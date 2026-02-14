@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import {
   LayoutDashboard, Vote, FileBarChart, Shield, AlertTriangle,
-  Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map
+  Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -20,6 +20,7 @@ const NAV_ITEMS = [
   { label: 'Polling Units', icon: MapPin, path: 'polling-units' },
   { label: 'Audit Trail', icon: Shield, path: 'audit' },
   { label: 'Incidents', icon: AlertTriangle, path: 'incidents' },
+  { label: 'Middleware', icon: Layers, path: 'middleware' },
 ];
 
 interface LayoutProps {

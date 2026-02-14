@@ -83,4 +83,16 @@ export const api = {
 
   getMapData: (electionId: number, stateCode?: string) =>
     request(`/geo/map-data?election_id=${electionId}${stateCode ? `&state_code=${stateCode}` : ''}`),
+
+  getMiddlewareStatus: () => request('/middleware/status'),
+  getMiddlewareHealth: () => request('/middleware/health'),
+  getKafkaTopics: () => request('/middleware/kafka/topics'),
+  getTemporalWorkflows: () => request('/middleware/temporal/workflows'),
+  getTigerBeetleAccounts: () => request('/middleware/tigerbeetle/accounts'),
+  getAPISIXRoutes: () => request('/middleware/apisix/routes'),
+  getRedisStats: () => request('/middleware/redis/stats'),
+  getFluvioTopics: () => request('/middleware/fluvio/topics'),
+  getLakehouseTables: () => request('/middleware/lakehouse/tables'),
+  getLakehouseAnalytics: (electionId: number, type: string) =>
+    request(`/middleware/lakehouse/analytics/${electionId}/${type}`),
 };

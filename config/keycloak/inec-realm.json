@@ -1,0 +1,67 @@
+{
+  "realm": "inec",
+  "enabled": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "Full system administrator" },
+      { "name": "presiding_officer", "description": "Polling unit presiding officer" },
+      { "name": "collation_officer", "description": "Collation center officer" },
+      { "name": "observer", "description": "Election observer" },
+      { "name": "public", "description": "Public viewer" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "inec-backend",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${KEYCLOAK_CLIENT_SECRET}",
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "serviceAccountsEnabled": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "defaultClientScopes": ["openid", "profile", "email", "roles"]
+    },
+    {
+      "clientId": "inec-frontend",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "defaultClientScopes": ["openid", "profile", "email", "roles"]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@inec.gov.ng",
+      "firstName": "System",
+      "lastName": "Administrator",
+      "credentials": [{ "type": "password", "value": "${ADMIN_PASSWORD}" }],
+      "realmRoles": ["admin"]
+    },
+    {
+      "username": "officer1",
+      "enabled": true,
+      "email": "officer1@inec.gov.ng",
+      "firstName": "Presiding",
+      "lastName": "Officer",
+      "credentials": [{ "type": "password", "value": "${OFFICER_PASSWORD}" }],
+      "realmRoles": ["presiding_officer"]
+    },
+    {
+      "username": "observer",
+      "enabled": true,
+      "email": "observer@inec.gov.ng",
+      "firstName": "Election",
+      "lastName": "Observer",
+      "credentials": [{ "type": "password", "value": "${OBSERVER_PASSWORD}" }],
+      "realmRoles": ["observer"]
+    }
+  ]
+}

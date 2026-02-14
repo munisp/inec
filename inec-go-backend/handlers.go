@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
@@ -284,10 +285,21 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tbID := fmt.Sprintf("TB-%06d", rand.Intn(900000)+100000)
 	ec8aHash := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(req.PollingUnitCode)))
 	userSub, _ := user["sub"].(string)
 	userID, _ := strconv.Atoi(userSub)
+
+	userRole, _ := user["role"].(string)
+	if !checkPermission(userRole, "submit_result") {
+		writeError(w, 403, "Permission denied by Permify")
+		return
+	}
+
+	tbTransfer := createTBTransfer(0, int64(totalCast), req.PollingUnitCode)
+	tbID := ""
+	if tbTransfer != nil {
+		tbID = tbTransfer.ID
+	}
 
 	res, _ := db.Exec(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
@@ -307,7 +319,22 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	go broadcastWS(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID})
 
-	writeJSON(w, 200, M{"id": resultID, "status": "pending", "tigerbeetle_transfer_id": tbID, "phase": "Pre-Validation", "message": "Result submitted. Proceeding to Edge Validation."})
+	go publishResultEvent(TopicResultSubmitted, resultID, req.PollingUnitCode, req.ElectionID, userID,
+		map[string]interface{}{"phase": "Pre-Validation", "tigerbeetle_id": tbID})
+	go publishAuditEvent("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", resultID), userID,
+		map[string]interface{}{"polling_unit": req.PollingUnitCode})
+
+	ws := startResultWorkflow("ResultSubmissionWorkflow", resultID, map[string]interface{}{
+		"result_id": resultID, "pu_code": req.PollingUnitCode, "election_id": req.ElectionID,
+	})
+	wfID := ""
+	if ws != nil {
+		wfID = ws.WorkflowID
+	}
+
+	cacheDel(fmt.Sprintf("dashboard_stats_%d", req.ElectionID))
+
+	writeJSON(w, 200, M{"id": resultID, "status": "pending", "tigerbeetle_transfer_id": tbID, "workflow_id": wfID, "phase": "Pre-Validation", "message": "Result submitted. Proceeding to Edge Validation."})
 }
 
 func handleValidateResult(w http.ResponseWriter, r *http.Request) {
@@ -326,11 +353,25 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, fmt.Sprintf("Result is already %s", status))
 		return
 	}
-	db.Exec("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
+	userRole, _ := user["role"].(string)
+	if !checkPermission(userRole, "validate_result") {
+		writeError(w, 403, "Permission denied by Permify")
+		return
+	}
+
+	db.Exec("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	logAudit("RESULT_VALIDATED", "result", id, uid, map[string]interface{}{"phase": "Edge Validation", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
+
+	idInt, _ := strconv.ParseInt(id, 10, 64)
+	go publishResultEvent(TopicResultValidated, idInt, puCode, 0, uid,
+		map[string]interface{}{"phase": "Edge Validation"})
+	go publishAuditEvent("RESULT_VALIDATED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
+
+	startResultWorkflow("ResultValidationWorkflow", idInt, map[string]interface{}{"result_id": id})
+
 	writeJSON(w, 200, M{"status": "validated", "phase": "Edge Validation"})
 }
 
@@ -350,13 +391,33 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, fmt.Sprintf("Cannot finalize result with status %s", status))
 		return
 	}
+	userSub, _ := user["sub"].(string)
+	uid, _ := strconv.Atoi(userSub)
+	userRole, _ := user["role"].(string)
+	if !checkPermission(userRole, "finalize_result") {
+		writeError(w, 403, "Permission denied by Permify")
+		return
+	}
+
+	var tbTransferID sql.NullString
+	db.QueryRow("SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
+	if tbTransferID.Valid && tbTransferID.String != "" {
+		postTBTransfer(tbTransferID.String)
+	}
+
 	hlTx := fmt.Sprintf("0x%x", rand.Int63())
 	ipfsCid := fmt.Sprintf("Qm%x", rand.Int63())
 	db.Exec(`UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
 		tigerbeetle_status='POSTED', hyperledger_status='CONFIRMED', hyperledger_tx_id=?, ipfs_cid=? WHERE id=?`, hlTx, ipfsCid, id)
-	userSub, _ := user["sub"].(string)
-	uid, _ := strconv.Atoi(userSub)
 	logAudit("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"phase": "Finalization", "polling_unit": puCode, "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
+
+	idInt, _ := strconv.ParseInt(id, 10, 64)
+	go publishResultEvent(TopicResultFinalized, idInt, puCode, 0, uid,
+		map[string]interface{}{"phase": "Finalization", "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
+	go publishAuditEvent("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
+
+	startResultWorkflow("ResultFinalizationWorkflow", idInt, map[string]interface{}{"result_id": id})
+
 	writeJSON(w, 200, M{"status": "finalized", "phase": "Finalization", "hyperledger_tx_id": hlTx, "ipfs_cid": ipfsCid, "tigerbeetle_status": "POSTED", "hyperledger_status": "CONFIRMED"})
 }
 
@@ -372,11 +433,29 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "Result not found")
 		return
 	}
-	db.Exec("UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
+	userRole, _ := user["role"].(string)
+	if !checkPermission(userRole, "dispute_result") {
+		writeError(w, 403, "Permission denied by Permify")
+		return
+	}
+
+	var tbTransferID sql.NullString
+	db.QueryRow("SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
+	if tbTransferID.Valid && tbTransferID.String != "" {
+		voidTBTransfer(tbTransferID.String)
+	}
+
+	db.Exec("UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)
 	logAudit("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"phase": "Dispute", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
+
+	idInt, _ := strconv.ParseInt(id, 10, 64)
+	go publishResultEvent(TopicResultDisputed, idInt, puCode, 0, uid,
+		map[string]interface{}{"phase": "Dispute"})
+	go publishAuditEvent("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
+
 	writeJSON(w, 200, M{"status": "disputed", "tigerbeetle_status": "VOIDED"})
 }
 
@@ -759,6 +838,15 @@ func handleExportGeoJSON(w http.ResponseWriter, r *http.Request) {
 func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 
+	cacheKey := fmt.Sprintf("dashboard_stats_%d", eid)
+	if cached, err := cacheGet(cacheKey); err == nil && cached != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.WriteHeader(200)
+		w.Write([]byte(cached))
+		return
+	}
+
 	election, err := querySingleRow("SELECT * FROM elections WHERE id=?", eid)
 	if err != nil {
 		writeJSON(w, 200, M{"error": "Election not found"})
@@ -814,7 +902,7 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		variance = math.Round(math.Abs(float64(tbPosted-hlConfirmed))/float64(resultsReceived)*1000000) / 10000
 	}
 
-	writeJSON(w, 200, M{
+	result := M{
 		"election": election, "total_polling_units": totalPUs, "results_received": resultsReceived,
 		"completion_percentage": comp,
 		"status_breakdown": M{
@@ -824,7 +912,11 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		"vote_totals": M{"valid": nullInt(validV), "rejected": nullInt(rejectedV), "cast": nullInt(castV), "accredited": nullInt(accreditedV)},
 		"party_scores": partyScores, "state_results": stateResults, "zone_results": zoneResults,
 		"dual_ledger": M{"tigerbeetle_posted": tbPosted, "hyperledger_confirmed": hlConfirmed, "total_results": resultsReceived, "reconciliation_variance": variance},
-	})
+	}
+
+	cacheSet(cacheKey, result, 15*time.Second)
+	w.Header().Set("X-Cache", "MISS")
+	writeJSON(w, 200, result)
 }
 
 func handleLiveFeed(w http.ResponseWriter, r *http.Request) {
@@ -1055,6 +1147,16 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 	res, _ := db.Exec("INSERT INTO incidents (election_id, polling_unit_code, reported_by, incident_type, description, severity) VALUES (?,?,?,?,?,?)",
 		req.ElectionID, req.PollingUnitCode, uid, req.IncidentType, req.Description, req.Severity)
 	lid, _ := res.LastInsertId()
+
+	go func() {
+		ctx := context.Background()
+		mwHub.Kafka.Produce(ctx, KafkaMessage{
+			Topic: TopicIncidentReport,
+			Key:   fmt.Sprintf("incident-%d", lid),
+			Value: map[string]interface{}{"id": lid, "election_id": req.ElectionID, "type": req.IncidentType, "severity": req.Severity},
+		})
+	}()
+
 	writeJSON(w, 200, M{"id": lid, "message": "Incident reported"})
 }
 

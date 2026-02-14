@@ -11,6 +11,7 @@ import PollingUnitsPage from '@/pages/PollingUnitsPage';
 import AuditPage from '@/pages/AuditPage';
 import IncidentsPage from '@/pages/IncidentsPage';
 import MapPage from '@/pages/MapPage';
+import MiddlewarePage from '@/pages/MiddlewarePage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -27,6 +28,7 @@ function AppContent() {
     'polling-units': <PollingUnitsPage />,
     audit: <AuditPage />,
     incidents: <IncidentsPage />,
+    middleware: <MiddlewarePage />,
   };
 
   return (

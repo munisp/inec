@@ -52,6 +52,8 @@ func main() {
 	initDB(db)
 	seedDatabase(db)
 
+	mwHub = initMiddlewareHub()
+
 	r := mux.NewRouter()
 
 	// Health
@@ -114,6 +116,23 @@ func main() {
 
 	// Parties
 	r.HandleFunc("/parties", handleListParties).Methods("GET")
+
+	// Middleware status & management
+	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
+	r.HandleFunc("/middleware/health", handleMiddlewareHealth).Methods("GET")
+	r.HandleFunc("/middleware/kafka/topics", handleKafkaTopics).Methods("GET")
+	r.HandleFunc("/middleware/temporal/workflows", handleTemporalWorkflows).Methods("GET")
+	r.HandleFunc("/middleware/temporal/workflows/{id}", handleTemporalWorkflowStatus).Methods("GET")
+	r.HandleFunc("/middleware/tigerbeetle/accounts", handleTBAccounts).Methods("GET")
+	r.HandleFunc("/middleware/tigerbeetle/transfers", handleTBTransfers).Methods("GET")
+	r.HandleFunc("/middleware/apisix/routes", handleAPISIXRoutes).Methods("GET")
+	r.HandleFunc("/middleware/apisix/config", handleAPISIXConfig).Methods("GET")
+	r.HandleFunc("/middleware/permify/check", handlePermifyCheck).Methods("POST")
+	r.HandleFunc("/middleware/fluvio/topics", handleFluvioTopics).Methods("GET")
+	r.HandleFunc("/middleware/fluvio/consume/{topic}", handleFluvioConsume).Methods("GET")
+	r.HandleFunc("/middleware/lakehouse/analytics/{election_id}/{type}", handleLakehouseAnalytics).Methods("GET")
+	r.HandleFunc("/middleware/lakehouse/tables", handleLakehouseTables).Methods("GET")
+	r.HandleFunc("/middleware/redis/stats", handleRedisStats).Methods("GET")
 
 	handler := corsMiddleware(securityHeaders(rateLimitMiddleware(gzipMiddleware(r))))
 
