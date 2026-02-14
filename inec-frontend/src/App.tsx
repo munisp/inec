@@ -16,6 +16,12 @@ import BVASPage from '@/pages/BVASPage';
 import AnomalyDetectionPage from '@/pages/AnomalyDetectionPage';
 import SMSVerificationPage from '@/pages/SMSVerificationPage';
 import PublicAPIPage from '@/pages/PublicAPIPage';
+import VoterRegistrationPage from '@/pages/VoterRegistrationPage';
+import WorkflowEnginePage from '@/pages/WorkflowEnginePage';
+import BVASSyncPage from '@/pages/BVASSyncPage';
+import PortalIntegrationPage from '@/pages/PortalIntegrationPage';
+import DataValidationPage from '@/pages/DataValidationPage';
+import AdminConsolePage from '@/pages/AdminConsolePage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -37,6 +43,12 @@ function AppContent() {
     'anomaly-detection': <AnomalyDetectionPage />,
     'sms-verification': <SMSVerificationPage />,
     'public-api': <PublicAPIPage />,
+    'voter-registration': <VoterRegistrationPage />,
+    'workflow-engine': <WorkflowEnginePage />,
+    'bvas-sync': <BVASSyncPage />,
+    'portal-integration': <PortalIntegrationPage />,
+    'data-validation': <DataValidationPage />,
+    'admin-console': <AdminConsolePage />,
   };
 
   return (

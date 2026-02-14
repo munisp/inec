@@ -131,4 +131,55 @@ export const api = {
     request('/api/v1/keys', { method: 'POST', body: JSON.stringify({ name, owner }) }),
   getAPIKeys: () => request('/api/v1/keys'),
   getAPIUsage: () => request('/api/v1/usage'),
+
+  getEMSVoters: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return request(`/ems/voters?${q}`);
+  },
+  getEMSVoterStats: (stateCode?: string) =>
+    request(`/ems/voters/stats${stateCode ? `?state_code=${stateCode}` : ''}`),
+  getEMSRegistrationCenters: (stateCode?: string) =>
+    request(`/ems/registration-centers${stateCode ? `?state_code=${stateCode}` : ''}`),
+
+  getEMSWorkflows: (electionId?: number) =>
+    request(`/ems/workflows${electionId ? `?election_id=${electionId}` : ''}`),
+  getEMSWorkflow: (id: number) => request(`/ems/workflows/${id}`),
+  advanceEMSWorkflow: (id: number) =>
+    request(`/ems/workflows/${id}/advance`, { method: 'POST' }),
+
+  getEMSSyncStats: (deviceId?: string) =>
+    request(`/ems/sync/stats${deviceId ? `?device_id=${deviceId}` : ''}`),
+  getEMSSyncQueue: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return request(`/ems/sync/queue?${q}`);
+  },
+  resolveEMSSyncConflict: (id: number, resolution: string) =>
+    request(`/ems/sync/conflicts/${id}/resolve`, { method: 'POST', body: JSON.stringify({ resolution }) }),
+
+  getEMSPortalStatus: () => request('/ems/portals/status'),
+  getEMSPortal: (id: number) => request(`/ems/portals/${id}`),
+  syncEMSPortal: (id: number) =>
+    request(`/ems/portals/${id}/sync`, { method: 'POST' }),
+  getEMSPortalSyncLog: () => request('/ems/portals/sync-log'),
+
+  getEMSValidationRules: (entityType?: string) =>
+    request(`/ems/validation/rules${entityType ? `?entity_type=${entityType}` : ''}`),
+  getEMSValidationStats: () => request('/ems/validation/stats'),
+  getEMSValidationHistory: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return request(`/ems/validation/history?${q}`);
+  },
+
+  getEMSLifecycle: (electionId: number) => request(`/ems/elections/${electionId}/lifecycle`),
+  getEMSStaff: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return request(`/ems/staff?${q}`);
+  },
+  getEMSMaterials: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return request(`/ems/materials?${q}`);
+  },
+  getEMSMaterialStats: (electionId?: number) =>
+    request(`/ems/materials/stats${electionId ? `?election_id=${electionId}` : ''}`),
+  getEMSDashboard: (electionId: number) => request(`/ems/dashboard?election_id=${electionId}`),
 };

@@ -9,7 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import {
   LayoutDashboard, Vote, FileBarChart, Shield, AlertTriangle,
   Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
-  Brain, MessageSquare, Code2
+  Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -26,6 +26,12 @@ const NAV_ITEMS = [
   { label: 'Public API', icon: Code2, path: 'public-api' },
   { label: 'Middleware', icon: Layers, path: 'middleware' },
   { label: 'BVAS', icon: Fingerprint, path: 'bvas' },
+  { label: 'Voter Reg', icon: UserPlus, path: 'voter-registration', section: 'EMS' },
+  { label: 'Workflow', icon: GitBranch, path: 'workflow-engine' },
+  { label: 'BVAS Sync', icon: RefreshCw, path: 'bvas-sync' },
+  { label: 'Portals', icon: Globe, path: 'portal-integration' },
+  { label: 'Validation', icon: ShieldCheck, path: 'data-validation' },
+  { label: 'Admin Console', icon: Settings, path: 'admin-console' },
 ];
 
 interface LayoutProps {
@@ -52,23 +58,29 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
         </div>
       </div>
-      <nav className="flex-1 p-2 space-y-1">
-        {NAV_ITEMS.map((item) => {
+      <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
+        {NAV_ITEMS.map((item: any) => {
           const isActive = currentPage === item.path;
           return (
-            <button
-              key={item.path}
-              onClick={() => { onNavigate(item.path); setSidebarOpen(false); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                isActive
-                  ? 'bg-green-50 text-green-800 font-medium'
-                  : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900'
-              }`}
-            >
-              <item.icon className={`w-4 h-4 ${isActive ? 'text-green-700' : ''}`} />
-              {item.label}
-              {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
-            </button>
+            <div key={item.path}>
+              {item.section && (
+                <div className="px-3 pt-3 pb-1">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">{item.section}</span>
+                </div>
+              )}
+              <button
+                onClick={() => { onNavigate(item.path); setSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  isActive
+                    ? 'bg-green-50 text-green-800 font-medium'
+                    : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900'
+                }`}
+              >
+                <item.icon className={`w-4 h-4 ${isActive ? 'text-green-700' : ''}`} />
+                {item.label}
+                {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
+              </button>
+            </div>
           );
         })}
       </nav>

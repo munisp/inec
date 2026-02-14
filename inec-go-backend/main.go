@@ -52,6 +52,8 @@ func main() {
 	initDB(db)
 	seedDatabase(db)
 	seedBVASDevices(db)
+	initEMSTables(db)
+	seedEMSData(db)
 	initAIProxy()
 
 	mwHub = initMiddlewareHub()
@@ -164,6 +166,52 @@ func main() {
 	r.HandleFunc("/api/v1/collation", apiKeyAuth(handlePublicAPICollation)).Methods("GET")
 	r.HandleFunc("/api/v1/ai/anomalies", apiKeyAuth(handleAIAnomalies)).Methods("GET")
 	r.HandleFunc("/api/v1/ai/integrity", apiKeyAuth(handleAIIntegrity)).Methods("GET")
+
+	// EMS - Voter Registration
+	r.HandleFunc("/ems/voters", handleListVoters).Methods("GET")
+	r.HandleFunc("/ems/voters/stats", handleVoterStats).Methods("GET")
+	r.HandleFunc("/ems/voters/register", handleRegisterVoter).Methods("POST")
+	r.HandleFunc("/ems/voters/{vin}", handleGetVoter).Methods("GET")
+	r.HandleFunc("/ems/voters/{vin}/verify", handleVoterVerify).Methods("POST")
+	r.HandleFunc("/ems/voters/{vin}/transfer", handleVoterTransfer).Methods("POST")
+	r.HandleFunc("/ems/registration-centers", handleRegistrationCenters).Methods("GET")
+
+	// EMS - Workflow Engine
+	r.HandleFunc("/ems/workflows", handleListWorkflows).Methods("GET")
+	r.HandleFunc("/ems/workflows", handleCreateWorkflow).Methods("POST")
+	r.HandleFunc("/ems/workflows/{id}", handleGetWorkflow).Methods("GET")
+	r.HandleFunc("/ems/workflows/{id}/advance", handleAdvanceWorkflow).Methods("POST")
+
+	// EMS - BVAS Sync Engine
+	r.HandleFunc("/ems/sync/submit", handleBVASSyncSubmit).Methods("POST")
+	r.HandleFunc("/ems/sync/heartbeat", handleBVASHeartbeat).Methods("POST")
+	r.HandleFunc("/ems/sync/stats", handleBVASSyncStats).Methods("GET")
+	r.HandleFunc("/ems/sync/queue", handleBVASSyncQueue).Methods("GET")
+	r.HandleFunc("/ems/sync/conflicts/{id}/resolve", handleBVASConflictResolve).Methods("POST")
+
+	// EMS - Portal Integration Hub
+	r.HandleFunc("/ems/portals", handleListPortals).Methods("GET")
+	r.HandleFunc("/ems/portals/status", handlePortalHubStatus).Methods("GET")
+	r.HandleFunc("/ems/portals/{id}", handleGetPortal).Methods("GET")
+	r.HandleFunc("/ems/portals/{id}/sync", handlePortalSync).Methods("POST")
+	r.HandleFunc("/ems/portals/sync-log", handlePortalSyncLog).Methods("GET")
+	r.HandleFunc("/ems/portals/webhooks", handlePortalWebhooks).Methods("GET")
+
+	// EMS - Data Validation Pipeline
+	r.HandleFunc("/ems/validation/rules", handleListValidationRules).Methods("GET")
+	r.HandleFunc("/ems/validation/validate", handleValidateEntity).Methods("POST")
+	r.HandleFunc("/ems/validation/stats", handleValidationStats).Methods("GET")
+	r.HandleFunc("/ems/validation/history", handleValidationHistory).Methods("GET")
+
+	// EMS - Admin Console / Election Lifecycle
+	r.HandleFunc("/ems/elections/{election_id}/lifecycle", handleElectionLifecycle).Methods("GET")
+	r.HandleFunc("/ems/elections/{election_id}/transition", handleTransitionElection).Methods("POST")
+	r.HandleFunc("/ems/staff", handleListStaffAssignments).Methods("GET")
+	r.HandleFunc("/ems/staff", handleAssignStaff).Methods("POST")
+	r.HandleFunc("/ems/materials", handleListMaterials).Methods("GET")
+	r.HandleFunc("/ems/materials/{id}/dispatch", handleDispatchMaterial).Methods("PATCH")
+	r.HandleFunc("/ems/materials/stats", handleMaterialStats).Methods("GET")
+	r.HandleFunc("/ems/dashboard", handleEMSDashboard).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
