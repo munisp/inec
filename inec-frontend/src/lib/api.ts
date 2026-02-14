@@ -95,4 +95,20 @@ export const api = {
   getLakehouseTables: () => request('/middleware/lakehouse/tables'),
   getLakehouseAnalytics: (electionId: number, type: string) =>
     request(`/middleware/lakehouse/analytics/${electionId}/${type}`),
+
+  getBVASSummary: (electionId: number) => request(`/bvas/summary?election_id=${electionId}`),
+  getBVASDevices: (params?: Record<string, string>) => {
+    const q = new URLSearchParams(params);
+    return request(`/bvas/devices?${q}`);
+  },
+  getBVASReconciliation: (electionId: number, flaggedOnly?: boolean) =>
+    request(`/bvas/reconciliation?election_id=${electionId}${flaggedOnly ? '&flagged_only=true' : ''}`),
+  getBVASAccreditationFeed: (electionId: number, limit?: number) =>
+    request(`/bvas/accreditation/feed?election_id=${electionId}&limit=${limit || 50}`),
+  getBVASAccreditationTimeline: (electionId: number, interval?: string) =>
+    request(`/bvas/accreditation/timeline?election_id=${electionId}&interval=${interval || 'hour'}`),
+  getIngestionStats: () => request('/ingestion/stats'),
+  getIngestionJobs: (status?: string) =>
+    request(`/ingestion/jobs${status ? `?status=${status}` : ''}`),
+  getDeadLetterQueue: () => request('/ingestion/dead-letter'),
 };

@@ -176,4 +176,6 @@ func initDB(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_pu_lonlat ON polling_units(longitude, latitude);
 	`
 	db.Exec(schema)
+	initBVASTables(db)
+	initIngestionTables(db)
 }

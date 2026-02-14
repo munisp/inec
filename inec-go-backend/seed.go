@@ -244,4 +244,6 @@ func seedDatabase(db *sql.DB) {
 		prevHash = blockHash
 	}
 	tx2.Commit()
+
+	seedBVASDevices(db)
 }

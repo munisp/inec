@@ -51,6 +51,7 @@ func main() {
 
 	initDB(db)
 	seedDatabase(db)
+	seedBVASDevices(db)
 
 	mwHub = initMiddlewareHub()
 
@@ -116,6 +117,27 @@ func main() {
 
 	// Parties
 	r.HandleFunc("/parties", handleListParties).Methods("GET")
+
+	// BVAS
+	r.HandleFunc("/bvas/devices", handleListBVASDevices).Methods("GET")
+	r.HandleFunc("/bvas/devices/{id}", handleGetBVASDevice).Methods("GET")
+	r.HandleFunc("/bvas/devices", handleRegisterBVASDevice).Methods("POST")
+	r.HandleFunc("/bvas/devices/{id}", handleUpdateBVASDevice).Methods("PATCH")
+	r.HandleFunc("/bvas/accreditation", handleBVASAccreditation).Methods("POST")
+	r.HandleFunc("/bvas/accreditation/feed", handleBVASAccreditationFeed).Methods("GET")
+	r.HandleFunc("/bvas/accreditation/timeline", handleBVASAccreditationTimeline).Methods("GET")
+	r.HandleFunc("/bvas/reconciliation", handleBVASReconciliation).Methods("GET")
+	r.HandleFunc("/bvas/summary", handleBVASSummary).Methods("GET")
+
+	// Ingestion Engine
+	r.HandleFunc("/ingestion/submit", handleIngestionSubmit).Methods("POST")
+	r.HandleFunc("/ingestion/batch", handleBatchUpload).Methods("POST")
+	r.HandleFunc("/ingestion/offline-sync", handleOfflineSync).Methods("POST")
+	r.HandleFunc("/ingestion/stats", handleIngestionStats).Methods("GET")
+	r.HandleFunc("/ingestion/jobs", handleIngestionJobs).Methods("GET")
+	r.HandleFunc("/ingestion/dead-letter", handleDeadLetterQueue).Methods("GET")
+	r.HandleFunc("/ingestion/dead-letter/{id}/reprocess", handleReprocessDLQ).Methods("POST")
+	r.HandleFunc("/ingestion/offline-queue", handleOfflineSyncQueue).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")

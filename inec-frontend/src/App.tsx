@@ -12,6 +12,7 @@ import AuditPage from '@/pages/AuditPage';
 import IncidentsPage from '@/pages/IncidentsPage';
 import MapPage from '@/pages/MapPage';
 import MiddlewarePage from '@/pages/MiddlewarePage';
+import BVASPage from '@/pages/BVASPage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -29,6 +30,7 @@ function AppContent() {
     audit: <AuditPage />,
     incidents: <IncidentsPage />,
     middleware: <MiddlewarePage />,
+    bvas: <BVASPage />,
   };
 
   return (
