@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -301,6 +300,14 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		tbID = tbTransfer.ID
 	}
 
+	var ptbID string
+	if persistentTB != nil {
+		ptbID, _ = persistentTB.CreateTransfer("inec-operational", "inec-official", int64(totalCast), 1, 1, req.PollingUnitCode)
+	}
+	if ptbID != "" {
+		tbID = ptbID
+	}
+
 	res, _ := db.Exec(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
 		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
@@ -403,15 +410,44 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
 		postTBTransfer(tbTransferID.String)
+		if persistentTB != nil {
+			persistentTB.PostTransfer(tbTransferID.String)
+		}
 	}
 
-	hlTx := fmt.Sprintf("0x%x", rand.Int63())
-	ipfsCid := fmt.Sprintf("Qm%x", rand.Int63())
+	var hlTx, ipfsCid string
+	idInt, _ := strconv.ParseInt(id, 10, 64)
+	var electionID, totalVotes, accredited int
+	db.QueryRow("SELECT election_id, total_votes_cast, accredited_voters FROM results WHERE id=?", id).Scan(&electionID, &totalVotes, &accredited)
+
+	if fabricNetwork != nil {
+		txID, _, _ := fabricNetwork.SubmitTransaction("inec-results", "result-validation-cc", "FinalizeResult",
+			[]string{id, puCode, fmt.Sprintf("%d", electionID)}, "INECMSP")
+		hlTx = txID
+	}
+	if hlTx == "" {
+		hlTx = fmt.Sprintf("TX-%x", sha256.Sum256([]byte(fmt.Sprintf("finalize-%s-%d", id, time.Now().UnixNano()))))
+		hlTx = hlTx[:26]
+	}
+
+	if ipfsStore != nil {
+		resultData := map[string]interface{}{"result_id": id, "pu_code": puCode, "election_id": electionID, "status": "finalized", "timestamp": time.Now().UTC().Format(time.RFC3339)}
+		cid, _ := ipfsStore.StoreJSON(resultData, "election/result-finalization")
+		ipfsCid = cid
+	}
+	if ipfsCid == "" {
+		h := sha256.Sum256([]byte(fmt.Sprintf("result-%s-%d", id, time.Now().UnixNano())))
+		ipfsCid = "Qm" + hex.EncodeToString(h[:])
+	}
+
+	if chaincodeEngine != nil {
+		chaincodeEngine.ExecuteResultValidation(int(idInt), puCode, electionID, totalVotes, accredited)
+	}
+
 	db.Exec(`UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
 		tigerbeetle_status='POSTED', hyperledger_status='CONFIRMED', hyperledger_tx_id=?, ipfs_cid=? WHERE id=?`, hlTx, ipfsCid, id)
 	logAudit("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"phase": "Finalization", "polling_unit": puCode, "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
 
-	idInt, _ := strconv.ParseInt(id, 10, 64)
 	go publishResultEvent(TopicResultFinalized, idInt, puCode, 0, uid,
 		map[string]interface{}{"phase": "Finalization", "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
 	go publishAuditEvent("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
@@ -445,6 +481,14 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
 		voidTBTransfer(tbTransferID.String)
+		if persistentTB != nil {
+			persistentTB.VoidTransfer(tbTransferID.String)
+		}
+	}
+
+	if fabricNetwork != nil {
+		fabricNetwork.SubmitTransaction("inec-results", "dispute-resolution-cc", "DisputeResult",
+			[]string{id, puCode, fmt.Sprintf("%d", uid)}, "INECMSP")
 	}
 
 	db.Exec("UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)

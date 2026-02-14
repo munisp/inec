@@ -59,6 +59,7 @@ func main() {
 	initBiometricEngine(db)
 	initBiometricAdvanced(db)
 	initAIProxy()
+	initBlockchainProduction(db)
 
 	mwHub = initMiddlewareHub()
 
@@ -280,6 +281,27 @@ func main() {
 	r.HandleFunc("/blockchain/contracts", handleSmartContracts).Methods("GET")
 	r.HandleFunc("/blockchain/verify/{result_id}", handleBlockchainVerifyResult).Methods("GET")
 	r.HandleFunc("/blockchain/audit", handleBlockchainAuditTrail).Methods("GET")
+
+	// Production Blockchain & Ledger
+	r.HandleFunc("/blockchain/production/stats", handleBlockchainProductionStats).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/network", handleFabricNetworkStats).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/blocks", handleFabricBlocks).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/transactions", handleFabricTransactions).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/verify-chain", handleFabricVerifyChain).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/submit", handleFabricSubmitTx).Methods("POST")
+	r.HandleFunc("/blockchain/chaincode/validate-result", handleChaincodeValidateResult).Methods("POST")
+	r.HandleFunc("/blockchain/chaincode/aggregate", handleChaincodeAggregate).Methods("POST")
+	r.HandleFunc("/blockchain/ipfs/stats", handleIPFSStats).Methods("GET")
+	r.HandleFunc("/blockchain/ipfs/store", handleIPFSStore).Methods("POST")
+	r.HandleFunc("/blockchain/ipfs/verify", handleIPFSVerify).Methods("GET")
+	r.HandleFunc("/blockchain/ipfs/objects", handleIPFSObjects).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/stats", handlePersistentTBStats).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/accounts", handlePersistentTBAccounts).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/transfers", handlePersistentTBTransfers).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/transfer", handlePersistentTBCreateTransfer).Methods("POST")
+	r.HandleFunc("/blockchain/ledger/transfer/post", handlePersistentTBPostTransfer).Methods("POST")
+	r.HandleFunc("/blockchain/merkle/build", handleMerkleTreeBuild).Methods("POST")
+	r.HandleFunc("/blockchain/merkle/trees", handleMerkleTreeList).Methods("GET")
 
 	// Phase 7 - Training & Capacity Building
 	r.HandleFunc("/training/courses", handleTrainingCourses).Methods("GET")

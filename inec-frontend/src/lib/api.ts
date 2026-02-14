@@ -286,6 +286,39 @@ export const api = {
   getBlockchainAudit: (limit?: number) =>
     request(`/blockchain/audit?limit=${limit || 50}`),
 
+  getBlockchainProductionStats: () => request('/blockchain/production/stats'),
+  getFabricNetwork: () => request('/blockchain/fabric/network'),
+  getFabricBlocks: (limit?: number) =>
+    request(`/blockchain/fabric/blocks?limit=${limit || 20}`),
+  getFabricTransactions: (limit?: number) =>
+    request(`/blockchain/fabric/transactions?limit=${limit || 50}`),
+  verifyFabricChain: (limit?: number) =>
+    request(`/blockchain/fabric/verify-chain?limit=${limit || 100}`),
+  submitFabricTx: (channel: string, chaincode: string, fn: string, args: string[]) =>
+    request('/blockchain/fabric/submit', { method: 'POST', body: JSON.stringify({ channel, chaincode, function: fn, args }) }),
+  chaincodeValidateResult: (resultId: number, puCode: string, electionId: number, totalVotes: number, accredited: number) =>
+    request('/blockchain/chaincode/validate-result', { method: 'POST', body: JSON.stringify({ result_id: resultId, pu_code: puCode, election_id: electionId, total_votes: totalVotes, accredited }) }),
+  chaincodeAggregate: (level: string, areaCode: string, electionId: number) =>
+    request('/blockchain/chaincode/aggregate', { method: 'POST', body: JSON.stringify({ level, area_code: areaCode, election_id: electionId }) }),
+  getIPFSStats: () => request('/blockchain/ipfs/stats'),
+  storeIPFS: (data: string, contentType?: string) =>
+    request('/blockchain/ipfs/store', { method: 'POST', body: JSON.stringify({ data, content_type: contentType }) }),
+  verifyIPFS: (cid: string) => request(`/blockchain/ipfs/verify?cid=${cid}`),
+  getIPFSObjects: (limit?: number, contentType?: string) =>
+    request(`/blockchain/ipfs/objects?limit=${limit || 50}${contentType ? `&content_type=${contentType}` : ''}`),
+  getLedgerStats: () => request('/blockchain/ledger/stats'),
+  getLedgerAccounts: () => request('/blockchain/ledger/accounts'),
+  getLedgerTransfers: (accountId?: string, limit?: number) =>
+    request(`/blockchain/ledger/transfers?account_id=${accountId || 'inec-operational'}&limit=${limit || 50}`),
+  createLedgerTransfer: (debitAccount: string, creditAccount: string, amount: number, userData?: string) =>
+    request('/blockchain/ledger/transfer', { method: 'POST', body: JSON.stringify({ debit_account: debitAccount, credit_account: creditAccount, amount, user_data: userData }) }),
+  postLedgerTransfer: (transferId: string) =>
+    request('/blockchain/ledger/transfer/post', { method: 'POST', body: JSON.stringify({ transfer_id: transferId }) }),
+  buildMerkleTree: (leaves: string[], treeType?: string) =>
+    request('/blockchain/merkle/build', { method: 'POST', body: JSON.stringify({ leaves, tree_type: treeType }) }),
+  getMerkleTrees: (limit?: number) =>
+    request(`/blockchain/merkle/trees?limit=${limit || 20}`),
+
   getTrainingCourses: (role?: string) =>
     request(`/training/courses${role ? `?role=${role}` : ''}`),
   getTrainingStats: () => request('/training/stats'),
