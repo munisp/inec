@@ -193,6 +193,42 @@ export const api = {
   resolveABISDuplicate: (id: number, status: string) =>
     request(`/biometric/abis/${id}/resolve`, { method: 'POST', body: JSON.stringify({ status }) }),
 
+  getBiometricEngineStats: () => request('/biometric/engine/stats'),
+  abisEnroll: (vin: string, modality: string, deviceId?: string) =>
+    request('/biometric/engine/enroll', { method: 'POST', body: JSON.stringify({ vin, modality, device_id: deviceId || 'BVAS-001' }) }),
+  abisVerify: (vin: string, modality: string, deviceId?: string) =>
+    request('/biometric/engine/verify', { method: 'POST', body: JSON.stringify({ vin, modality, device_id: deviceId || 'BVAS-001' }) }),
+  abisMultiModalVerify: (vin: string, deviceId?: string) =>
+    request('/biometric/engine/verify-multimodal', { method: 'POST', body: JSON.stringify({ vin, device_id: deviceId || 'BVAS-001' }) }),
+  abisIdentify: (vin: string, modality?: string, limit?: number) =>
+    request(`/biometric/engine/identify?vin=${vin}&modality=${modality || 'fingerprint'}&limit=${limit || 10}`),
+  padCheck: (vin: string, modality: string, deviceId?: string) =>
+    request('/biometric/engine/pad-check', { method: 'POST', body: JSON.stringify({ vin, modality, device_id: deviceId || 'BVAS-001' }) }),
+  getPADHistory: (vin?: string, limit?: number) =>
+    request(`/biometric/engine/pad-history?${vin ? `vin=${vin}&` : ''}limit=${limit || 50}`),
+  getDedupJobs: () => request('/biometric/engine/dedup/jobs'),
+  startDedupJob: (type?: string, modalities?: string, threshold?: number) =>
+    request('/biometric/engine/dedup/start', { method: 'POST', body: JSON.stringify({ type: type || 'incremental', modalities: modalities || 'fingerprint', threshold: threshold || 0.85 }) }),
+  getDedupCandidates: (jobId: number, decision?: string) =>
+    request(`/biometric/engine/dedup/${jobId}/candidates${decision ? `?decision=${decision}` : ''}`),
+  resolveDedupCandidate: (id: number, decision: string, reviewer?: string) =>
+    request(`/biometric/engine/dedup/resolve/${id}`, { method: 'POST', body: JSON.stringify({ decision, reviewer }) }),
+  getVaultStats: () => request('/biometric/engine/vault/stats'),
+  rotateVaultKey: (keyId: string) =>
+    request('/biometric/engine/vault/rotate-key', { method: 'POST', body: JSON.stringify({ key_id: keyId }) }),
+  getVaultAudit: (vin?: string, limit?: number) =>
+    request(`/biometric/engine/vault/audit?${vin ? `vin=${vin}&` : ''}limit=${limit || 50}`),
+  getBVASDeviceCapabilities: () => request('/biometric/engine/devices'),
+  registerBVASDevice: (deviceId: string, firmware: string, modalities: string[], meta?: Record<string, unknown>) =>
+    request('/biometric/engine/devices/register', { method: 'POST', body: JSON.stringify({ device_id: deviceId, firmware, modalities, meta }) }),
+  getBVASCaptureSessions: (deviceId?: string, limit?: number) =>
+    request(`/biometric/engine/capture-sessions?${deviceId ? `device_id=${deviceId}&` : ''}limit=${limit || 50}`),
+  getABISPipeline: () => request('/biometric/engine/pipeline'),
+  getABISConfig: () => request('/biometric/engine/config'),
+  updateABISConfig: (config: Record<string, number>) =>
+    request('/biometric/engine/config', { method: 'POST', body: JSON.stringify(config) }),
+  getTemplateIntegrity: (vin: string) => request(`/biometric/engine/template-integrity?vin=${vin}`),
+
   getBlockchainStats: () => request('/blockchain/stats'),
   getBlockchainChain: (limit?: number) =>
     request(`/blockchain/chain?limit=${limit || 50}`),

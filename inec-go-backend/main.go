@@ -56,6 +56,7 @@ func main() {
 	seedEMSData(db)
 	initPhase7Tables(db)
 	seedPhase7Data(db)
+	initBiometricEngine(db)
 	initAIProxy()
 
 	mwHub = initMiddlewareHub()
@@ -221,6 +222,28 @@ func main() {
 	r.HandleFunc("/biometric/profiles", handleBiometricProfiles).Methods("GET")
 	r.HandleFunc("/biometric/abis/duplicates", handleABISDuplicates).Methods("GET")
 	r.HandleFunc("/biometric/abis/{id}/resolve", handleABISResolve).Methods("POST")
+
+	// Biometric Engine - Production-Grade
+	r.HandleFunc("/biometric/engine/stats", handleBiometricEngineStats).Methods("GET")
+	r.HandleFunc("/biometric/engine/enroll", handleABISEnroll).Methods("POST")
+	r.HandleFunc("/biometric/engine/verify", handleABISVerify).Methods("POST")
+	r.HandleFunc("/biometric/engine/verify-multimodal", handleMultiModalVerify).Methods("POST")
+	r.HandleFunc("/biometric/engine/identify", handleABISIdentify).Methods("GET")
+	r.HandleFunc("/biometric/engine/pad-check", handlePADCheck).Methods("POST")
+	r.HandleFunc("/biometric/engine/pad-history", handlePADHistory).Methods("GET")
+	r.HandleFunc("/biometric/engine/dedup/jobs", handleDedupJobs).Methods("GET")
+	r.HandleFunc("/biometric/engine/dedup/start", handleDedupStart).Methods("POST")
+	r.HandleFunc("/biometric/engine/dedup/{job_id}/candidates", handleDedupCandidates).Methods("GET")
+	r.HandleFunc("/biometric/engine/dedup/resolve/{id}", handleDedupResolve).Methods("POST")
+	r.HandleFunc("/biometric/engine/vault/stats", handleVaultStats).Methods("GET")
+	r.HandleFunc("/biometric/engine/vault/rotate-key", handleVaultRotateKey).Methods("POST")
+	r.HandleFunc("/biometric/engine/vault/audit", handleVaultAudit).Methods("GET")
+	r.HandleFunc("/biometric/engine/devices", handleBVASDeviceCapabilities).Methods("GET")
+	r.HandleFunc("/biometric/engine/devices/register", handleBVASRegisterDevice).Methods("POST")
+	r.HandleFunc("/biometric/engine/capture-sessions", handleBVASCaptureSessions).Methods("GET")
+	r.HandleFunc("/biometric/engine/pipeline", handleABISPipelineStatus).Methods("GET")
+	r.HandleFunc("/biometric/engine/config", handleABISConfig).Methods("GET", "POST")
+	r.HandleFunc("/biometric/engine/template-integrity", handleTemplateIntegrity).Methods("GET")
 
 	// Phase 7 - Blockchain-Enhanced Result Transmission
 	r.HandleFunc("/blockchain/stats", handleBlockchainStats).Methods("GET")
