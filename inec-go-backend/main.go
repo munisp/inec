@@ -54,6 +54,8 @@ func main() {
 	seedBVASDevices(db)
 	initEMSTables(db)
 	seedEMSData(db)
+	initPhase7Tables(db)
+	seedPhase7Data(db)
 	initAIProxy()
 
 	mwHub = initMiddlewareHub()
@@ -212,6 +214,43 @@ func main() {
 	r.HandleFunc("/ems/materials/{id}/dispatch", handleDispatchMaterial).Methods("PATCH")
 	r.HandleFunc("/ems/materials/stats", handleMaterialStats).Methods("GET")
 	r.HandleFunc("/ems/dashboard", handleEMSDashboard).Methods("GET")
+
+	// Phase 7 - Enhanced Biometric Verification
+	r.HandleFunc("/biometric/stats", handleBiometricStats).Methods("GET")
+	r.HandleFunc("/biometric/verify", handleBiometricVerify).Methods("POST")
+	r.HandleFunc("/biometric/profiles", handleBiometricProfiles).Methods("GET")
+	r.HandleFunc("/biometric/abis/duplicates", handleABISDuplicates).Methods("GET")
+	r.HandleFunc("/biometric/abis/{id}/resolve", handleABISResolve).Methods("POST")
+
+	// Phase 7 - Blockchain-Enhanced Result Transmission
+	r.HandleFunc("/blockchain/stats", handleBlockchainStats).Methods("GET")
+	r.HandleFunc("/blockchain/chain", handleBlockchainChain).Methods("GET")
+	r.HandleFunc("/blockchain/contracts", handleSmartContracts).Methods("GET")
+	r.HandleFunc("/blockchain/verify/{result_id}", handleBlockchainVerifyResult).Methods("GET")
+	r.HandleFunc("/blockchain/audit", handleBlockchainAuditTrail).Methods("GET")
+
+	// Phase 7 - Training & Capacity Building
+	r.HandleFunc("/training/courses", handleTrainingCourses).Methods("GET")
+	r.HandleFunc("/training/stats", handleTrainingStats).Methods("GET")
+	r.HandleFunc("/training/enrollments", handleTrainingEnrollments).Methods("GET")
+	r.HandleFunc("/training/certificates", handleTrainingCertificates).Methods("GET")
+	r.HandleFunc("/training/vr-scenarios", handleVRScenarios).Methods("GET")
+
+	// Phase 7 - Stakeholder Engagement
+	r.HandleFunc("/stakeholders/stats", handleStakeholderStats).Methods("GET")
+	r.HandleFunc("/stakeholders", handleListStakeholders).Methods("GET")
+	r.HandleFunc("/stakeholders/incidents", handleStakeholderIncidents).Methods("GET")
+	r.HandleFunc("/stakeholders/grievances", handleListGrievances).Methods("GET")
+	r.HandleFunc("/stakeholders/notifications", handlePushNotifications).Methods("GET")
+	r.HandleFunc("/stakeholders/notifications", handleSendNotification).Methods("POST")
+
+	// Phase 7 - AI Election Monitoring & Analytics
+	r.HandleFunc("/ai-monitoring/dashboard", handleAIMonitoringDashboard).Methods("GET")
+	r.HandleFunc("/ai-monitoring/predictions", handleAIPredictions).Methods("GET")
+	r.HandleFunc("/ai-monitoring/sentiment", handleSentimentAnalysis).Methods("GET")
+	r.HandleFunc("/ai-monitoring/misinformation", handleMisinformationAlerts).Methods("GET")
+	r.HandleFunc("/ai-monitoring/security-threats", handleSecurityThreats).Methods("GET")
+	r.HandleFunc("/ai-monitoring/cv-monitoring", handleCVMonitoring).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")

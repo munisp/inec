@@ -22,6 +22,11 @@ import BVASSyncPage from '@/pages/BVASSyncPage';
 import PortalIntegrationPage from '@/pages/PortalIntegrationPage';
 import DataValidationPage from '@/pages/DataValidationPage';
 import AdminConsolePage from '@/pages/AdminConsolePage';
+import BiometricPage from '@/pages/BiometricPage';
+import BlockchainPage from '@/pages/BlockchainPage';
+import TrainingPage from '@/pages/TrainingPage';
+import StakeholderPage from '@/pages/StakeholderPage';
+import AIMonitoringPage from '@/pages/AIMonitoringPage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -49,6 +54,11 @@ function AppContent() {
     'portal-integration': <PortalIntegrationPage />,
     'data-validation': <DataValidationPage />,
     'admin-console': <AdminConsolePage />,
+    'biometric': <BiometricPage />,
+    'blockchain': <BlockchainPage />,
+    'training': <TrainingPage />,
+    'stakeholders': <StakeholderPage />,
+    'ai-monitoring': <AIMonitoringPage />,
   };
 
   return (

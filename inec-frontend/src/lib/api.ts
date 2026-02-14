@@ -182,4 +182,59 @@ export const api = {
   getEMSMaterialStats: (electionId?: number) =>
     request(`/ems/materials/stats${electionId ? `?election_id=${electionId}` : ''}`),
   getEMSDashboard: (electionId: number) => request(`/ems/dashboard?election_id=${electionId}`),
+
+  getBiometricStats: () => request('/biometric/stats'),
+  getBiometricProfiles: (limit?: number, offset?: number) =>
+    request(`/biometric/profiles?limit=${limit || 50}&offset=${offset || 0}`),
+  biometricVerify: (vin: string, modality: string) =>
+    request('/biometric/verify', { method: 'POST', body: JSON.stringify({ vin, modality }) }),
+  getABISDuplicates: (status?: string) =>
+    request(`/biometric/abis/duplicates${status ? `?status=${status}` : ''}`),
+  resolveABISDuplicate: (id: number, status: string) =>
+    request(`/biometric/abis/${id}/resolve`, { method: 'POST', body: JSON.stringify({ status }) }),
+
+  getBlockchainStats: () => request('/blockchain/stats'),
+  getBlockchainChain: (limit?: number) =>
+    request(`/blockchain/chain?limit=${limit || 50}`),
+  getSmartContracts: () => request('/blockchain/contracts'),
+  blockchainVerifyResult: (resultId: number) =>
+    request(`/blockchain/verify/${resultId}`),
+  getBlockchainAudit: (limit?: number) =>
+    request(`/blockchain/audit?limit=${limit || 50}`),
+
+  getTrainingCourses: (role?: string) =>
+    request(`/training/courses${role ? `?role=${role}` : ''}`),
+  getTrainingStats: () => request('/training/stats'),
+  getTrainingEnrollments: (courseId?: number) =>
+    request(`/training/enrollments${courseId ? `?course_id=${courseId}` : ''}`),
+  getTrainingCertificates: () => request('/training/certificates'),
+  getVRScenarios: () => request('/training/vr-scenarios'),
+
+  getStakeholderStats: () => request('/stakeholders/stats'),
+  getStakeholders: (type?: string, status?: string) => {
+    const p = new URLSearchParams();
+    if (type) p.set('type', type);
+    if (status) p.set('status', status);
+    return request(`/stakeholders?${p}`);
+  },
+  getStakeholderIncidents: (severity?: string, status?: string) => {
+    const p = new URLSearchParams();
+    if (severity) p.set('severity', severity);
+    if (status) p.set('status', status);
+    return request(`/stakeholders/incidents?${p}`);
+  },
+  getGrievances: () => request('/stakeholders/grievances'),
+  getPushNotifications: () => request('/stakeholders/notifications'),
+  sendNotification: (data: { title: string; body: string; target_type?: string; target_value?: string; type?: string }) =>
+    request('/stakeholders/notifications', { method: 'POST', body: JSON.stringify(data) }),
+
+  getAIMonitoringDashboard: () => request('/ai-monitoring/dashboard'),
+  getAIPredictions: (type?: string) =>
+    request(`/ai-monitoring/predictions${type ? `?type=${type}` : ''}`),
+  getSentimentAnalysis: () => request('/ai-monitoring/sentiment'),
+  getMisinformationAlerts: (status?: string) =>
+    request(`/ai-monitoring/misinformation${status ? `?status=${status}` : ''}`),
+  getSecurityThreats: (status?: string) =>
+    request(`/ai-monitoring/security-threats${status ? `?status=${status}` : ''}`),
+  getCVMonitoring: () => request('/ai-monitoring/cv-monitoring'),
 };

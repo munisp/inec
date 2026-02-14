@@ -9,7 +9,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import {
   LayoutDashboard, Vote, FileBarChart, Shield, AlertTriangle,
   Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
-  Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings
+  Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings,
+  ScanFace, Link2, GraduationCap, Users2, BarChart3
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -32,6 +33,11 @@ const NAV_ITEMS = [
   { label: 'Portals', icon: Globe, path: 'portal-integration' },
   { label: 'Validation', icon: ShieldCheck, path: 'data-validation' },
   { label: 'Admin Console', icon: Settings, path: 'admin-console' },
+  { label: 'Biometrics', icon: ScanFace, path: 'biometric', section: 'Advanced' },
+  { label: 'Blockchain', icon: Link2, path: 'blockchain' },
+  { label: 'Training', icon: GraduationCap, path: 'training' },
+  { label: 'Stakeholders', icon: Users2, path: 'stakeholders' },
+  { label: 'AI Monitoring', icon: BarChart3, path: 'ai-monitoring' },
 ];
 
 interface LayoutProps {
