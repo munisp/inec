@@ -178,4 +178,6 @@ func initDB(db *sql.DB) {
 	db.Exec(schema)
 	initBVASTables(db)
 	initIngestionTables(db)
+	initSMSUSSDTables(db)
+	initPublicAPITables(db)
 }

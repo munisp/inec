@@ -52,6 +52,7 @@ func main() {
 	initDB(db)
 	seedDatabase(db)
 	seedBVASDevices(db)
+	initAIProxy()
 
 	mwHub = initMiddlewareHub()
 
@@ -138,6 +139,31 @@ func main() {
 	r.HandleFunc("/ingestion/dead-letter", handleDeadLetterQueue).Methods("GET")
 	r.HandleFunc("/ingestion/dead-letter/{id}/reprocess", handleReprocessDLQ).Methods("POST")
 	r.HandleFunc("/ingestion/offline-queue", handleOfflineSyncQueue).Methods("GET")
+
+	// SMS/USSD Gateway
+	r.HandleFunc("/sms/verify", handleSMSVerify).Methods("POST")
+	r.HandleFunc("/sms/stats", handleSMSStats).Methods("GET")
+	r.HandleFunc("/ussd/gateway", handleUSSDGateway).Methods("POST")
+
+	// AI Analytics (proxy to Python service)
+	r.HandleFunc("/ai/anomalies", handleAIAnomalies).Methods("GET")
+	r.HandleFunc("/ai/benford", handleAIBenford).Methods("GET")
+	r.HandleFunc("/ai/integrity", handleAIIntegrity).Methods("GET")
+	r.HandleFunc("/ai/methods", handleAIMethods).Methods("GET")
+
+	// Public API v1 (API key authenticated)
+	r.HandleFunc("/api/v1/docs", handlePublicAPIDocs).Methods("GET")
+	r.HandleFunc("/api/v1/docs.json", handlePublicAPIDocs).Methods("GET")
+	r.HandleFunc("/api/v1/keys", handlePublicAPIKeys).Methods("GET", "POST")
+	r.HandleFunc("/api/v1/usage", handlePublicAPIUsage).Methods("GET")
+	r.HandleFunc("/api/v1/elections", apiKeyAuth(handlePublicAPIElections)).Methods("GET")
+	r.HandleFunc("/api/v1/results", apiKeyAuth(handlePublicAPIResults)).Methods("GET")
+	r.HandleFunc("/api/v1/results/{id:[0-9]+}", apiKeyAuth(handlePublicAPIResultDetail)).Methods("GET")
+	r.HandleFunc("/api/v1/states", apiKeyAuth(handlePublicAPIStates)).Methods("GET")
+	r.HandleFunc("/api/v1/polling-units", apiKeyAuth(handlePublicAPIPollingUnits)).Methods("GET")
+	r.HandleFunc("/api/v1/collation", apiKeyAuth(handlePublicAPICollation)).Methods("GET")
+	r.HandleFunc("/api/v1/ai/anomalies", apiKeyAuth(handleAIAnomalies)).Methods("GET")
+	r.HandleFunc("/api/v1/ai/integrity", apiKeyAuth(handleAIIntegrity)).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")

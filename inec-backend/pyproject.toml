@@ -16,6 +16,7 @@ aiosqlite = "^0.22.1"
 mapbox-vector-tile = "^2.2.0"
 httpx = "^0.28.1"
 websockets = "^16.0"
+uvicorn = "^0.40.0"
 
 
 [build-system]

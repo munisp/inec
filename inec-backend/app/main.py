@@ -9,6 +9,7 @@ import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from app.analytics import router as analytics_router
 
 GO_BACKEND_URL = "http://127.0.0.1:8088"
 go_process = None
@@ -19,11 +20,13 @@ app = FastAPI(title="INEC Election Platform", version="4.0",
 # Disable CORS. Do not remove this for full-stack development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+app.include_router(analytics_router)
 
 http_client: httpx.AsyncClient = None
 
@@ -32,17 +35,14 @@ http_client: httpx.AsyncClient = None
 async def startup():
     global go_process, http_client
     http_client = httpx.AsyncClient(base_url=GO_BACKEND_URL, timeout=30.0)
+    db_path = os.environ.get("DB_PATH", "/data/app.db")
+    os.environ["DB_PATH"] = db_path
     binary = os.path.join(os.path.dirname(os.path.dirname(__file__)), "inec-go-backend")
     if not os.path.isfile(binary):
         binary = "/app/inec-go-backend"
     os.chmod(binary, os.stat(binary).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    env = {**os.environ, "PORT": "8088", "DB_PATH": os.environ.get("DB_PATH", "/data/app.db")}
-    go_process = subprocess.Popen(
-        [binary],
-        env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
+    env = {**os.environ, "PORT": "8088", "DB_PATH": db_path}
+    go_process = subprocess.Popen([binary], env=env, stdout=sys.stdout, stderr=sys.stderr)
     for _ in range(50):
         await asyncio.sleep(0.2)
         try:

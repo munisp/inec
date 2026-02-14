@@ -8,7 +8,8 @@ import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import {
   LayoutDashboard, Vote, FileBarChart, Shield, AlertTriangle,
-  Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint
+  Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
+  Brain, MessageSquare, Code2
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -20,6 +21,9 @@ const NAV_ITEMS = [
   { label: 'Polling Units', icon: MapPin, path: 'polling-units' },
   { label: 'Audit Trail', icon: Shield, path: 'audit' },
   { label: 'Incidents', icon: AlertTriangle, path: 'incidents' },
+  { label: 'AI Anomaly', icon: Brain, path: 'anomaly-detection' },
+  { label: 'SMS/USSD', icon: MessageSquare, path: 'sms-verification' },
+  { label: 'Public API', icon: Code2, path: 'public-api' },
   { label: 'Middleware', icon: Layers, path: 'middleware' },
   { label: 'BVAS', icon: Fingerprint, path: 'bvas' },
 ];

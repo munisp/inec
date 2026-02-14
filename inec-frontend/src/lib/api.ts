@@ -111,4 +111,24 @@ export const api = {
   getIngestionJobs: (status?: string) =>
     request(`/ingestion/jobs${status ? `?status=${status}` : ''}`),
   getDeadLetterQueue: () => request('/ingestion/dead-letter'),
+
+  smsVerify: (phone: string, pollingUnitCode: string) =>
+    request('/sms/verify', { method: 'POST', body: JSON.stringify({ phone, polling_unit_code: pollingUnitCode }) }),
+  ussdGateway: (sessionId: string, phoneNumber: string, text: string) =>
+    request('/ussd/gateway', { method: 'POST', body: JSON.stringify({ sessionId, phoneNumber, text }) }),
+  getSMSStats: () => request('/sms/stats'),
+
+  getAIAnomalies: (electionId: number, severity?: string) =>
+    request(`/ai/anomalies?election_id=${electionId}${severity ? `&severity=${severity}` : ''}`),
+  getAIBenford: (electionId: number) =>
+    request(`/ai/benford?election_id=${electionId}`),
+  getAIIntegrity: (electionId: number) =>
+    request(`/ai/integrity?election_id=${electionId}`),
+  getAIMethods: () => request('/ai/methods'),
+
+  getPublicAPIDocs: () => request('/api/v1/docs'),
+  generateAPIKey: (name: string, owner: string) =>
+    request('/api/v1/keys', { method: 'POST', body: JSON.stringify({ name, owner }) }),
+  getAPIKeys: () => request('/api/v1/keys'),
+  getAPIUsage: () => request('/api/v1/usage'),
 };

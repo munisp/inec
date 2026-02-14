@@ -13,6 +13,9 @@ import IncidentsPage from '@/pages/IncidentsPage';
 import MapPage from '@/pages/MapPage';
 import MiddlewarePage from '@/pages/MiddlewarePage';
 import BVASPage from '@/pages/BVASPage';
+import AnomalyDetectionPage from '@/pages/AnomalyDetectionPage';
+import SMSVerificationPage from '@/pages/SMSVerificationPage';
+import PublicAPIPage from '@/pages/PublicAPIPage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -31,6 +34,9 @@ function AppContent() {
     incidents: <IncidentsPage />,
     middleware: <MiddlewarePage />,
     bvas: <BVASPage />,
+    'anomaly-detection': <AnomalyDetectionPage />,
+    'sms-verification': <SMSVerificationPage />,
+    'public-api': <PublicAPIPage />,
   };
 
   return (
