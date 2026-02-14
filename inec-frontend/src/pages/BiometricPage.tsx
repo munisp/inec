@@ -3,7 +3,7 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Fingerprint, Eye, ScanFace, AlertTriangle, ShieldCheck, Activity, Lock, Database, Cpu, Scan, KeyRound, HardDrive } from 'lucide-react';
+import { Fingerprint, Eye, ScanFace, AlertTriangle, ShieldCheck, Activity, Lock, Database, Cpu, Scan, KeyRound, HardDrive, Shield, Radio, Wifi, WifiOff, BarChart3, Clock, Users, Layers } from 'lucide-react';
 
 export default function BiometricPage() {
   const [stats, setStats] = useState<any>(null);
@@ -17,6 +17,22 @@ export default function BiometricPage() {
   const [pipeline, setPipeline] = useState<any>(null);
   const [abisConfig, setAbisConfig] = useState<any>(null);
   const [captureSessions, setCaptureSessions] = useState<any>(null);
+  const [, setAdvStats] = useState<any>(null);
+  const [hsmStats, setHsmStats] = useState<any>(null);
+  const [sdkProviders, setSdkProviders] = useState<any>(null);
+  const [agingData, setAgingData] = useState<any>(null);
+  const [cancelableData, setCancelableData] = useState<any>(null);
+  const [tuningData, setTuningData] = useState<any>(null);
+  const [padModels, setPadModels] = useState<any>(null);
+  const [qualityGW, setQualityGW] = useState<any>(null);
+  const [offlineQueue, setOfflineQueue] = useState<any>(null);
+  const [scoreCohorts, setScoreCohorts] = useState<any>(null);
+  const [nistBench, setNistBench] = useState<any>(null);
+  const [auditTimeline, setAuditTimeline] = useState<any>(null);
+  const [auditSummary, setAuditSummary] = useState<any>(null);
+  const [kioskSessions, setKioskSessions] = useState<any>(null);
+  const [multiFingerData, setMultiFingerData] = useState<any>(null);
+  const [privacyStats, setPrivacyStats] = useState<any>(null);
   const [tab, setTab] = useState('engine');
 
   useEffect(() => {
@@ -31,6 +47,22 @@ export default function BiometricPage() {
     api.getABISPipeline().then(setPipeline).catch(() => {});
     api.getABISConfig().then(setAbisConfig).catch(() => {});
     api.getBVASCaptureSessions().then(setCaptureSessions).catch(() => {});
+    api.getAdvancedBiometricStats().then(setAdvStats).catch(() => {});
+    api.getHSMStats().then(setHsmStats).catch(() => {});
+    api.getSDKProviders().then(setSdkProviders).catch(() => {});
+    api.getTemplateAging().then(setAgingData).catch(() => {});
+    api.getCancelableStatus().then(setCancelableData).catch(() => {});
+    api.getThresholdTuning().then(setTuningData).catch(() => {});
+    api.getPADModels().then(setPadModels).catch(() => {});
+    api.getQualityGateway().then(setQualityGW).catch(() => {});
+    api.getOfflineQueue().then(setOfflineQueue).catch(() => {});
+    api.getScoreCohorts().then(setScoreCohorts).catch(() => {});
+    api.getNISTBenchmarks().then(setNistBench).catch(() => {});
+    api.getBioAuditTimeline(50).then(setAuditTimeline).catch(() => {});
+    api.getBioAuditSummary().then(setAuditSummary).catch(() => {});
+    api.getKioskSessions().then(setKioskSessions).catch(() => {});
+    api.getMultiFingerStatus().then(setMultiFingerData).catch(() => {});
+    api.getPrivacyStats().then(setPrivacyStats).catch(() => {});
   }, []);
 
   return (
@@ -79,6 +111,20 @@ export default function BiometricPage() {
           <TabsTrigger value="pipeline">Enrollment Pipeline</TabsTrigger>
           <TabsTrigger value="profiles">Profiles</TabsTrigger>
           <TabsTrigger value="config">ABIS Config</TabsTrigger>
+          <TabsTrigger value="hsm">HSM</TabsTrigger>
+          <TabsTrigger value="sdk">SDK</TabsTrigger>
+          <TabsTrigger value="aging">Aging</TabsTrigger>
+          <TabsTrigger value="cancelable">Cancelable</TabsTrigger>
+          <TabsTrigger value="tuning">Auto-Tune</TabsTrigger>
+          <TabsTrigger value="padmodels">PAD Models</TabsTrigger>
+          <TabsTrigger value="quality">Quality GW</TabsTrigger>
+          <TabsTrigger value="offline">Offline Queue</TabsTrigger>
+          <TabsTrigger value="normalize">Normalization</TabsTrigger>
+          <TabsTrigger value="nist">NIST Bench</TabsTrigger>
+          <TabsTrigger value="bioaudit">Audit</TabsTrigger>
+          <TabsTrigger value="kiosk">Kiosk</TabsTrigger>
+          <TabsTrigger value="multifinger">Multi-Finger</TabsTrigger>
+          <TabsTrigger value="privacy">Privacy Match</TabsTrigger>
         </TabsList>
 
         <TabsContent value="engine">
@@ -567,6 +613,558 @@ export default function BiometricPage() {
                 </CardContent>
               </Card>
             )}
+          </div>
+        </TabsContent>
+        <TabsContent value="hsm">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Shield className="w-4 h-4" />HSM Key Management (FIPS 140-2 L3)</CardTitle></CardHeader>
+              <CardContent>
+                {hsmStats && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      {[{l:'Total Keys',v:hsmStats.total_keys},{l:'Active Keys',v:hsmStats.active_keys},{l:'Total Ops',v:hsmStats.total_operations},{l:'Avg Latency',v:`${hsmStats.avg_latency_us}μs`},{l:'HSM Slots',v:hsmStats.slots},{l:'FIPS Level',v:'Level 3'}].map((s,i)=>(
+                        <div key={i} className="p-2 bg-zinc-50 rounded">
+                          <p className="text-[10px] text-zinc-500">{s.l}</p>
+                          <p className="text-sm font-bold">{s.v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-green-50 rounded-lg">
+                      <p className="text-xs font-semibold text-green-800 mb-1">Security Properties</p>
+                      <div className="flex flex-wrap gap-1">
+                        {['Tamper-proof','Key never leaves HSM','FIPS 140-2 L3','Common Criteria EAL4+','PCI HSC'].map(p=>(
+                          <Badge key={p} className="text-[9px] bg-green-100 text-green-700">{p}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-sm">HSM Compliance</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {hsmStats?.compliance && Object.entries(hsmStats.compliance).map(([k,v])=>(
+                    <div key={k} className="flex justify-between items-center text-xs">
+                      <span className="text-zinc-600">{k.replace(/_/g,' ')}</span>
+                      <Badge variant={v ? 'default' : 'destructive'} className="text-[9px]">{v ? 'Compliant' : 'Pending'}</Badge>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="sdk">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Cpu className="w-4 h-4" />Biometric SDK Providers</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b text-left text-zinc-500">
+                    <th className="pb-2 pr-3">Provider</th><th className="pb-2 pr-3">Version</th><th className="pb-2 pr-3">Modalities</th>
+                    <th className="pb-2 pr-3">License</th><th className="pb-2 pr-3">Endpoint</th><th className="pb-2">Status</th>
+                  </tr></thead>
+                  <tbody>
+                    {sdkProviders?.providers?.map((p: any, i: number) => (
+                      <tr key={i} className="border-b border-zinc-100">
+                        <td className="py-2 pr-3 font-semibold">{p.name?.replace(/_/g,' ')}</td>
+                        <td className="py-2 pr-3 font-mono">{p.version}</td>
+                        <td className="py-2 pr-3"><div className="flex gap-1">{p.modalities?.map((m:string)=>(<Badge key={m} variant="outline" className="text-[9px]">{m}</Badge>))}</div></td>
+                        <td className="py-2 pr-3 capitalize">{p.license}</td>
+                        <td className="py-2 pr-3 font-mono text-[10px]">{p.endpoint}</td>
+                        <td className="py-2"><Badge variant={p.status==='active'?'default':'secondary'} className="text-[9px]">{p.status}</Badge></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="aging">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Clock className="w-4 h-4" />Template Aging & Re-enrollment</CardTitle></CardHeader>
+              <CardContent>
+                {agingData && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      {[{l:'Total Templates',v:agingData.total,c:'text-blue-600'},{l:'Valid',v:agingData.valid,c:'text-green-600'},{l:'Near Expiry',v:agingData.near_expiry,c:'text-amber-600'},{l:'Expired',v:agingData.expired,c:'text-red-600'}].map((s,i)=>(
+                        <div key={i} className="p-3 bg-zinc-50 rounded-lg text-center">
+                          <p className="text-[10px] text-zinc-500">{s.l}</p>
+                          <p className={`text-xl font-bold ${s.c}`}>{s.v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-zinc-50 rounded-lg">
+                      <div className="flex justify-between text-xs"><span className="text-zinc-500">Max Age Policy</span><span className="font-semibold">{agingData.max_age_policy_days} days (5 years)</span></div>
+                      <div className="flex justify-between text-xs mt-1"><span className="text-zinc-500">Re-enrollment Window</span><span className="font-semibold">{agingData.re_enrollment_window_days} days</span></div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-sm">Aging Policy</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-2 text-xs">
+                  {['Templates auto-flagged at 80% of max age','Quality decay score calculated per template','Re-enrollment notifications sent automatically','Scheduled re-enrollment workflow triggered','Old templates invalidated after expiry'].map((p,i)=>(
+                    <div key={i} className="flex items-start gap-2 p-2 bg-zinc-50 rounded">
+                      <span className="text-zinc-400 font-bold">{i+1}.</span>
+                      <span>{p}</span>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="cancelable">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><KeyRound className="w-4 h-4" />Cancelable Biometrics (ISO 24745)</CardTitle></CardHeader>
+            <CardContent>
+              {cancelableData && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 bg-zinc-50 rounded-lg text-center">
+                      <p className="text-[10px] text-zinc-500">Total Transforms</p>
+                      <p className="text-xl font-bold">{cancelableData.total}</p>
+                    </div>
+                    <div className="p-3 bg-green-50 rounded-lg text-center">
+                      <p className="text-[10px] text-green-600">Active</p>
+                      <p className="text-xl font-bold text-green-700">{cancelableData.active}</p>
+                    </div>
+                    <div className="p-3 bg-red-50 rounded-lg text-center">
+                      <p className="text-[10px] text-red-600">Revoked</p>
+                      <p className="text-xl font-bold text-red-700">{cancelableData.revoked}</p>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-blue-50 rounded-lg">
+                    <p className="text-xs font-semibold text-blue-800 mb-1">How It Works</p>
+                    <p className="text-[10px] text-blue-600">Biohashing transforms templates with random seeds so compromised templates can be revoked and reissued without re-enrolling the biometric. New transform version generated on revocation.</p>
+                  </div>
+                  <Badge className="bg-green-100 text-green-700">ISO 24745 Compliant</Badge>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="tuning">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="w-4 h-4" />Threshold Auto-Tuning (ROC/DET Analysis)</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b text-left text-zinc-500">
+                    <th className="pb-2 pr-3">Modality</th><th className="pb-2 pr-3">Genuine Pairs</th><th className="pb-2 pr-3">Impostor Pairs</th>
+                    <th className="pb-2 pr-3">Optimal Threshold</th><th className="pb-2 pr-3">EER</th><th className="pb-2 pr-3">FAR</th>
+                    <th className="pb-2 pr-3">FRR</th><th className="pb-2 pr-3">AUC</th><th className="pb-2">Run At</th>
+                  </tr></thead>
+                  <tbody>
+                    {tuningData?.tuning_runs?.map((t: any, i: number) => (
+                      <tr key={i} className="border-b border-zinc-100">
+                        <td className="py-2 pr-3 capitalize font-semibold">{t.modality}</td>
+                        <td className="py-2 pr-3">{t.genuine_pairs?.toLocaleString()}</td>
+                        <td className="py-2 pr-3">{t.impostor_pairs?.toLocaleString()}</td>
+                        <td className="py-2 pr-3 font-mono font-bold text-blue-600">{t.optimal_threshold?.toFixed(3)}</td>
+                        <td className="py-2 pr-3 font-mono">{t.eer?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono">{t.far?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono">{t.frr?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono text-green-600">{t.auc?.toFixed(4)}</td>
+                        <td className="py-2 text-[10px] text-zinc-400">{t.run_at?.split('T')[0]}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="padmodels">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Radio className="w-4 h-4" />PAD Model OTA Updates</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b text-left text-zinc-500">
+                    <th className="pb-2 pr-3">Model ID</th><th className="pb-2 pr-3">Modality</th><th className="pb-2 pr-3">Version</th>
+                    <th className="pb-2 pr-3">Algorithm</th><th className="pb-2 pr-3">Accuracy</th><th className="pb-2 pr-3">FLR</th>
+                    <th className="pb-2 pr-3">FSR</th><th className="pb-2 pr-3">Size</th><th className="pb-2 pr-3">Status</th><th className="pb-2">OTA</th>
+                  </tr></thead>
+                  <tbody>
+                    {padModels?.models?.map((m: any, i: number) => (
+                      <tr key={i} className="border-b border-zinc-100">
+                        <td className="py-2 pr-3 font-mono text-[10px]">{m.model_id}</td>
+                        <td className="py-2 pr-3 capitalize">{m.modality}</td>
+                        <td className="py-2 pr-3">{m.version}</td>
+                        <td className="py-2 pr-3">{m.algorithm?.replace(/_/g,' ')}</td>
+                        <td className="py-2 pr-3 font-mono text-green-600">{(m.accuracy*100)?.toFixed(1)}%</td>
+                        <td className="py-2 pr-3 font-mono">{m.false_live_rate?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono">{m.false_spoof_rate?.toFixed(4)}</td>
+                        <td className="py-2 pr-3">{m.model_size_kb}KB</td>
+                        <td className="py-2 pr-3"><Badge variant={m.status==='active'?'default':'secondary'} className="text-[9px]">{m.status}</Badge></td>
+                        <td className="py-2">{m.ota_available ? <Badge className="text-[9px] bg-blue-100 text-blue-700">Available</Badge> : '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-3 p-3 bg-zinc-50 rounded-lg">
+                <p className="text-xs"><span className="font-semibold">Attack Types Covered:</span> Silicone mold, printed photo, 3D mask, deepfake, screen replay, latex finger, contact lens, gel pad</p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="quality">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Scan className="w-4 h-4" />Quality Gateway (NFIQ2)</CardTitle></CardHeader>
+              <CardContent>
+                {qualityGW && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 bg-red-50 rounded-lg text-center">
+                        <p className="text-[10px] text-red-600">Total Rejections</p>
+                        <p className="text-xl font-bold text-red-700">{qualityGW.total_rejections}</p>
+                      </div>
+                      <div className="p-3 bg-green-50 rounded-lg text-center">
+                        <p className="text-[10px] text-green-600">Bandwidth Saved</p>
+                        <p className="text-xl font-bold text-green-700">{(qualityGW.total_bandwidth_saved_kb/1024)?.toFixed(1)} MB</p>
+                      </div>
+                    </div>
+                    <div className="p-3 bg-zinc-50 rounded-lg">
+                      <p className="text-xs font-semibold mb-2">Quality Thresholds</p>
+                      {qualityGW.thresholds && Object.entries(qualityGW.thresholds).map(([k,v])=>(
+                        <div key={k} className="flex justify-between text-xs"><span className="capitalize text-zinc-500">{k}</span><span className="font-mono">{String(v)}</span></div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-sm">Rejections by Modality</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {qualityGW?.by_modality?.map((m: any, i: number) => (
+                    <div key={i} className="p-2 bg-zinc-50 rounded flex justify-between items-center text-xs">
+                      <span className="capitalize font-semibold">{m.modality}</span>
+                      <div className="flex gap-3">
+                        <span>Rejections: <span className="font-bold text-red-600">{m.rejections}</span></span>
+                        <span>Avg Quality: <span className="font-mono">{m.avg_quality?.toFixed(2)}</span></span>
+                        <span>BW Saved: <span className="font-mono">{(m.bandwidth_saved_kb/1024)?.toFixed(1)}MB</span></span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="offline">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><WifiOff className="w-4 h-4" />Offline Enrollment Queue</CardTitle></CardHeader>
+              <CardContent>
+                {offlineQueue && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      {[{l:'Total Queued',v:offlineQueue.total},{l:'Pending Sync',v:offlineQueue.pending,c:'text-amber-600'},{l:'Synced',v:offlineQueue.synced,c:'text-green-600'},{l:'Conflicts',v:offlineQueue.conflicts,c:'text-red-600'}].map((s,i)=>(
+                        <div key={i} className="p-3 bg-zinc-50 rounded-lg text-center">
+                          <p className="text-[10px] text-zinc-500">{s.l}</p>
+                          <p className={`text-xl font-bold ${s.c||''}`}>{s.v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-blue-50 rounded-lg text-xs">
+                      <p><span className="font-semibold">Sync Strategy:</span> {offlineQueue.sync_strategy?.replace(/_/g,' ')}</p>
+                      <p className="mt-1"><span className="font-semibold">Conflict Resolution:</span> {offlineQueue.conflict_resolution?.replace(/_/g,' ')}</p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Wifi className="w-4 h-4" />By Device</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {offlineQueue?.by_device?.map((d: any, i: number) => (
+                    <div key={i} className="p-2 bg-zinc-50 rounded flex justify-between items-center text-xs">
+                      <span className="font-mono font-semibold">{d.device_id}</span>
+                      <div className="flex gap-3">
+                        <span>Total: <span className="font-bold">{d.total}</span></span>
+                        <span>Synced: <span className="text-green-600 font-bold">{d.synced}</span></span>
+                        <span>Pending: <span className="text-amber-600 font-bold">{d.pending}</span></span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="normalize">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="w-4 h-4" />Match Score Normalization Cohorts</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b text-left text-zinc-500">
+                    <th className="pb-2 pr-3">Cohort</th><th className="pb-2 pr-3">Modality</th><th className="pb-2 pr-3">Type</th>
+                    <th className="pb-2 pr-3">Mean (Gen)</th><th className="pb-2 pr-3">Std (Gen)</th>
+                    <th className="pb-2 pr-3">Mean (Imp)</th><th className="pb-2 pr-3">Std (Imp)</th>
+                    <th className="pb-2 pr-3">Samples</th><th className="pb-2">Device</th>
+                  </tr></thead>
+                  <tbody>
+                    {scoreCohorts?.cohorts?.map((c: any, i: number) => (
+                      <tr key={i} className="border-b border-zinc-100">
+                        <td className="py-2 pr-3 font-mono text-[10px]">{c.cohort_id}</td>
+                        <td className="py-2 pr-3 capitalize">{c.modality}</td>
+                        <td className="py-2 pr-3"><Badge variant="outline" className="text-[9px]">{c.norm_type}</Badge></td>
+                        <td className="py-2 pr-3 font-mono">{c.mean_genuine?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono">{c.std_genuine?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono">{c.mean_impostor?.toFixed(4)}</td>
+                        <td className="py-2 pr-3 font-mono">{c.std_impostor?.toFixed(4)}</td>
+                        <td className="py-2 pr-3">{c.sample_size?.toLocaleString()}</td>
+                        <td className="py-2">{c.device_id || 'All'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-3 p-3 bg-zinc-50 rounded-lg text-xs">
+                <span className="font-semibold">Supported:</span> Z-norm (impostor-centric), T-norm (genuine-centric), ZT-norm (combined) for cross-device score consistency.
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="nist">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Activity className="w-4 h-4" />NIST Benchmark Results (MINEX/FRVT/IREX)</CardTitle></CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b text-left text-zinc-500">
+                    <th className="pb-2 pr-3">Benchmark</th><th className="pb-2 pr-3">Modality</th><th className="pb-2 pr-3">Dataset</th>
+                    <th className="pb-2 pr-3">Subjects</th><th className="pb-2 pr-3">Comparisons</th>
+                    <th className="pb-2 pr-3">FNMR@FMR0.01%</th><th className="pb-2 pr-3">FNMR@FMR0.1%</th>
+                    <th className="pb-2 pr-3">EER</th><th className="pb-2 pr-3">TPS</th><th className="pb-2">Template</th>
+                  </tr></thead>
+                  <tbody>
+                    {nistBench?.benchmarks?.map((b: any, i: number) => (
+                      <tr key={i} className="border-b border-zinc-100">
+                        <td className="py-2 pr-3 font-bold">{b.benchmark}</td>
+                        <td className="py-2 pr-3 capitalize">{b.modality}</td>
+                        <td className="py-2 pr-3 font-mono text-[10px]">{b.dataset}</td>
+                        <td className="py-2 pr-3">{b.subjects?.toLocaleString()}</td>
+                        <td className="py-2 pr-3">{b.comparisons?.toLocaleString()}</td>
+                        <td className="py-2 pr-3 font-mono text-green-600">{(b['fnmr_at_fmr_0.01%']*100)?.toFixed(2)}%</td>
+                        <td className="py-2 pr-3 font-mono">{(b['fnmr_at_fmr_0.1%']*100)?.toFixed(2)}%</td>
+                        <td className="py-2 pr-3 font-mono">{(b.eer*100)?.toFixed(2)}%</td>
+                        <td className="py-2 pr-3">{b.throughput_per_sec?.toLocaleString()}</td>
+                        <td className="py-2">{b.template_size_bytes}B</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="bioaudit">
+          <div className="grid md:grid-cols-3 gap-4">
+            <Card className="md:col-span-1">
+              <CardHeader><CardTitle className="text-sm">Audit Summary</CardTitle></CardHeader>
+              <CardContent>
+                {auditSummary && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-zinc-50 rounded-lg text-center">
+                      <p className="text-[10px] text-zinc-500">Total Events</p>
+                      <p className="text-2xl font-bold">{auditSummary.total_events}</p>
+                    </div>
+                    <div className="space-y-1">
+                      {auditSummary.by_severity && Object.entries(auditSummary.by_severity).map(([k,v])=>(
+                        <div key={k} className="flex justify-between text-xs p-1.5 bg-zinc-50 rounded">
+                          <Badge variant={k==='critical'?'destructive':k==='error'?'destructive':k==='warning'?'outline':'secondary'} className="text-[9px]">{k}</Badge>
+                          <span className="font-bold">{String(v)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold">By Category</p>
+                      {auditSummary.by_category?.map((c: any, i: number)=>(
+                        <div key={i} className="flex justify-between text-xs"><span className="text-zinc-500 capitalize">{c.category}</span><span className="font-mono">{c.count}</span></div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card className="md:col-span-2">
+              <CardHeader><CardTitle className="text-sm">Audit Timeline</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-1.5 max-h-[500px] overflow-y-auto">
+                  {auditTimeline?.timeline?.map((e: any, i: number) => (
+                    <div key={i} className="flex items-center gap-2 text-xs p-2 bg-zinc-50 rounded">
+                      <Badge variant={e.severity==='critical'?'destructive':e.severity==='warning'?'outline':'secondary'} className="text-[9px] min-w-[60px] justify-center">{e.severity}</Badge>
+                      <span className="font-semibold min-w-[120px]">{e.event_type?.replace(/_/g,' ')}</span>
+                      <Badge variant="outline" className="text-[9px]">{e.category}</Badge>
+                      {e.device_id && <span className="font-mono text-[10px] text-zinc-400">{e.device_id}</span>}
+                      <span className="ml-auto text-[10px] text-zinc-400">{e.timestamp?.split('T')[0]}</span>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="kiosk">
+          <Card>
+            <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Users className="w-4 h-4" />Enrollment Kiosk Sessions</CardTitle></CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-8 gap-2 mb-4">
+                {['ID Verify', 'FP Capture', 'FP Quality', 'Face Capture', 'Face Quality', 'Iris Capture', 'Dedup', 'Confirm'].map((step, i) => (
+                  <div key={i} className="text-center p-2 bg-zinc-50 rounded relative">
+                    <div className="w-6 h-6 mx-auto mb-1 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700">{i + 1}</div>
+                    <p className="text-[9px] font-semibold">{step}</p>
+                    {i < 7 && <div className="absolute top-5 -right-1 text-zinc-300 text-xs">&rarr;</div>}
+                  </div>
+                ))}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b text-left text-zinc-500">
+                    <th className="pb-2 pr-3">Session</th><th className="pb-2 pr-3">Device</th><th className="pb-2 pr-3">VIN</th>
+                    <th className="pb-2 pr-3">Step</th><th className="pb-2 pr-3">Progress</th><th className="pb-2 pr-3">Status</th><th className="pb-2">Started</th>
+                  </tr></thead>
+                  <tbody>
+                    {kioskSessions?.sessions?.map((s: any, i: number) => (
+                      <tr key={i} className="border-b border-zinc-100">
+                        <td className="py-2 pr-3 font-mono text-[10px]">{s.session_id?.slice(0,20)}...</td>
+                        <td className="py-2 pr-3">{s.device_id}</td>
+                        <td className="py-2 pr-3 font-mono text-[10px]">{s.voter_vin?.slice(0,12)}...</td>
+                        <td className="py-2 pr-3"><span className="capitalize">{s.step_name?.replace(/_/g,' ')}</span> ({s.current_step}/{s.total_steps})</td>
+                        <td className="py-2 pr-3">
+                          <div className="flex items-center gap-1"><div className="w-16 h-1.5 bg-zinc-200 rounded-full"><div className="h-full bg-blue-500 rounded-full" style={{width:`${s.progress_percent}%`}}/></div><span className="text-[10px]">{s.progress_percent?.toFixed(0)}%</span></div>
+                        </td>
+                        <td className="py-2 pr-3"><Badge variant={s.status==='completed'?'default':'outline'} className="text-[9px]">{s.status}</Badge></td>
+                        <td className="py-2 text-[10px] text-zinc-400">{s.started_at?.split('T')[0]}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="multifinger">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Layers className="w-4 h-4" />Multi-Instance Enrollment (All 10 Fingers)</CardTitle></CardHeader>
+              <CardContent>
+                {multiFingerData && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      {[{l:'Total Fingers',v:multiFingerData.total_fingers},{l:'Total Voters',v:multiFingerData.total_voters},{l:'All 10 Complete',v:multiFingerData.voters_with_all_10},{l:'Avg per Voter',v:multiFingerData.avg_fingers_per_voter}].map((s,i)=>(
+                        <div key={i} className="p-3 bg-zinc-50 rounded-lg text-center">
+                          <p className="text-[10px] text-zinc-500">{s.l}</p>
+                          <p className="text-xl font-bold">{s.v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-blue-50 rounded-lg text-xs">
+                      <p className="font-semibold text-blue-800">Fallback Strategy</p>
+                      <p className="text-blue-600 mt-1">{multiFingerData.fallback_strategy?.replace(/_/g,' ')}: If primary finger fails verification, system automatically tries next best quality finger sequentially.</p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-sm">Finger Positions</CardTitle></CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-5 gap-2">
+                  {['R.Thumb','R.Index','R.Middle','R.Ring','R.Little','L.Thumb','L.Index','L.Middle','L.Ring','L.Little'].map((f,i)=>(
+                    <div key={i} className="p-2 bg-zinc-50 rounded text-center">
+                      <Fingerprint className={`w-5 h-5 mx-auto ${i===0?'text-blue-600':'text-zinc-400'}`}/>
+                      <p className="text-[9px] mt-1">{f}</p>
+                      <p className="text-[9px] text-zinc-400">{i===0?'Primary':'Fallback'}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="privacy">
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Lock className="w-4 h-4" />Privacy-Preserving Matching</CardTitle></CardHeader>
+              <CardContent>
+                {privacyStats && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      {[{l:'Total Operations',v:privacyStats.total_operations},{l:'Secure Matches',v:privacyStats.secure_matches},{l:'Secure Enrollments',v:privacyStats.secure_enrollments},{l:'Avg Time',v:`${privacyStats.avg_computation_time_ms}ms`}].map((s,i)=>(
+                        <div key={i} className="p-3 bg-zinc-50 rounded-lg text-center">
+                          <p className="text-[10px] text-zinc-500">{s.l}</p>
+                          <p className="text-xl font-bold">{s.v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-green-50 rounded-lg">
+                      <p className="text-xs font-semibold text-green-800 mb-2">Security Guarantees</p>
+                      <div className="space-y-1">
+                        {privacyStats.properties && Object.entries(privacyStats.properties).map(([k,v])=>(
+                          <div key={k} className="flex justify-between text-xs">
+                            <span className="text-green-700">{k.replace(/_/g,' ')}</span>
+                            <Badge className="text-[9px] bg-green-100 text-green-700">{v ? 'Yes' : 'No'}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {privacyStats.encryption_schemes?.map((s: string)=>(
+                        <Badge key={s} variant="outline" className="text-[9px]">{s.replace(/_/g,' ')}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-sm">How It Works</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-2 text-xs">
+                  {[
+                    {t:'Paillier Homomorphic',d:'Additive HE: compute distance on encrypted templates without decryption'},
+                    {t:'BGV/CKKS',d:'Lattice-based FHE for SIMD-style encrypted arithmetic on template vectors'},
+                    {t:'Secure MPC',d:'Multi-party computation: split templates across servers, no single party sees plaintext'},
+                    {t:'Zero-Knowledge Proofs',d:'Prove match result is correct without revealing the template or score'},
+                  ].map((m,i)=>(
+                    <div key={i} className="p-2 bg-zinc-50 rounded">
+                      <p className="font-semibold">{m.t}</p>
+                      <p className="text-zinc-500 text-[10px] mt-0.5">{m.d}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
       </Tabs>

@@ -14,7 +14,7 @@ from app.analytics import router as analytics_router
 GO_BACKEND_URL = "http://127.0.0.1:8088"
 go_process = None
 
-app = FastAPI(title="INEC Election Platform", version="5.0",
+app = FastAPI(title="INEC Election Platform", version="7.0",
               description="Next-Generation Blockchain-Based Election Results Platform")
 
 # Disable CORS. Do not remove this for full-stack development.

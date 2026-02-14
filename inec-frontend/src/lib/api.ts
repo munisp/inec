@@ -229,6 +229,54 @@ export const api = {
     request('/biometric/engine/config', { method: 'POST', body: JSON.stringify(config) }),
   getTemplateIntegrity: (vin: string) => request(`/biometric/engine/template-integrity?vin=${vin}`),
 
+  getAdvancedBiometricStats: () => request('/biometric/advanced/stats'),
+  getHSMStats: () => request('/biometric/advanced/hsm/stats'),
+  generateHSMKey: (purpose: string, slot: number) =>
+    request('/biometric/advanced/hsm/generate-key', { method: 'POST', body: JSON.stringify({ purpose, slot }) }),
+  getSDKProviders: () => request('/biometric/advanced/sdk/providers'),
+  getTemplateAging: (vin?: string, modality?: string) =>
+    request(`/biometric/advanced/aging?${vin ? `vin=${vin}&` : ''}${modality ? `modality=${modality}` : ''}`),
+  getCancelableStatus: (vin?: string) =>
+    request(`/biometric/advanced/cancelable${vin ? `?vin=${vin}` : ''}`),
+  revokeCancelable: (vin: string, modality: string, reason?: string) =>
+    request('/biometric/advanced/cancelable/revoke', { method: 'POST', body: JSON.stringify({ vin, modality, reason }) }),
+  getThresholdTuning: () => request('/biometric/advanced/threshold-tuning'),
+  runThresholdTuning: (modality: string) =>
+    request('/biometric/advanced/threshold-tuning', { method: 'POST', body: JSON.stringify({ modality }) }),
+  runDistributedDedup: (modality?: string, workers?: number, threshold?: number) =>
+    request('/biometric/advanced/distributed-dedup', { method: 'POST', body: JSON.stringify({ modality, workers, threshold }) }),
+  getPADModels: () => request('/biometric/advanced/pad-models'),
+  deployPADUpdate: (modelId: string, newVersion: string) =>
+    request('/biometric/advanced/pad-models/update', { method: 'POST', body: JSON.stringify({ model_id: modelId, new_version: newVersion }) }),
+  getQualityGateway: () => request('/biometric/advanced/quality-gateway'),
+  evaluateQuality: (deviceId: string, vin: string, modality: string, quality: number, nfiq2: number) =>
+    request('/biometric/advanced/quality-gateway', { method: 'POST', body: JSON.stringify({ device_id: deviceId, vin, modality, quality, nfiq2 }) }),
+  getOfflineQueue: () => request('/biometric/advanced/offline-queue'),
+  triggerOfflineSync: (deviceId: string) =>
+    request('/biometric/advanced/offline-queue/sync', { method: 'POST', body: JSON.stringify({ device_id: deviceId }) }),
+  normalizeScore: (score: number, modality: string, normType: string) =>
+    request('/biometric/advanced/score-normalize', { method: 'POST', body: JSON.stringify({ score, modality, norm_type: normType }) }),
+  getScoreCohorts: () => request('/biometric/advanced/score-cohorts'),
+  getNISTBenchmarks: () => request('/biometric/advanced/nist-benchmark'),
+  runNISTBenchmark: (type: string, modality: string) =>
+    request('/biometric/advanced/nist-benchmark', { method: 'POST', body: JSON.stringify({ type, modality }) }),
+  getBioAuditTimeline: (limit?: number, category?: string, severity?: string) =>
+    request(`/biometric/advanced/audit/timeline?limit=${limit || 50}${category ? `&category=${category}` : ''}${severity ? `&severity=${severity}` : ''}`),
+  getBioAuditSummary: () => request('/biometric/advanced/audit/summary'),
+  startKioskSession: (deviceId: string, vin?: string) =>
+    request('/biometric/advanced/kiosk/start', { method: 'POST', body: JSON.stringify({ device_id: deviceId, vin }) }),
+  advanceKioskStep: (sessionId: string) =>
+    request(`/biometric/advanced/kiosk/${sessionId}/advance`, { method: 'POST' }),
+  getKioskSessions: (limit?: number) =>
+    request(`/biometric/advanced/kiosk/sessions?limit=${limit || 20}`),
+  enrollMultiFinger: (vin: string, fingers?: string[], primaryFinger?: string) =>
+    request('/biometric/advanced/multi-finger/enroll', { method: 'POST', body: JSON.stringify({ vin, fingers, primary_finger: primaryFinger }) }),
+  getMultiFingerStatus: (vin?: string) =>
+    request(`/biometric/advanced/multi-finger${vin ? `?vin=${vin}` : ''}`),
+  privacyMatch: (vin: string, modality?: string) =>
+    request('/biometric/advanced/privacy-match', { method: 'POST', body: JSON.stringify({ vin, modality }) }),
+  getPrivacyStats: () => request('/biometric/advanced/privacy-stats'),
+
   getBlockchainStats: () => request('/blockchain/stats'),
   getBlockchainChain: (limit?: number) =>
     request(`/blockchain/chain?limit=${limit || 50}`),
