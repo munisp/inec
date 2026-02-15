@@ -174,6 +174,10 @@ func initDB(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
 	CREATE INDEX IF NOT EXISTS idx_collation_election ON collation_results(election_id, level);
 	CREATE INDEX IF NOT EXISTS idx_pu_lonlat ON polling_units(longitude, latitude);
+	CREATE INDEX IF NOT EXISTS idx_rps_result ON result_party_scores(result_id);
+	CREATE INDEX IF NOT EXISTS idx_rps_party ON result_party_scores(party_code);
+	CREATE INDEX IF NOT EXISTS idx_results_election_status ON results(election_id, status);
+	CREATE INDEX IF NOT EXISTS idx_results_pu_election ON results(polling_unit_code, election_id);
 	`
 	execMulti(db, schema)
 	initBVASTables(db)

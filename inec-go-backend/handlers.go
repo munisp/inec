@@ -660,6 +660,15 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 	sc := r.URL.Query().Get("state_code")
 
+	cacheKey := fmt.Sprintf("map_data_%d_%s", eid, sc)
+	if cached, err := cacheGet(cacheKey); err == nil && cached != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.WriteHeader(200)
+		w.Write([]byte(cached))
+		return
+	}
+
 	stRows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone, s.capital,
 		COUNT(DISTINCT pu.code) as total_pus, COUNT(DISTINCT r.id) as reported_pus,
 		COALESCE(SUM(r.total_valid_votes),0) as total_votes,
@@ -672,19 +681,22 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 		GROUP BY s.code ORDER BY s.name`, eid)
 	states := scanRows(stRows)
 
+	codes := make([]string, len(states))
+	for i, s := range states {
+		codes[i], _ = s["code"].(string)
+	}
+	psMap := collationPartyScoresBatch(r.Context(), "state_code", codes, eid)
 	for i, s := range states {
 		code, _ := s["code"].(string)
-		psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
-			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
-			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
-			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
-			WHERE l.state_code=? AND res.election_id=? AND res.status IN ('finalized','validated')
-			GROUP BY rps.party_code ORDER BY total_votes DESC`, code, eid)
-		ps := scanRows(psRows)
-		states[i]["party_scores"] = ps
-		if len(ps) > 0 {
-			states[i]["leading_party"] = ps[0]
+		if ps, ok := psMap[code]; ok {
+			states[i]["party_scores"] = ps
+			if len(ps) > 0 {
+				states[i]["leading_party"] = ps[0]
+			} else {
+				states[i]["leading_party"] = nil
+			}
 		} else {
+			states[i]["party_scores"] = []M{}
 			states[i]["leading_party"] = nil
 		}
 	}
@@ -704,16 +716,45 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 	puRows, _ := dbQueryCtx(r.Context(), puQ, puParams...)
 	pus := scanRows(puRows)
 
+	rids := make([]interface{}, 0, len(pus))
+	ridPH := make([]string, 0, len(pus))
+	for _, pu := range pus {
+		if rid, ok := pu["result_id"]; ok && rid != nil {
+			rids = append(rids, rid)
+			ridPH = append(ridPH, "?")
+		}
+	}
+	puPsMap := map[interface{}][]M{}
+	if len(rids) > 0 {
+		puPsRows, _ := dbQueryCtx(r.Context(), fmt.Sprintf(`SELECT rps.result_id, rps.party_code, p.abbreviation, p.color, rps.votes
+			FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code
+			WHERE rps.result_id IN (%s) ORDER BY rps.result_id, rps.votes DESC`,
+			strings.Join(ridPH, ",")), rids...)
+		if puPsRows != nil {
+			for puPsRows.Next() {
+				var rid interface{}
+				var pc, abbr, clr string
+				var v int64
+				if puPsRows.Scan(&rid, &pc, &abbr, &clr, &v) == nil {
+					puPsMap[rid] = append(puPsMap[rid], M{"party_code": pc, "abbreviation": abbr, "color": clr, "votes": v})
+				}
+			}
+			puPsRows.Close()
+		}
+	}
 	for i, pu := range pus {
 		if rid, ok := pu["result_id"]; ok && rid != nil {
-			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, rps.votes
-				FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code
-				WHERE rps.result_id=? ORDER BY rps.votes DESC`, rid)
-			pus[i]["party_scores"] = scanRows(psRows)
+			if ps, ok := puPsMap[rid]; ok {
+				pus[i]["party_scores"] = ps
+			} else {
+				pus[i]["party_scores"] = []M{}
+			}
 		} else {
 			pus[i]["party_scores"] = []M{}
 		}
 	}
+	w.Header().Set("X-Cache", "MISS")
+	cacheSet(cacheKey, M{"states": states, "polling_units": pus}, 15*time.Second)
 	writeJSON(w, 200, M{"states": states, "polling_units": pus})
 }
 
@@ -972,10 +1013,79 @@ func handleLiveFeed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, scanRows(rows))
 }
 
+func collationPartyScoresBatch(ctx context.Context, groupCol string, groupCodes []string, eid int) map[string][]M {
+	if len(groupCodes) == 0 {
+		return map[string][]M{}
+	}
+	placeholders := make([]string, len(groupCodes))
+	args := make([]interface{}, 0, len(groupCodes)+1)
+	for i, c := range groupCodes {
+		placeholders[i] = "?"
+		args = append(args, c)
+	}
+	args = append(args, eid)
+
+	var q string
+	switch groupCol {
+	case "state_code":
+		q = fmt.Sprintf(`SELECT l.state_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
+			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
+			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
+			WHERE l.state_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
+			GROUP BY l.state_code, rps.party_code ORDER BY l.state_code, total_votes DESC`,
+			strings.Join(placeholders, ","))
+	case "lga_code":
+		q = fmt.Sprintf(`SELECT w.lga_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
+			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
+			JOIN parties p ON p.code=rps.party_code
+			WHERE w.lga_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
+			GROUP BY w.lga_code, rps.party_code ORDER BY w.lga_code, total_votes DESC`,
+			strings.Join(placeholders, ","))
+	case "ward_code":
+		q = fmt.Sprintf(`SELECT pu.ward_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
+			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN parties p ON p.code=rps.party_code
+			WHERE pu.ward_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
+			GROUP BY pu.ward_code, rps.party_code ORDER BY pu.ward_code, total_votes DESC`,
+			strings.Join(placeholders, ","))
+	default:
+		return map[string][]M{}
+	}
+
+	rows, err := dbQueryCtx(ctx, q, args...)
+	if err != nil {
+		return map[string][]M{}
+	}
+	result := map[string][]M{}
+	for rows.Next() {
+		var groupCode, partyCode, abbreviation, color string
+		var totalVotes int64
+		if rows.Scan(&groupCode, &partyCode, &abbreviation, &color, &totalVotes) == nil {
+			result[groupCode] = append(result[groupCode], M{
+				"party_code": partyCode, "abbreviation": abbreviation,
+				"color": color, "total_votes": totalVotes,
+			})
+		}
+	}
+	rows.Close()
+	return result
+}
+
 func handleCollation(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 	level := queryParam(r, "level", "state")
 	parentCode := r.URL.Query().Get("parent_code")
+
+	cacheKey := fmt.Sprintf("collation_%s_%d_%s", level, eid, parentCode)
+	if cached, err := cacheGet(cacheKey); err == nil && cached != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.WriteHeader(200)
+		w.Write([]byte(cached))
+		return
+	}
 
 	switch level {
 	case "state":
@@ -988,16 +1098,21 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
 			GROUP BY s.code ORDER BY s.name`, eid)
 		results := scanRows(rows)
+		codes := make([]string, len(results))
+		for i, res := range results {
+			codes[i], _ = res["code"].(string)
+		}
+		psMap := collationPartyScoresBatch(r.Context(), "state_code", codes, eid)
 		for i, res := range results {
 			code, _ := res["code"].(string)
-			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
-				FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
-				JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
-				JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
-				WHERE l.state_code=? AND res.election_id=? AND res.status IN ('finalized','validated')
-				GROUP BY rps.party_code ORDER BY total_votes DESC`, code, eid)
-			results[i]["party_scores"] = scanRows(psRows)
+			if ps, ok := psMap[code]; ok {
+				results[i]["party_scores"] = ps
+			} else {
+				results[i]["party_scores"] = []M{}
+			}
 		}
+		w.Header().Set("X-Cache", "MISS")
+		cacheSet(cacheKey, results, 15*time.Second)
 		writeJSON(w, 200, results)
 
 	case "lga":
@@ -1009,16 +1124,21 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
 			WHERE l.state_code=? GROUP BY l.code ORDER BY l.name`, eid, parentCode)
 		results := scanRows(rows)
+		codes := make([]string, len(results))
+		for i, res := range results {
+			codes[i], _ = res["code"].(string)
+		}
+		psMap := collationPartyScoresBatch(r.Context(), "lga_code", codes, eid)
 		for i, res := range results {
 			code, _ := res["code"].(string)
-			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
-				FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
-				JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
-				JOIN parties p ON p.code=rps.party_code
-				WHERE w.lga_code=? AND res.election_id=? AND res.status IN ('finalized','validated')
-				GROUP BY rps.party_code ORDER BY total_votes DESC`, code, eid)
-			results[i]["party_scores"] = scanRows(psRows)
+			if ps, ok := psMap[code]; ok {
+				results[i]["party_scores"] = ps
+			} else {
+				results[i]["party_scores"] = []M{}
+			}
 		}
+		w.Header().Set("X-Cache", "MISS")
+		cacheSet(cacheKey, results, 15*time.Second)
 		writeJSON(w, 200, results)
 
 	case "ward":
@@ -1030,15 +1150,21 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
 			WHERE w.lga_code=? GROUP BY w.code ORDER BY w.name`, eid, parentCode)
 		results := scanRows(rows)
+		codes := make([]string, len(results))
+		for i, res := range results {
+			codes[i], _ = res["code"].(string)
+		}
+		psMap := collationPartyScoresBatch(r.Context(), "ward_code", codes, eid)
 		for i, res := range results {
 			code, _ := res["code"].(string)
-			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
-				FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
-				JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN parties p ON p.code=rps.party_code
-				WHERE pu.ward_code=? AND res.election_id=? AND res.status IN ('finalized','validated')
-				GROUP BY rps.party_code ORDER BY total_votes DESC`, code, eid)
-			results[i]["party_scores"] = scanRows(psRows)
+			if ps, ok := psMap[code]; ok {
+				results[i]["party_scores"] = ps
+			} else {
+				results[i]["party_scores"] = []M{}
+			}
 		}
+		w.Header().Set("X-Cache", "MISS")
+		cacheSet(cacheKey, results, 15*time.Second)
 		writeJSON(w, 200, results)
 
 	case "pu":
@@ -1048,16 +1174,48 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			FROM polling_units pu LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=?
 			WHERE pu.ward_code=? ORDER BY pu.name`, eid, parentCode)
 		results := scanRows(rows)
+		rids := make([]interface{}, 0, len(results))
+		ridPlaceholders := make([]string, 0, len(results))
+		for _, res := range results {
+			if rid, ok := res["result_id"]; ok && rid != nil {
+				rids = append(rids, rid)
+				ridPlaceholders = append(ridPlaceholders, "?")
+			}
+		}
+		psMap := map[interface{}][]M{}
+		if len(rids) > 0 {
+			psRows, _ := dbQueryCtx(r.Context(), fmt.Sprintf(`SELECT rps.result_id, rps.party_code, p.abbreviation, p.color, rps.votes
+				FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code
+				WHERE rps.result_id IN (%s) ORDER BY rps.result_id, rps.votes DESC`,
+				strings.Join(ridPlaceholders, ",")), rids...)
+			if psRows != nil {
+				for psRows.Next() {
+					var rid interface{}
+					var partyCode, abbreviation, color string
+					var votes int64
+					if psRows.Scan(&rid, &partyCode, &abbreviation, &color, &votes) == nil {
+						psMap[rid] = append(psMap[rid], M{
+							"party_code": partyCode, "abbreviation": abbreviation,
+							"color": color, "votes": votes,
+						})
+					}
+				}
+				psRows.Close()
+			}
+		}
 		for i, res := range results {
 			if rid, ok := res["result_id"]; ok && rid != nil {
-				psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, rps.votes
-					FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code
-					WHERE rps.result_id=? ORDER BY rps.votes DESC`, rid)
-				results[i]["party_scores"] = scanRows(psRows)
+				if ps, ok := psMap[rid]; ok {
+					results[i]["party_scores"] = ps
+				} else {
+					results[i]["party_scores"] = []M{}
+				}
 			} else {
 				results[i]["party_scores"] = []M{}
 			}
 		}
+		w.Header().Set("X-Cache", "MISS")
+		cacheSet(cacheKey, results, 15*time.Second)
 		writeJSON(w, 200, results)
 
 	default:
