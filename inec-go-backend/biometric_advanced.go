@@ -43,7 +43,7 @@ var (
 func initBiometricAdvanced(database *sql.DB) {
 	advSchema := `
 	CREATE TABLE IF NOT EXISTS hsm_keys (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		key_id TEXT UNIQUE NOT NULL,
 		hsm_slot INTEGER NOT NULL DEFAULT 0,
 		key_type TEXT NOT NULL DEFAULT 'AES-256',
@@ -54,7 +54,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		last_accessed TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS hsm_audit (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		operation TEXT NOT NULL,
 		key_id TEXT,
 		hsm_slot INTEGER,
@@ -63,7 +63,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS biometric_sdk_providers (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		provider_name TEXT UNIQUE NOT NULL,
 		sdk_version TEXT NOT NULL,
 		modalities TEXT NOT NULL,
@@ -77,7 +77,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS template_aging_records (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		modality TEXT NOT NULL,
 		enrolled_at TIMESTAMP NOT NULL,
@@ -92,12 +92,12 @@ func initBiometricAdvanced(database *sql.DB) {
 		UNIQUE(voter_vin, modality)
 	);
 	CREATE TABLE IF NOT EXISTS cancelable_transforms (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		modality TEXT NOT NULL,
 		transform_id TEXT UNIQUE NOT NULL,
 		transform_type TEXT NOT NULL DEFAULT 'biohashing',
-		transform_seed BLOB NOT NULL,
+		transform_seed BYTEA NOT NULL,
 		version INTEGER DEFAULT 1,
 		revoked INTEGER DEFAULT 0,
 		revoked_at TIMESTAMP,
@@ -106,7 +106,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		UNIQUE(voter_vin, modality, version)
 	);
 	CREATE TABLE IF NOT EXISTS threshold_tuning_runs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		modality TEXT NOT NULL,
 		genuine_pairs INTEGER DEFAULT 0,
 		impostor_pairs INTEGER DEFAULT 0,
@@ -121,7 +121,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS distributed_dedup_partitions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		job_id INTEGER NOT NULL,
 		partition_key TEXT NOT NULL,
 		worker_id TEXT NOT NULL,
@@ -133,7 +133,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		completed_at TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS pad_models (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		model_id TEXT UNIQUE NOT NULL,
 		modality TEXT NOT NULL,
 		model_version TEXT NOT NULL,
@@ -149,7 +149,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		ota_url TEXT
 	);
 	CREATE TABLE IF NOT EXISTS quality_gateway_rejections (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT NOT NULL,
 		voter_vin TEXT NOT NULL,
 		modality TEXT NOT NULL,
@@ -162,7 +162,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS offline_enrollment_queue (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT NOT NULL,
 		voter_vin TEXT NOT NULL,
 		modality TEXT NOT NULL,
@@ -176,7 +176,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		resolution TEXT
 	);
 	CREATE TABLE IF NOT EXISTS score_normalization_cohorts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		cohort_id TEXT UNIQUE NOT NULL,
 		modality TEXT NOT NULL,
 		norm_type TEXT NOT NULL DEFAULT 'z_norm',
@@ -189,7 +189,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS nist_benchmark_results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		benchmark_type TEXT NOT NULL,
 		modality TEXT NOT NULL,
 		dataset TEXT NOT NULL,
@@ -205,7 +205,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		status TEXT DEFAULT 'completed'
 	);
 	CREATE TABLE IF NOT EXISTS bio_audit_timeline (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		event_type TEXT NOT NULL,
 		category TEXT NOT NULL,
 		severity TEXT DEFAULT 'info',
@@ -219,7 +219,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS kiosk_sessions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		session_id TEXT UNIQUE NOT NULL,
 		device_id TEXT NOT NULL,
 		voter_vin TEXT,
@@ -234,7 +234,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		completed_at TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS multi_finger_enrollments (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		finger_position TEXT NOT NULL,
 		finger_index INTEGER NOT NULL,
@@ -247,7 +247,7 @@ func initBiometricAdvanced(database *sql.DB) {
 		UNIQUE(voter_vin, finger_position)
 	);
 	CREATE TABLE IF NOT EXISTS privacy_preserving_ops (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		operation_type TEXT NOT NULL,
 		encryption_scheme TEXT NOT NULL DEFAULT 'paillier',
 		voter_vin TEXT,
@@ -373,7 +373,7 @@ func (s *BiometricSDKRegistry) RegisterProvider(p *SDKProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.providers[p.Name] = p
-	s.db.Exec(`INSERT OR REPLACE INTO biometric_sdk_providers (provider_name, sdk_version, modalities, license_type, api_endpoint, status) VALUES (?,?,?,?,?,?)`,
+	s.db.Exec(`INSERT INTO biometric_sdk_providers (provider_name, sdk_version, modalities, license_type, api_endpoint, status) VALUES (?,?,?,?,?,?)`,
 		p.Name, p.Version, strings.Join(p.Modalities, ","), p.License, p.Endpoint, p.Status)
 }
 
@@ -558,9 +558,8 @@ func NewDistributedDedupManager(database *sql.DB) *DistributedDedupManager {
 
 func (d *DistributedDedupManager) StartDistributed(modality string, workers int, threshold float64) M {
 	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
-	result, _ := d.db.Exec(`INSERT INTO dedup_jobs (job_type, status, modalities, threshold, blocking_strategy, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`,
+	jobID := insertReturningID(d.db, `INSERT INTO dedup_jobs (job_type, status, modalities, threshold, blocking_strategy, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		"distributed_mapreduce", "running", modality, threshold, "lsh_partitioned")
-	jobID, _ := result.LastInsertId()
 
 	totalRecords := 0
 	d.db.QueryRow("SELECT COUNT(*) FROM biometric_templates WHERE modality=?", modality).Scan(&totalRecords)
@@ -1065,7 +1064,7 @@ func (m *MultiInstanceEnrollment) EnrollFingers(vin string, fingers []string, pr
 		nfiq := 1 + rng.Intn(4)
 		isPrimary := f == primaryFinger
 		hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%d", vin, f, time.Now().UnixNano())))
-		m.db.Exec(`INSERT OR REPLACE INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
+		m.db.Exec(`INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
 			vin, f, idx, hex.EncodeToString(hash[:16]), quality, nfiq,		advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
 				enrolled = append(enrolled, M{
 			"finger": f, "index": idx, "quality": math.Round(quality*100) / 100,
@@ -1195,14 +1194,16 @@ func seedBiometricAdvanced(database *sql.DB) {
 	sdkRegistry.RegisterProvider(&SDKProvider{Name: "IrisID_iCAM", Version: "5.0", Modalities: []string{"iris"}, License: "commercial", Endpoint: "sdk://icam/v5", Status: "active"})
 	sdkRegistry.RegisterProvider(&SDKProvider{Name: "Innovatrics_DOT", Version: "6.1", Modalities: []string{"fingerprint", "facial"}, License: "commercial", Endpoint: "sdk://dot/v6", Status: "standby"})
 
-	voterRows, _ := database.Query("SELECT vin FROM voters ORDER BY RANDOM() LIMIT 100")
+	voterRows, vErr := database.Query("SELECT vin FROM voters ORDER BY RANDOM() LIMIT 100")
 	var vins []string
-	for voterRows.Next() {
-		var v string
-		voterRows.Scan(&v)
-		vins = append(vins, v)
+	if vErr == nil {
+		for voterRows.Next() {
+			var v string
+			voterRows.Scan(&v)
+			vins = append(vins, v)
+		}
+		voterRows.Close()
 	}
-	voterRows.Close()
 
 	for _, vin := range vins {
 		for _, mod := range []string{"fingerprint", "facial", "iris"} {
@@ -1216,13 +1217,13 @@ func seedBiometricAdvanced(database *sql.DB) {
 			} else if ageDays > 1460 {
 				status = "near_expiry"
 			}
-			database.Exec(`INSERT OR REPLACE INTO template_aging_records (voter_vin, modality, enrolled_at, age_days, max_age_days, quality_decay, re_enrollment_required, status) VALUES (?,?,datetime('now','-'||?||' days'),?,1825,?,?,?)`,
+			database.Exec(`INSERT INTO template_aging_records (voter_vin, modality, enrolled_at, age_days, max_age_days, quality_decay, re_enrollment_required, status) VALUES (?,?,NOW() - (? || ' days')::INTERVAL,?,1825,?,?,?)`,
 				vin, mod, ageDays, ageDays, decay, reEnroll, status)
 
 			seed := make([]byte, 32)
 			rand.Read(seed)
 			tid := fmt.Sprintf("CT-%s-%s-v1", vin[:8], mod[:2])
-			database.Exec(`INSERT OR REPLACE INTO cancelable_transforms (voter_vin, modality, transform_id, transform_type, transform_seed, version) VALUES (?,?,?,?,?,?)`,
+			database.Exec(`INSERT INTO cancelable_transforms (voter_vin, modality, transform_id, transform_type, transform_seed, version) VALUES (?,?,?,?,?,?)`,
 				vin, mod, tid, "biohashing", seed, 1)
 		}
 
@@ -1237,7 +1238,7 @@ func seedBiometricAdvanced(database *sql.DB) {
 			nfiq := 1 + rng.Intn(5)
 			hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%d", vin, pos, rng.Int63())))
 			isPrimary := fi == 0
-						database.Exec(`INSERT OR REPLACE INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
+						database.Exec(`INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
 							vin, pos, fi+1, hex.EncodeToString(hash[:16]), quality, nfiq, advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
 		}
 	}
@@ -1250,7 +1251,7 @@ func seedBiometricAdvanced(database *sql.DB) {
 		sg := 0.08 + rng.Float64()*0.08
 		mi := 0.2 + rng.Float64()*0.1
 		si := 0.1 + rng.Float64()*0.1
-		database.Exec(`INSERT OR REPLACE INTO score_normalization_cohorts (cohort_id, modality, norm_type, mean_genuine, std_genuine, mean_impostor, std_impostor, sample_size) VALUES (?,?,?,?,?,?,?,?)`,
+		database.Exec(`INSERT INTO score_normalization_cohorts (cohort_id, modality, norm_type, mean_genuine, std_genuine, mean_impostor, std_impostor, sample_size) VALUES (?,?,?,?,?,?,?,?)`,
 			cohortID, mod, "z_norm", mg, sg, mi, si, 1000+rng.Intn(4000))
 	}
 
@@ -1264,12 +1265,14 @@ func seedBiometricAdvanced(database *sql.DB) {
 	}
 	for _, pm := range padModels {
 		acc := 0.96 + rng.Float64()*0.039
-		database.Exec(`INSERT OR REPLACE INTO pad_models (model_id, modality, model_version, algorithm, attack_types, accuracy, false_live_rate, false_spoof_rate, model_size_kb, status, ota_available) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		database.Exec(`INSERT INTO pad_models (model_id, modality, model_version, algorithm, attack_types, accuracy, false_live_rate, false_spoof_rate, model_size_kb, status, ota_available) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			pm.id, pm.mod, pm.ver, pm.algo, pm.attacks, acc, 0.001+rng.Float64()*0.009, 0.005+rng.Float64()*0.02, 1024+rng.Intn(2048), "active", 1)
 	}
 
 	devices := []string{"BVAS-001", "BVAS-002", "BVAS-003", "BVAS-004", "BVAS-005"}
-	for i, vin := range vins[:30] {
+	qgLimit := 30
+	if qgLimit > len(vins) { qgLimit = len(vins) }
+	for i, vin := range vins[:qgLimit] {
 		dev := devices[i%len(devices)]
 		quality := 0.3 + rng.Float64()*0.3
 		nfiq := 3 + rng.Intn(3)
@@ -1277,7 +1280,9 @@ func seedBiometricAdvanced(database *sql.DB) {
 			dev, vin, "fingerprint", nfiq, quality, "quality below threshold", 0.5, 10+rng.Float64()*20)
 	}
 
-	for i, vin := range vins[:20] {
+	oqLimit := 20
+	if oqLimit > len(vins) { oqLimit = len(vins) }
+	for i, vin := range vins[:oqLimit] {
 		dev := devices[i%len(devices)]
 		hash := sha256.Sum256([]byte(vin))
 		syncStatus := "synced"

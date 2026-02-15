@@ -15,7 +15,8 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -31,23 +32,27 @@ var (
 )
 
 func main() {
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "/data/app.db"
-	}
-	if _, err := os.Stat("/data"); os.IsNotExist(err) && strings.HasPrefix(dbPath, "/data") {
-		dbPath = "app.db"
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dbPath := os.Getenv("DB_PATH")
+		if dbPath == "" {
+			dbPath = "file:inec.db?_journal_mode=WAL&_foreign_keys=ON&cache=shared&_busy_timeout=5000"
+		}
+		dsn = dbPath
 	}
 
-	var err error
-	db, err = sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=ON&cache=shared&_busy_timeout=5000")
-	if err != nil {
-		log.Fatal(err)
+	db = openDatabase(dsn)
+	if usePostgres {
+		db.SetMaxOpenConns(20)
+		db.SetMaxIdleConns(10)
+		db.SetConnMaxLifetime(5 * time.Minute)
 	}
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
 	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		log.Fatal("Database connection failed: ", err)
+	}
+	log.Println("Database connected")
 
 	initDB(db)
 	seedDatabase(db)

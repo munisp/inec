@@ -73,13 +73,12 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pwHash := hashPassword(req.Password)
-	res, err := db.Exec("INSERT INTO users (username, password_hash, full_name, role, staff_id, state_code) VALUES (?,?,?,?,?,?)",
+	uid := insertReturningID(db, "INSERT INTO users (username, password_hash, full_name, role, staff_id, state_code) VALUES (?,?,?,?,?,?)",
 		req.Username, pwHash, req.FullName, req.Role, req.StaffID, req.StateCode)
-	if err != nil {
-		writeError(w, 500, err.Error())
+	if uid == 0 {
+		writeError(w, 500, "Failed to create user")
 		return
 	}
-	uid, _ := res.LastInsertId()
 	token, _ := createAccessToken(map[string]interface{}{
 		"sub": fmt.Sprintf("%d", uid), "username": req.Username, "role": req.Role, "full_name": req.FullName,
 	})
@@ -142,9 +141,8 @@ func handleCreateElection(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "" {
 		req.Status = "upcoming"
 	}
-	res, _ := db.Exec("INSERT INTO elections (title, election_type, election_date, status, description) VALUES (?,?,?,?,?)",
+	lid := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status, description) VALUES (?,?,?,?,?)",
 		req.Title, req.ElectionType, req.ElectionDate, req.Status, req.Description)
-	lid, _ := res.LastInsertId()
 	writeJSON(w, 200, M{"id": lid, "message": "Election created"})
 }
 
@@ -308,14 +306,13 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		tbID = ptbID
 	}
 
-	res, _ := db.Exec(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
+	resultID := insertReturningID(db, `INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
 		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.ElectionID, req.PollingUnitCode, userID, "pending",
 		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
 		ec8aHash, tbID, "PENDING", "PENDING")
-	resultID, _ := res.LastInsertId()
 
 	for _, ps := range req.PartyScores {
 		db.Exec("INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)", resultID, ps.PartyCode, ps.Votes)
@@ -736,7 +733,7 @@ func handlePUTile(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`SELECT pu.code, pu.name, pu.latitude as lat, pu.longitude as lon,
 		COALESCE(r.status, 'no_result') as status,
 		r.submitted_at as submitted_at,
-		CAST(strftime('%s', r.submitted_at) AS INTEGER) as submitted_ts
+		COALESCE(EXTRACT(EPOCH FROM r.submitted_at)::INTEGER, 0) as submitted_ts
 		FROM polling_units pu LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=?
 		WHERE pu.longitude BETWEEN ? AND ? AND pu.latitude BETWEEN ? AND ? LIMIT 10000`,
 		eid, lonMin, lonMax, latMin, latMax)
@@ -1188,9 +1185,8 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 	}
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
-	res, _ := db.Exec("INSERT INTO incidents (election_id, polling_unit_code, reported_by, incident_type, description, severity) VALUES (?,?,?,?,?,?)",
+	lid := insertReturningID(db, "INSERT INTO incidents (election_id, polling_unit_code, reported_by, incident_type, description, severity) VALUES (?,?,?,?,?,?)",
 		req.ElectionID, req.PollingUnitCode, uid, req.IncidentType, req.Description, req.Severity)
-	lid, _ := res.LastInsertId()
 
 	go func() {
 		ctx := context.Background()

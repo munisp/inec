@@ -28,7 +28,7 @@ var (
 )
 
 func initBlockchainProduction(database *sql.DB) {
-	database.Exec(`
+	execMulti(database, `
 	CREATE TABLE IF NOT EXISTS tb_accounts (
 		id TEXT PRIMARY KEY,
 		ledger INTEGER NOT NULL,
@@ -121,7 +121,7 @@ func initBlockchainProduction(database *sql.DB) {
 		PRIMARY KEY (cid, node_id)
 	);
 	CREATE TABLE IF NOT EXISTS merkle_trees (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		root_hash TEXT NOT NULL,
 		tree_type TEXT NOT NULL,
 		leaf_count INTEGER NOT NULL,
@@ -130,7 +130,7 @@ func initBlockchainProduction(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS chaincode_events (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		chaincode_id TEXT NOT NULL,
 		event_name TEXT NOT NULL,
 		tx_id TEXT,
@@ -174,7 +174,7 @@ func (p *PersistentTigerBeetle) ensureAccounts() {
 		{"inec-disputed", 4, 1},
 	}
 	for _, a := range accounts {
-		p.db.Exec(`INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
+		p.db.Exec(`INSERT INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
 	}
 }
 
@@ -300,7 +300,7 @@ func (p *PersistentTigerBeetle) GetStats() M {
 		}
 	}
 	return M{
-		"persistent": true, "storage": "sqlite_wal",
+		"persistent": true, "storage": "postgresql",
 		"total_accounts": totalAccounts, "total_transfers": totalTransfers,
 		"posted": posted, "pending": pending, "voided": voided,
 		"total_posted_amount": totalAmount,
@@ -553,12 +553,12 @@ func (s *IPFSContentStore) Store(data []byte, contentType string) (string, error
 	hash := sha256.Sum256(data)
 	cid := "Qm" + hex.EncodeToString(hash[:])
 	dataHash := hex.EncodeToString(hash[:])
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO ipfs_objects (cid, content_type, data_hash, size_bytes) VALUES (?,?,?,?)`,
+	_, err := s.db.Exec(`INSERT INTO ipfs_objects (cid, content_type, data_hash, size_bytes) VALUES (?,?,?,?)`,
 		cid, contentType, dataHash, len(data))
 	if err != nil {
 		return "", err
 	}
-	s.db.Exec(`INSERT OR IGNORE INTO ipfs_pins (cid, node_id, pin_type) VALUES (?,?,?)`, cid, "node-local-1", "recursive")
+	s.db.Exec(`INSERT INTO ipfs_pins (cid, node_id, pin_type) VALUES (?,?,?)`, cid, "node-local-1", "recursive")
 	return cid, nil
 }
 
@@ -851,9 +851,9 @@ func seedBlockchainProduction(database *sql.DB) {
 		h := sha256.Sum256([]byte(resultData))
 		cid := "Qm" + hex.EncodeToString(h[:])
 		types := []string{"election/result-validation", "election/ec8a-form", "election/aggregation", "election/audit-record"}
-		database.Exec(`INSERT OR IGNORE INTO ipfs_objects (cid, content_type, data_hash, size_bytes) VALUES (?,?,?,?)`,
+		database.Exec(`INSERT INTO ipfs_objects (cid, content_type, data_hash, size_bytes) VALUES (?,?,?,?)`,
 			cid, types[rng.Intn(len(types))], hex.EncodeToString(h[:]), len(resultData))
-		database.Exec(`INSERT OR IGNORE INTO ipfs_pins (cid, node_id) VALUES (?,?)`, cid, "node-local-1")
+		database.Exec(`INSERT INTO ipfs_pins (cid, node_id) VALUES (?,?)`, cid, "node-local-1")
 	}
 
 	for i := 0; i < 40; i++ {
@@ -862,7 +862,7 @@ func seedBlockchainProduction(database *sql.DB) {
 		txID := "TB-" + hex.EncodeToString(h[:8])
 		statuses := []string{"POSTED", "POSTED", "POSTED", "PENDING", "VOIDED"}
 		st := statuses[rng.Intn(len(statuses))]
-		database.Exec(`INSERT OR IGNORE INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)`,
+		database.Exec(`INSERT INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)`,
 			txID, "inec-operational", "inec-official", amount, 1, 1, st, fmt.Sprintf("PU-seed-%d", i))
 		if st == "POSTED" {
 			database.Exec(`UPDATE tb_accounts SET credits_posted = credits_posted + ? WHERE id = 'inec-official'`, amount)

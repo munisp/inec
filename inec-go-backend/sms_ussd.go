@@ -11,7 +11,7 @@ import (
 
 func initSMSUSSDTables(database *sql.DB) {
 	database.Exec(`CREATE TABLE IF NOT EXISTS sms_verifications (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		phone TEXT NOT NULL,
 		polling_unit_code TEXT,
 		election_id INTEGER,
@@ -182,7 +182,7 @@ func handleUSSDGateway(w http.ResponseWriter, r *http.Request) {
 
 	if text == "" {
 		response = "CON Welcome to INEC Result Verification\n1. Check Result by PU Code\n2. Election Status\n3. Verify Result\n0. Exit"
-		db.Exec(`INSERT OR REPLACE INTO ussd_sessions (id, phone, stage, data) VALUES (?,?,'main_menu','{}')`,
+		db.Exec(`INSERT INTO ussd_sessions (id, phone, stage, data) VALUES (?,?,'main_menu','{}')`,
 			sessionID, req.PhoneNumber)
 	} else if len(parts) == 1 {
 		switch parts[0] {
@@ -233,7 +233,7 @@ func handleSMSStats(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE channel='ussd'").Scan(&totalUSSD)
 
 	var today int
-	db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE created_at >= date('now')").Scan(&today)
+	db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE created_at >= CURRENT_DATE").Scan(&today)
 
 	rows, _ := db.Query(`SELECT request_type, COUNT(*) as cnt FROM sms_verifications
 		GROUP BY request_type ORDER BY cnt DESC`)

@@ -3,12 +3,12 @@ package main
 import "database/sql"
 
 func initDB(db *sql.DB) {
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA foreign_keys=ON")
+	// PostgreSQL handles this natively
+	// PostgreSQL handles this natively
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		username TEXT UNIQUE NOT NULL,
 		password_hash TEXT NOT NULL,
 		full_name TEXT NOT NULL,
@@ -21,7 +21,7 @@ func initDB(db *sql.DB) {
 		is_active INTEGER DEFAULT 1
 	);
 	CREATE TABLE IF NOT EXISTS elections (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		title TEXT NOT NULL,
 		election_type TEXT NOT NULL CHECK(election_type IN ('presidential','gubernatorial','senatorial','house_of_reps','state_assembly','local_government')),
 		election_date TEXT NOT NULL,
@@ -32,7 +32,7 @@ func initDB(db *sql.DB) {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS parties (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		code TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		abbreviation TEXT NOT NULL,
@@ -41,28 +41,28 @@ func initDB(db *sql.DB) {
 		is_active INTEGER DEFAULT 1
 	);
 	CREATE TABLE IF NOT EXISTS states (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		code TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		geo_zone TEXT NOT NULL,
 		capital TEXT
 	);
 	CREATE TABLE IF NOT EXISTS lgas (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		code TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		state_code TEXT NOT NULL,
 		FOREIGN KEY (state_code) REFERENCES states(code)
 	);
 	CREATE TABLE IF NOT EXISTS wards (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		code TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		lga_code TEXT NOT NULL,
 		FOREIGN KEY (lga_code) REFERENCES lgas(code)
 	);
 	CREATE TABLE IF NOT EXISTS polling_units (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		code TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		ward_code TEXT NOT NULL,
@@ -72,7 +72,7 @@ func initDB(db *sql.DB) {
 		FOREIGN KEY (ward_code) REFERENCES wards(code)
 	);
 	CREATE TABLE IF NOT EXISTS results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		polling_unit_code TEXT NOT NULL,
 		presiding_officer_id INTEGER,
@@ -96,7 +96,7 @@ func initDB(db *sql.DB) {
 		UNIQUE(election_id, polling_unit_code)
 	);
 	CREATE TABLE IF NOT EXISTS result_party_scores (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		result_id INTEGER NOT NULL,
 		party_code TEXT NOT NULL,
 		votes INTEGER NOT NULL DEFAULT 0,
@@ -105,7 +105,7 @@ func initDB(db *sql.DB) {
 		UNIQUE(result_id, party_code)
 	);
 	CREATE TABLE IF NOT EXISTS audit_log (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		action TEXT NOT NULL,
 		entity_type TEXT NOT NULL,
 		entity_id TEXT,
@@ -117,7 +117,7 @@ func initDB(db *sql.DB) {
 		FOREIGN KEY (user_id) REFERENCES users(id)
 	);
 	CREATE TABLE IF NOT EXISTS incidents (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		polling_unit_code TEXT,
 		reported_by INTEGER,
@@ -131,7 +131,7 @@ func initDB(db *sql.DB) {
 		FOREIGN KEY (reported_by) REFERENCES users(id)
 	);
 	CREATE TABLE IF NOT EXISTS collation_results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		level TEXT NOT NULL CHECK(level IN ('ward','lga','state','national')),
 		area_code TEXT NOT NULL,
@@ -149,7 +149,7 @@ func initDB(db *sql.DB) {
 		UNIQUE(election_id, level, area_code)
 	);
 	CREATE TABLE IF NOT EXISTS collation_party_scores (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		collation_result_id INTEGER NOT NULL,
 		party_code TEXT NOT NULL,
 		votes INTEGER NOT NULL DEFAULT 0,
@@ -158,7 +158,7 @@ func initDB(db *sql.DB) {
 		UNIQUE(collation_result_id, party_code)
 	);
 	CREATE TABLE IF NOT EXISTS metrics_client (
-		id INTEGER PRIMARY KEY,
+		id SERIAL PRIMARY KEY,
 		ts TEXT,
 		event TEXT,
 		data TEXT,
@@ -175,7 +175,7 @@ func initDB(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_collation_election ON collation_results(election_id, level);
 	CREATE INDEX IF NOT EXISTS idx_pu_lonlat ON polling_units(longitude, latitude);
 	`
-	db.Exec(schema)
+	execMulti(db, schema)
 	initBVASTables(db)
 	initIngestionTables(db)
 	initSMSUSSDTables(db)

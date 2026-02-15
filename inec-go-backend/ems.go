@@ -22,7 +22,7 @@ import (
 func initEMSTables(database *sql.DB) {
 	schema := `
 	CREATE TABLE IF NOT EXISTS voters (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		vin TEXT UNIQUE NOT NULL,
 		first_name TEXT NOT NULL,
 		last_name TEXT NOT NULL,
@@ -52,7 +52,7 @@ func initEMSTables(database *sql.DB) {
 		FOREIGN KEY (polling_unit_code) REFERENCES polling_units(code)
 	);
 	CREATE TABLE IF NOT EXISTS registration_centers (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		code TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		state_code TEXT NOT NULL,
@@ -71,7 +71,7 @@ func initEMSTables(database *sql.DB) {
 
 	-- Module 2: Workflow Engine
 	CREATE TABLE IF NOT EXISTS ems_workflows (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		workflow_type TEXT NOT NULL CHECK(workflow_type IN ('full_election','by_election','rerun','supplementary')),
 		current_phase TEXT NOT NULL DEFAULT 'planning' CHECK(current_phase IN ('planning','registration','accreditation','voting','collation','declaration','certification','archived')),
@@ -82,7 +82,7 @@ func initEMSTables(database *sql.DB) {
 		FOREIGN KEY (election_id) REFERENCES elections(id)
 	);
 	CREATE TABLE IF NOT EXISTS ems_workflow_phases (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		workflow_id INTEGER NOT NULL,
 		phase TEXT NOT NULL,
 		status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','in_progress','completed','skipped','failed')),
@@ -95,7 +95,7 @@ func initEMSTables(database *sql.DB) {
 
 	-- Module 3: BVAS Sync Engine
 	CREATE TABLE IF NOT EXISTS bvas_sync_queue (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT NOT NULL,
 		sync_type TEXT NOT NULL CHECK(sync_type IN ('accreditation','result','heartbeat','config')),
 		payload TEXT NOT NULL,
@@ -110,7 +110,7 @@ func initEMSTables(database *sql.DB) {
 		FOREIGN KEY (device_id) REFERENCES bvas_devices(id)
 	);
 	CREATE TABLE IF NOT EXISTS bvas_heartbeats (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT NOT NULL,
 		battery_level INTEGER,
 		signal_strength INTEGER,
@@ -125,7 +125,7 @@ func initEMSTables(database *sql.DB) {
 
 	-- Module 4: Portal Integration Hub
 	CREATE TABLE IF NOT EXISTS portal_connections (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		portal_name TEXT UNIQUE NOT NULL,
 		portal_type TEXT NOT NULL CHECK(portal_type IN ('irev','icnp','press','croms','bvas_portal','custom')),
 		base_url TEXT NOT NULL,
@@ -138,7 +138,7 @@ func initEMSTables(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS portal_sync_log (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		portal_id INTEGER NOT NULL,
 		sync_type TEXT NOT NULL CHECK(sync_type IN ('push','pull','webhook')),
 		entity_type TEXT NOT NULL,
@@ -151,7 +151,7 @@ func initEMSTables(database *sql.DB) {
 		FOREIGN KEY (portal_id) REFERENCES portal_connections(id)
 	);
 	CREATE TABLE IF NOT EXISTS portal_webhooks (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		portal_id INTEGER NOT NULL,
 		event_type TEXT NOT NULL,
 		payload TEXT NOT NULL,
@@ -164,7 +164,7 @@ func initEMSTables(database *sql.DB) {
 
 	-- Module 5: Data Validation Pipeline
 	CREATE TABLE IF NOT EXISTS validation_rules (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		rule_name TEXT UNIQUE NOT NULL,
 		rule_type TEXT NOT NULL CHECK(rule_type IN ('format','range','cross_reference','statistical','business','custom')),
 		entity_type TEXT NOT NULL CHECK(entity_type IN ('result','accreditation','voter','incident')),
@@ -175,7 +175,7 @@ func initEMSTables(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS validation_results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		entity_type TEXT NOT NULL,
 		entity_id TEXT NOT NULL,
 		rule_id INTEGER NOT NULL,
@@ -189,7 +189,7 @@ func initEMSTables(database *sql.DB) {
 
 	-- Module 6: Admin Console / Election Lifecycle
 	CREATE TABLE IF NOT EXISTS election_lifecycle (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		phase TEXT NOT NULL CHECK(phase IN ('created','configured','staff_deployed','materials_deployed','monitoring','voting_open','voting_closed','collation','declaration','certified','archived')),
 		transitioned_by INTEGER,
@@ -199,7 +199,7 @@ func initEMSTables(database *sql.DB) {
 		FOREIGN KEY (transitioned_by) REFERENCES users(id)
 	);
 	CREATE TABLE IF NOT EXISTS election_staff_assignments (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		user_id INTEGER NOT NULL,
 		role TEXT NOT NULL,
@@ -212,7 +212,7 @@ func initEMSTables(database *sql.DB) {
 		FOREIGN KEY (user_id) REFERENCES users(id)
 	);
 	CREATE TABLE IF NOT EXISTS election_materials (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		election_id INTEGER NOT NULL,
 		material_type TEXT NOT NULL CHECK(material_type IN ('ballot_paper','result_sheet','stamp','ink','seal','bvas_device','generator','tent')),
 		quantity INTEGER NOT NULL,
@@ -238,7 +238,7 @@ func initEMSTables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_staff_election ON election_staff_assignments(election_id);
 	CREATE INDEX IF NOT EXISTS idx_materials_election ON election_materials(election_id);
 	`
-	database.Exec(schema)
+	execMulti(database, schema)
 }
 
 func seedEMSData(database *sql.DB) {
@@ -289,7 +289,7 @@ func seedEMSData(database *sql.DB) {
 			if status == "active" && rng.Float64() < 0.85 {
 				collected = 1
 			}
-			tx.Exec(`INSERT OR IGNORE INTO voters (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			tx.Exec(`INSERT INTO voters (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				vin, fn, ln, dob, gender, pu.stateCode, pu.lgaCode, pu.wardCode, pu.puCode, bioHash[:32], pvcNum, collected, status)
 		}
 	}
@@ -299,7 +299,7 @@ func seedEMSData(database *sql.DB) {
 		for i := 0; i < 3; i++ {
 			code := fmt.Sprintf("RC-%s-%03d", sc, i+1)
 			name := fmt.Sprintf("Registration Center %d, %s", i+1, sc)
-			tx.Exec(`INSERT OR IGNORE INTO registration_centers (code, name, state_code, lga_code, ward_code, capacity, status) VALUES (?,?,?,?||'-001',?||'-001-W001',500,'active')`,
+			tx.Exec(`INSERT INTO registration_centers (code, name, state_code, lga_code, ward_code, capacity, status) VALUES (?,?,?,?||'-001',?||'-001-W001',500,'active')`,
 				code, name, sc, sc, sc)
 		}
 	}
@@ -307,7 +307,7 @@ func seedEMSData(database *sql.DB) {
 	var electionID int
 	database.QueryRow("SELECT id FROM elections LIMIT 1").Scan(&electionID)
 	if electionID > 0 {
-		tx.Exec(`INSERT OR IGNORE INTO ems_workflows (election_id, workflow_type, current_phase, status) VALUES (?,'full_election','voting','active')`, electionID)
+		tx.Exec(`INSERT INTO ems_workflows (election_id, workflow_type, current_phase, status) VALUES (?,'full_election','voting','active')`, electionID)
 
 		var wfID int64
 		tx.QueryRow("SELECT last_insert_rowid()").Scan(&wfID)
@@ -317,7 +317,7 @@ func seedEMSData(database *sql.DB) {
 			if ph == "voting" {
 				st = "in_progress"
 			}
-			tx.Exec(`INSERT INTO ems_workflow_phases (workflow_id, phase, status, started_at, completed_at) VALUES (?,?,?,datetime('now','-30 days'),CASE WHEN ?='completed' THEN datetime('now','-10 days') ELSE NULL END)`,
+			tx.Exec(`INSERT INTO ems_workflow_phases (workflow_id, phase, status, started_at, completed_at) VALUES (?,?,?,NOW() + INTERVAL '-30 days',CASE WHEN ?='completed' THEN NOW() + INTERVAL '-10 days' ELSE NULL END)`,
 				wfID, ph, st, st)
 		}
 		for _, ph := range []string{"collation", "declaration", "certification"} {
@@ -332,7 +332,7 @@ func seedEMSData(database *sql.DB) {
 			{"BVAS Management Portal", "bvas_portal", "https://bvas.inec.gov.ng/api"},
 		}
 		for _, p := range portals {
-			tx.Exec(`INSERT OR IGNORE INTO portal_connections (portal_name, portal_type, base_url, status, last_sync_at) VALUES (?,?,?,?,datetime('now',?))`,
+			tx.Exec(`INSERT INTO portal_connections (portal_name, portal_type, base_url, status, last_sync_at) VALUES (?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 				p.name, p.ptype, p.url, "active", fmt.Sprintf("-%d minutes", rng.Intn(120)))
 		}
 
@@ -340,7 +340,7 @@ func seedEMSData(database *sql.DB) {
 			for j := 0; j < 3+rng.Intn(5); j++ {
 				syncTypes := []string{"push", "pull", "webhook"}
 				entityTypes := []string{"result", "accreditation", "voter", "incident"}
-				tx.Exec(`INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, records_synced, records_failed, status, started_at, completed_at) VALUES (?,?,?,?,?,?,datetime('now',?),datetime('now',?))`,
+				tx.Exec(`INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, records_synced, records_failed, status, started_at, completed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL),NOW() + CAST(? AS INTERVAL))`,
 					i, syncTypes[rng.Intn(3)], entityTypes[rng.Intn(4)], 50+rng.Intn(500), rng.Intn(5), "completed",
 					fmt.Sprintf("-%d hours", rng.Intn(48)), fmt.Sprintf("-%d hours", rng.Intn(47)))
 			}
@@ -361,18 +361,18 @@ func seedEMSData(database *sql.DB) {
 			{"incident_requires_description", "format", "incident", "description IS NOT EMPTY", "error", "Incident must have description"},
 		}
 		for _, r := range rules {
-			tx.Exec(`INSERT OR IGNORE INTO validation_rules (rule_name, rule_type, entity_type, expression, severity, description) VALUES (?,?,?,?,?,?)`,
+			tx.Exec(`INSERT INTO validation_rules (rule_name, rule_type, entity_type, expression, severity, description) VALUES (?,?,?,?,?,?)`,
 				r.name, r.rtype, r.entity, r.expr, r.sev, r.desc)
 		}
 
 		lifecyclePhases := []string{"created", "configured", "staff_deployed", "materials_deployed", "monitoring", "voting_open"}
 		for i, ph := range lifecyclePhases {
-			tx.Exec(`INSERT INTO election_lifecycle (election_id, phase, transitioned_by, notes, transitioned_at) VALUES (?,?,1,?,datetime('now',?))`,
+			tx.Exec(`INSERT INTO election_lifecycle (election_id, phase, transitioned_by, notes, transitioned_at) VALUES (?,?,1,?,NOW() + CAST(? AS INTERVAL))`,
 				electionID, ph, fmt.Sprintf("Auto-transitioned to %s", ph), fmt.Sprintf("-%d days", 30-i*5))
 		}
 
-		tx.Exec(`INSERT OR IGNORE INTO election_staff_assignments (election_id, user_id, role, area_type, area_code, status) VALUES (?,'1','chief_electoral_officer','national','NG','active')`, electionID)
-		tx.Exec(`INSERT OR IGNORE INTO election_staff_assignments (election_id, user_id, role, area_type, area_code, status) VALUES (?,'3','presiding_officer','polling_unit','LA-001-W001-PU001','deployed')`, electionID)
+		tx.Exec(`INSERT INTO election_staff_assignments (election_id, user_id, role, area_type, area_code, status) VALUES (?,'1','chief_electoral_officer','national','NG','active')`, electionID)
+		tx.Exec(`INSERT INTO election_staff_assignments (election_id, user_id, role, area_type, area_code, status) VALUES (?,'3','presiding_officer','polling_unit','LA-001-W001-PU001','deployed')`, electionID)
 
 		matTypes := []string{"ballot_paper", "result_sheet", "stamp", "ink", "seal"}
 		for _, sc := range rcStates {
@@ -636,9 +636,8 @@ func handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		req.WorkflowType = "full_election"
 	}
 
-	res, _ := db.Exec(`INSERT INTO ems_workflows (election_id, workflow_type, current_phase, status) VALUES (?,?,'planning','active')`,
+	wfID := insertReturningID(db, `INSERT INTO ems_workflows (election_id, workflow_type, current_phase, status) VALUES (?,?,'planning','active')`,
 		req.ElectionID, req.WorkflowType)
-	wfID, _ := res.LastInsertId()
 
 	allPhases := []string{"planning", "registration", "accreditation", "voting", "collation", "declaration", "certification"}
 	for _, ph := range allPhases {
@@ -806,7 +805,7 @@ func handleBVASSyncStats(w http.ResponseWriter, r *http.Request) {
 	recentHeartbeats = scanRows(hbRows)
 
 	var offlineDevices int
-	db.QueryRow("SELECT COUNT(*) FROM bvas_devices WHERE last_sync_at < datetime('now', '-30 minutes') AND status='active'").Scan(&offlineDevices)
+	db.QueryRow("SELECT COUNT(*) FROM bvas_devices WHERE last_sync_at < NOW() - INTERVAL '30 minutes' AND status='active'").Scan(&offlineDevices)
 
 	writeJSON(w, 200, M{
 		"total": total, "synced": synced, "queued": queued, "conflicts": conflicts, "failed": failed,
@@ -899,10 +898,9 @@ func handlePortalSync(w http.ResponseWriter, r *http.Request) {
 	numSynced := 50 + rand.Intn(200)
 	numFailed := rand.Intn(3)
 
-	res, _ := db.Exec(`INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, records_synced, records_failed, status, completed_at)
+	syncID := insertReturningID(db, `INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, records_synced, records_failed, status, completed_at)
 		VALUES (?,?,?,?,?,'completed',CURRENT_TIMESTAMP)`,
 		id, req.SyncType, req.EntityType, numSynced, numFailed)
-	syncID, _ := res.LastInsertId()
 
 	db.Exec("UPDATE portal_connections SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", id)
 
@@ -1178,9 +1176,8 @@ func handleAssignStaff(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	res, _ := db.Exec(`INSERT INTO election_staff_assignments (election_id, user_id, role, area_type, area_code) VALUES (?,?,?,?,?)`,
+	id := insertReturningID(db, `INSERT INTO election_staff_assignments (election_id, user_id, role, area_type, area_code) VALUES (?,?,?,?,?)`,
 		req.ElectionID, req.UserID, req.Role, req.AreaType, req.AreaCode)
-	id, _ := res.LastInsertId()
 	logAudit("STAFF_ASSIGNED", "staff", fmt.Sprintf("%d", id), 0, map[string]interface{}{"user_id": req.UserID, "role": req.Role, "area": req.AreaCode})
 	writeJSON(w, 201, M{"id": id, "message": "Staff assigned"})
 }

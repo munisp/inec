@@ -90,7 +90,7 @@ func initIngestionTables(database *sql.DB) {
 		FOREIGN KEY (job_id) REFERENCES ingestion_jobs(id)
 	);
 	CREATE TABLE IF NOT EXISTS offline_sync_queue (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT NOT NULL,
 		sync_type TEXT NOT NULL CHECK(sync_type IN ('result','accreditation','incident')),
 		payload TEXT NOT NULL,
@@ -104,7 +104,7 @@ func initIngestionTables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_dlq_reprocessed ON dead_letter_queue(reprocessed);
 	CREATE INDEX IF NOT EXISTS idx_offline_status ON offline_sync_queue(status);
 	`
-	database.Exec(schema)
+	execMulti(database, schema)
 }
 
 func generateIdempotencyKey(jobType string, payload map[string]interface{}) string {
@@ -159,7 +159,7 @@ func enqueueJob(jobType string, payload map[string]interface{}, idempotencyKey s
 	idempotencyStore[idempotencyKey] = id
 
 	payloadJSON, _ := json.Marshal(payload)
-	db.Exec("INSERT OR IGNORE INTO ingestion_jobs (id, job_type, status, payload, idempotency_key, max_retries) VALUES (?,?,?,?,?,?)",
+	db.Exec("INSERT INTO ingestion_jobs (id, job_type, status, payload, idempotency_key, max_retries) VALUES (?,?,?,?,?,?)",
 		id, jobType, "pending", string(payloadJSON), idempotencyKey, 3)
 
 	go processJob(id)

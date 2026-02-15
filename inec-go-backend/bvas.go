@@ -82,7 +82,7 @@ func initBVASTables(database *sql.DB) {
 		FOREIGN KEY (election_id) REFERENCES elections(id)
 	);
 	CREATE TABLE IF NOT EXISTS bvas_accreditations (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT NOT NULL,
 		election_id INTEGER NOT NULL,
 		polling_unit_code TEXT NOT NULL,
@@ -100,7 +100,7 @@ func initBVASTables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_bvas_acc_device ON bvas_accreditations(device_id);
 	CREATE INDEX IF NOT EXISTS idx_bvas_devices_pu ON bvas_devices(polling_unit_code);
 	`
-	database.Exec(schema)
+	execMulti(database, schema)
 }
 
 func seedBVASDevices(database *sql.DB) {
@@ -137,8 +137,8 @@ func seedBVASDevices(database *sql.DB) {
 		battery := 60 + rng.Intn(41)
 		statuses := []string{"active", "active", "active", "active", "deployed", "offline"}
 		st := statuses[rng.Intn(len(statuses))]
-		tx.Exec(`INSERT OR IGNORE INTO bvas_devices (id, serial_number, polling_unit_code, election_id, status, battery_level, firmware_version, last_sync_at, latitude, longitude)
-			VALUES (?,?,?,1,?,?,?,datetime('now',?),?,?)`,
+		tx.Exec(`INSERT INTO bvas_devices (id, serial_number, polling_unit_code, election_id, status, battery_level, firmware_version, last_sync_at, latitude, longitude)
+			VALUES (?,?,?,1,?,?,?,NOW() + CAST(? AS INTERVAL),?,?)`,
 			devID, serial, pu.code, st, battery, "3.2.1",
 			fmt.Sprintf("-%d minutes", rng.Intn(120)), pu.lat, pu.lon)
 	}
@@ -179,7 +179,7 @@ func seedBVASAccreditations(database *sql.DB, rng *rand.Rand) {
 			methods := []string{"biometric", "biometric", "biometric", "biometric", "manual"}
 			method := methods[rng.Intn(len(methods))]
 			tx.Exec(`INSERT INTO bvas_accreditations (device_id, election_id, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, accredited_at, synced_at)
-				VALUES (?,1,?,?,?,?,?,datetime('now',?),datetime('now',?))`,
+				VALUES (?,1,?,?,?,?,?,NOW() + CAST(? AS INTERVAL),NOW() + CAST(? AS INTERVAL))`,
 				d.devID, d.puCode, pvcHash,
 				boolToInt(bioMatch), boolToInt(pvcOK), method,
 				fmt.Sprintf("-%d minutes", rng.Intn(480)),
@@ -320,11 +320,10 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, _ := db.Exec(`INSERT INTO bvas_accreditations (device_id, election_id, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, synced_at)
+	lid := insertReturningID(db, `INSERT INTO bvas_accreditations (device_id, election_id, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, synced_at)
 		VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		req.DeviceID, req.ElectionID, req.PollingUnitCode, pvcHash,
 		boolToInt(req.BiometricMatch), boolToInt(req.PVCVerified), req.Method)
-	lid, _ := res.LastInsertId()
 
 	db.Exec("UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
 
@@ -518,20 +517,19 @@ func handleBVASAccreditationTimeline(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 	interval := queryParam(r, "interval", "hour")
 
-	fmtMap := map[string]string{"minute": "%Y-%m-%d %H:%M", "hour": "%Y-%m-%d %H:00", "day": "%Y-%m-%d"}
-	fmt2 := fmtMap[interval]
-	if fmt2 == "" {
-		fmt2 = fmtMap["hour"]
+	pgFmtMap:= map[string]string{"minute": "YYYY-MM-DD HH24:MI", "hour": "YYYY-MM-DD HH24:00", "day": "YYYY-MM-DD"}
+	pgFmt := pgFmtMap[interval]
+	if pgFmt == "" {
+		pgFmt = pgFmtMap["hour"]
 	}
-
 	rows, _ := db.Query(fmt.Sprintf(`
-		SELECT strftime('%s', accredited_at) as time_bucket,
+		SELECT to_char(accredited_at, '%s') as time_bucket,
 			COUNT(*) as accreditations,
 			SUM(biometric_match) as bio_pass,
 			SUM(pvc_verified) as pvc_pass
 		FROM bvas_accreditations WHERE election_id=?
 		GROUP BY time_bucket ORDER BY time_bucket
-	`, fmt2), eid)
+	`, pgFmt), eid)
 	data := scanRows(rows)
 
 	cumulative := 0

@@ -18,7 +18,7 @@ func initPhase7Tables(database *sql.DB) {
 	schema := `
 	-- Module 1: Enhanced Biometric Verification System
 	CREATE TABLE IF NOT EXISTS biometric_profiles (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		fingerprint_hash TEXT,
 		facial_hash TEXT,
@@ -35,7 +35,7 @@ func initPhase7Tables(database *sql.DB) {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS biometric_verifications (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		device_id TEXT,
 		modality TEXT NOT NULL CHECK(modality IN ('fingerprint','facial','iris','multi_modal')),
@@ -48,7 +48,7 @@ func initPhase7Tables(database *sql.DB) {
 		verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS abis_duplicate_checks (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		source_vin TEXT NOT NULL,
 		candidate_vin TEXT,
 		similarity_score REAL NOT NULL,
@@ -61,7 +61,7 @@ func initPhase7Tables(database *sql.DB) {
 
 	-- Module 2: Blockchain-Enhanced Result Transmission
 	CREATE TABLE IF NOT EXISTS blockchain_results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		result_id INTEGER NOT NULL,
 		ec8a_hash TEXT NOT NULL,
 		prev_hash TEXT NOT NULL DEFAULT '',
@@ -76,7 +76,7 @@ func initPhase7Tables(database *sql.DB) {
 		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS smart_contracts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		contract_id TEXT UNIQUE NOT NULL,
 		contract_type TEXT NOT NULL CHECK(contract_type IN ('pu_validation','ward_aggregation','lga_aggregation','state_aggregation','national_declaration')),
 		level TEXT NOT NULL,
@@ -89,7 +89,7 @@ func initPhase7Tables(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS blockchain_audit_trail (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		action TEXT NOT NULL,
 		entity_type TEXT NOT NULL,
 		entity_id TEXT NOT NULL,
@@ -104,7 +104,7 @@ func initPhase7Tables(database *sql.DB) {
 
 	-- Module 3: Training & Capacity Building Platform
 	CREATE TABLE IF NOT EXISTS training_courses (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		title TEXT NOT NULL,
 		description TEXT,
 		course_type TEXT NOT NULL CHECK(course_type IN ('vr_simulation','gamified','video','interactive','assessment')),
@@ -118,7 +118,7 @@ func initPhase7Tables(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS training_enrollments (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		user_id INTEGER NOT NULL,
 		course_id INTEGER NOT NULL,
 		progress_percent REAL DEFAULT 0,
@@ -131,7 +131,7 @@ func initPhase7Tables(database *sql.DB) {
 		enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS training_certificates (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		enrollment_id INTEGER NOT NULL,
 		user_id INTEGER NOT NULL,
 		course_id INTEGER NOT NULL,
@@ -144,7 +144,7 @@ func initPhase7Tables(database *sql.DB) {
 		FOREIGN KEY (enrollment_id) REFERENCES training_enrollments(id)
 	);
 	CREATE TABLE IF NOT EXISTS training_vr_scenarios (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		course_id INTEGER NOT NULL,
 		scenario_name TEXT NOT NULL,
 		scenario_type TEXT NOT NULL CHECK(scenario_type IN ('election_day','emergency','crowd_control','result_collation','equipment_setup','conflict_resolution')),
@@ -158,7 +158,7 @@ func initPhase7Tables(database *sql.DB) {
 
 	-- Module 4: Electoral Stakeholder Engagement System
 	CREATE TABLE IF NOT EXISTS stakeholders (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		name TEXT NOT NULL,
 		organization TEXT,
 		stakeholder_type TEXT NOT NULL CHECK(stakeholder_type IN ('party_agent','observer','media','cso','diplomat','security','candidate','legal')),
@@ -174,7 +174,7 @@ func initPhase7Tables(database *sql.DB) {
 		registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS stakeholder_incidents (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		reporter_id INTEGER NOT NULL,
 		incident_type TEXT NOT NULL CHECK(incident_type IN ('violence','intimidation','ballot_stuffing','equipment_failure','process_violation','other')),
 		description TEXT NOT NULL,
@@ -191,7 +191,7 @@ func initPhase7Tables(database *sql.DB) {
 		FOREIGN KEY (reporter_id) REFERENCES stakeholders(id)
 	);
 	CREATE TABLE IF NOT EXISTS grievances (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		stakeholder_id INTEGER NOT NULL,
 		grievance_type TEXT NOT NULL CHECK(grievance_type IN ('result_dispute','process_complaint','staff_misconduct','access_denial','equipment_issue','other')),
 		subject TEXT NOT NULL,
@@ -206,7 +206,7 @@ func initPhase7Tables(database *sql.DB) {
 		FOREIGN KEY (stakeholder_id) REFERENCES stakeholders(id)
 	);
 	CREATE TABLE IF NOT EXISTS push_notifications (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		target_type TEXT NOT NULL CHECK(target_type IN ('all','stakeholder_type','individual','area')),
 		target_value TEXT,
 		title TEXT NOT NULL,
@@ -219,7 +219,7 @@ func initPhase7Tables(database *sql.DB) {
 
 	-- Module 5: AI-Powered Election Monitoring & Analytics
 	CREATE TABLE IF NOT EXISTS ai_predictions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		prediction_type TEXT NOT NULL CHECK(prediction_type IN ('turnout','resource','security_threat','sentiment','misinformation')),
 		target_area TEXT NOT NULL,
 		target_level TEXT NOT NULL CHECK(target_level IN ('national','state','lga','ward','polling_unit')),
@@ -231,7 +231,7 @@ func initPhase7Tables(database *sql.DB) {
 		predicted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS sentiment_analysis (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		source TEXT NOT NULL CHECK(source IN ('twitter','facebook','news','radio','whatsapp','other')),
 		content_snippet TEXT,
 		sentiment TEXT NOT NULL CHECK(sentiment IN ('positive','negative','neutral','mixed')),
@@ -243,7 +243,7 @@ func initPhase7Tables(database *sql.DB) {
 		analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS misinformation_alerts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		content TEXT NOT NULL,
 		source_platform TEXT,
 		source_url TEXT,
@@ -256,7 +256,7 @@ func initPhase7Tables(database *sql.DB) {
 		detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS security_threats (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		threat_type TEXT NOT NULL CHECK(threat_type IN ('violence','protest','road_blockage','device_theft','cyber_attack','impersonation','other')),
 		location TEXT NOT NULL,
 		latitude REAL,
@@ -271,7 +271,7 @@ func initPhase7Tables(database *sql.DB) {
 		resolved_at TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS cv_monitoring (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		camera_id TEXT NOT NULL,
 		polling_unit_code TEXT,
 		event_type TEXT NOT NULL CHECK(event_type IN ('crowd_size','queue_length','suspicious_activity','equipment_status','accessibility_issue')),
@@ -294,7 +294,7 @@ func initPhase7Tables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_misinfo ON misinformation_alerts(status, detected_at);
 	CREATE INDEX IF NOT EXISTS idx_security ON security_threats(status, severity);
 	`
-	database.Exec(schema)
+	execMulti(database, schema)
 }
 
 func seedPhase7Data(database *sql.DB) {
@@ -307,15 +307,18 @@ func seedPhase7Data(database *sql.DB) {
 	rng := rand.New(rand.NewSource(777))
 	tx, _ := database.Begin()
 
-	voterRows, _ := database.Query("SELECT vin, biometric_hash FROM voters ORDER BY RANDOM() LIMIT 500")
+	voterRows, err := database.Query("SELECT vin, biometric_hash FROM voters ORDER BY RANDOM() LIMIT 500")
 	var vins, bioHashes []string
-	for voterRows.Next() {
-		var v, b string
-		voterRows.Scan(&v, &b)
-		vins = append(vins, v)
-		bioHashes = append(bioHashes, b)
+	if err == nil {
+		for voterRows.Next() {
+			var v, b string
+			voterRows.Scan(&v, &b)
+			vins = append(vins, v)
+			bioHashes = append(bioHashes, b)
+		}
+		voterRows.Close()
 	}
-	voterRows.Close()
+	_ = bioHashes
 
 	for i, vin := range vins {
 		fpHash := fmt.Sprintf("%x", sha256.Sum256([]byte("fp-"+vin)))[:32]
@@ -348,13 +351,13 @@ func seedPhase7Data(database *sql.DB) {
 			if rng.Float64() < 0.01 {
 				result = "spoof_detected"
 			}
-			tx.Exec(`INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms, verified_at) VALUES (?,?,?,?,?,?,datetime('now',?))`,
+			tx.Exec(`INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms, verified_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 				vin, fmt.Sprintf("BVAS-%03d", rng.Intn(500)+1), mod, score, result,
 				50+rng.Intn(200), fmt.Sprintf("-%d hours", rng.Intn(72)))
 		}
 	}
 
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 15 && len(vins) > 0; i++ {
 		src := vins[rng.Intn(len(vins))]
 		cand := vins[rng.Intn(len(vins))]
 		sim := 0.7 + rng.Float64()*0.3
@@ -366,14 +369,16 @@ func seedPhase7Data(database *sql.DB) {
 	var electionID int
 	database.QueryRow("SELECT id FROM elections LIMIT 1").Scan(&electionID)
 
-	resultRows, _ := database.Query("SELECT id FROM results ORDER BY id LIMIT 200")
+	resultRows, err2 := database.Query("SELECT id FROM results ORDER BY id LIMIT 200")
 	var resultIDs []int
-	for resultRows.Next() {
-		var rid int
-		resultRows.Scan(&rid)
-		resultIDs = append(resultIDs, rid)
+	if err2 == nil {
+		for resultRows.Next() {
+			var rid int
+			resultRows.Scan(&rid)
+			resultIDs = append(resultIDs, rid)
+		}
+		resultRows.Close()
 	}
-	resultRows.Close()
 
 	prevHash := "0000000000000000000000000000000000000000000000000000000000000000"
 	for i, rid := range resultIDs {
@@ -412,7 +417,7 @@ func seedPhase7Data(database *sql.DB) {
 		actions := []string{"result_uploaded", "result_validated", "hash_verified", "contract_executed", "dispute_raised"}
 		entities := []string{"result", "smart_contract", "voter", "election"}
 		txHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("tx-%d-%d", i, time.Now().UnixNano()))))
-		tx.Exec(`INSERT INTO blockchain_audit_trail (action, entity_type, entity_id, actor, tx_hash, timestamp) VALUES (?,?,?,?,?,datetime('now',?))`,
+		tx.Exec(`INSERT INTO blockchain_audit_trail (action, entity_type, entity_id, actor, tx_hash, timestamp) VALUES (?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			actions[rng.Intn(len(actions))], entities[rng.Intn(len(entities))],
 			fmt.Sprintf("%d", rng.Intn(200)+1), fmt.Sprintf("user_%d", rng.Intn(10)+1),
 			txHash, fmt.Sprintf("-%d hours", rng.Intn(168)))
@@ -447,7 +452,7 @@ func seedPhase7Data(database *sql.DB) {
 			status = "completed"
 			if score < 70 { status = "failed" }
 		}
-		tx.Exec(`INSERT INTO training_enrollments (user_id, course_id, progress_percent, current_module, score, status, started_at, completed_at) VALUES (?,?,?,?,?,?,datetime('now',?),CASE WHEN ?='completed' THEN datetime('now',?) ELSE NULL END)`,
+		tx.Exec(`INSERT INTO training_enrollments (user_id, course_id, progress_percent, current_module, score, status, started_at, completed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL),CASE WHEN ?='completed' THEN NOW() + CAST(? AS INTERVAL) ELSE NULL END)`,
 			uid, cid, progress, 1+rng.Intn(5), score, status,
 			fmt.Sprintf("-%d days", rng.Intn(30)), status, fmt.Sprintf("-%d days", rng.Intn(10)))
 
@@ -492,7 +497,7 @@ func seedPhase7Data(database *sql.DB) {
 		repID := rng.Intn(120) + 1
 		sev := []string{"low", "medium", "high", "critical"}
 		stat := []string{"reported", "acknowledged", "investigating", "resolved", "escalated"}
-		tx.Exec(`INSERT INTO stakeholder_incidents (reporter_id, incident_type, description, severity, latitude, longitude, status, reported_at) VALUES (?,?,?,?,?,?,?,datetime('now',?))`,
+		tx.Exec(`INSERT INTO stakeholder_incidents (reporter_id, incident_type, description, severity, latitude, longitude, status, reported_at) VALUES (?,?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			repID, incTypes[rng.Intn(len(incTypes))],
 			fmt.Sprintf("Incident report #%d from stakeholder", i+1),
 			sev[rng.Intn(len(sev))],
@@ -506,7 +511,7 @@ func seedPhase7Data(database *sql.DB) {
 		sid := rng.Intn(120) + 1
 		pri := []string{"low", "normal", "high", "urgent"}
 		stat := []string{"filed", "under_review", "hearing_scheduled", "resolved", "dismissed"}
-		tx.Exec(`INSERT INTO grievances (stakeholder_id, grievance_type, subject, description, priority, status, filed_at) VALUES (?,?,?,?,?,?,datetime('now',?))`,
+		tx.Exec(`INSERT INTO grievances (stakeholder_id, grievance_type, subject, description, priority, status, filed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			sid, gTypes[rng.Intn(len(gTypes))],
 			fmt.Sprintf("Grievance #%d", i+1),
 			fmt.Sprintf("Detailed description of grievance %d", i+1),
@@ -541,7 +546,7 @@ func seedPhase7Data(database *sql.DB) {
 	sources := []string{"twitter", "facebook", "news", "whatsapp"}
 	topics := []string{"election security", "BVAS performance", "voter turnout", "result credibility", "INEC preparedness"}
 	for i := 0; i < 200; i++ {
-		tx.Exec(`INSERT INTO sentiment_analysis (source, content_snippet, sentiment, score, topics, location, election_id, analyzed_at) VALUES (?,?,?,?,?,?,?,datetime('now',?))`,
+		tx.Exec(`INSERT INTO sentiment_analysis (source, content_snippet, sentiment, score, topics, location, election_id, analyzed_at) VALUES (?,?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			sources[rng.Intn(len(sources))],
 			fmt.Sprintf("Sample social media content about %s", topics[rng.Intn(len(topics))]),
 			sentiments[rng.Intn(len(sentiments))],
@@ -584,7 +589,7 @@ func seedPhase7Data(database *sql.DB) {
 
 	cvEvents := []string{"crowd_size", "queue_length", "suspicious_activity", "equipment_status"}
 	for i := 0; i < 30; i++ {
-		tx.Exec(`INSERT INTO cv_monitoring (camera_id, event_type, value, description, confidence, detected_at) VALUES (?,?,?,?,?,datetime('now',?))`,
+		tx.Exec(`INSERT INTO cv_monitoring (camera_id, event_type, value, description, confidence, detected_at) VALUES (?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			fmt.Sprintf("CAM-%03d", rng.Intn(100)+1),
 			cvEvents[rng.Intn(len(cvEvents))],
 			rng.Float64()*100,

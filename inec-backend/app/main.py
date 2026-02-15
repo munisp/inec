@@ -13,9 +13,11 @@ from app.analytics import router as analytics_router
 
 GO_BACKEND_URL = "http://127.0.0.1:8088"
 go_process = None
+go_ready = False
 
-app = FastAPI(title="INEC Election Platform", version="7.0",
-              description="Next-Generation Blockchain-Based Election Results Platform")
+
+app = FastAPI(title="INEC Election Platform", version="9.0",
+              description="Next-Generation Election Results Platform with PostgreSQL support")
 
 # Disable CORS. Do not remove this for full-stack development.
 app.add_middleware(
@@ -31,28 +33,56 @@ app.include_router(analytics_router)
 http_client: httpx.AsyncClient = None
 
 
+@app.get("/healthz")
+async def direct_health():
+    return {"status": "ok", "go_backend": go_ready}
+
+
+@app.get("/readiness")
+async def direct_readiness():
+    return {"ready": go_ready}
+
+
 @app.on_event("startup")
 async def startup():
-    global go_process, http_client
+    global http_client
     http_client = httpx.AsyncClient(base_url=GO_BACKEND_URL, timeout=30.0)
-    db_path = os.environ.get("DB_PATH", "/data/app.db")
-    os.environ["DB_PATH"] = db_path
+    asyncio.create_task(background_setup())
+
+
+async def background_setup():
+    global go_process, go_ready
+
     binary = os.path.join(os.path.dirname(os.path.dirname(__file__)), "inec-go-backend")
     if not os.path.isfile(binary):
         binary = "/app/inec-go-backend"
-    os.chmod(binary, os.stat(binary).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    env = {**os.environ, "PORT": "8088", "DB_PATH": db_path}
+    try:
+        os.chmod(binary, os.stat(binary).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except Exception as e:
+        print(f"WARNING: chmod failed: {e}", flush=True)
+
+    env = {**os.environ, "PORT": "8088"}
+    if not os.environ.get("DATABASE_URL"):
+        db_path = "/data/inec.db" if os.path.isdir("/data") else "inec.db"
+        env["DB_PATH"] = f"file:{db_path}?_journal_mode=WAL&_foreign_keys=ON&cache=shared&_busy_timeout=5000"
+        print(f"Using SQLite at {db_path}", flush=True)
+    else:
+        print(f"Using PostgreSQL via DATABASE_URL", flush=True)
+
     go_process = subprocess.Popen([binary], env=env, stdout=sys.stdout, stderr=sys.stderr)
-    for _ in range(50):
-        await asyncio.sleep(0.2)
+    print("Go backend process started, waiting for ready...", flush=True)
+
+    for _ in range(180):
+        await asyncio.sleep(0.5)
         try:
             resp = await http_client.get("/healthz")
             if resp.status_code == 200:
-                print("Go backend is ready")
+                go_ready = True
+                print("Go backend is ready", flush=True)
                 return
         except Exception:
             pass
-    print("WARNING: Go backend did not become ready in 10s")
+    print("WARNING: Go backend did not become ready in 90s", flush=True)
 
 
 @app.on_event("shutdown")
@@ -70,6 +100,12 @@ async def shutdown():
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
 async def proxy(request: Request, path: str):
+    if not go_ready:
+        return Response(
+            content='{"detail":"backend initializing, please wait"}',
+            status_code=503,
+            media_type="application/json",
+        )
     url = f"/{path}"
     if request.url.query:
         url += f"?{request.url.query}"

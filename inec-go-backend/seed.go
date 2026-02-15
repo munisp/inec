@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 )
 
@@ -159,7 +160,11 @@ func seedDatabase(db *sql.DB) {
 	var electionID int
 	db.QueryRow("SELECT id FROM elections LIMIT 1").Scan(&electionID)
 
-	rows, _ := db.Query("SELECT code FROM polling_units ORDER BY RANDOM() LIMIT 800")
+	rows, err := db.Query("SELECT code FROM polling_units ORDER BY RANDOM() LIMIT 800")
+	if err != nil {
+		log.Printf("seedDatabase: polling_units query failed: %v", err)
+		return
+	}
 	var samplePUs []string
 	for rows.Next() {
 		var c string
@@ -213,13 +218,12 @@ func seedDatabase(db *sql.DB) {
 			hlStatus = "CONFIRMED"
 		}
 
-		res, _ := tx2.Exec(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
+		resultID := insertReturningID(tx2, `INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 			total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
 			ec8a_hash, tigerbeetle_transfer_id, hyperledger_tx_id, tigerbeetle_status, hyperledger_status, ipfs_cid)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			electionID, puCode, 3, status, validVotes, rejected, accredited, accredited,
 			ec8aHash, tbID, hlID, tbStatus, hlStatus, ipfsCid)
-		resultID, _ := res.LastInsertId()
 
 		for pc, votes := range partyVotes {
 			tx2.Exec("INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)", resultID, pc, votes)

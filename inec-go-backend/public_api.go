@@ -15,7 +15,7 @@ import (
 
 func initPublicAPITables(database *sql.DB) {
 	database.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		key_hash TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
 		owner TEXT NOT NULL,
@@ -26,7 +26,7 @@ func initPublicAPITables(database *sql.DB) {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
 	database.Exec(`CREATE TABLE IF NOT EXISTS api_usage (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		api_key_id INTEGER,
 		endpoint TEXT NOT NULL,
 		method TEXT NOT NULL,

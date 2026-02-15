@@ -40,13 +40,13 @@ func initBiometricEngine(database *sql.DB) {
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS biometric_templates (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		modality TEXT NOT NULL CHECK(modality IN ('fingerprint','facial','iris')),
-		template_data BLOB NOT NULL,
+		template_data BYTEA NOT NULL,
 		template_format TEXT NOT NULL DEFAULT 'ISO_19794',
 		encryption_key_id TEXT NOT NULL,
-		iv BLOB NOT NULL,
+		iv BYTEA NOT NULL,
 		quality_score REAL NOT NULL DEFAULT 0,
 		nfiq_score INTEGER DEFAULT 0,
 		minutiae_count INTEGER DEFAULT 0,
@@ -60,9 +60,9 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS biometric_vault_keys (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		key_id TEXT UNIQUE NOT NULL,
-		encrypted_key BLOB NOT NULL,
+		encrypted_key BYTEA NOT NULL,
 		key_type TEXT NOT NULL DEFAULT 'AES-256-GCM',
 		purpose TEXT NOT NULL CHECK(purpose IN ('template_encryption','signing','key_wrapping')),
 		status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','rotated','revoked')),
@@ -73,7 +73,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS biometric_vault_audit (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		operation TEXT NOT NULL,
 		key_id TEXT,
 		voter_vin TEXT,
@@ -86,7 +86,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS pad_results (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		modality TEXT NOT NULL,
 		device_id TEXT,
@@ -104,7 +104,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS dedup_jobs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		job_type TEXT NOT NULL CHECK(job_type IN ('full_scan','incremental','targeted')),
 		status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed','cancelled')),
 		total_comparisons INTEGER DEFAULT 0,
@@ -121,7 +121,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS dedup_candidates (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		job_id INTEGER NOT NULL,
 		source_vin TEXT NOT NULL,
 		candidate_vin TEXT NOT NULL,
@@ -138,7 +138,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS bvas_device_capabilities (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		device_id TEXT UNIQUE NOT NULL,
 		firmware_version TEXT NOT NULL,
 		supported_modalities TEXT NOT NULL DEFAULT 'fingerprint',
@@ -157,7 +157,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS bvas_capture_sessions (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		session_id TEXT UNIQUE NOT NULL,
 		device_id TEXT NOT NULL,
 		voter_vin TEXT NOT NULL,
@@ -176,7 +176,7 @@ func initBiometricEngine(database *sql.DB) {
 	);
 
 	CREATE TABLE IF NOT EXISTS abis_enrollment_pipeline (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id SERIAL PRIMARY KEY,
 		voter_vin TEXT NOT NULL,
 		stage TEXT NOT NULL CHECK(stage IN ('capture','quality_check','template_extract','dedup_check','vault_store','complete','failed')),
 		modality TEXT NOT NULL,
@@ -202,7 +202,7 @@ func initBiometricEngine(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_bvas_cap ON bvas_capture_sessions(device_id, voter_vin);
 	CREATE INDEX IF NOT EXISTS idx_abis_pipe ON abis_enrollment_pipeline(voter_vin, stage);
 	`
-	database.Exec(schema)
+	execMulti(database, schema)
 
 	seedBiometricEngine(database)
 }
@@ -637,7 +637,7 @@ func (v *BiometricVault) StoreTemplate(vin, modality string, templateData []byte
 		}
 	}
 
-	_, err = v.db.Exec(`INSERT OR REPLACE INTO biometric_templates
+	_, err = v.db.Exec(`INSERT INTO biometric_templates
 		(voter_vin, modality, template_data, encryption_key_id, iv, quality_score, nfiq_score, minutiae_count, embedding_dim, iris_code_bits, capture_device, iso_compliance)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		vin, modality, enc, keyID, iv, quality, nfiq, minCount, embDim, irisBits, device, isoFmt)
@@ -1067,9 +1067,8 @@ func NewDeduplicationManager(database *sql.DB, engine *ABISEngine) *Deduplicatio
 }
 
 func (d *DeduplicationManager) StartJob(jobType, modalities string, threshold float64) M {
-	result, _ := d.db.Exec(`INSERT INTO dedup_jobs (job_type, status, modalities, threshold, blocking_strategy, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`,
+	jobID := insertReturningID(d.db, `INSERT INTO dedup_jobs (job_type, status, modalities, threshold, blocking_strategy, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		jobType, "running", modalities, threshold, "locality_sensitive_hash")
-	jobID, _ := result.LastInsertId()
 
 	go d.runDedup(int(jobID), modalities, threshold)
 
@@ -1172,7 +1171,7 @@ func (r *BVASDeviceRegistry) RegisterDevice(deviceID, firmware string, modalitie
 		fpSensor = "capacitive_500dpi"
 	}
 
-	r.db.Exec(`INSERT OR REPLACE INTO bvas_device_capabilities
+	r.db.Exec(`INSERT INTO bvas_device_capabilities
 		(device_id, firmware_version, supported_modalities, fingerprint_sensor, fingerprint_fap_level, camera_resolution, iris_sensor_type, nfc_capable, secure_element, last_calibrated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		deviceID, firmware, strings.Join(modalities, ","), fpSensor, fapLevel, camRes, irisSensor, nfc, secureElem)
