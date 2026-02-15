@@ -1,9 +1,12 @@
 package main
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+)
 
 func querySingleRow(query string, args ...interface{}) (M, error) {
-	rows, err := db.Query(query, args...)
+	rows, err := dbQueryCtx(context.Background(), query, args...)
 	if err != nil {
 		return nil, err
 	}

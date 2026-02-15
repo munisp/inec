@@ -42,17 +42,15 @@ func main() {
 	}
 
 	db = openDatabase(dsn)
-	if usePostgres {
-		db.SetMaxOpenConns(20)
-		db.SetMaxIdleConns(10)
-		db.SetConnMaxLifetime(5 * time.Minute)
-	}
 	defer db.Close()
 
 	if err := db.Ping(); err != nil {
 		log.Fatal("Database connection failed: ", err)
 	}
 	log.Println("Database connected")
+
+	initScaledDB(db)
+	go periodicPoolStats()
 
 	initDB(db)
 	seedDatabase(db)
@@ -77,6 +75,8 @@ func main() {
 	r.HandleFunc("/readiness", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, M{"ready": true})
 	}).Methods("GET")
+	r.HandleFunc("/db/metrics", handleDBMetrics).Methods("GET")
+	r.HandleFunc("/db/pool", handleDBPoolStats).Methods("GET")
 
 	// Auth
 	r.HandleFunc("/auth/login", handleLogin).Methods("POST")

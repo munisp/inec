@@ -29,7 +29,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid request")
 		return
 	}
-	row := db.QueryRow("SELECT id, username, password_hash, full_name, role, staff_id, state_code FROM users WHERE username=? AND is_active=1", req.Username)
+	row := dbQueryRowCtx(r.Context(), "SELECT id, username, password_hash, full_name, role, staff_id, state_code FROM users WHERE username=? AND is_active=1", req.Username)
 	var id int
 	var username, pwHash, fullName, role string
 	var staffID, stateCode sql.NullString
@@ -67,7 +67,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		req.Role = "public"
 	}
 	var exists int
-	db.QueryRow("SELECT COUNT(*) FROM users WHERE username=?", req.Username).Scan(&exists)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM users WHERE username=?", req.Username).Scan(&exists)
 	if exists > 0 {
 		writeError(w, 400, "Username already exists")
 		return
@@ -104,9 +104,9 @@ func handleListElections(w http.ResponseWriter, r *http.Request) {
 	var rows *sql.Rows
 	var err error
 	if status != "" {
-		rows, err = db.Query("SELECT * FROM elections WHERE status=? ORDER BY election_date DESC", status)
+		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections WHERE status=? ORDER BY election_date DESC", status)
 	} else {
-		rows, err = db.Query("SELECT * FROM elections ORDER BY election_date DESC")
+		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections ORDER BY election_date DESC")
 	}
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -174,7 +174,7 @@ func handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 	}
 	updates = append(updates, "updated_at=CURRENT_TIMESTAMP")
 	vals = append(vals, id)
-	db.Exec("UPDATE elections SET "+strings.Join(updates, ",")+` WHERE id=?`, vals...)
+	dbExecCtx(r.Context(), "UPDATE elections SET "+strings.Join(updates, ",")+` WHERE id=?`, vals...)
 	writeJSON(w, 200, M{"message": "Election updated"})
 }
 
@@ -186,18 +186,18 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var totalResults, finalized, validated, pending, disputed, totalPUs int
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=?", eid).Scan(&totalResults)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='finalized'", eid).Scan(&finalized)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='validated'", eid).Scan(&validated)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='pending'", eid).Scan(&pending)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='disputed'", eid).Scan(&disputed)
-	db.QueryRow("SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=?", eid).Scan(&totalResults)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND status='finalized'", eid).Scan(&finalized)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND status='validated'", eid).Scan(&validated)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND status='pending'", eid).Scan(&pending)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND status='disputed'", eid).Scan(&disputed)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
 
 	var validV, rejectedV, castV, accreditedV sql.NullInt64
-	db.QueryRow(`SELECT SUM(total_valid_votes), SUM(rejected_votes), SUM(total_votes_cast), SUM(accredited_voters)
+	dbQueryRowCtx(r.Context(), `SELECT SUM(total_valid_votes), SUM(rejected_votes), SUM(total_votes_cast), SUM(accredited_voters)
 		FROM results WHERE election_id=? AND status IN ('finalized','validated')`, eid).Scan(&validV, &rejectedV, &castV, &accreditedV)
 
-	rows, _ := db.Query(`SELECT rps.party_code, p.name as party_name, p.color, SUM(rps.votes) as total_votes
+	rows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, SUM(rps.votes) as total_votes
 		FROM result_party_scores rps JOIN results r ON r.id=rps.result_id JOIN parties p ON p.code=rps.party_code
 		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code ORDER BY total_votes DESC`, eid)
 	partyScores := scanRows(rows)
@@ -220,7 +220,7 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 
 func logAudit(action, entityType, entityID string, userID int, details map[string]interface{}) {
 	var prevHash sql.NullString
-	db.QueryRow("SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
+	dbQueryRowCtx(context.Background(), "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
 	prev := strings.Repeat("0", 64)
 	if prevHash.Valid {
 		prev = prevHash.String
@@ -229,7 +229,7 @@ func logAudit(action, entityType, entityID string, userID int, details map[strin
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
 	detailsJSON, _ := json.Marshal(details)
-	db.Exec("INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
+	dbExecCtx(context.Background(), "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
 		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev)
 }
 
@@ -252,18 +252,18 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 
 	var eExists int
-	db.QueryRow("SELECT COUNT(*) FROM elections WHERE id=? AND status='active'", req.ElectionID).Scan(&eExists)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM elections WHERE id=? AND status='active'", req.ElectionID).Scan(&eExists)
 	if eExists == 0 {
 		writeError(w, 400, "Election not found or not active")
 		return
 	}
 	var regVoters int
-	if err := db.QueryRow("SELECT registered_voters FROM polling_units WHERE code=?", req.PollingUnitCode).Scan(&regVoters); err != nil {
+	if err := dbQueryRowCtx(r.Context(), "SELECT registered_voters FROM polling_units WHERE code=?", req.PollingUnitCode).Scan(&regVoters); err != nil {
 		writeError(w, 400, "Polling unit not found")
 		return
 	}
 	var dupCheck int
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND polling_unit_code=?", req.ElectionID, req.PollingUnitCode).Scan(&dupCheck)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND polling_unit_code=?", req.ElectionID, req.PollingUnitCode).Scan(&dupCheck)
 	if dupCheck > 0 {
 		writeError(w, 400, "Result already submitted for this polling unit")
 		return
@@ -315,7 +315,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		ec8aHash, tbID, "PENDING", "PENDING")
 
 	for _, ps := range req.PartyScores {
-		db.Exec("INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)", resultID, ps.PartyCode, ps.Votes)
+		dbExecCtx(r.Context(), "INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)", resultID, ps.PartyCode, ps.Votes)
 	}
 
 	logAudit("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", resultID), userID,
@@ -349,7 +349,7 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 	}
 	id := mux.Vars(r)["id"]
 	var status, puCode string
-	if err := db.QueryRow("SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
+	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
 		writeError(w, 404, "Result not found")
 		return
 	}
@@ -365,7 +365,7 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db.Exec("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+	dbExecCtx(r.Context(), "UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	logAudit("RESULT_VALIDATED", "result", id, uid, map[string]interface{}{"phase": "Edge Validation", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
 
@@ -387,7 +387,7 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	}
 	id := mux.Vars(r)["id"]
 	var status, puCode string
-	if err := db.QueryRow("SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
+	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
 		writeError(w, 404, "Result not found")
 		return
 	}
@@ -404,7 +404,7 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tbTransferID sql.NullString
-	db.QueryRow("SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
+	dbQueryRowCtx(r.Context(), "SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
 		postTBTransfer(tbTransferID.String)
 		if persistentTB != nil {
@@ -415,7 +415,7 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	var hlTx, ipfsCid string
 	idInt, _ := strconv.ParseInt(id, 10, 64)
 	var electionID, totalVotes, accredited int
-	db.QueryRow("SELECT election_id, total_votes_cast, accredited_voters FROM results WHERE id=?", id).Scan(&electionID, &totalVotes, &accredited)
+	dbQueryRowCtx(r.Context(), "SELECT election_id, total_votes_cast, accredited_voters FROM results WHERE id=?", id).Scan(&electionID, &totalVotes, &accredited)
 
 	if fabricNetwork != nil {
 		txID, _, _ := fabricNetwork.SubmitTransaction("inec-results", "result-validation-cc", "FinalizeResult",
@@ -441,7 +441,7 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 		chaincodeEngine.ExecuteResultValidation(int(idInt), puCode, electionID, totalVotes, accredited)
 	}
 
-	db.Exec(`UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
+	dbExecCtx(r.Context(), `UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
 		tigerbeetle_status='POSTED', hyperledger_status='CONFIRMED', hyperledger_tx_id=?, ipfs_cid=? WHERE id=?`, hlTx, ipfsCid, id)
 	logAudit("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"phase": "Finalization", "polling_unit": puCode, "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
 
@@ -462,7 +462,7 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	}
 	id := mux.Vars(r)["id"]
 	var puCode string
-	if err := db.QueryRow("SELECT polling_unit_code FROM results WHERE id=?", id).Scan(&puCode); err != nil {
+	if err := dbQueryRowCtx(r.Context(), "SELECT polling_unit_code FROM results WHERE id=?", id).Scan(&puCode); err != nil {
 		writeError(w, 404, "Result not found")
 		return
 	}
@@ -475,7 +475,7 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tbTransferID sql.NullString
-	db.QueryRow("SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
+	dbQueryRowCtx(r.Context(), "SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
 		voidTBTransfer(tbTransferID.String)
 		if persistentTB != nil {
@@ -488,7 +488,7 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 			[]string{id, puCode, fmt.Sprintf("%d", uid)}, "INECMSP")
 	}
 
-	db.Exec("UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)
+	dbExecCtx(r.Context(), "UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)
 	logAudit("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"phase": "Dispute", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
 
@@ -537,16 +537,16 @@ func handleListResults(w http.ResponseWriter, r *http.Request) {
 
 	countQ := strings.Replace(q, "SELECT r.id, r.election_id, r.polling_unit_code, r.presiding_officer_id, r.status,\n\t\tr.total_valid_votes, r.rejected_votes, r.total_votes_cast, r.accredited_voters,\n\t\tr.ec8a_hash, r.tigerbeetle_transfer_id, r.hyperledger_tx_id,\n\t\tr.tigerbeetle_status, r.hyperledger_status, r.ipfs_cid,\n\t\tr.submitted_at, r.validated_at, r.finalized_at,\n\t\tpu.name as pu_name, pu.ward_code, w.name as ward_name, w.lga_code,\n\t\tl.name as lga_name, l.state_code, s.name as state_name", "SELECT COUNT(*) as total", 1)
 	var total int
-	db.QueryRow(countQ, params...).Scan(&total)
+	dbQueryRowCtx(r.Context(), countQ, params...).Scan(&total)
 
 	q += " ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?"
 	params = append(params, limit, offset)
-	rows, _ := db.Query(q, params...)
+	rows, _ := dbQueryCtx(r.Context(), q, params...)
 	results := scanRows(rows)
 
 	for i, res := range results {
 		rid, _ := res["id"]
-		psRows, _ := db.Query(`SELECT rps.party_code, p.name as party_name, p.color, rps.votes
+		psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, rps.votes
 			FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code WHERE rps.result_id=? ORDER BY rps.votes DESC`, rid)
 		results[i]["party_scores"] = scanRows(psRows)
 	}
@@ -555,7 +555,7 @@ func handleListResults(w http.ResponseWriter, r *http.Request) {
 
 func handleGetResult(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	rows, _ := db.Query(`SELECT r.*, pu.name as pu_name, pu.ward_code, pu.registered_voters,
+	rows, _ := dbQueryCtx(r.Context(), `SELECT r.*, pu.name as pu_name, pu.ward_code, pu.registered_voters,
 		w.name as ward_name, w.lga_code, l.name as lga_name, l.state_code, s.name as state_name
 		FROM results r JOIN polling_units pu ON pu.code=r.polling_unit_code
 		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code JOIN states s ON s.code=l.state_code
@@ -566,7 +566,7 @@ func handleGetResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := all[0]
-	psRows, _ := db.Query(`SELECT rps.party_code, p.name as party_name, p.color, rps.votes
+	psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, rps.votes
 		FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code WHERE rps.result_id=? ORDER BY rps.votes DESC`, id)
 	result["party_scores"] = scanRows(psRows)
 	writeJSON(w, 200, result)
@@ -575,7 +575,7 @@ func handleGetResult(w http.ResponseWriter, r *http.Request) {
 // ── Geo ──
 
 func handleListStates(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT * FROM states ORDER BY name")
+	rows, _ := dbQueryCtx(r.Context(), "SELECT * FROM states ORDER BY name")
 	writeJSON(w, 200, scanRows(rows))
 }
 
@@ -593,9 +593,9 @@ func handleListLGAs(w http.ResponseWriter, r *http.Request) {
 	sc := r.URL.Query().Get("state_code")
 	var rows *sql.Rows
 	if sc != "" {
-		rows, _ = db.Query("SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code WHERE l.state_code=? ORDER BY l.name", sc)
+		rows, _ = dbQueryCtx(r.Context(), "SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code WHERE l.state_code=? ORDER BY l.name", sc)
 	} else {
-		rows, _ = db.Query("SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code ORDER BY l.name")
+		rows, _ = dbQueryCtx(r.Context(), "SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code ORDER BY l.name")
 	}
 	writeJSON(w, 200, scanRows(rows))
 }
@@ -604,9 +604,9 @@ func handleListWards(w http.ResponseWriter, r *http.Request) {
 	lc := r.URL.Query().Get("lga_code")
 	var rows *sql.Rows
 	if lc != "" {
-		rows, _ = db.Query("SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code WHERE w.lga_code=? ORDER BY w.name", lc)
+		rows, _ = dbQueryCtx(r.Context(), "SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code WHERE w.lga_code=? ORDER BY w.name", lc)
 	} else {
-		rows, _ = db.Query("SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code ORDER BY w.name LIMIT 100")
+		rows, _ = dbQueryCtx(r.Context(), "SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code ORDER BY w.name LIMIT 100")
 	}
 	writeJSON(w, 200, scanRows(rows))
 }
@@ -639,13 +639,13 @@ func handleListPollingUnits(w http.ResponseWriter, r *http.Request) {
 	}
 	q += " ORDER BY pu.name LIMIT ? OFFSET ?"
 	params = append(params, limit, offset)
-	rows, _ := db.Query(q, params...)
+	rows, _ := dbQueryCtx(r.Context(), q, params...)
 	writeJSON(w, 200, scanRows(rows))
 }
 
 func handleGetPollingUnit(w http.ResponseWriter, r *http.Request) {
 	code := mux.Vars(r)["code"]
-	rows, _ := db.Query(`SELECT pu.*, w.name as ward_name, w.lga_code, l.name as lga_name, l.state_code, s.name as state_name
+	rows, _ := dbQueryCtx(r.Context(), `SELECT pu.*, w.name as ward_name, w.lga_code, l.name as lga_name, l.state_code, s.name as state_name
 		FROM polling_units pu JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code JOIN states s ON s.code=l.state_code
 		WHERE pu.code=?`, code)
 	all := scanRows(rows)
@@ -660,7 +660,7 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 	sc := r.URL.Query().Get("state_code")
 
-	stRows, _ := db.Query(`SELECT s.code, s.name, s.geo_zone, s.capital,
+	stRows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone, s.capital,
 		COUNT(DISTINCT pu.code) as total_pus, COUNT(DISTINCT r.id) as reported_pus,
 		COALESCE(SUM(r.total_valid_votes),0) as total_votes,
 		COALESCE(SUM(r.total_votes_cast),0) as total_cast,
@@ -674,7 +674,7 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 
 	for i, s := range states {
 		code, _ := s["code"].(string)
-		psRows, _ := db.Query(`SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+		psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
@@ -701,12 +701,12 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 		puParams = append(puParams, sc)
 	}
 	puQ += " LIMIT 2000"
-	puRows, _ := db.Query(puQ, puParams...)
+	puRows, _ := dbQueryCtx(r.Context(), puQ, puParams...)
 	pus := scanRows(puRows)
 
 	for i, pu := range pus {
 		if rid, ok := pu["result_id"]; ok && rid != nil {
-			psRows, _ := db.Query(`SELECT rps.party_code, p.abbreviation, p.color, rps.votes
+			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, rps.votes
 				FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code
 				WHERE rps.result_id=? ORDER BY rps.votes DESC`, rid)
 			pus[i]["party_scores"] = scanRows(psRows)
@@ -730,7 +730,7 @@ func handlePUTile(w http.ResponseWriter, r *http.Request) {
 	latMax := math.Atan(math.Sinh(math.Pi*(1-2*float64(y)/n))) * 180.0 / math.Pi
 	latMin := math.Atan(math.Sinh(math.Pi*(1-2*float64(y+1)/n))) * 180.0 / math.Pi
 
-	rows, err := db.Query(`SELECT pu.code, pu.name, pu.latitude as lat, pu.longitude as lon,
+	rows, err := dbQueryCtx(r.Context(), `SELECT pu.code, pu.name, pu.latitude as lat, pu.longitude as lon,
 		COALESCE(r.status, 'no_result') as status,
 		r.submitted_at as submitted_at,
 		COALESCE(EXTRACT(EPOCH FROM r.submitted_at)::INTEGER, 0) as submitted_ts
@@ -772,7 +772,7 @@ func handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		q += " WHERE l.state_code=?"
 		params = append(params, sc)
 	}
-	rows, _ := db.Query(q, params...)
+	rows, _ := dbQueryCtx(r.Context(), q, params...)
 	defer rows.Close()
 
 	filename := "polling_units"
@@ -823,7 +823,7 @@ func handleExportGeoJSON(w http.ResponseWriter, r *http.Request) {
 		q += " WHERE l.state_code=?"
 		params = append(params, sc)
 	}
-	rows, err := db.Query(q, params...)
+	rows, err := dbQueryCtx(r.Context(), q, params...)
 	if err != nil {
 		writeError(w, 500, "query failed")
 		return
@@ -895,10 +895,10 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var totalPUs, resultsReceived int
-	db.QueryRow("SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=?", eid).Scan(&resultsReceived)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=?", eid).Scan(&resultsReceived)
 
-	statusRows, _ := db.Query("SELECT status, COUNT(*) as count FROM results WHERE election_id=? GROUP BY status", eid)
+	statusRows, _ := dbQueryCtx(r.Context(), "SELECT status, COUNT(*) as count FROM results WHERE election_id=? GROUP BY status", eid)
 	statusMap := make(map[string]int)
 	for statusRows.Next() {
 		var s string
@@ -909,15 +909,15 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 	statusRows.Close()
 
 	var validV, rejectedV, castV, accreditedV sql.NullInt64
-	db.QueryRow(`SELECT SUM(total_valid_votes), SUM(rejected_votes), SUM(total_votes_cast), SUM(accredited_voters)
+	dbQueryRowCtx(r.Context(), `SELECT SUM(total_valid_votes), SUM(rejected_votes), SUM(total_votes_cast), SUM(accredited_voters)
 		FROM results WHERE election_id=? AND status IN ('finalized','validated')`, eid).Scan(&validV, &rejectedV, &castV, &accreditedV)
 
-	psRows, _ := db.Query(`SELECT rps.party_code, p.name as party_name, p.color, p.abbreviation, SUM(rps.votes) as total_votes
+	psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, p.abbreviation, SUM(rps.votes) as total_votes
 		FROM result_party_scores rps JOIN results r ON r.id=rps.result_id JOIN parties p ON p.code=rps.party_code
 		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code ORDER BY total_votes DESC`, eid)
 	partyScores := scanRows(psRows)
 
-	srRows, _ := db.Query(`SELECT s.code, s.name, s.geo_zone, COUNT(r.id) as results_count, SUM(r.total_valid_votes) as total_votes
+	srRows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone, COUNT(r.id) as results_count, SUM(r.total_valid_votes) as total_votes
 		FROM states s LEFT JOIN lgas l ON l.state_code=s.code LEFT JOIN wards w ON w.lga_code=l.code
 		LEFT JOIN polling_units pu ON pu.ward_code=w.code
 		LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=?
@@ -925,10 +925,10 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 	stateResults := scanRows(srRows)
 
 	var tbPosted, hlConfirmed int
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND tigerbeetle_status='POSTED'", eid).Scan(&tbPosted)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND hyperledger_status='CONFIRMED'", eid).Scan(&hlConfirmed)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND tigerbeetle_status='POSTED'", eid).Scan(&tbPosted)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND hyperledger_status='CONFIRMED'", eid).Scan(&hlConfirmed)
 
-	zRows, _ := db.Query(`SELECT s.geo_zone, SUM(r.total_valid_votes) as total_votes, COUNT(r.id) as results_count
+	zRows, _ := dbQueryCtx(r.Context(), `SELECT s.geo_zone, SUM(r.total_valid_votes) as total_votes, COUNT(r.id) as results_count
 		FROM results r JOIN polling_units pu ON pu.code=r.polling_unit_code
 		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code JOIN states s ON s.code=l.state_code
 		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY s.geo_zone`, eid)
@@ -963,7 +963,7 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 func handleLiveFeed(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 	limit := queryParamInt(r, "limit", 20)
-	rows, _ := db.Query(`SELECT r.id, r.polling_unit_code, r.status, r.total_votes_cast,
+	rows, _ := dbQueryCtx(r.Context(), `SELECT r.id, r.polling_unit_code, r.status, r.total_votes_cast,
 		r.tigerbeetle_status, r.hyperledger_status, r.submitted_at,
 		pu.name as pu_name, w.name as ward_name, l.name as lga_name, s.name as state_name, s.code as state_code
 		FROM results r JOIN polling_units pu ON pu.code=r.polling_unit_code
@@ -979,7 +979,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 
 	switch level {
 	case "state":
-		rows, _ := db.Query(`SELECT s.code, s.name, s.geo_zone,
+		rows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone,
 			COUNT(DISTINCT pu.code) as total_pus, COUNT(DISTINCT r.id) as reported_pus,
 			SUM(r.total_valid_votes) as total_valid_votes, SUM(r.rejected_votes) as rejected_votes,
 			SUM(r.total_votes_cast) as total_votes_cast
@@ -990,7 +990,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		results := scanRows(rows)
 		for i, res := range results {
 			code, _ := res["code"].(string)
-			psRows, _ := db.Query(`SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 				FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 				JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 				JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
@@ -1001,7 +1001,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, results)
 
 	case "lga":
-		rows, _ := db.Query(`SELECT l.code, l.name,
+		rows, _ := dbQueryCtx(r.Context(), `SELECT l.code, l.name,
 			COUNT(DISTINCT pu.code) as total_pus, COUNT(DISTINCT r.id) as reported_pus,
 			SUM(r.total_valid_votes) as total_valid_votes, SUM(r.rejected_votes) as rejected_votes,
 			SUM(r.total_votes_cast) as total_votes_cast
@@ -1011,7 +1011,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		results := scanRows(rows)
 		for i, res := range results {
 			code, _ := res["code"].(string)
-			psRows, _ := db.Query(`SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 				FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 				JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 				JOIN parties p ON p.code=rps.party_code
@@ -1022,7 +1022,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, results)
 
 	case "ward":
-		rows, _ := db.Query(`SELECT w.code, w.name,
+		rows, _ := dbQueryCtx(r.Context(), `SELECT w.code, w.name,
 			COUNT(DISTINCT pu.code) as total_pus, COUNT(DISTINCT r.id) as reported_pus,
 			SUM(r.total_valid_votes) as total_valid_votes, SUM(r.rejected_votes) as rejected_votes,
 			SUM(r.total_votes_cast) as total_votes_cast
@@ -1032,7 +1032,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		results := scanRows(rows)
 		for i, res := range results {
 			code, _ := res["code"].(string)
-			psRows, _ := db.Query(`SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
+			psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 				FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 				JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN parties p ON p.code=rps.party_code
 				WHERE pu.ward_code=? AND res.election_id=? AND res.status IN ('finalized','validated')
@@ -1042,7 +1042,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, results)
 
 	case "pu":
-		rows, _ := db.Query(`SELECT pu.code, pu.name, pu.registered_voters,
+		rows, _ := dbQueryCtx(r.Context(), `SELECT pu.code, pu.name, pu.registered_voters,
 			r.id as result_id, r.status, r.total_valid_votes, r.rejected_votes,
 			r.total_votes_cast, r.accredited_voters, r.tigerbeetle_status, r.hyperledger_status
 			FROM polling_units pu LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=?
@@ -1050,7 +1050,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 		results := scanRows(rows)
 		for i, res := range results {
 			if rid, ok := res["result_id"]; ok && rid != nil {
-				psRows, _ := db.Query(`SELECT rps.party_code, p.abbreviation, p.color, rps.votes
+				psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.abbreviation, p.color, rps.votes
 					FROM result_party_scores rps JOIN parties p ON p.code=rps.party_code
 					WHERE rps.result_id=? ORDER BY rps.votes DESC`, rid)
 				results[i]["party_scores"] = scanRows(psRows)
@@ -1078,14 +1078,14 @@ func handlePostClientMetric(w http.ResponseWriter, r *http.Request) {
 		event = "unknown"
 	}
 	dataJSON, _ := json.Marshal(payload["data"])
-	db.Exec("INSERT INTO metrics_client (ts, event, data, ua, ip) VALUES (?,?,?,?,?)",
+	dbExecCtx(r.Context(), "INSERT INTO metrics_client (ts, event, data, ua, ip) VALUES (?,?,?,?,?)",
 		time.Now().UTC().Format(time.RFC3339)+"Z", event, string(dataJSON), ua, ip)
 	writeJSON(w, 200, M{"ok": true})
 }
 
 func handleRecentClientMetrics(w http.ResponseWriter, r *http.Request) {
 	limit := queryParamInt(r, "limit", 50)
-	rows, _ := db.Query("SELECT * FROM metrics_client ORDER BY id DESC LIMIT ?", limit)
+	rows, _ := dbQueryCtx(r.Context(), "SELECT * FROM metrics_client ORDER BY id DESC LIMIT ?", limit)
 	writeJSON(w, 200, scanRows(rows))
 }
 
@@ -1114,17 +1114,17 @@ func handleAuditTrail(w http.ResponseWriter, r *http.Request) {
 	}
 	countQ := strings.Replace(q, "SELECT a.*, u.username, u.full_name", "SELECT COUNT(*) as total", 1)
 	var total int
-	db.QueryRow(countQ, params...).Scan(&total)
+	dbQueryRowCtx(r.Context(), countQ, params...).Scan(&total)
 
 	q += " ORDER BY a.timestamp DESC LIMIT ? OFFSET ?"
 	params = append(params, limit, offset)
-	rows, _ := db.Query(q, params...)
+	rows, _ := dbQueryCtx(r.Context(), q, params...)
 	writeJSON(w, 200, M{"total": total, "entries": scanRows(rows)})
 }
 
 func handleVerifyResult(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	rows, _ := db.Query("SELECT * FROM audit_log WHERE entity_type='result' AND entity_id=? ORDER BY timestamp ASC", id)
+	rows, _ := dbQueryCtx(r.Context(), "SELECT * FROM audit_log WHERE entity_type='result' AND entity_id=? ORDER BY timestamp ASC", id)
 	entries := scanRows(rows)
 
 	chainValid := true
@@ -1155,12 +1155,12 @@ func handleVerifyResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAuditStats(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT action, COUNT(*) as count FROM audit_log GROUP BY action ORDER BY count DESC")
+	rows, _ := dbQueryCtx(r.Context(), "SELECT action, COUNT(*) as count FROM audit_log GROUP BY action ORDER BY count DESC")
 	actionCounts := scanRows(rows)
 	var total int
-	db.QueryRow("SELECT COUNT(*) FROM audit_log").Scan(&total)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM audit_log").Scan(&total)
 	var latestHash sql.NullString
-	db.QueryRow("SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&latestHash)
+	dbQueryRowCtx(r.Context(), "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&latestHash)
 	writeJSON(w, 200, M{"total_entries": total, "action_counts": actionCounts, "latest_block_hash": nullStr(latestHash)})
 }
 
@@ -1219,7 +1219,7 @@ func handleListIncidents(w http.ResponseWriter, r *http.Request) {
 	}
 	q += " ORDER BY i.reported_at DESC LIMIT ? OFFSET ?"
 	params = append(params, limit, offset)
-	rows, _ := db.Query(q, params...)
+	rows, _ := dbQueryCtx(r.Context(), q, params...)
 	writeJSON(w, 200, scanRows(rows))
 }
 
@@ -1240,14 +1240,14 @@ func handleUpdateIncident(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "resolved" {
 		resolved = ", resolved_at=CURRENT_TIMESTAMP"
 	}
-	db.Exec("UPDATE incidents SET status=?"+resolved+" WHERE id=?", req.Status, id)
+	dbExecCtx(r.Context(), "UPDATE incidents SET status=?"+resolved+" WHERE id=?", req.Status, id)
 	writeJSON(w, 200, M{"message": "Incident updated"})
 }
 
 // ── Parties ──
 
 func handleListParties(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT * FROM parties WHERE is_active=1 ORDER BY name")
+	rows, _ := dbQueryCtx(r.Context(), "SELECT * FROM parties WHERE is_active=1 ORDER BY name")
 	writeJSON(w, 200, scanRows(rows))
 }
 
