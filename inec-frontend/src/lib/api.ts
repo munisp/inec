@@ -354,4 +354,45 @@ export const api = {
   getSecurityThreats: (status?: string) =>
     request(`/ai-monitoring/security-threats${status ? `?status=${status}` : ''}`),
   getCVMonitoring: () => request('/ai-monitoring/cv-monitoring'),
+
+  getProductionStatus: () => request('/production/status'),
+  getProductionHSMStats: () => request('/production/hsm/stats'),
+  productionHSMGenerateKey: (purpose: string, algorithm?: string) =>
+    request('/production/hsm/generate-key', { method: 'POST', body: JSON.stringify({ purpose, algorithm }) }),
+  productionHSMSign: (keyId: string, data: string) =>
+    request('/production/hsm/sign', { method: 'POST', body: JSON.stringify({ key_id: keyId, data }) }),
+  productionHSMVerify: (keyId: string, data: string, signature: string) =>
+    request('/production/hsm/verify', { method: 'POST', body: JSON.stringify({ key_id: keyId, data, signature }) }),
+  productionHSMRotate: (keyId: string) =>
+    request('/production/hsm/rotate', { method: 'POST', body: JSON.stringify({ key_id: keyId }) }),
+  getProductionSMSStats: () => request('/production/sms/stats'),
+  productionSMSSend: (phone: string, message: string) =>
+    request('/production/sms/send', { method: 'POST', body: JSON.stringify({ phone, message }) }),
+  getProductionSMSDeliveryLog: () => request('/production/sms/delivery-log'),
+  getProductionPADStats: () => request('/production/pad/stats'),
+  productionPADCheck: (voterId: string, modality: string) =>
+    request('/production/pad/check', { method: 'POST', body: JSON.stringify({ voter_id: voterId, modality }) }),
+  getProductionPADAttackLog: () => request('/production/pad/attack-log'),
+  getProductionIPFSStats: () => request('/production/ipfs/stats'),
+  productionIPFSStore: (data: string, codec?: string) =>
+    request('/production/ipfs/store', { method: 'POST', body: JSON.stringify({ data, codec }) }),
+  productionIPFSVerify: (cid: string) => request(`/production/ipfs/verify?cid=${cid}`),
+  getProductionFabricStats: () => request('/production/fabric/stats'),
+  productionFabricSubmit: (channel: string, chaincode: string, fn: string, args: string[]) =>
+    request('/production/fabric/submit', { method: 'POST', body: JSON.stringify({ channel, chaincode, function: fn, args }) }),
+  getProductionFabricEndorsements: (txId?: string) =>
+    request(`/production/fabric/verify-endorsements${txId ? `?tx_id=${txId}` : ''}`),
+  getProductionLedgerStats: () => request('/production/ledger/stats'),
+  productionLedgerTransfer: (debitAccount: string, creditAccount: string, amount: number, idempotencyKey?: string) =>
+    request('/production/ledger/transfer', { method: 'POST', body: JSON.stringify({ debit_account: debitAccount, credit_account: creditAccount, amount, idempotency_key: idempotencyKey }) }),
+  getProductionLedgerJournal: (transferId?: string) =>
+    request(`/production/ledger/journal${transferId ? `?transfer_id=${transferId}` : ''}`),
+  getDBMetrics: () => request('/db/metrics'),
+  getDBPool: () => request('/db/pool'),
+  getPgpoolStatus: () => request('/pgpool/status'),
+  getPgpoolNodes: () => request('/pgpool/nodes'),
+  getPgpoolHealth: () => request('/pgpool/health'),
+  getPgpoolMetrics: () => request('/pgpool/metrics'),
+  getPgpoolReplication: () => request('/pgpool/replication'),
+  getPgpoolDashboard: () => request('/pgpool/dashboard'),
 };

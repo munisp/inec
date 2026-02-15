@@ -38,6 +38,7 @@ const NAV_ITEMS = [
   { label: 'Training', icon: GraduationCap, path: 'training' },
   { label: 'Stakeholders', icon: Users2, path: 'stakeholders' },
   { label: 'AI Monitoring', icon: BarChart3, path: 'ai-monitoring' },
+  { label: 'Production', icon: Shield, path: 'production', section: 'Infrastructure' },
 ];
 
 interface LayoutProps {

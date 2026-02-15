@@ -27,6 +27,7 @@ import BlockchainPage from '@/pages/BlockchainPage';
 import TrainingPage from '@/pages/TrainingPage';
 import StakeholderPage from '@/pages/StakeholderPage';
 import AIMonitoringPage from '@/pages/AIMonitoringPage';
+import ProductionPage from '@/pages/ProductionPage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -59,6 +60,7 @@ function AppContent() {
     'training': <TrainingPage />,
     'stakeholders': <StakeholderPage />,
     'ai-monitoring': <AIMonitoringPage />,
+    'production': <ProductionPage />,
   };
 
   return (
