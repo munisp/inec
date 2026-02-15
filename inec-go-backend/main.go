@@ -64,6 +64,7 @@ func main() {
 	initBiometricAdvanced(db)
 	initAIProxy()
 	initBlockchainProduction(db)
+	initProductionUpgrades(db)
 
 	mwHub = initMiddlewareHub()
 
@@ -341,6 +342,29 @@ func main() {
 	r.HandleFunc("/pgpool/replication", handlePgpoolReplicationStatus).Methods("GET")
 	r.HandleFunc("/pgpool/cache", handlePgpoolQueryCache).Methods("GET")
 	r.HandleFunc("/pgpool/dashboard", handlePgpoolDashboard).Methods("GET")
+
+	// Production Upgrades
+	r.HandleFunc("/production/status", handleProductionUpgradeStatus).Methods("GET")
+	r.HandleFunc("/production/hsm/stats", handleProductionHSMStats).Methods("GET")
+	r.HandleFunc("/production/hsm/generate-key", handleProductionHSMGenerateKey).Methods("POST")
+	r.HandleFunc("/production/hsm/sign", handleProductionHSMSign).Methods("POST")
+	r.HandleFunc("/production/hsm/verify", handleProductionHSMVerify).Methods("POST")
+	r.HandleFunc("/production/hsm/rotate", handleProductionHSMRotate).Methods("POST")
+	r.HandleFunc("/production/sms/stats", handleProductionSMSGatewayStats).Methods("GET")
+	r.HandleFunc("/production/sms/send", handleProductionSMSSend).Methods("POST")
+	r.HandleFunc("/production/sms/delivery-log", handleProductionSMSDeliveryLog).Methods("GET")
+	r.HandleFunc("/production/pad/stats", handleProductionPADStats).Methods("GET")
+	r.HandleFunc("/production/pad/check", handleProductionPADCheck).Methods("POST")
+	r.HandleFunc("/production/pad/attack-log", handleProductionPADAttackLog).Methods("GET")
+	r.HandleFunc("/production/ipfs/stats", handleProductionIPFSStats).Methods("GET")
+	r.HandleFunc("/production/ipfs/store", handleProductionIPFSStore).Methods("POST")
+	r.HandleFunc("/production/ipfs/verify", handleProductionIPFSVerify).Methods("GET")
+	r.HandleFunc("/production/fabric/stats", handleProductionFabricStats).Methods("GET")
+	r.HandleFunc("/production/fabric/submit", handleProductionFabricSubmit).Methods("POST")
+	r.HandleFunc("/production/fabric/verify-endorsements", handleProductionFabricVerifyEndorsements).Methods("GET")
+	r.HandleFunc("/production/ledger/stats", handleProductionTBStats).Methods("GET")
+	r.HandleFunc("/production/ledger/transfer", handleProductionTBCreateTransfer).Methods("POST")
+	r.HandleFunc("/production/ledger/journal", handleProductionTBJournal).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
