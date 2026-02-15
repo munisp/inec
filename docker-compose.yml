@@ -1,6 +1,94 @@
 version: "3.9"
 
 services:
+  # ── PostgreSQL Primary ──
+  pg-primary:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER:-inec_admin}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB:-inec_db}
+      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
+    volumes:
+      - pg-primary-data:/var/lib/postgresql/data
+      - ./config/postgres/primary-init.sh:/docker-entrypoint-initdb.d/01-replication.sh
+    command: postgres -c wal_level=replica -c max_wal_senders=5 -c max_replication_slots=5 -c hot_standby=on -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=8MB -c log_min_duration_statement=100
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inec_admin -d inec_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - inec-network
+
+  # ── PostgreSQL Replica (Streaming Replication) ──
+  pg-replica:
+    image: postgres:16-alpine
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER:-inec_admin}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB:-inec_db}
+      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - pg-replica-data:/var/lib/postgresql/data
+      - ./config/postgres/replica-entrypoint.sh:/replica-entrypoint.sh
+    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inec_admin -d inec_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - inec-network
+
+  # ── Pgpool-II (Connection Pooling + Load Balancing + HA Failover) ──
+  pgpool:
+    image: pgpool/pgpool-ii:4.5
+    ports:
+      - "5432:5432"
+      - "9898:9898"
+    environment:
+      PGPOOL_BACKEND_NODES: 0:pg-primary:5432,1:pg-replica:5432
+      PGPOOL_SR_CHECK_USER: replicator
+      PGPOOL_SR_CHECK_PASSWORD: ${REPLICATOR_PASSWORD}
+      PGPOOL_POSTGRES_USERNAME: ${PG_USER:-inec_admin}
+      PGPOOL_POSTGRES_PASSWORD: ${PG_PASSWORD}
+      PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USER:-pgpool_admin}
+      PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD}
+      PGPOOL_ENABLE_LOAD_BALANCING: "yes"
+      PGPOOL_ENABLE_STATEMENT_LOAD_BALANCING: "yes"
+      PGPOOL_NUM_INIT_CHILDREN: "64"
+      PGPOOL_MAX_POOL: "4"
+      PGPOOL_CHILD_LIFE_TIME: "300"
+      PGPOOL_CLIENT_IDLE_LIMIT: "300"
+      PGPOOL_ENABLE_POOL_HBA: "yes"
+      PGPOOL_AUTO_FAILBACK: "yes"
+    volumes:
+      - ./config/pgpool/pgpool.conf:/etc/pgpool-II/pgpool.conf
+      - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
+      - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U inec_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - inec-network
+
   # ── Core Application ──
   go-backend:
     build:
@@ -10,7 +98,12 @@ services:
       - "8088:8088"
     environment:
       - PORT=8088
-      - DB_PATH=/data/app.db
+      - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
+      - DATABASE_REPLICA_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pg-replica:5432/${PG_DB:-inec_db}?sslmode=disable
+      - PGPOOL_HOST=pgpool
+      - PGPOOL_PORT=5432
+      - PGPOOL_PCP_HOST=pgpool
+      - PGPOOL_PCP_PORT=9898
       - REDIS_URL=http://redis:6379
       - KAFKA_REST_URL=http://kafka-rest:8082
       - TEMPORAL_URL=http://temporal:7233
@@ -28,13 +121,22 @@ services:
     volumes:
       - app-data:/data
     depends_on:
-      - redis
-      - kafka
-      - temporal
-      - keycloak
-      - permify
-      - apisix
-      - lakehouse
+      pgpool:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+      temporal:
+        condition: service_started
+      keycloak:
+        condition: service_started
+      permify:
+        condition: service_started
+      apisix:
+        condition: service_started
+      lakehouse:
+        condition: service_started
     networks:
       - inec-network
 
@@ -234,6 +336,8 @@ services:
 
 volumes:
   app-data:
+  pg-primary-data:
+  pg-replica-data:
   redis-data:
   kafka-data:
   temporal-data:

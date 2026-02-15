@@ -50,6 +50,7 @@ func main() {
 	log.Println("Database connected")
 
 	initScaledDB(db)
+	initPgpool()
 	go periodicPoolStats()
 
 	initDB(db)
@@ -330,6 +331,16 @@ func main() {
 	r.HandleFunc("/ai-monitoring/misinformation", handleMisinformationAlerts).Methods("GET")
 	r.HandleFunc("/ai-monitoring/security-threats", handleSecurityThreats).Methods("GET")
 	r.HandleFunc("/ai-monitoring/cv-monitoring", handleCVMonitoring).Methods("GET")
+
+	// Pgpool-II Infrastructure
+	r.HandleFunc("/pgpool/status", handlePgpoolStatus).Methods("GET")
+	r.HandleFunc("/pgpool/nodes", handlePgpoolNodes).Methods("GET")
+	r.HandleFunc("/pgpool/health", handlePgpoolHealth).Methods("GET")
+	r.HandleFunc("/pgpool/config", handlePgpoolConfig).Methods("GET")
+	r.HandleFunc("/pgpool/metrics", handlePgpoolMetricsEndpoint).Methods("GET")
+	r.HandleFunc("/pgpool/replication", handlePgpoolReplicationStatus).Methods("GET")
+	r.HandleFunc("/pgpool/cache", handlePgpoolQueryCache).Methods("GET")
+	r.HandleFunc("/pgpool/dashboard", handlePgpoolDashboard).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
