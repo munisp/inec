@@ -61,6 +61,21 @@ type VoterRegistration struct {
 	PUCode      string `json:"pu_code" validate:"required"`
 }
 
+// ElectionCreate is the validated input for creating an election.
+type ElectionCreate struct {
+	Title        string `json:"title" validate:"required,min=3,max=200"`
+	ElectionType string `json:"election_type" validate:"required,oneof=presidential gubernatorial senatorial house_of_reps"`
+	ElectionDate string `json:"election_date" validate:"required"`
+	Description  string `json:"description" validate:"max=2000"`
+	Status       string `json:"status" validate:"omitempty,oneof=upcoming active completed cancelled"`
+}
+
+// UserPromotion is the validated input for promoting a user to a new role.
+type UserPromotion struct {
+	UserID int    `json:"user_id" validate:"required,gt=0"`
+	Role   string `json:"role" validate:"required,oneof=admin presiding_officer collation_officer observer public"`
+}
+
 // decodeAndValidate decodes JSON body into dest and validates it.
 func decodeAndValidate(r *http.Request, dest interface{}) error {
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {

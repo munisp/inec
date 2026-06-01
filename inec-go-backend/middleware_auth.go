@@ -27,7 +27,7 @@ var publicPaths = map[string]bool{
 // publicPrefixes are path prefixes accessible without auth.
 var publicPrefixes = []string{
 	"/public/",
-	"/middleware/",
+	"/api/v1/docs",
 }
 
 func isPublicPath(path string) bool {

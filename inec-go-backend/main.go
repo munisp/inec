@@ -145,39 +145,39 @@ func main() {
 	// Parties
 	r.HandleFunc("/parties", handleListParties).Methods("GET")
 
-	// BVAS
-	r.HandleFunc("/bvas/devices", handleListBVASDevices).Methods("GET")
-	r.HandleFunc("/bvas/devices/{id}", handleGetBVASDevice).Methods("GET")
-	r.HandleFunc("/bvas/devices", handleRegisterBVASDevice).Methods("POST")
-	r.HandleFunc("/bvas/devices/{id}", handleUpdateBVASDevice).Methods("PATCH")
-	r.HandleFunc("/bvas/accreditation", handleBVASAccreditation).Methods("POST")
-	r.HandleFunc("/bvas/accreditation/feed", handleBVASAccreditationFeed).Methods("GET")
-	r.HandleFunc("/bvas/accreditation/timeline", handleBVASAccreditationTimeline).Methods("GET")
-	r.HandleFunc("/bvas/reconciliation", handleBVASReconciliation).Methods("GET")
-	r.HandleFunc("/bvas/summary", handleBVASSummary).Methods("GET")
+	// BVAS — auth required
+	r.HandleFunc("/bvas/devices", readAuth(handleListBVASDevices)).Methods("GET")
+	r.HandleFunc("/bvas/devices/{id}", readAuth(handleGetBVASDevice)).Methods("GET")
+	r.HandleFunc("/bvas/devices", writeAuth(handleRegisterBVASDevice)).Methods("POST")
+	r.HandleFunc("/bvas/devices/{id}", writeAuth(handleUpdateBVASDevice)).Methods("PATCH")
+	r.HandleFunc("/bvas/accreditation", writeAuth(handleBVASAccreditation)).Methods("POST")
+	r.HandleFunc("/bvas/accreditation/feed", readAuth(handleBVASAccreditationFeed)).Methods("GET")
+	r.HandleFunc("/bvas/accreditation/timeline", readAuth(handleBVASAccreditationTimeline)).Methods("GET")
+	r.HandleFunc("/bvas/reconciliation", readAuth(handleBVASReconciliation)).Methods("GET")
+	r.HandleFunc("/bvas/summary", readAuth(handleBVASSummary)).Methods("GET")
 
-	// Ingestion Engine
-	r.HandleFunc("/ingestion/submit", handleIngestionSubmit).Methods("POST")
-	r.HandleFunc("/ingestion/batch", handleBatchUpload).Methods("POST")
-	r.HandleFunc("/ingestion/offline-sync", handleOfflineSync).Methods("POST")
-	r.HandleFunc("/ingestion/stats", handleIngestionStats).Methods("GET")
-	r.HandleFunc("/ingestion/jobs", handleIngestionJobs).Methods("GET")
-	r.HandleFunc("/ingestion/dead-letter", handleDeadLetterQueue).Methods("GET")
-	r.HandleFunc("/ingestion/dead-letter/{id}/reprocess", handleReprocessDLQ).Methods("POST")
-	r.HandleFunc("/ingestion/offline-queue", handleOfflineSyncQueue).Methods("GET")
+	// Ingestion Engine — auth required
+	r.HandleFunc("/ingestion/submit", writeAuth(handleIngestionSubmit)).Methods("POST")
+	r.HandleFunc("/ingestion/batch", writeAuth(handleBatchUpload)).Methods("POST")
+	r.HandleFunc("/ingestion/offline-sync", writeAuth(handleOfflineSync)).Methods("POST")
+	r.HandleFunc("/ingestion/stats", readAuth(handleIngestionStats)).Methods("GET")
+	r.HandleFunc("/ingestion/jobs", readAuth(handleIngestionJobs)).Methods("GET")
+	r.HandleFunc("/ingestion/dead-letter", readAuth(handleDeadLetterQueue)).Methods("GET")
+	r.HandleFunc("/ingestion/dead-letter/{id}/reprocess", adminOnly(handleReprocessDLQ)).Methods("POST")
+	r.HandleFunc("/ingestion/offline-queue", readAuth(handleOfflineSyncQueue)).Methods("GET")
 
-	// SMS/USSD Gateway
-	r.HandleFunc("/sms/verify", handleSMSVerify).Methods("POST")
-	r.HandleFunc("/sms/stats", handleSMSStats).Methods("GET")
-	r.HandleFunc("/ussd/gateway", handleUSSDGateway).Methods("POST")
+	// SMS/USSD Gateway — auth required
+	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
+	r.HandleFunc("/sms/stats", readAuth(handleSMSStats)).Methods("GET")
+	r.HandleFunc("/ussd/gateway", authRequired(handleUSSDGateway)).Methods("POST")
 
-	// AI Analytics (proxy to Python service)
-	r.HandleFunc("/ai/anomalies", handleAIAnomalies).Methods("GET")
-	r.HandleFunc("/ai/benford", handleAIBenford).Methods("GET")
-	r.HandleFunc("/ai/integrity", handleAIIntegrity).Methods("GET")
-	r.HandleFunc("/ai/methods", handleAIMethods).Methods("GET")
-	r.HandleFunc("/ai/proxy/anomalies", handleAIProxy).Methods("GET")
-	r.HandleFunc("/ai/fallback/anomalies", handleAIFallbackAnomalies).Methods("GET")
+	// AI Analytics (proxy to Python service) — auth required
+	r.HandleFunc("/ai/anomalies", readAuth(handleAIAnomalies)).Methods("GET")
+	r.HandleFunc("/ai/benford", readAuth(handleAIBenford)).Methods("GET")
+	r.HandleFunc("/ai/integrity", readAuth(handleAIIntegrity)).Methods("GET")
+	r.HandleFunc("/ai/methods", readAuth(handleAIMethods)).Methods("GET")
+	r.HandleFunc("/ai/proxy/anomalies", readAuth(handleAIProxy)).Methods("GET")
+	r.HandleFunc("/ai/fallback/anomalies", readAuth(handleAIFallbackAnomalies)).Methods("GET")
 
 	// Public API v1 (API key authenticated)
 	r.HandleFunc("/api/v1/docs", handlePublicAPIDocs).Methods("GET")
@@ -193,192 +193,192 @@ func main() {
 	r.HandleFunc("/api/v1/ai/anomalies", apiKeyAuth(handleAIAnomalies)).Methods("GET")
 	r.HandleFunc("/api/v1/ai/integrity", apiKeyAuth(handleAIIntegrity)).Methods("GET")
 
-	// EMS - Voter Registration
-	r.HandleFunc("/ems/voters", handleListVoters).Methods("GET")
-	r.HandleFunc("/ems/voters/stats", handleVoterStats).Methods("GET")
-	r.HandleFunc("/ems/voters/register", handleRegisterVoter).Methods("POST")
-	r.HandleFunc("/ems/voters/{vin}", handleGetVoter).Methods("GET")
-	r.HandleFunc("/ems/voters/{vin}/verify", handleVoterVerify).Methods("POST")
-	r.HandleFunc("/ems/voters/{vin}/transfer", handleVoterTransfer).Methods("POST")
-	r.HandleFunc("/ems/registration-centers", handleRegistrationCenters).Methods("GET")
+	// EMS - Voter Registration — auth required
+	r.HandleFunc("/ems/voters", readAuth(handleListVoters)).Methods("GET")
+	r.HandleFunc("/ems/voters/stats", readAuth(handleVoterStats)).Methods("GET")
+	r.HandleFunc("/ems/voters/register", writeAuth(handleRegisterVoter)).Methods("POST")
+	r.HandleFunc("/ems/voters/{vin}", readAuth(handleGetVoter)).Methods("GET")
+	r.HandleFunc("/ems/voters/{vin}/verify", writeAuth(handleVoterVerify)).Methods("POST")
+	r.HandleFunc("/ems/voters/{vin}/transfer", writeAuth(handleVoterTransfer)).Methods("POST")
+	r.HandleFunc("/ems/registration-centers", readAuth(handleRegistrationCenters)).Methods("GET")
 
-	// EMS - Workflow Engine
-	r.HandleFunc("/ems/workflows", handleListWorkflows).Methods("GET")
-	r.HandleFunc("/ems/workflows", handleCreateWorkflow).Methods("POST")
-	r.HandleFunc("/ems/workflows/{id}", handleGetWorkflow).Methods("GET")
-	r.HandleFunc("/ems/workflows/{id}/advance", handleAdvanceWorkflow).Methods("POST")
+	// EMS - Workflow Engine — auth required
+	r.HandleFunc("/ems/workflows", readAuth(handleListWorkflows)).Methods("GET")
+	r.HandleFunc("/ems/workflows", adminOnly(handleCreateWorkflow)).Methods("POST")
+	r.HandleFunc("/ems/workflows/{id}", readAuth(handleGetWorkflow)).Methods("GET")
+	r.HandleFunc("/ems/workflows/{id}/advance", writeAuth(handleAdvanceWorkflow)).Methods("POST")
 
-	// EMS - BVAS Sync Engine
-	r.HandleFunc("/ems/sync/submit", handleBVASSyncSubmit).Methods("POST")
-	r.HandleFunc("/ems/sync/heartbeat", handleBVASHeartbeat).Methods("POST")
-	r.HandleFunc("/ems/sync/stats", handleBVASSyncStats).Methods("GET")
-	r.HandleFunc("/ems/sync/queue", handleBVASSyncQueue).Methods("GET")
-	r.HandleFunc("/ems/sync/conflicts/{id}/resolve", handleBVASConflictResolve).Methods("POST")
+	// EMS - BVAS Sync Engine — auth required
+	r.HandleFunc("/ems/sync/submit", writeAuth(handleBVASSyncSubmit)).Methods("POST")
+	r.HandleFunc("/ems/sync/heartbeat", writeAuth(handleBVASHeartbeat)).Methods("POST")
+	r.HandleFunc("/ems/sync/stats", readAuth(handleBVASSyncStats)).Methods("GET")
+	r.HandleFunc("/ems/sync/queue", readAuth(handleBVASSyncQueue)).Methods("GET")
+	r.HandleFunc("/ems/sync/conflicts/{id}/resolve", adminOnly(handleBVASConflictResolve)).Methods("POST")
 
-	// EMS - Portal Integration Hub
-	r.HandleFunc("/ems/portals", handleListPortals).Methods("GET")
-	r.HandleFunc("/ems/portals/status", handlePortalHubStatus).Methods("GET")
-	r.HandleFunc("/ems/portals/{id}", handleGetPortal).Methods("GET")
-	r.HandleFunc("/ems/portals/{id}/sync", handlePortalSync).Methods("POST")
-	r.HandleFunc("/ems/portals/sync-log", handlePortalSyncLog).Methods("GET")
-	r.HandleFunc("/ems/portals/webhooks", handlePortalWebhooks).Methods("GET")
+	// EMS - Portal Integration Hub — auth required
+	r.HandleFunc("/ems/portals", readAuth(handleListPortals)).Methods("GET")
+	r.HandleFunc("/ems/portals/status", readAuth(handlePortalHubStatus)).Methods("GET")
+	r.HandleFunc("/ems/portals/{id}", readAuth(handleGetPortal)).Methods("GET")
+	r.HandleFunc("/ems/portals/{id}/sync", adminOnly(handlePortalSync)).Methods("POST")
+	r.HandleFunc("/ems/portals/sync-log", readAuth(handlePortalSyncLog)).Methods("GET")
+	r.HandleFunc("/ems/portals/webhooks", readAuth(handlePortalWebhooks)).Methods("GET")
 
-	// EMS - Data Validation Pipeline
-	r.HandleFunc("/ems/validation/rules", handleListValidationRules).Methods("GET")
-	r.HandleFunc("/ems/validation/validate", handleValidateEntity).Methods("POST")
-	r.HandleFunc("/ems/validation/stats", handleValidationStats).Methods("GET")
-	r.HandleFunc("/ems/validation/history", handleValidationHistory).Methods("GET")
+	// EMS - Data Validation Pipeline — auth required
+	r.HandleFunc("/ems/validation/rules", readAuth(handleListValidationRules)).Methods("GET")
+	r.HandleFunc("/ems/validation/validate", writeAuth(handleValidateEntity)).Methods("POST")
+	r.HandleFunc("/ems/validation/stats", readAuth(handleValidationStats)).Methods("GET")
+	r.HandleFunc("/ems/validation/history", readAuth(handleValidationHistory)).Methods("GET")
 
-	// EMS - Admin Console / Election Lifecycle
-	r.HandleFunc("/ems/elections/{election_id}/lifecycle", handleElectionLifecycle).Methods("GET")
-	r.HandleFunc("/ems/elections/{election_id}/transition", handleTransitionElection).Methods("POST")
-	r.HandleFunc("/ems/staff", handleListStaffAssignments).Methods("GET")
-	r.HandleFunc("/ems/staff", handleAssignStaff).Methods("POST")
-	r.HandleFunc("/ems/materials", handleListMaterials).Methods("GET")
-	r.HandleFunc("/ems/materials/{id}/dispatch", handleDispatchMaterial).Methods("PATCH")
-	r.HandleFunc("/ems/materials/stats", handleMaterialStats).Methods("GET")
-	r.HandleFunc("/ems/dashboard", handleEMSDashboard).Methods("GET")
+	// EMS - Admin Console / Election Lifecycle — auth required
+	r.HandleFunc("/ems/elections/{election_id}/lifecycle", readAuth(handleElectionLifecycle)).Methods("GET")
+	r.HandleFunc("/ems/elections/{election_id}/transition", adminOnly(handleTransitionElection)).Methods("POST")
+	r.HandleFunc("/ems/staff", readAuth(handleListStaffAssignments)).Methods("GET")
+	r.HandleFunc("/ems/staff", adminOnly(handleAssignStaff)).Methods("POST")
+	r.HandleFunc("/ems/materials", readAuth(handleListMaterials)).Methods("GET")
+	r.HandleFunc("/ems/materials/{id}/dispatch", adminOnly(handleDispatchMaterial)).Methods("PATCH")
+	r.HandleFunc("/ems/materials/stats", readAuth(handleMaterialStats)).Methods("GET")
+	r.HandleFunc("/ems/dashboard", readAuth(handleEMSDashboard)).Methods("GET")
 
-	// Phase 7 - Enhanced Biometric Verification
-	r.HandleFunc("/biometric/stats", handleBiometricStats).Methods("GET")
-	r.HandleFunc("/biometric/verify", handleBiometricVerify).Methods("POST")
-	r.HandleFunc("/biometric/profiles", handleBiometricProfiles).Methods("GET")
-	r.HandleFunc("/biometric/abis/duplicates", handleABISDuplicates).Methods("GET")
-	r.HandleFunc("/biometric/abis/{id}/resolve", handleABISResolve).Methods("POST")
+	// Phase 7 - Enhanced Biometric Verification — auth required
+	r.HandleFunc("/biometric/stats", readAuth(handleBiometricStats)).Methods("GET")
+	r.HandleFunc("/biometric/verify", writeAuth(handleBiometricVerify)).Methods("POST")
+	r.HandleFunc("/biometric/profiles", readAuth(handleBiometricProfiles)).Methods("GET")
+	r.HandleFunc("/biometric/abis/duplicates", readAuth(handleABISDuplicates)).Methods("GET")
+	r.HandleFunc("/biometric/abis/{id}/resolve", adminOnly(handleABISResolve)).Methods("POST")
 
-	// Biometric Engine - Production-Grade
-	r.HandleFunc("/biometric/engine/stats", handleBiometricEngineStats).Methods("GET")
-	r.HandleFunc("/biometric/engine/enroll", handleABISEnroll).Methods("POST")
-	r.HandleFunc("/biometric/engine/verify", handleABISVerify).Methods("POST")
-	r.HandleFunc("/biometric/engine/verify-multimodal", handleMultiModalVerify).Methods("POST")
-	r.HandleFunc("/biometric/engine/identify", handleABISIdentify).Methods("GET")
-	r.HandleFunc("/biometric/engine/pad-check", handlePADCheck).Methods("POST")
-	r.HandleFunc("/biometric/engine/pad-history", handlePADHistory).Methods("GET")
-	r.HandleFunc("/biometric/engine/dedup/jobs", handleDedupJobs).Methods("GET")
-	r.HandleFunc("/biometric/engine/dedup/start", handleDedupStart).Methods("POST")
-	r.HandleFunc("/biometric/engine/dedup/{job_id}/candidates", handleDedupCandidates).Methods("GET")
-	r.HandleFunc("/biometric/engine/dedup/resolve/{id}", handleDedupResolve).Methods("POST")
-	r.HandleFunc("/biometric/engine/vault/stats", handleVaultStats).Methods("GET")
-	r.HandleFunc("/biometric/engine/vault/rotate-key", handleVaultRotateKey).Methods("POST")
-	r.HandleFunc("/biometric/engine/vault/audit", handleVaultAudit).Methods("GET")
-	r.HandleFunc("/biometric/engine/devices", handleBVASDeviceCapabilities).Methods("GET")
-	r.HandleFunc("/biometric/engine/devices/register", handleBVASRegisterDevice).Methods("POST")
-	r.HandleFunc("/biometric/engine/capture-sessions", handleBVASCaptureSessions).Methods("GET")
-	r.HandleFunc("/biometric/engine/pipeline", handleABISPipelineStatus).Methods("GET")
-	r.HandleFunc("/biometric/engine/config", handleABISConfig).Methods("GET", "POST")
-	r.HandleFunc("/biometric/engine/template-integrity", handleTemplateIntegrity).Methods("GET")
+	// Biometric Engine - Production-Grade — auth required
+	r.HandleFunc("/biometric/engine/stats", readAuth(handleBiometricEngineStats)).Methods("GET")
+	r.HandleFunc("/biometric/engine/enroll", writeAuth(handleABISEnroll)).Methods("POST")
+	r.HandleFunc("/biometric/engine/verify", writeAuth(handleABISVerify)).Methods("POST")
+	r.HandleFunc("/biometric/engine/verify-multimodal", writeAuth(handleMultiModalVerify)).Methods("POST")
+	r.HandleFunc("/biometric/engine/identify", readAuth(handleABISIdentify)).Methods("GET")
+	r.HandleFunc("/biometric/engine/pad-check", writeAuth(handlePADCheck)).Methods("POST")
+	r.HandleFunc("/biometric/engine/pad-history", readAuth(handlePADHistory)).Methods("GET")
+	r.HandleFunc("/biometric/engine/dedup/jobs", readAuth(handleDedupJobs)).Methods("GET")
+	r.HandleFunc("/biometric/engine/dedup/start", adminOnly(handleDedupStart)).Methods("POST")
+	r.HandleFunc("/biometric/engine/dedup/{job_id}/candidates", readAuth(handleDedupCandidates)).Methods("GET")
+	r.HandleFunc("/biometric/engine/dedup/resolve/{id}", adminOnly(handleDedupResolve)).Methods("POST")
+	r.HandleFunc("/biometric/engine/vault/stats", adminOnly(handleVaultStats)).Methods("GET")
+	r.HandleFunc("/biometric/engine/vault/rotate-key", adminOnly(handleVaultRotateKey)).Methods("POST")
+	r.HandleFunc("/biometric/engine/vault/audit", adminOnly(handleVaultAudit)).Methods("GET")
+	r.HandleFunc("/biometric/engine/devices", readAuth(handleBVASDeviceCapabilities)).Methods("GET")
+	r.HandleFunc("/biometric/engine/devices/register", writeAuth(handleBVASRegisterDevice)).Methods("POST")
+	r.HandleFunc("/biometric/engine/capture-sessions", readAuth(handleBVASCaptureSessions)).Methods("GET")
+	r.HandleFunc("/biometric/engine/pipeline", readAuth(handleABISPipelineStatus)).Methods("GET")
+	r.HandleFunc("/biometric/engine/config", adminOnly(handleABISConfig)).Methods("GET", "POST")
+	r.HandleFunc("/biometric/engine/template-integrity", readAuth(handleTemplateIntegrity)).Methods("GET")
 
-	// Biometric Advanced - 15 Improvements
-	r.HandleFunc("/biometric/advanced/stats", handleAdvancedBiometricStats).Methods("GET")
-	r.HandleFunc("/biometric/advanced/hsm/stats", handleHSMStats).Methods("GET")
-	r.HandleFunc("/biometric/advanced/hsm/generate-key", handleHSMGenerateKey).Methods("POST")
-	r.HandleFunc("/biometric/advanced/sdk/providers", handleSDKProviders).Methods("GET")
-	r.HandleFunc("/biometric/advanced/aging", handleTemplateAging).Methods("GET")
-	r.HandleFunc("/biometric/advanced/cancelable", handleCancelableStatus).Methods("GET")
-	r.HandleFunc("/biometric/advanced/cancelable/revoke", handleCancelableRevoke).Methods("POST")
-	r.HandleFunc("/biometric/advanced/threshold-tuning", handleThresholdTuning).Methods("GET", "POST")
-	r.HandleFunc("/biometric/advanced/distributed-dedup", handleDistributedDedup).Methods("POST")
-	r.HandleFunc("/biometric/advanced/pad-models", handlePADModels).Methods("GET")
-	r.HandleFunc("/biometric/advanced/pad-models/update", handlePADModelUpdate).Methods("POST")
-	r.HandleFunc("/biometric/advanced/quality-gateway", handleQualityGateway).Methods("GET", "POST")
-	r.HandleFunc("/biometric/advanced/offline-queue", handleOfflineQueue).Methods("GET")
-	r.HandleFunc("/biometric/advanced/offline-queue/sync", handleBioOfflineSync).Methods("POST")
-	r.HandleFunc("/biometric/advanced/score-normalize", handleScoreNormalize).Methods("POST")
-	r.HandleFunc("/biometric/advanced/score-cohorts", handleScoreCohorts).Methods("GET")
-	r.HandleFunc("/biometric/advanced/nist-benchmark", handleNISTBenchmark).Methods("GET", "POST")
-	r.HandleFunc("/biometric/advanced/audit/timeline", handleBioAuditTimeline).Methods("GET")
-	r.HandleFunc("/biometric/advanced/audit/summary", handleBioAuditSummary).Methods("GET")
-	r.HandleFunc("/biometric/advanced/kiosk/start", handleKioskStart).Methods("POST")
-	r.HandleFunc("/biometric/advanced/kiosk/{session_id}/advance", handleKioskAdvance).Methods("POST")
-	r.HandleFunc("/biometric/advanced/kiosk/sessions", handleKioskSessions).Methods("GET")
-	r.HandleFunc("/biometric/advanced/multi-finger/enroll", handleMultiFingerEnroll).Methods("POST")
-	r.HandleFunc("/biometric/advanced/multi-finger", handleMultiFingerStatus).Methods("GET")
-	r.HandleFunc("/biometric/advanced/privacy-match", handlePrivacyMatch).Methods("POST")
-	r.HandleFunc("/biometric/advanced/privacy-stats", handlePrivacyStats).Methods("GET")
+	// Biometric Advanced - 15 Improvements — auth required
+	r.HandleFunc("/biometric/advanced/stats", readAuth(handleAdvancedBiometricStats)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/hsm/stats", adminOnly(handleHSMStats)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/hsm/generate-key", adminOnly(handleHSMGenerateKey)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/sdk/providers", readAuth(handleSDKProviders)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/aging", readAuth(handleTemplateAging)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/cancelable", readAuth(handleCancelableStatus)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/cancelable/revoke", adminOnly(handleCancelableRevoke)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/threshold-tuning", adminOnly(handleThresholdTuning)).Methods("GET", "POST")
+	r.HandleFunc("/biometric/advanced/distributed-dedup", adminOnly(handleDistributedDedup)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/pad-models", readAuth(handlePADModels)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/pad-models/update", adminOnly(handlePADModelUpdate)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/quality-gateway", readAuth(handleQualityGateway)).Methods("GET", "POST")
+	r.HandleFunc("/biometric/advanced/offline-queue", readAuth(handleOfflineQueue)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/offline-queue/sync", writeAuth(handleBioOfflineSync)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/score-normalize", writeAuth(handleScoreNormalize)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/score-cohorts", readAuth(handleScoreCohorts)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/nist-benchmark", adminOnly(handleNISTBenchmark)).Methods("GET", "POST")
+	r.HandleFunc("/biometric/advanced/audit/timeline", readAuth(handleBioAuditTimeline)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/audit/summary", readAuth(handleBioAuditSummary)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/kiosk/start", writeAuth(handleKioskStart)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/kiosk/{session_id}/advance", writeAuth(handleKioskAdvance)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/kiosk/sessions", readAuth(handleKioskSessions)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/multi-finger/enroll", writeAuth(handleMultiFingerEnroll)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/multi-finger", readAuth(handleMultiFingerStatus)).Methods("GET")
+	r.HandleFunc("/biometric/advanced/privacy-match", writeAuth(handlePrivacyMatch)).Methods("POST")
+	r.HandleFunc("/biometric/advanced/privacy-stats", readAuth(handlePrivacyStats)).Methods("GET")
 
-	// Phase 7 - Blockchain-Enhanced Result Transmission
-	r.HandleFunc("/blockchain/stats", handleBlockchainStats).Methods("GET")
-	r.HandleFunc("/blockchain/chain", handleBlockchainChain).Methods("GET")
-	r.HandleFunc("/blockchain/contracts", handleSmartContracts).Methods("GET")
-	r.HandleFunc("/blockchain/verify/{result_id}", handleBlockchainVerifyResult).Methods("GET")
-	r.HandleFunc("/blockchain/audit", handleBlockchainAuditTrail).Methods("GET")
+	// Phase 7 - Blockchain-Enhanced Result Transmission — auth required
+	r.HandleFunc("/blockchain/stats", readAuth(handleBlockchainStats)).Methods("GET")
+	r.HandleFunc("/blockchain/chain", readAuth(handleBlockchainChain)).Methods("GET")
+	r.HandleFunc("/blockchain/contracts", readAuth(handleSmartContracts)).Methods("GET")
+	r.HandleFunc("/blockchain/verify/{result_id}", readAuth(handleBlockchainVerifyResult)).Methods("GET")
+	r.HandleFunc("/blockchain/audit", readAuth(handleBlockchainAuditTrail)).Methods("GET")
 
-	// Production Blockchain & Ledger
-	r.HandleFunc("/blockchain/production/stats", handleBlockchainProductionStats).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/network", handleFabricNetworkStats).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/blocks", handleFabricBlocks).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/transactions", handleFabricTransactions).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/verify-chain", handleFabricVerifyChain).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/submit", handleFabricSubmitTx).Methods("POST")
-	r.HandleFunc("/blockchain/chaincode/validate-result", handleChaincodeValidateResult).Methods("POST")
-	r.HandleFunc("/blockchain/chaincode/aggregate", handleChaincodeAggregate).Methods("POST")
-	r.HandleFunc("/blockchain/ipfs/stats", handleIPFSStats).Methods("GET")
-	r.HandleFunc("/blockchain/ipfs/store", handleIPFSStore).Methods("POST")
-	r.HandleFunc("/blockchain/ipfs/verify", handleIPFSVerify).Methods("GET")
-	r.HandleFunc("/blockchain/ipfs/objects", handleIPFSObjects).Methods("GET")
-	r.HandleFunc("/blockchain/ledger/stats", handlePersistentTBStats).Methods("GET")
-	r.HandleFunc("/blockchain/ledger/accounts", handlePersistentTBAccounts).Methods("GET")
-	r.HandleFunc("/blockchain/ledger/transfers", handlePersistentTBTransfers).Methods("GET")
-	r.HandleFunc("/blockchain/ledger/transfer", handlePersistentTBCreateTransfer).Methods("POST")
-	r.HandleFunc("/blockchain/ledger/transfer/post", handlePersistentTBPostTransfer).Methods("POST")
-	r.HandleFunc("/blockchain/merkle/build", handleMerkleTreeBuild).Methods("POST")
-	r.HandleFunc("/blockchain/merkle/trees", handleMerkleTreeList).Methods("GET")
+	// Production Blockchain & Ledger — auth required
+	r.HandleFunc("/blockchain/production/stats", readAuth(handleBlockchainProductionStats)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/network", readAuth(handleFabricNetworkStats)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/blocks", readAuth(handleFabricBlocks)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/transactions", readAuth(handleFabricTransactions)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/verify-chain", readAuth(handleFabricVerifyChain)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/submit", adminOnly(handleFabricSubmitTx)).Methods("POST")
+	r.HandleFunc("/blockchain/chaincode/validate-result", writeAuth(handleChaincodeValidateResult)).Methods("POST")
+	r.HandleFunc("/blockchain/chaincode/aggregate", writeAuth(handleChaincodeAggregate)).Methods("POST")
+	r.HandleFunc("/blockchain/ipfs/stats", readAuth(handleIPFSStats)).Methods("GET")
+	r.HandleFunc("/blockchain/ipfs/store", writeAuth(handleIPFSStore)).Methods("POST")
+	r.HandleFunc("/blockchain/ipfs/verify", readAuth(handleIPFSVerify)).Methods("GET")
+	r.HandleFunc("/blockchain/ipfs/objects", readAuth(handleIPFSObjects)).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/stats", readAuth(handlePersistentTBStats)).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/accounts", readAuth(handlePersistentTBAccounts)).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/transfers", readAuth(handlePersistentTBTransfers)).Methods("GET")
+	r.HandleFunc("/blockchain/ledger/transfer", adminOnly(handlePersistentTBCreateTransfer)).Methods("POST")
+	r.HandleFunc("/blockchain/ledger/transfer/post", adminOnly(handlePersistentTBPostTransfer)).Methods("POST")
+	r.HandleFunc("/blockchain/merkle/build", adminOnly(handleMerkleTreeBuild)).Methods("POST")
+	r.HandleFunc("/blockchain/merkle/trees", readAuth(handleMerkleTreeList)).Methods("GET")
 
-	// Phase 7 - Training & Capacity Building
-	r.HandleFunc("/training/courses", handleTrainingCourses).Methods("GET")
-	r.HandleFunc("/training/stats", handleTrainingStats).Methods("GET")
-	r.HandleFunc("/training/enrollments", handleTrainingEnrollments).Methods("GET")
-	r.HandleFunc("/training/certificates", handleTrainingCertificates).Methods("GET")
-	r.HandleFunc("/training/vr-scenarios", handleVRScenarios).Methods("GET")
+	// Phase 7 - Training & Capacity Building — auth required
+	r.HandleFunc("/training/courses", readAuth(handleTrainingCourses)).Methods("GET")
+	r.HandleFunc("/training/stats", readAuth(handleTrainingStats)).Methods("GET")
+	r.HandleFunc("/training/enrollments", readAuth(handleTrainingEnrollments)).Methods("GET")
+	r.HandleFunc("/training/certificates", readAuth(handleTrainingCertificates)).Methods("GET")
+	r.HandleFunc("/training/vr-scenarios", readAuth(handleVRScenarios)).Methods("GET")
 
-	// Phase 7 - Stakeholder Engagement
-	r.HandleFunc("/stakeholders/stats", handleStakeholderStats).Methods("GET")
-	r.HandleFunc("/stakeholders", handleListStakeholders).Methods("GET")
-	r.HandleFunc("/stakeholders/incidents", handleStakeholderIncidents).Methods("GET")
-	r.HandleFunc("/stakeholders/grievances", handleListGrievances).Methods("GET")
-	r.HandleFunc("/stakeholders/notifications", handlePushNotifications).Methods("GET")
-	r.HandleFunc("/stakeholders/notifications", handleSendNotification).Methods("POST")
+	// Phase 7 - Stakeholder Engagement — auth required
+	r.HandleFunc("/stakeholders/stats", readAuth(handleStakeholderStats)).Methods("GET")
+	r.HandleFunc("/stakeholders", readAuth(handleListStakeholders)).Methods("GET")
+	r.HandleFunc("/stakeholders/incidents", readAuth(handleStakeholderIncidents)).Methods("GET")
+	r.HandleFunc("/stakeholders/grievances", readAuth(handleListGrievances)).Methods("GET")
+	r.HandleFunc("/stakeholders/notifications", readAuth(handlePushNotifications)).Methods("GET")
+	r.HandleFunc("/stakeholders/notifications", adminOnly(handleSendNotification)).Methods("POST")
 
-	// Phase 7 - AI Election Monitoring & Analytics
-	r.HandleFunc("/ai-monitoring/dashboard", handleAIMonitoringDashboard).Methods("GET")
-	r.HandleFunc("/ai-monitoring/predictions", handleAIPredictions).Methods("GET")
-	r.HandleFunc("/ai-monitoring/sentiment", handleSentimentAnalysis).Methods("GET")
-	r.HandleFunc("/ai-monitoring/misinformation", handleMisinformationAlerts).Methods("GET")
-	r.HandleFunc("/ai-monitoring/security-threats", handleSecurityThreats).Methods("GET")
-	r.HandleFunc("/ai-monitoring/cv-monitoring", handleCVMonitoring).Methods("GET")
+	// Phase 7 - AI Election Monitoring & Analytics — auth required
+	r.HandleFunc("/ai-monitoring/dashboard", readAuth(handleAIMonitoringDashboard)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/predictions", readAuth(handleAIPredictions)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/sentiment", readAuth(handleSentimentAnalysis)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/misinformation", readAuth(handleMisinformationAlerts)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/security-threats", readAuth(handleSecurityThreats)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/cv-monitoring", readAuth(handleCVMonitoring)).Methods("GET")
 
-	// Pgpool-II Infrastructure
-	r.HandleFunc("/pgpool/status", handlePgpoolStatus).Methods("GET")
-	r.HandleFunc("/pgpool/nodes", handlePgpoolNodes).Methods("GET")
-	r.HandleFunc("/pgpool/health", handlePgpoolHealth).Methods("GET")
-	r.HandleFunc("/pgpool/config", handlePgpoolConfig).Methods("GET")
-	r.HandleFunc("/pgpool/metrics", handlePgpoolMetricsEndpoint).Methods("GET")
-	r.HandleFunc("/pgpool/replication", handlePgpoolReplicationStatus).Methods("GET")
-	r.HandleFunc("/pgpool/cache", handlePgpoolQueryCache).Methods("GET")
-	r.HandleFunc("/pgpool/dashboard", handlePgpoolDashboard).Methods("GET")
+	// Pgpool-II Infrastructure — admin only
+	r.HandleFunc("/pgpool/status", adminOnly(handlePgpoolStatus)).Methods("GET")
+	r.HandleFunc("/pgpool/nodes", adminOnly(handlePgpoolNodes)).Methods("GET")
+	r.HandleFunc("/pgpool/health", adminOnly(handlePgpoolHealth)).Methods("GET")
+	r.HandleFunc("/pgpool/config", adminOnly(handlePgpoolConfig)).Methods("GET")
+	r.HandleFunc("/pgpool/metrics", adminOnly(handlePgpoolMetricsEndpoint)).Methods("GET")
+	r.HandleFunc("/pgpool/replication", adminOnly(handlePgpoolReplicationStatus)).Methods("GET")
+	r.HandleFunc("/pgpool/cache", adminOnly(handlePgpoolQueryCache)).Methods("GET")
+	r.HandleFunc("/pgpool/dashboard", adminOnly(handlePgpoolDashboard)).Methods("GET")
 
-	// Production Upgrades
-	r.HandleFunc("/production/status", handleProductionUpgradeStatus).Methods("GET")
-	r.HandleFunc("/production/hsm/stats", handleProductionHSMStats).Methods("GET")
-	r.HandleFunc("/production/hsm/generate-key", handleProductionHSMGenerateKey).Methods("POST")
-	r.HandleFunc("/production/hsm/sign", handleProductionHSMSign).Methods("POST")
-	r.HandleFunc("/production/hsm/verify", handleProductionHSMVerify).Methods("POST")
-	r.HandleFunc("/production/hsm/rotate", handleProductionHSMRotate).Methods("POST")
-	r.HandleFunc("/production/sms/stats", handleProductionSMSGatewayStats).Methods("GET")
-	r.HandleFunc("/production/sms/send", handleProductionSMSSend).Methods("POST")
-	r.HandleFunc("/production/sms/delivery-log", handleProductionSMSDeliveryLog).Methods("GET")
-	r.HandleFunc("/production/pad/stats", handleProductionPADStats).Methods("GET")
-	r.HandleFunc("/production/pad/check", handleProductionPADCheck).Methods("POST")
-	r.HandleFunc("/production/pad/attack-log", handleProductionPADAttackLog).Methods("GET")
-	r.HandleFunc("/production/ipfs/stats", handleProductionIPFSStats).Methods("GET")
-	r.HandleFunc("/production/ipfs/store", handleProductionIPFSStore).Methods("POST")
-	r.HandleFunc("/production/ipfs/verify", handleProductionIPFSVerify).Methods("GET")
-	r.HandleFunc("/production/fabric/stats", handleProductionFabricStats).Methods("GET")
-	r.HandleFunc("/production/fabric/submit", handleProductionFabricSubmit).Methods("POST")
-	r.HandleFunc("/production/fabric/verify-endorsements", handleProductionFabricVerifyEndorsements).Methods("GET")
-	r.HandleFunc("/production/ledger/stats", handleProductionTBStats).Methods("GET")
-	r.HandleFunc("/production/ledger/transfer", handleProductionTBCreateTransfer).Methods("POST")
-	r.HandleFunc("/production/ledger/journal", handleProductionTBJournal).Methods("GET")
+	// Production Upgrades — admin only for write, auth for read
+	r.HandleFunc("/production/status", readAuth(handleProductionUpgradeStatus)).Methods("GET")
+	r.HandleFunc("/production/hsm/stats", adminOnly(handleProductionHSMStats)).Methods("GET")
+	r.HandleFunc("/production/hsm/generate-key", adminOnly(handleProductionHSMGenerateKey)).Methods("POST")
+	r.HandleFunc("/production/hsm/sign", adminOnly(handleProductionHSMSign)).Methods("POST")
+	r.HandleFunc("/production/hsm/verify", adminOnly(handleProductionHSMVerify)).Methods("POST")
+	r.HandleFunc("/production/hsm/rotate", adminOnly(handleProductionHSMRotate)).Methods("POST")
+	r.HandleFunc("/production/sms/stats", readAuth(handleProductionSMSGatewayStats)).Methods("GET")
+	r.HandleFunc("/production/sms/send", adminOnly(handleProductionSMSSend)).Methods("POST")
+	r.HandleFunc("/production/sms/delivery-log", readAuth(handleProductionSMSDeliveryLog)).Methods("GET")
+	r.HandleFunc("/production/pad/stats", readAuth(handleProductionPADStats)).Methods("GET")
+	r.HandleFunc("/production/pad/check", writeAuth(handleProductionPADCheck)).Methods("POST")
+	r.HandleFunc("/production/pad/attack-log", readAuth(handleProductionPADAttackLog)).Methods("GET")
+	r.HandleFunc("/production/ipfs/stats", readAuth(handleProductionIPFSStats)).Methods("GET")
+	r.HandleFunc("/production/ipfs/store", adminOnly(handleProductionIPFSStore)).Methods("POST")
+	r.HandleFunc("/production/ipfs/verify", readAuth(handleProductionIPFSVerify)).Methods("GET")
+	r.HandleFunc("/production/fabric/stats", readAuth(handleProductionFabricStats)).Methods("GET")
+	r.HandleFunc("/production/fabric/submit", adminOnly(handleProductionFabricSubmit)).Methods("POST")
+	r.HandleFunc("/production/fabric/verify-endorsements", readAuth(handleProductionFabricVerifyEndorsements)).Methods("GET")
+	r.HandleFunc("/production/ledger/stats", readAuth(handleProductionTBStats)).Methods("GET")
+	r.HandleFunc("/production/ledger/transfer", adminOnly(handleProductionTBCreateTransfer)).Methods("POST")
+	r.HandleFunc("/production/ledger/journal", readAuth(handleProductionTBJournal)).Methods("GET")
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
@@ -419,26 +419,30 @@ func main() {
 	r.HandleFunc("/middleware/waf/stats", handleWAFStats).Methods("GET")
 	r.HandleFunc("/middleware/waf/blocklist", handleWAFBlocklist).Methods("GET", "POST")
 
-	// INEC Domain Logic — Form Validation, Collation, Reconciliation
-	r.HandleFunc("/inec/ec8a/submit", handleSubmitEC8A).Methods("POST")
-	r.HandleFunc("/inec/collation", handleHierarchicalCollation).Methods("GET")
-	r.HandleFunc("/inec/reconciliation/ballot", handleBallotReconciliation).Methods("GET")
-	r.HandleFunc("/inec/reconciliation/dual-ledger", handleDualLedgerReconciliation).Methods("GET")
+	// INEC Domain Logic — Form Validation, Collation, Reconciliation — auth required
+	r.HandleFunc("/inec/ec8a/submit", writeAuth(handleSubmitEC8A)).Methods("POST")
+	r.HandleFunc("/inec/collation", readAuth(handleHierarchicalCollation)).Methods("GET")
+	r.HandleFunc("/inec/reconciliation/ballot", readAuth(handleBallotReconciliation)).Methods("GET")
+	r.HandleFunc("/inec/reconciliation/dual-ledger", readAuth(handleDualLedgerReconciliation)).Methods("GET")
+
+	// Admin user management
+	r.HandleFunc("/admin/users/promote", handlePromoteUser).Methods("POST")
 
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")
 
-	// Middleware chain: request ID → access log → metrics → CORS → auth → security → WAF → rate limit → gzip → size limit
+	// Middleware chain: request ID → access log → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
 	handler := requestIDMiddleware(
 		accessLogMiddleware(
 			metricsMiddleware(
 				corsProductionMiddleware(
 					jwtAuthMiddleware(
-						securityHeaders(
-							wafMiddleware(
-								requestSizeLimit(
-									rateLimitMiddleware(
-						gzipMiddleware(r))))))))))
+						csrfMiddleware(
+							enhancedSecurityHeaders(
+								wafMiddleware(
+									requestSizeLimit(
+										rateLimitMiddleware(
+							gzipMiddleware(r)))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -574,7 +578,7 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		{"/geo/reports", 5},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
+		ip := stripPort(r.RemoteAddr)
 		for _, l := range limits {
 			if strings.HasPrefix(r.URL.Path, l.prefix) {
 				if !rateLimiter.allow(ip+":"+l.prefix, l.limit, time.Second) {

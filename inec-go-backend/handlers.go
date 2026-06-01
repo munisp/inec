@@ -66,6 +66,23 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "public"
 	}
+	// Security: restrict self-registration to safe roles only
+	if !allowedSelfRegRoles[req.Role] {
+		writeError(w, 403, "self-registration is restricted to 'public' and 'observer' roles; elevated roles require admin assignment")
+		return
+	}
+	if len(req.Username) < 3 || len(req.Username) > 64 {
+		writeError(w, 400, "username must be 3-64 characters")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeError(w, 400, "password must be at least 8 characters")
+		return
+	}
+	if len(req.FullName) < 2 {
+		writeError(w, 400, "full_name is required")
+		return
+	}
 	var exists int
 	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM users WHERE username=?", req.Username).Scan(&exists)
 	if exists > 0 {
@@ -137,12 +154,20 @@ func handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		Description  *string `json:"description"`
 		Status       string  `json:"status"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.Title == "" || req.ElectionType == "" || req.ElectionDate == "" {
+		writeError(w, 400, "title, election_type, and election_date are required")
+		return
+	}
 	if req.Status == "" {
 		req.Status = "upcoming"
 	}
 	lid := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status, description) VALUES (?,?,?,?,?)",
 		req.Title, req.ElectionType, req.ElectionDate, req.Status, req.Description)
+	auditWrite("ELECTION_CREATED", "election", fmt.Sprintf("%d", lid), r, map[string]interface{}{"title": req.Title})
 	writeJSON(w, 200, M{"id": lid, "message": "Election created"})
 }
 
@@ -153,7 +178,10 @@ func handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 	}
 	id := mux.Vars(r)["id"]
 	var req map[string]interface{}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	var updates []string
 	var vals []interface{}
 	if v, ok := req["title"]; ok && v != nil {
@@ -175,6 +203,7 @@ func handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 	updates = append(updates, "updated_at=CURRENT_TIMESTAMP")
 	vals = append(vals, id)
 	dbExecCtx(r.Context(), "UPDATE elections SET "+strings.Join(updates, ",")+` WHERE id=?`, vals...)
+	auditWrite("ELECTION_UPDATED", "election", id, r, req)
 	writeJSON(w, 200, M{"message": "Election updated"})
 }
 
@@ -249,7 +278,14 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		AccreditedVoters int `json:"accredited_voters"`
 		RejectedVotes    int `json:"rejected_votes"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON body")
+		return
+	}
+	if req.ElectionID == 0 || req.PollingUnitCode == "" || len(req.PartyScores) == 0 {
+		writeError(w, 400, "election_id, polling_unit_code, and party_scores are required")
+		return
+	}
 
 	var eExists int
 	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM elections WHERE id=? AND status='active'", req.ElectionID).Scan(&eExists)
@@ -306,7 +342,13 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		tbID = ptbID
 	}
 
-	resultID := insertReturningID(db, `INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
+	// Use transaction for atomic result + party scores insert
+	tx, txErr := db.BeginTx(r.Context(), nil)
+	if txErr != nil {
+		writeError(w, 500, "database transaction error")
+		return
+	}
+	resultID := insertReturningID(tx, `INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
 		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -315,7 +357,15 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		ec8aHash, tbID, "PENDING", "PENDING")
 
 	for _, ps := range req.PartyScores {
-		dbExecCtx(r.Context(), "INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)", resultID, ps.PartyCode, ps.Votes)
+		if _, err := tx.Exec(convertPlaceholders("INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)"), resultID, ps.PartyCode, ps.Votes); err != nil {
+			tx.Rollback()
+			writeError(w, 500, "failed to save party scores")
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, 500, "failed to commit result")
+		return
 	}
 
 	logAudit("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", resultID), userID,
@@ -353,8 +403,8 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "Result not found")
 		return
 	}
-	if status != "pending" {
-		writeError(w, 400, fmt.Sprintf("Result is already %s", status))
+	if !canTransition(status, "validated") {
+		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'validated'; allowed transitions: %v", status, validTransitions[status]))
 		return
 	}
 	userSub, _ := user["sub"].(string)
@@ -391,8 +441,8 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "Result not found")
 		return
 	}
-	if status != "pending" && status != "validated" {
-		writeError(w, 400, fmt.Sprintf("Cannot finalize result with status %s", status))
+	if !canTransition(status, "finalized") {
+		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'finalized'; only 'validated' results can be finalized", status))
 		return
 	}
 	userSub, _ := user["sub"].(string)
@@ -461,9 +511,13 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := mux.Vars(r)["id"]
-	var puCode string
-	if err := dbQueryRowCtx(r.Context(), "SELECT polling_unit_code FROM results WHERE id=?", id).Scan(&puCode); err != nil {
+	var status, puCode string
+	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
 		writeError(w, 404, "Result not found")
+		return
+	}
+	if !canTransition(status, "disputed") {
+		writeError(w, 400, fmt.Sprintf("cannot dispute result with status '%s'; already in terminal state", status))
 		return
 	}
 	userSub, _ := user["sub"].(string)
@@ -1337,7 +1391,14 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 		Description     string  `json:"description"`
 		Severity        string  `json:"severity"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.IncidentType == "" || req.Description == "" {
+		writeError(w, 400, "incident_type and description are required")
+		return
+	}
 	if req.Severity == "" {
 		req.Severity = "medium"
 	}
@@ -1345,6 +1406,7 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 	uid, _ := strconv.Atoi(userSub)
 	lid := insertReturningID(db, "INSERT INTO incidents (election_id, polling_unit_code, reported_by, incident_type, description, severity) VALUES (?,?,?,?,?,?)",
 		req.ElectionID, req.PollingUnitCode, uid, req.IncidentType, req.Description, req.Severity)
+	auditWrite("INCIDENT_CREATED", "incident", fmt.Sprintf("%d", lid), r, map[string]interface{}{"type": req.IncidentType, "severity": req.Severity})
 
 	go func() {
 		ctx := context.Background()
@@ -1390,15 +1452,23 @@ func handleUpdateIncident(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Status == "" {
 		req.Status = r.URL.Query().Get("status")
+	}
+	if req.Status == "" {
+		writeError(w, 400, "status is required")
+		return
 	}
 	resolved := ""
 	if req.Status == "resolved" {
 		resolved = ", resolved_at=CURRENT_TIMESTAMP"
 	}
 	dbExecCtx(r.Context(), "UPDATE incidents SET status=?"+resolved+" WHERE id=?", req.Status, id)
+	auditWrite("INCIDENT_UPDATED", "incident", id, r, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"message": "Incident updated"})
 }
 
