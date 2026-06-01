@@ -339,8 +339,12 @@ func wafMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Read request body for POST/PUT/PATCH inspection (limit to 64KB)
+		// Skip body inspection for multipart/form-data (file uploads contain binary
+		// content that triggers false positives on pattern matching).
 		var bodyStr string
-		if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" {
+		ct := r.Header.Get("Content-Type")
+		isMultipart := strings.HasPrefix(ct, "multipart/form-data")
+		if !isMultipart && (r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH") {
 			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 65536))
 			r.Body.Close()
 			bodyStr = string(bodyBytes)
