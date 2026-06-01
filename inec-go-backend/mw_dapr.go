@@ -23,7 +23,7 @@ type DaprClient interface {
 
 type daprHTTPClient struct {
 	baseURL string
-	client  *http.Client
+	client  *ResilientHTTPClient
 }
 
 func (d *daprHTTPClient) PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error {
@@ -96,7 +96,7 @@ func (d *daprHTTPClient) Status() MWStatus {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", d.baseURL+"/v1.0/healthz", nil)
 	lat, err := measureLatency(func() error {
-		resp, e := d.client.Do(req)
+		resp, e := d.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -198,7 +198,7 @@ func initDaprClient() DaprClient {
 	if daprURL != "" {
 		client := &daprHTTPClient{
 			baseURL: daprURL,
-			client:  &http.Client{Timeout: 5 * time.Second},
+			client:  NewResilientHTTPClient("dapr"),
 		}
 		s := client.Status()
 		if s.Connected {

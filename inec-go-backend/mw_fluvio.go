@@ -29,7 +29,7 @@ type FluvioClient interface {
 
 type fluvioHTTPClient struct {
 	baseURL string
-	client  *http.Client
+	client  *ResilientHTTPClient
 }
 
 func (f *fluvioHTTPClient) Produce(ctx context.Context, topic string, record FluvioRecord) error {
@@ -77,7 +77,7 @@ func (f *fluvioHTTPClient) Status() MWStatus {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", f.baseURL+"/api/v1/topics", nil)
 	lat, err := measureLatency(func() error {
-		resp, e := f.client.Do(req)
+		resp, e := f.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -160,7 +160,7 @@ func initFluvioClient() FluvioClient {
 	if fluvioURL != "" {
 		client := &fluvioHTTPClient{
 			baseURL: fluvioURL,
-			client:  &http.Client{Timeout: 5 * time.Second},
+			client:  NewResilientHTTPClient("fluvio"),
 		}
 		s := client.Status()
 		if s.Connected {

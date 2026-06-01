@@ -50,12 +50,15 @@ type TigerBeetleClient interface {
 
 type tbHTTPClient struct {
 	baseURL string
-	client  *http.Client
+	client  *ResilientHTTPClient
 }
 
 func (t *tbHTTPClient) CreateTransfer(ctx context.Context, transfer TBTransfer) (*TBTransfer, error) {
 	body, _ := json.Marshal(transfer)
-	req, _ := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/transfers", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/transfers", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -68,7 +71,10 @@ func (t *tbHTTPClient) CreateTransfer(ctx context.Context, transfer TBTransfer) 
 }
 
 func (t *tbHTTPClient) GetTransfer(ctx context.Context, transferID string) (*TBTransfer, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET", t.baseURL+"/transfers/"+transferID, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", t.baseURL+"/transfers/"+transferID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -80,7 +86,10 @@ func (t *tbHTTPClient) GetTransfer(ctx context.Context, transferID string) (*TBT
 }
 
 func (t *tbHTTPClient) VoidTransfer(ctx context.Context, transferID string) error {
-	req, _ := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/transfers/"+transferID+"/void", nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/transfers/"+transferID+"/void", nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return err
@@ -90,7 +99,10 @@ func (t *tbHTTPClient) VoidTransfer(ctx context.Context, transferID string) erro
 }
 
 func (t *tbHTTPClient) PostTransfer(ctx context.Context, transferID string) error {
-	req, _ := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/transfers/"+transferID+"/post", nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/transfers/"+transferID+"/post", nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return err
@@ -101,7 +113,10 @@ func (t *tbHTTPClient) PostTransfer(ctx context.Context, transferID string) erro
 
 func (t *tbHTTPClient) CreateAccount(ctx context.Context, account TBAccount) error {
 	body, _ := json.Marshal(account)
-	req, _ := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/accounts", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/accounts", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -112,7 +127,10 @@ func (t *tbHTTPClient) CreateAccount(ctx context.Context, account TBAccount) err
 }
 
 func (t *tbHTTPClient) GetAccount(ctx context.Context, accountID string) (*TBAccount, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET", t.baseURL+"/accounts/"+accountID, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", t.baseURL+"/accounts/"+accountID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -125,7 +143,10 @@ func (t *tbHTTPClient) GetAccount(ctx context.Context, accountID string) (*TBAcc
 
 func (t *tbHTTPClient) LookupTransfers(ctx context.Context, accountID string, limit int) ([]TBTransfer, error) {
 	url := fmt.Sprintf("%s/accounts/%s/transfers?limit=%d", t.baseURL, accountID, limit)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -141,7 +162,7 @@ func (t *tbHTTPClient) Status() MWStatus {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", t.baseURL+"/health", nil)
 	lat, err := measureLatency(func() error {
-		resp, e := t.client.Do(req)
+		resp, e := t.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -305,7 +326,7 @@ func initTigerBeetleClient() TigerBeetleClient {
 	if tbURL != "" {
 		client := &tbHTTPClient{
 			baseURL: tbURL,
-			client:  &http.Client{Timeout: 5 * time.Second},
+			client:  NewResilientHTTPClient("tigerbeetle"),
 		}
 		s := client.Status()
 		if s.Connected {

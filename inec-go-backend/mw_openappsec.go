@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // OpenAppSecClient provides Web Application Firewall (WAF) capabilities:
@@ -86,9 +89,26 @@ type embeddedWAF struct {
 }
 
 func newEmbeddedWAF() *embeddedWAF {
-	return &embeddedWAF{
+	w := &embeddedWAF{
 		blocklist: make(map[string]BlocklistEntry),
 	}
+	// Load persisted blocklist from DB
+	if db != nil {
+		rows, err := db.Query(`SELECT ip_address, reason, blocked_at FROM waf_blocklist`)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var e BlocklistEntry
+				if rows.Scan(&e.IP, &e.Reason, &e.AddedAt) == nil {
+					w.blocklist[e.IP] = e
+				}
+			}
+			if len(w.blocklist) > 0 {
+				log.Info().Int("count", len(w.blocklist)).Msg("WAF: loaded blocklist from DB")
+			}
+		}
+	}
+	return w
 }
 
 var sqlInjectionPatterns = []string{
@@ -247,10 +267,20 @@ func (w *embeddedWAF) GetStats(ctx context.Context) (*WAFStats, error) {
 func (w *embeddedWAF) AddIPToBlocklist(ctx context.Context, ip, reason string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.blocklist[ip] = BlocklistEntry{
+	entry := BlocklistEntry{
 		IP:      ip,
 		Reason:  reason,
 		AddedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	w.blocklist[ip] = entry
+	// Persist to DB
+	if db != nil {
+		_, err := db.Exec(`INSERT INTO waf_blocklist (ip_address, reason, blocked_at) VALUES (?, ?, ?)
+			ON CONFLICT(ip_address) DO UPDATE SET reason=excluded.reason, blocked_at=excluded.blocked_at`,
+			ip, reason, entry.AddedAt)
+		if err != nil {
+			log.Warn().Err(err).Str("ip", ip).Msg("waf: failed to persist blocklist entry")
+		}
 	}
 	return nil
 }
@@ -277,7 +307,7 @@ func (w *embeddedWAF) Status() MWStatus {
 func initOpenAppSecClient() OpenAppSecClient {
 	baseURL := os.Getenv("OPENAPPSEC_URL")
 	if baseURL != "" {
-		log.Printf("OpenAppSec: external mode configured at %s (not yet integrated)", baseURL)
+		log.Info().Str("url", baseURL).Msg("OpenAppSec: external mode configured (not yet integrated)")
 	}
 	log.Info().Msg("OpenAppSec using embedded rule-based WAF")
 	return newEmbeddedWAF()
@@ -296,11 +326,27 @@ func wafMiddleware(next http.Handler) http.Handler {
 			ip = r.RemoteAddr
 		}
 
+		// Build full inspection path: URL path + query params
+		fullPath := r.URL.Path
+		if r.URL.RawQuery != "" {
+			fullPath += "?" + r.URL.RawQuery
+		}
+
+		// Read request body for POST/PUT/PATCH inspection (limit to 64KB)
+		var bodyStr string
+		if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 65536))
+			r.Body.Close()
+			bodyStr = string(bodyBytes)
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
 		wafReq := WAFRequest{
 			SourceIP:  ip,
 			Method:    r.Method,
-			Path:      r.URL.Path,
+			Path:      fullPath,
 			UserAgent: r.UserAgent(),
+			Body:      bodyStr,
 		}
 
 		decision, err := mwHub.OpenAppSec.InspectRequest(r.Context(), wafReq)

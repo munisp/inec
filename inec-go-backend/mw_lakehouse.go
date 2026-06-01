@@ -34,7 +34,7 @@ type LakehouseClient interface {
 
 type lakehouseHTTPClient struct {
 	baseURL string
-	client  *http.Client
+	client  *ResilientHTTPClient
 }
 
 func (l *lakehouseHTTPClient) Query(ctx context.Context, query LakehouseQuery) (*LakehouseResult, error) {
@@ -93,7 +93,7 @@ func (l *lakehouseHTTPClient) Status() MWStatus {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", l.baseURL+"/health", nil)
 	lat, err := measureLatency(func() error {
-		resp, e := l.client.Do(req)
+		resp, e := l.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -217,7 +217,7 @@ func initLakehouseClient() LakehouseClient {
 	if lakehouseURL != "" {
 		client := &lakehouseHTTPClient{
 			baseURL: lakehouseURL,
-			client:  &http.Client{Timeout: 30 * time.Second},
+			client:  NewResilientHTTPClient("lakehouse"),
 		}
 		s := client.Status()
 		if s.Connected {

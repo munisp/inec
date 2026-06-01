@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"time"
 )
 
 var aiServiceURL string
@@ -18,13 +17,19 @@ func initAIProxy() {
 	}
 }
 
+var aiProxyClient = NewResilientHTTPClient("ai-proxy")
+
 func proxyToAI(w http.ResponseWriter, r *http.Request, path string) {
-	client := &http.Client{Timeout: 30 * time.Second}
 	url := aiServiceURL + path
 	if r.URL.RawQuery != "" {
 		url += "?" + r.URL.RawQuery
 	}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
+	if err != nil {
+		writeJSON(w, 200, M{"error": "AI service unavailable", "fallback": true})
+		return
+	}
+	resp, err := aiProxyClient.Do(req)
 	if err != nil {
 		writeJSON(w, 200, M{"error": "AI service unavailable", "fallback": true})
 		return
@@ -166,9 +171,13 @@ func handleAIProxy(w http.ResponseWriter, r *http.Request) {
 		path += "?severity=" + severity
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
 	url := aiServiceURL + path
-	resp, err := client.Get(url)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
+	if err != nil {
+		handleAIFallbackAnomalies(w, r)
+		return
+	}
+	resp, err := aiProxyClient.Do(proxyReq)
 	if err != nil {
 		handleAIFallbackAnomalies(w, r)
 		return

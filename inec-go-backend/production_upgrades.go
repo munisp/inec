@@ -577,13 +577,13 @@ func (g *ProductionSMSGateway) sendViaAfricasTalking(phone, message string) (str
 	data.Set("message", message)
 	data.Set("from", g.shortCode)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	smsClient := NewResilientHTTPClient("sms-at")
 	req, _ := http.NewRequest("POST", g.baseURL+"/messaging", strings.NewReader(data.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("apiKey", g.apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := smsClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("AT API error: %w", err)
 	}
@@ -613,7 +613,7 @@ func (g *ProductionSMSGateway) sendViaTwilio(phone, message string) (string, err
 	data.Set("From", g.shortCode)
 	data.Set("Body", message)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	tClient := NewResilientHTTPClient("sms-twilio")
 	twilioSID := os.Getenv("TWILIO_ACCOUNT_SID")
 	twilioAuth := os.Getenv("TWILIO_AUTH_TOKEN")
 	apiURL := fmt.Sprintf("%s/Accounts/%s/Messages.json", g.baseURL, twilioSID)
@@ -622,7 +622,7 @@ func (g *ProductionSMSGateway) sendViaTwilio(phone, message string) (string, err
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(twilioSID, twilioAuth)
 
-	resp, err := client.Do(req)
+	resp, err := tClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("Twilio API error: %w", err)
 	}

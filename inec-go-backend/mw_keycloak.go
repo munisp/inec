@@ -34,7 +34,7 @@ type keycloakHTTPClient struct {
 	realm        string
 	clientID     string
 	clientSecret string
-	client       *http.Client
+	client       *ResilientHTTPClient
 }
 
 func (k *keycloakHTTPClient) ValidateToken(ctx context.Context, token string) (*KeycloakUser, error) {
@@ -282,7 +282,7 @@ func initKeycloakClient() KeycloakClient {
 			realm:        realm,
 			clientID:     clientID,
 			clientSecret: clientSecret,
-			client:       &http.Client{Timeout: 5 * time.Second},
+			client:       NewResilientHTTPClient("keycloak"),
 		}
 		s := client.Status()
 		if s.Connected {

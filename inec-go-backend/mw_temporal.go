@@ -36,7 +36,7 @@ type TemporalClient interface {
 
 type temporalHTTPClient struct {
 	baseURL string
-	client  *http.Client
+	client  *ResilientHTTPClient
 }
 
 func (t *temporalHTTPClient) StartWorkflow(ctx context.Context, input WorkflowInput) (*WorkflowStatus, error) {
@@ -82,7 +82,7 @@ func (t *temporalHTTPClient) Status() MWStatus {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", t.baseURL+"/api/v1/namespaces", nil)
 	lat, err := measureLatency(func() error {
-		resp, e := t.client.Do(req)
+		resp, e := t.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -230,7 +230,7 @@ func initTemporalClient() TemporalClient {
 	if temporalURL != "" {
 		client := &temporalHTTPClient{
 			baseURL: temporalURL,
-			client:  &http.Client{Timeout: 5 * time.Second},
+			client:  NewResilientHTTPClient("temporal"),
 		}
 		s := client.Status()
 		if s.Connected {

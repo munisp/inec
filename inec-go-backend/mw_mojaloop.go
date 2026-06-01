@@ -1,16 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // MojaloopClient implements the 4-Phase Transaction Pattern:
@@ -136,28 +138,133 @@ func (m *mojaHTTPClient) PartyLookup(ctx context.Context, partyType, partyID str
 	return &party, nil
 }
 
-func (m *mojaHTTPClient) CreateQuote(ctx context.Context, req MojaQuoteRequest) (*MojaQuote, error) {
-	return nil, fmt.Errorf("mojaloop HTTP quote not yet connected")
+func (m *mojaHTTPClient) CreateQuote(ctx context.Context, qr MojaQuoteRequest) (*MojaQuote, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"quoteId":   qr.QuoteID,
+		"payer":     map[string]string{"partyIdType": "MSISDN", "partyIdentifier": qr.PayerFSP, "fspId": qr.PayerFSP},
+		"payee":     map[string]string{"partyIdType": "MSISDN", "partyIdentifier": qr.PayeeFSP, "fspId": qr.PayeeFSP},
+		"amountType": "SEND",
+		"amount":     map[string]interface{}{"currency": qr.Currency, "amount": fmt.Sprintf("%.2f", qr.Amount)},
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/quotes", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.interoperability.quotes+json;version=1.1")
+	req.Header.Set("Content-Type", "application/vnd.interoperability.quotes+json;version=1.1")
+	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create quote: %w", err)
+	}
+	defer resp.Body.Close()
+	var quote MojaQuote
+	json.NewDecoder(resp.Body).Decode(&quote)
+	return &quote, nil
 }
 
-func (m *mojaHTTPClient) CreateTransfer(ctx context.Context, req MojaTransferRequest) (*MojaTransfer, error) {
-	return nil, fmt.Errorf("mojaloop HTTP transfer not yet connected")
+func (m *mojaHTTPClient) CreateTransfer(ctx context.Context, tr MojaTransferRequest) (*MojaTransfer, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"transferId":    tr.TransferID,
+		"payerFsp":      tr.PayerFSP,
+		"payeeFsp":      tr.PayeeFSP,
+		"amount":        map[string]interface{}{"currency": tr.Currency, "amount": fmt.Sprintf("%.2f", tr.Amount)},
+		"ilpPacket":     tr.ILPPacket,
+		"condition":     tr.Condition,
+		"expiration":    time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/transfers", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.interoperability.transfers+json;version=1.1")
+	req.Header.Set("Content-Type", "application/vnd.interoperability.transfers+json;version=1.1")
+	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create transfer: %w", err)
+	}
+	defer resp.Body.Close()
+	var transfer MojaTransfer
+	json.NewDecoder(resp.Body).Decode(&transfer)
+	return &transfer, nil
 }
 
 func (m *mojaHTTPClient) SettleBatch(ctx context.Context, settlementModel string) (*MojaSettlement, error) {
-	return nil, fmt.Errorf("mojaloop HTTP settlement not yet connected")
+	body, _ := json.Marshal(map[string]interface{}{
+		"reason":          "election settlement batch",
+		"settlementModel": settlementModel,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/settlements", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("settle batch: %w", err)
+	}
+	defer resp.Body.Close()
+	var settlement MojaSettlement
+	json.NewDecoder(resp.Body).Decode(&settlement)
+	return &settlement, nil
 }
 
 func (m *mojaHTTPClient) GetTransaction(ctx context.Context, txID string) (*MojaTransaction, error) {
-	return nil, fmt.Errorf("mojaloop HTTP get-tx not yet connected")
+	req, err := http.NewRequestWithContext(ctx, "GET", m.baseURL+"/transactions/"+txID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get transaction: %w", err)
+	}
+	defer resp.Body.Close()
+	var tx MojaTransaction
+	json.NewDecoder(resp.Body).Decode(&tx)
+	return &tx, nil
 }
 
 func (m *mojaHTTPClient) ListTransactions(ctx context.Context, phase string, limit int) ([]MojaTransaction, error) {
-	return nil, fmt.Errorf("mojaloop HTTP list-tx not yet connected")
+	url := fmt.Sprintf("%s/transactions?phase=%s&limit=%d", m.baseURL, phase, limit)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list transactions: %w", err)
+	}
+	defer resp.Body.Close()
+	var txs []MojaTransaction
+	json.NewDecoder(resp.Body).Decode(&txs)
+	return txs, nil
 }
 
 func (m *mojaHTTPClient) Status() MWStatus {
-	return MWStatus{Name: "Mojaloop", Connected: false, Mode: "external (unreachable)"}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", m.baseURL+"/health", nil)
+	lat, err := measureLatency(func() error {
+		resp, e := m.client.Client.Do(req)
+		if e != nil {
+			return e
+		}
+		resp.Body.Close()
+		return nil
+	})
+	if err != nil {
+		return MWStatus{Name: "Mojaloop", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
+	}
+	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
 }
 
 // Embedded Mojaloop implementation backed by PostgreSQL
@@ -197,7 +304,7 @@ func (m *embeddedMojaloop) CreateQuote(ctx context.Context, req MojaQuoteRequest
 		 ON CONFLICT(id) DO UPDATE SET phase='quote', quote_id=excluded.quote_id, ilp_packet=excluded.ilp_packet, condition=excluded.condition, updated_at=CURRENT_TIMESTAMP`,
 		txID, req.PayerFSP, req.PayeeFSP, req.Amount, req.Currency, req.QuoteID, quote.ILPPacket, quote.Condition)
 	if err != nil {
-		log.Printf("mojaloop: persist quote error: %v", err)
+		log.Warn().Err(err).Msg("mojaloop: persist quote error")
 	}
 	return quote, nil
 }
@@ -220,7 +327,7 @@ func (m *embeddedMojaloop) CreateTransfer(ctx context.Context, req MojaTransferR
 		`UPDATE mw_mojaloop_transactions SET phase='transfer', transfer_id=?, fulfilment=?, updated_at=CURRENT_TIMESTAMP WHERE quote_id=?`,
 		req.TransferID, fulfilment, req.QuoteID)
 	if err != nil {
-		log.Printf("mojaloop: persist transfer error: %v", err)
+		log.Warn().Err(err).Msg("mojaloop: persist transfer error")
 	}
 	return transfer, nil
 }
@@ -328,7 +435,7 @@ func (m *embeddedMojaloop) Status() MWStatus {
 func initMojaloopClient() MojaloopClient {
 	baseURL := os.Getenv("MOJALOOP_URL")
 	if baseURL != "" {
-		log.Printf("Mojaloop: connecting to %s", baseURL)
+		log.Info().Str("url", baseURL).Msg("Mojaloop: connecting")
 		client := &mojaHTTPClient{
 			client:  NewResilientHTTPClient("mojaloop"),
 			baseURL: baseURL,
@@ -338,7 +445,7 @@ func initMojaloopClient() MojaloopClient {
 			log.Info().Msg("Mojaloop connected to external service")
 			return client
 		}
-		log.Printf("Mojaloop: external connection failed (%v), using embedded", err)
+		log.Warn().Err(err).Msg("Mojaloop: external connection failed, using embedded")
 	}
 	log.Info().Msg("Mojaloop using embedded DB-backed implementation")
 	return &embeddedMojaloop{}

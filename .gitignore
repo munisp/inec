@@ -2,7 +2,9 @@
 *.db-shm
 *.db-wal
 inec-go-backend/inec-go-backend
+inec-go-backend/inec-server
 inec-backend/inec-go-backend
+inec-frontend/.vite/
 test.db*
 app.db*
 bin/

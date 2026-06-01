@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package inec;
+
+option go_package = "github.com/munisp/NGApp/inec-go-backend/proto";
+
+// ElectionResultService handles high-throughput result submission and retrieval.
+service ElectionResultService {
+  // Submit a single polling unit result (used by BVAS devices)
+  rpc SubmitResult(SubmitResultRequest) returns (SubmitResultResponse);
+  // Stream results in bulk (used for batch synchronization)
+  rpc StreamResults(StreamResultsRequest) returns (stream ResultEvent);
+  // Get collation status for a given level (ward/LGA/state/national)
+  rpc GetCollation(CollationRequest) returns (CollationResponse);
+}
+
+// CollationService handles hierarchical vote aggregation.
+service CollationService {
+  // Aggregate results from ward → LGA → state → national
+  rpc CollateLevel(CollateLevelRequest) returns (CollateLevelResponse);
+  // Stream live collation updates
+  rpc StreamCollation(StreamCollationRequest) returns (stream CollationUpdate);
+}
+
+// AuditService provides blockchain-backed audit trail verification.
+service AuditService {
+  // Log an audit event
+  rpc LogEvent(AuditEvent) returns (AuditResponse);
+  // Verify chain integrity
+  rpc VerifyChain(VerifyChainRequest) returns (VerifyChainResponse);
+}
+
+// ---------- Messages ----------
+
+message SubmitResultRequest {
+  string polling_unit_code = 1;
+  int32  election_id = 2;
+  int32  accredited_voters = 3;
+  int32  total_valid_votes = 4;
+  int32  rejected_votes = 5;
+  repeated PartyVote party_votes = 6;
+  string presiding_officer_id = 7;
+  string bvas_device_id = 8;
+}
+
+message PartyVote {
+  string party_code = 1;
+  int32  votes = 2;
+}
+
+message SubmitResultResponse {
+  bool   success = 1;
+  string result_id = 2;
+  string message = 3;
+  repeated string violations = 4;
+}
+
+message StreamResultsRequest {
+  int32  election_id = 1;
+  string state_code = 2;
+  int64  since_timestamp = 3;
+}
+
+message ResultEvent {
+  string result_id = 1;
+  string polling_unit_code = 2;
+  string polling_unit_name = 3;
+  string state_code = 4;
+  int32  total_votes = 5;
+  repeated PartyVote party_votes = 6;
+  int64  submitted_at = 7;
+}
+
+message CollationRequest {
+  int32  election_id = 1;
+  string level = 2;       // "ward", "lga", "state", "national"
+  string parent_code = 3; // e.g., state code for LGA-level collation
+}
+
+message CollationResponse {
+  string level = 1;
+  int32  total_units = 2;
+  int32  reported_units = 3;
+  repeated PartyTotal party_totals = 4;
+  int32  total_votes = 5;
+  int32  total_rejected = 6;
+}
+
+message PartyTotal {
+  string party_code = 1;
+  string party_name = 2;
+  int32  total_votes = 3;
+  double percentage = 4;
+}
+
+message CollateLevelRequest {
+  int32  election_id = 1;
+  string level = 2;
+  string code = 3;
+}
+
+message CollateLevelResponse {
+  bool   success = 1;
+  string message = 2;
+  CollationResponse result = 3;
+}
+
+message StreamCollationRequest {
+  int32  election_id = 1;
+  string level = 2;
+}
+
+message CollationUpdate {
+  string level = 1;
+  string code = 2;
+  string name = 3;
+  int32  reported_units = 4;
+  int32  total_units = 5;
+  repeated PartyTotal party_totals = 6;
+  int64  updated_at = 7;
+}
+
+message AuditEvent {
+  string event_type = 1;
+  string entity_type = 2;
+  string entity_id = 3;
+  string user_id = 4;
+  string action = 5;
+  string details = 6;
+  string ip_address = 7;
+}
+
+message AuditResponse {
+  bool   success = 1;
+  string event_id = 2;
+  string block_hash = 3;
+}
+
+message VerifyChainRequest {
+  int32 from_block = 1;
+  int32 to_block = 2;
+}
+
+message VerifyChainResponse {
+  bool   valid = 1;
+  int32  blocks_verified = 2;
+  string message = 3;
+}

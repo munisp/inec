@@ -30,7 +30,7 @@ type APISIXClient interface {
 type apisixHTTPClient struct {
 	baseURL string
 	apiKey  string
-	client  *http.Client
+	client  *ResilientHTTPClient
 }
 
 func (a *apisixHTTPClient) RegisterRoute(ctx context.Context, route APISIXRoute) error {
@@ -95,7 +95,7 @@ func (a *apisixHTTPClient) Status() MWStatus {
 	req, _ := http.NewRequestWithContext(ctx, "GET", a.baseURL+"/apisix/admin/routes", nil)
 	req.Header.Set("X-API-KEY", a.apiKey)
 	lat, err := measureLatency(func() error {
-		resp, e := a.client.Do(req)
+		resp, e := a.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -190,11 +190,11 @@ func apisixDefaultRoutes() []APISIXRoute {
 func initAPISIXClient() APISIXClient {
 	apisixURL := envOrDefault("APISIX_ADMIN_URL", "")
 	if apisixURL != "" {
-		apiKey := envOrDefault("APISIX_API_KEY", "edd1c9f034335f136f87ad84b625c8f1")
+		apiKey := envOrDefault("APISIX_API_KEY", "")
 		client := &apisixHTTPClient{
 			baseURL: apisixURL,
 			apiKey:  apiKey,
-			client:  &http.Client{Timeout: 5 * time.Second},
+			client:  NewResilientHTTPClient("apisix"),
 		}
 		s := client.Status()
 		if s.Connected {

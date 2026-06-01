@@ -176,6 +176,8 @@ func main() {
 	r.HandleFunc("/ai/benford", handleAIBenford).Methods("GET")
 	r.HandleFunc("/ai/integrity", handleAIIntegrity).Methods("GET")
 	r.HandleFunc("/ai/methods", handleAIMethods).Methods("GET")
+	r.HandleFunc("/ai/proxy/anomalies", handleAIProxy).Methods("GET")
+	r.HandleFunc("/ai/fallback/anomalies", handleAIFallbackAnomalies).Methods("GET")
 
 	// Public API v1 (API key authenticated)
 	r.HandleFunc("/api/v1/docs", handlePublicAPIDocs).Methods("GET")

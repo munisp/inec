@@ -154,10 +154,12 @@ func seedDatabase(db *sql.DB) {
 		tx.Exec("INSERT INTO parties (code, name, abbreviation, color) VALUES (?,?,?,?)", p.Code, p.Name, p.Abbreviation, p.Color)
 	}
 
-	adminHash := hashPassword("admin123")
+	adminPwd := envOrDefault("SEED_ADMIN_PASSWORD", "admin123")
+	adminHash := hashPassword(adminPwd)
 	tx.Exec("INSERT INTO users (username, password_hash, full_name, role, staff_id) VALUES (?,?,?,?,?)",
 		"admin", adminHash, "System Administrator", "admin", "INEC-ADMIN-001")
-	observerHash := hashPassword("observer123")
+	observerPwd := envOrDefault("SEED_OBSERVER_PASSWORD", "observer123")
+	observerHash := hashPassword(observerPwd)
 	tx.Exec("INSERT INTO users (username, password_hash, full_name, role, staff_id) VALUES (?,?,?,?,?)",
 		"observer", observerHash, "Election Observer", "observer", "OBS-001")
 

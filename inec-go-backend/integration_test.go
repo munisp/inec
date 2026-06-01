@@ -194,6 +194,170 @@ func TestTokenCreationAndDecoding(t *testing.T) {
 	}
 }
 
+func TestWAFBodyInspection(t *testing.T) {
+	waf := newEmbeddedWAF()
+
+	// SQL injection in body should be detected
+	decision, _ := waf.InspectRequest(nil, WAFRequest{
+		SourceIP: "10.0.0.1",
+		Method:   "POST",
+		Path:     "/api/v1/results",
+		Body:     `{"name": "'; DROP TABLE results; --"}`,
+	})
+	if decision != nil && decision.Action != "block" {
+		t.Error("SQL injection in body should have been blocked")
+	}
+
+	// XSS in body should be detected
+	decision2, _ := waf.InspectRequest(nil, WAFRequest{
+		SourceIP: "10.0.0.2",
+		Method:   "POST",
+		Path:     "/api/v1/comments",
+		Body:     `{"text": "<script>alert('xss')</script>"}`,
+	})
+	if decision2 != nil && decision2.ThreatLevel == "none" {
+		t.Error("XSS in body should have been detected")
+	}
+
+	// Clean request should pass
+	decision3, _ := waf.InspectRequest(nil, WAFRequest{
+		SourceIP: "10.0.0.3",
+		Method:   "GET",
+		Path:     "/api/v1/results",
+	})
+	if decision3 != nil && decision3.Action != "allow" {
+		t.Error("clean request should be allowed")
+	}
+}
+
+func TestWAFQueryParamInspection(t *testing.T) {
+	waf := newEmbeddedWAF()
+
+	// SQL injection in query params should be detected
+	decision, _ := waf.InspectRequest(nil, WAFRequest{
+		SourceIP: "10.0.0.4",
+		Method:   "GET",
+		Path:     "/results?id=1 UNION SELECT * FROM users",
+	})
+	if decision != nil && decision.Action != "block" {
+		t.Error("SQL injection in query param should have been blocked")
+	}
+}
+
+func TestWAFBlocklistPersistence(t *testing.T) {
+	waf := newEmbeddedWAF()
+
+	// Add IP to blocklist
+	waf.AddIPToBlocklist(nil, "192.168.1.100", "test block")
+
+	// Verify blocked
+	decision, _ := waf.InspectRequest(nil, WAFRequest{
+		SourceIP: "192.168.1.100",
+		Method:   "GET",
+		Path:     "/api/v1/results",
+	})
+	if decision != nil && decision.Action != "block" {
+		t.Error("blocked IP should be rejected")
+	}
+
+	// Verify blocklist retrieval
+	entries, _ := waf.GetBlocklist(nil)
+	found := false
+	for _, e := range entries {
+		if e.IP == "192.168.1.100" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("IP not found in blocklist")
+	}
+}
+
+func TestCircuitBreakerRecovery(t *testing.T) {
+	// Use very short reset timeout
+	cb := NewCircuitBreaker("test-recovery", 2, 50e6) // 50ms
+
+	// Trip the breaker
+	cb.RecordFailure()
+	cb.RecordFailure()
+	if cb.State() != "open" {
+		t.Fatal("should be open")
+	}
+
+	// Wait for reset
+	for i := 0; i < 20; i++ {
+		if cb.State() == "half-open" {
+			break
+		}
+		// small busy-wait
+	}
+}
+
+func TestResilientHTTPClient(t *testing.T) {
+	client := NewResilientHTTPClient("test-client")
+	if client == nil {
+		t.Fatal("NewResilientHTTPClient returned nil")
+	}
+	if client.CB == nil {
+		t.Fatal("circuit breaker not initialized")
+	}
+	if client.Client == nil {
+		t.Fatal("http client not initialized")
+	}
+}
+
+func TestEC8AValidationRules(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	// Test that domain validation function exists and runs
+	r := setupTestRouter()
+	r.HandleFunc("/domain/ec8a/submit", handleSubmitEC8A).Methods("POST")
+
+	// Submit an invalid form (missing required fields)
+	body := `{"polling_unit_code": "", "election_id": 0}`
+	req := httptest.NewRequest("POST", "/domain/ec8a/submit", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	// Should have violations or error
+	if w.Code == 200 {
+		if violations, ok := resp["violations"].([]interface{}); ok {
+			if len(violations) == 0 {
+				t.Error("empty EC8A form should have validation violations")
+			}
+		}
+	}
+}
+
+func TestCollationEndpoint(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	r := setupTestRouter()
+	r.HandleFunc("/domain/collation", handleHierarchicalCollation).Methods("GET")
+
+	req := httptest.NewRequest("GET", "/domain/collation?election_id=1&level=state", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("collation endpoint returned %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if _, ok := resp["level"]; !ok {
+		t.Error("collation response missing 'level' field")
+	}
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

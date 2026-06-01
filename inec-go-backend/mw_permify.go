@@ -31,7 +31,7 @@ type PermifyClient interface {
 type permifyHTTPClient struct {
 	baseURL  string
 	tenantID string
-	client   *http.Client
+	client   *ResilientHTTPClient
 }
 
 func (p *permifyHTTPClient) Check(ctx context.Context, check PermifyCheck) (bool, error) {
@@ -120,7 +120,7 @@ func (p *permifyHTTPClient) Status() MWStatus {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/healthz", nil)
 	lat, err := measureLatency(func() error {
-		resp, e := p.client.Do(req)
+		resp, e := p.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
@@ -189,7 +189,7 @@ func initPermifyClient() PermifyClient {
 		client := &permifyHTTPClient{
 			baseURL:  permifyURL,
 			tenantID: tenantID,
-			client:   &http.Client{Timeout: 5 * time.Second},
+			client:   NewResilientHTTPClient("permify"),
 		}
 		s := client.Status()
 		if s.Connected {
