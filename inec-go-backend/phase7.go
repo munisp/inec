@@ -487,8 +487,11 @@ func seedPhase7Data(database *sql.DB) {
 		credID := fmt.Sprintf("CRED-%s-%04d", strings.ToUpper(sType[:3]), i+1)
 		qr := fmt.Sprintf("https://inec.ng/verify/%s", credID)
 		statuses := []string{"approved", "approved", "approved", "pending", "suspended"}
+		firstNames := []string{"Adebayo", "Chukwuma", "Fatima", "Ibrahim", "Ngozi", "Olumide", "Aisha", "Emeka", "Hauwa", "Tunde", "Chioma", "Musa", "Amina", "Chidi", "Binta", "Segun", "Halima", "Obiora", "Zainab", "Femi"}
+		lastNames := []string{"Okafor", "Mohammed", "Adeyemi", "Bello", "Nwosu", "Ibrahim", "Ogunleye", "Abubakar", "Eze", "Yusuf", "Adeniyi", "Suleiman", "Okoro", "Aliyu", "Bakare", "Danladi", "Onyeka", "Hassan", "Adeleke", "Usman"}
+		sName := fmt.Sprintf("%s %s", firstNames[rng.Intn(len(firstNames))], lastNames[rng.Intn(len(lastNames))])
 		tx.Exec(`INSERT INTO stakeholders (name, organization, stakeholder_type, credential_id, credential_qr, accreditation_status, election_id) VALUES (?,?,?,?,?,?,?)`,
-			fmt.Sprintf("Stakeholder %d", i+1), org, sType, credID, qr,
+			sName, org, sType, credID, qr,
 			statuses[rng.Intn(len(statuses))], electionID)
 	}
 
@@ -497,9 +500,26 @@ func seedPhase7Data(database *sql.DB) {
 		repID := rng.Intn(120) + 1
 		sev := []string{"low", "medium", "high", "critical"}
 		stat := []string{"reported", "acknowledged", "investigating", "resolved", "escalated"}
+		incDescs := []string{
+			"Thugs disrupted voting at polling unit and scattered ballot papers",
+			"Unknown persons attempted to intimidate voters outside polling station",
+			"BVAS device malfunctioned during accreditation process",
+			"Presiding officer refused to allow party agents into polling booth",
+			"Suspected ballot box snatching reported near market area",
+			"Voters turned away despite having valid PVCs",
+			"Collation officer observed altering figures on result sheet",
+			"Armed men blocked access road to polling unit",
+			"BVAS fingerprint reader not recognizing registered voters",
+			"Party agents distributing money to voters near polling station",
+			"Underage voters observed in queue at polling unit",
+			"Electoral materials arrived 3 hours late at polling station",
+			"Result sheet figures do not match BVAS accreditation count",
+			"Polling unit opened late due to missing INEC officials",
+			"Voters with disability denied assistance at polling booth",
+		}
 		tx.Exec(`INSERT INTO stakeholder_incidents (reporter_id, incident_type, description, severity, latitude, longitude, status, reported_at) VALUES (?,?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			repID, incTypes[rng.Intn(len(incTypes))],
-			fmt.Sprintf("Incident report #%d from stakeholder", i+1),
+			incDescs[rng.Intn(len(incDescs))],
 			sev[rng.Intn(len(sev))],
 			6.0+rng.Float64()*7, 3.0+rng.Float64()*12,
 			stat[rng.Intn(len(stat))],
@@ -511,10 +531,34 @@ func seedPhase7Data(database *sql.DB) {
 		sid := rng.Intn(120) + 1
 		pri := []string{"low", "normal", "high", "urgent"}
 		stat := []string{"filed", "under_review", "hearing_scheduled", "resolved", "dismissed"}
+		gSubjects := []string{
+			"Disputed result in Ward III collation centre",
+			"Complaint about staff misconduct during accreditation",
+			"Request for recount at polling unit level",
+			"Denial of observer access to collation centre",
+			"Allegation of result falsification at LGA level",
+			"BVAS malfunction affected voter turnout",
+			"Late opening of polls disenfranchised voters",
+			"Unauthorized persons present during vote counting",
+			"Missing result sheets from two polling units",
+			"Party agent removed from polling station without cause",
+		}
+		gDescriptions := []string{
+			"The announced figures differ from what was recorded on the EC8A form at the polling unit level. We request an immediate recount.",
+			"An INEC ad-hoc staff was observed directing voters to specific candidates. Multiple witnesses have provided statements.",
+			"The BVAS device rejected valid PVCs for over 50 registered voters. Technical support was not available on time.",
+			"Our accredited observers were prevented from entering the collation centre by security personnel without explanation.",
+			"The figures announced at the LGA collation centre do not match the sum of ward-level results.",
+			"Polling unit opened 4 hours late. Many registered voters left and could not return to vote.",
+			"Unauthorized individuals were seen handling ballot boxes during transportation to the collation centre.",
+			"Two result sheets from polling units in this ward are missing and unaccounted for in the collation.",
+			"Our party agent was forcibly removed from the polling station after raising objections about irregularities.",
+			"The presiding officer allowed voting to continue past the official closing time without authorization.",
+		}
 		tx.Exec(`INSERT INTO grievances (stakeholder_id, grievance_type, subject, description, priority, status, filed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			sid, gTypes[rng.Intn(len(gTypes))],
-			fmt.Sprintf("Grievance #%d", i+1),
-			fmt.Sprintf("Detailed description of grievance %d", i+1),
+			gSubjects[rng.Intn(len(gSubjects))],
+			gDescriptions[rng.Intn(len(gDescriptions))],
 			pri[rng.Intn(len(pri))], stat[rng.Intn(len(stat))],
 			fmt.Sprintf("-%d hours", rng.Intn(72)))
 	}
@@ -546,9 +590,26 @@ func seedPhase7Data(database *sql.DB) {
 	sources := []string{"twitter", "facebook", "news", "whatsapp"}
 	topics := []string{"election security", "BVAS performance", "voter turnout", "result credibility", "INEC preparedness"}
 	for i := 0; i < 200; i++ {
+		sentimentSnippets := []string{
+			"BVAS working perfectly at my polling unit. Smooth process so far #NigeriaDecides",
+			"Why is INEC always late with materials? This is unacceptable! #ElectionDay",
+			"Kudos to INEC staff for maintaining order at our polling station",
+			"Voter turnout looking impressive in Lagos today. Democracy is alive!",
+			"Concerned about security situation in some northern states #NigeriaElection",
+			"The new electronic voting process is much better than before. Well done INEC",
+			"Still waiting in queue after 4 hours. When will they start accreditation?",
+			"Peaceful voting in my area. No incidents reported. #NigeriaDecides2027",
+			"BVAS rejected my fingerprint twice before it worked. Stressful experience",
+			"International observers impressed with the level of transparency this election",
+			"Why are party agents being denied access to the collation centre?",
+			"The result from my polling unit matches what I saw. Transparent process",
+			"Reports of thugs causing chaos at several polling units in Rivers State",
+			"Congratulations to all Nigerians who came out to vote. Democracy wins!",
+			"INEC should explain why results are delayed in these key states",
+		}
 		tx.Exec(`INSERT INTO sentiment_analysis (source, content_snippet, sentiment, score, topics, location, election_id, analyzed_at) VALUES (?,?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
 			sources[rng.Intn(len(sources))],
-			fmt.Sprintf("Sample social media content about %s", topics[rng.Intn(len(topics))]),
+			sentimentSnippets[rng.Intn(len(sentimentSnippets))],
 			sentiments[rng.Intn(len(sentiments))],
 			-1+rng.Float64()*2,
 			topics[rng.Intn(len(topics))],
@@ -561,8 +622,22 @@ func seedPhase7Data(database *sql.DB) {
 		classif := []string{"fake_result", "false_claim", "manipulated_media", "impersonation", "incitement"}
 		sev := []string{"low", "medium", "high", "critical"}
 		stat := []string{"detected", "verified", "debunked", "monitoring"}
+		misinfoContent := []string{
+			"Viral post claims INEC server was hacked and results altered in favor of ruling party",
+			"Fabricated screenshot of INEC chairman endorsing a candidate shared on WhatsApp",
+			"False claim that election has been postponed in 5 northern states",
+			"Doctored video showing ballot stuffing claimed to be from Lagos polling unit",
+			"Fake news claiming BVAS machines have been programmed to reject opposition voters",
+			"Manipulated image showing military preventing voters in South East",
+			"False report claiming electoral commissioner fled the country",
+			"Fabricated result sheets circulating on social media claiming premature results",
+			"Deepfake video of candidate making inflammatory statement during voting",
+			"False claim that international observers declared the election invalid",
+			"Manipulated audio of INEC official discussing vote rigging plan",
+			"Fake social media account impersonating REC posting false state results",
+		}
 		tx.Exec(`INSERT INTO misinformation_alerts (content, source_platform, classification, confidence, severity, reach_estimate, status, fact_check) VALUES (?,?,?,?,?,?,?,?)`,
-			fmt.Sprintf("Misinformation sample #%d", i+1),
+			misinfoContent[rng.Intn(len(misinfoContent))],
 			sources[rng.Intn(len(sources))],
 			classif[rng.Intn(len(classif))],
 			0.6+rng.Float64()*0.4,

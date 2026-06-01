@@ -492,7 +492,7 @@ func handleBVASSummary(w http.ResponseWriter, r *http.Request) {
 			GROUP BY l2.state_code
 		) ba ON ba.state_code=s.code
 		WHERE d.id IS NOT NULL
-		GROUP BY s.code ORDER BY accreditation_count DESC
+		GROUP BY s.code, s.name, ba.acc_count ORDER BY accreditation_count DESC
 	`, eid, eid)
 	stateBreakdown := scanRows(stateRows)
 

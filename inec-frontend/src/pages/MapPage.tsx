@@ -126,6 +126,7 @@ export default function MapPage() {
       container: mapContainer.current,
       style: {
         version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         sources: { 'base-tiles': getTileSource(tileMode) },
         layers: [{
           id: 'base-tiles',
@@ -347,6 +348,7 @@ export default function MapPage() {
       container: mapContainerB.current,
       style: {
         version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         sources: { 'base-tiles-b': getTileSource(tileMode) },
         layers: [{ id: 'base-tiles-b', type: 'raster', source: 'base-tiles-b', minzoom: 0, maxzoom: 19 }],
       },

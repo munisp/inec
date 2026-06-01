@@ -238,7 +238,7 @@ export default function AnomalyDetectionPage() {
                   <span>Chi-Square: <strong>{benford.chi_square}</strong></span>
                   <span>{t('sample_size')}: <strong>{benford.sample_size}</strong></span>
                   <Badge className={benford.status === 'pass' ? 'bg-green-100 text-green-800' : benford.status === 'suspicious' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}>
-                    {benford.status.toUpperCase()}
+                    {(benford.status || 'N/A').toUpperCase()}
                   </Badge>
                 </div>
               )}

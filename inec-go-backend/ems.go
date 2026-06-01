@@ -520,7 +520,7 @@ func handleVoterStats(w http.ResponseWriter, r *http.Request) {
 
 	var byState []M
 	stateRows, _ := db.Query(`SELECT v.state_code, s.name, COUNT(*) as count, SUM(CASE WHEN v.pvc_collected=1 THEN 1 ELSE 0 END) as pvc_collected
-		FROM voters v JOIN states s ON s.code=v.state_code GROUP BY v.state_code ORDER BY count DESC`)
+		FROM voters v JOIN states s ON s.code=v.state_code GROUP BY v.state_code, s.name ORDER BY count DESC`)
 	byState = scanRows(stateRows)
 
 	var byGender []M

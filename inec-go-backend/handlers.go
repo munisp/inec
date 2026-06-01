@@ -199,7 +199,7 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 
 	rows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, SUM(rps.votes) as total_votes
 		FROM result_party_scores rps JOIN results r ON r.id=rps.result_id JOIN parties p ON p.code=rps.party_code
-		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code ORDER BY total_votes DESC`, eid)
+		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code, p.name, p.color ORDER BY total_votes DESC`, eid)
 	partyScores := scanRows(rows)
 
 	comp := 0.0
@@ -678,7 +678,7 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 		FROM states s LEFT JOIN lgas l ON l.state_code=s.code
 		LEFT JOIN wards w ON w.lga_code=l.code LEFT JOIN polling_units pu ON pu.ward_code=w.code
 		LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
-		GROUP BY s.code ORDER BY s.name`, eid)
+		GROUP BY s.code, s.name, s.geo_zone, s.capital ORDER BY s.name`, eid)
 	states := scanRows(stRows)
 
 	codes := make([]string, len(states))
@@ -955,14 +955,14 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 
 	psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, p.abbreviation, SUM(rps.votes) as total_votes
 		FROM result_party_scores rps JOIN results r ON r.id=rps.result_id JOIN parties p ON p.code=rps.party_code
-		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code ORDER BY total_votes DESC`, eid)
+		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code, p.name, p.color, p.abbreviation ORDER BY total_votes DESC`, eid)
 	partyScores := scanRows(psRows)
 
 	srRows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone, COUNT(r.id) as results_count, SUM(r.total_valid_votes) as total_votes
 		FROM states s LEFT JOIN lgas l ON l.state_code=s.code LEFT JOIN wards w ON w.lga_code=l.code
 		LEFT JOIN polling_units pu ON pu.ward_code=w.code
 		LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=?
-		GROUP BY s.code ORDER BY s.name`, eid)
+		GROUP BY s.code, s.name, s.geo_zone, s.capital ORDER BY s.name`, eid)
 	stateResults := scanRows(srRows)
 
 	var tbPosted, hlConfirmed int
@@ -1033,7 +1033,7 @@ func collationPartyScoresBatch(ctx context.Context, groupCol string, groupCodes 
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
 			WHERE l.state_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
-			GROUP BY l.state_code, rps.party_code ORDER BY l.state_code, total_votes DESC`,
+			GROUP BY l.state_code, rps.party_code, p.abbreviation, p.color ORDER BY l.state_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	case "lga_code":
 		q = fmt.Sprintf(`SELECT w.lga_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
@@ -1041,14 +1041,14 @@ func collationPartyScoresBatch(ctx context.Context, groupCol string, groupCodes 
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 			JOIN parties p ON p.code=rps.party_code
 			WHERE w.lga_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
-			GROUP BY w.lga_code, rps.party_code ORDER BY w.lga_code, total_votes DESC`,
+			GROUP BY w.lga_code, rps.party_code, p.abbreviation, p.color ORDER BY w.lga_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	case "ward_code":
 		q = fmt.Sprintf(`SELECT pu.ward_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN parties p ON p.code=rps.party_code
 			WHERE pu.ward_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
-			GROUP BY pu.ward_code, rps.party_code ORDER BY pu.ward_code, total_votes DESC`,
+			GROUP BY pu.ward_code, rps.party_code, p.abbreviation, p.color ORDER BY pu.ward_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	default:
 		return map[string][]M{}
@@ -1096,7 +1096,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			FROM states s LEFT JOIN lgas l ON l.state_code=s.code LEFT JOIN wards w ON w.lga_code=l.code
 			LEFT JOIN polling_units pu ON pu.ward_code=w.code
 			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
-			GROUP BY s.code ORDER BY s.name`, eid)
+			GROUP BY s.code, s.name, s.geo_zone, s.capital ORDER BY s.name`, eid)
 		results := scanRows(rows)
 		codes := make([]string, len(results))
 		for i, res := range results {
@@ -1122,7 +1122,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			SUM(r.total_votes_cast) as total_votes_cast
 			FROM lgas l LEFT JOIN wards w ON w.lga_code=l.code LEFT JOIN polling_units pu ON pu.ward_code=w.code
 			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
-			WHERE l.state_code=? GROUP BY l.code ORDER BY l.name`, eid, parentCode)
+			WHERE l.state_code=? GROUP BY l.code, l.name ORDER BY l.name`, eid, parentCode)
 		results := scanRows(rows)
 		codes := make([]string, len(results))
 		for i, res := range results {
@@ -1148,7 +1148,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			SUM(r.total_votes_cast) as total_votes_cast
 			FROM wards w LEFT JOIN polling_units pu ON pu.ward_code=w.code
 			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
-			WHERE w.lga_code=? GROUP BY w.code ORDER BY w.name`, eid, parentCode)
+			WHERE w.lga_code=? GROUP BY w.code, w.name ORDER BY w.name`, eid, parentCode)
 		results := scanRows(rows)
 		codes := make([]string, len(results))
 		for i, res := range results {
