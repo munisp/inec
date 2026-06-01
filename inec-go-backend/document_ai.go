@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // ── Document AI Integration ──
@@ -364,12 +366,24 @@ func handleKYCVerify(w http.ResponseWriter, r *http.Request) {
 	// Read uploaded files
 	var idDocBytes, selfieBytes []byte
 	if idDoc, _, err := r.FormFile("id_document"); err == nil {
-		idDocBytes, _ = io.ReadAll(idDoc)
+		var readErr error
+		idDocBytes, readErr = io.ReadAll(idDoc)
 		idDoc.Close()
+		if readErr != nil {
+			log.Error().Err(readErr).Msg("Failed to read id_document upload")
+			writeError(w, 400, "failed to read id_document file")
+			return
+		}
 	}
 	if selfie, _, err := r.FormFile("selfie"); err == nil {
-		selfieBytes, _ = io.ReadAll(selfie)
+		var readErr error
+		selfieBytes, readErr = io.ReadAll(selfie)
 		selfie.Close()
+		if readErr != nil {
+			log.Error().Err(readErr).Msg("Failed to read selfie upload")
+			writeError(w, 400, "failed to read selfie file")
+			return
+		}
 	}
 
 	// Call Document AI KYC endpoint

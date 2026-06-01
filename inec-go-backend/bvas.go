@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/gorilla/mux"
 )
@@ -31,17 +30,7 @@ type BVASDevice struct {
 	AssignedOfficer int     `json:"assigned_officer"`
 }
 
-type AccreditationEvent struct {
-	ID              int64  `json:"id"`
-	DeviceID        string `json:"device_id"`
-	ElectionID      int    `json:"election_id"`
-	PollingUnitCode string `json:"polling_unit_code"`
-	VoterPVCNumber  string `json:"voter_pvc_number"`
-	BiometricMatch  bool   `json:"biometric_match"`
-	PVCVerified     bool   `json:"pvc_verified"`
-	AccreditedAt    string `json:"accredited_at"`
-	Method          string `json:"method"`
-}
+// AccreditationEvent — DB-backed via bvas_accreditation table (no in-memory struct needed)
 
 type AccreditationReconciliation struct {
 	PollingUnitCode   string  `json:"polling_unit_code"`
@@ -55,13 +44,8 @@ type AccreditationReconciliation struct {
 	PVCVerifyRate     float64 `json:"pvc_verify_rate"`
 }
 
-var (
-	bvasDevices    = make(map[string]*BVASDevice)
-	bvasAccEvents  []AccreditationEvent
-	bvasAccCounts  = make(map[string]int)
-	bvasAccMu      sync.RWMutex
-	bvasNextEventID int64 = 1
-)
+// All BVAS state is DB-backed (bvas_devices, bvas_accreditation tables).
+// No in-memory state needed.
 
 func initBVASTables(database *sql.DB) {
 	schema := `

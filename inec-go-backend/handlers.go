@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 // ── Auth ──
@@ -349,7 +350,11 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	var ptbID string
 	if persistentTB != nil {
-		ptbID, _ = persistentTB.CreateTransfer("inec-operational", "inec-official", int64(totalCast), 1, 1, req.PollingUnitCode)
+		var tbErr error
+		ptbID, tbErr = persistentTB.CreateTransfer("inec-operational", "inec-official", int64(totalCast), 1, 1, req.PollingUnitCode)
+		if tbErr != nil {
+			log.Error().Err(tbErr).Str("pu_code", req.PollingUnitCode).Msg("TigerBeetle transfer failed")
+		}
 	}
 	if ptbID != "" {
 		tbID = ptbID
@@ -668,10 +673,16 @@ func handleGetState(w http.ResponseWriter, r *http.Request) {
 func handleListLGAs(w http.ResponseWriter, r *http.Request) {
 	sc := r.URL.Query().Get("state_code")
 	var rows *sql.Rows
+	var err error
 	if sc != "" {
-		rows, _ = dbQueryCtx(r.Context(), "SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code WHERE l.state_code=? ORDER BY l.name", sc)
+		rows, err = dbQueryCtx(r.Context(), "SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code WHERE l.state_code=? ORDER BY l.name", sc)
 	} else {
-		rows, _ = dbQueryCtx(r.Context(), "SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code ORDER BY l.name")
+		rows, err = dbQueryCtx(r.Context(), "SELECT l.*, s.name as state_name FROM lgas l JOIN states s ON s.code=l.state_code ORDER BY l.name")
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to query LGAs")
+		writeJSON(w, 500, M{"error": "database query failed"})
+		return
 	}
 	writeJSON(w, 200, scanRows(rows))
 }
@@ -679,10 +690,16 @@ func handleListLGAs(w http.ResponseWriter, r *http.Request) {
 func handleListWards(w http.ResponseWriter, r *http.Request) {
 	lc := r.URL.Query().Get("lga_code")
 	var rows *sql.Rows
+	var err error
 	if lc != "" {
-		rows, _ = dbQueryCtx(r.Context(), "SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code WHERE w.lga_code=? ORDER BY w.name", lc)
+		rows, err = dbQueryCtx(r.Context(), "SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code WHERE w.lga_code=? ORDER BY w.name", lc)
 	} else {
-		rows, _ = dbQueryCtx(r.Context(), "SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code ORDER BY w.name LIMIT 100")
+		rows, err = dbQueryCtx(r.Context(), "SELECT w.*, l.name as lga_name FROM wards w JOIN lgas l ON l.code=w.lga_code ORDER BY w.name LIMIT 100")
+	}
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to query wards")
+		writeJSON(w, 500, M{"error": "database query failed"})
+		return
 	}
 	writeJSON(w, 200, scanRows(rows))
 }

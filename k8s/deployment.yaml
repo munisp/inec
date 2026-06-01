@@ -33,7 +33,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: inec-backend
-          image: ghcr.io/munisp/ngapp/inec-backend:latest
+          image: ghcr.io/munisp/inec-backend:latest
           ports:
             - containerPort: 8088
               name: http

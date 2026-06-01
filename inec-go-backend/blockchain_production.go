@@ -333,8 +333,33 @@ type HyperledgerFabricNetwork struct {
 }
 
 func NewHyperledgerFabricNetwork(database *sql.DB) *HyperledgerFabricNetwork {
+	database.Exec(`CREATE TABLE IF NOT EXISTS fabric_signing_keys (
+		key_id TEXT PRIMARY KEY,
+		private_key_pem TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	f := &HyperledgerFabricNetwork{db: database}
+	// Load existing key from DB for persistence across restarts
+	var keyPEM string
+	err := database.QueryRow(`SELECT private_key_pem FROM fabric_signing_keys WHERE key_id='primary' LIMIT 1`).Scan(&keyPEM)
+	if err == nil {
+		block, _ := pem.Decode([]byte(keyPEM))
+		if block != nil {
+			pk, parseErr := x509.ParseECPrivateKey(block.Bytes)
+			if parseErr == nil {
+				f.ecdsaKey = pk
+				return f
+			}
+		}
+	}
+	// Generate new key and persist
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	return &HyperledgerFabricNetwork{db: database, ecdsaKey: key}
+	f.ecdsaKey = key
+	derBytes, _ := x509.MarshalECPrivateKey(key)
+	pemBlock := &pem.Block{Type: "EC PRIVATE KEY", Bytes: derBytes}
+	pemStr := string(pem.EncodeToMemory(pemBlock))
+	database.Exec(`INSERT INTO fabric_signing_keys (key_id, private_key_pem) VALUES ('primary', ?)`, pemStr)
+	return f
 }
 
 func (f *HyperledgerFabricNetwork) signData(data []byte) string {
@@ -1035,12 +1060,13 @@ func handleIPFSObjects(w http.ResponseWriter, r *http.Request) {
 	limit := queryParamInt(r, "limit", 50)
 	contentType := r.URL.Query().Get("content_type")
 	var rows *sql.Rows
+	var err error
 	if contentType != "" {
-		rows, _ = ipfsStore.db.Query(`SELECT cid, content_type, data_hash, size_bytes, pinned, pin_count, created_at FROM ipfs_objects WHERE content_type=? ORDER BY created_at DESC LIMIT ?`, contentType, limit)
+		rows, err = ipfsStore.db.Query(`SELECT cid, content_type, data_hash, size_bytes, pinned, pin_count, created_at FROM ipfs_objects WHERE content_type=? ORDER BY created_at DESC LIMIT ?`, contentType, limit)
 	} else {
-		rows, _ = ipfsStore.db.Query(`SELECT cid, content_type, data_hash, size_bytes, pinned, pin_count, created_at FROM ipfs_objects ORDER BY created_at DESC LIMIT ?`, limit)
+		rows, err = ipfsStore.db.Query(`SELECT cid, content_type, data_hash, size_bytes, pinned, pin_count, created_at FROM ipfs_objects ORDER BY created_at DESC LIMIT ?`, limit)
 	}
-	if rows == nil {
+	if err != nil || rows == nil {
 		writeJSON(w, 200, M{"objects": []M{}})
 		return
 	}

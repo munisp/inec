@@ -17,6 +17,7 @@ import (
 	"math"
 	mrand "math/rand"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -743,17 +744,26 @@ func NewABISEngine(database *sql.DB, vault *BiometricVault) *ABISEngine {
 		db:    database,
 		vault: vault,
 		config: ABISConfig{
-			FingerprintFARThreshold: 0.0001,
-			FingerprintFRRThreshold: 0.01,
-			FacialFARThreshold:      0.001,
-			FacialFRRThreshold:      0.02,
-			IrisFARThreshold:        0.00001,
-			IrisFRRThreshold:        0.005,
-			FusionThreshold:         0.85,
+			FingerprintFARThreshold: envFloat("ABIS_FP_FAR_THRESHOLD", 0.0001),
+			FingerprintFRRThreshold: envFloat("ABIS_FP_FRR_THRESHOLD", 0.01),
+			FacialFARThreshold:      envFloat("ABIS_FACE_FAR_THRESHOLD", 0.001),
+			FacialFRRThreshold:      envFloat("ABIS_FACE_FRR_THRESHOLD", 0.02),
+			IrisFARThreshold:        envFloat("ABIS_IRIS_FAR_THRESHOLD", 0.00001),
+			IrisFRRThreshold:        envFloat("ABIS_IRIS_FRR_THRESHOLD", 0.005),
+			FusionThreshold:         envFloat("ABIS_FUSION_THRESHOLD", 0.85),
 			MaxCandidates:           10,
 			PADRequired:             true,
 		},
 	}
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
 }
 
 func (e *ABISEngine) Verify(vin string, modality string, probeData []byte) *MatchResult {

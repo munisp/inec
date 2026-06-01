@@ -306,10 +306,33 @@ type HSMManager struct {
 
 func NewHSMManager(database *sql.DB) *HSMManager {
 	h := &HSMManager{db: database, slots: make(map[int][]byte), fipsMode: true}
+	database.Exec(`CREATE TABLE IF NOT EXISTS hsm_slot_keys (
+		slot_id INTEGER PRIMARY KEY,
+		key_material TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	// Load persisted keys from DB
+	rows, err := database.Query(`SELECT slot_id, key_material FROM hsm_slot_keys ORDER BY slot_id`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var slotID int
+			var keyHex string
+			if rows.Scan(&slotID, &keyHex) == nil {
+				if keyBytes, decErr := hex.DecodeString(keyHex); decErr == nil && len(keyBytes) == 32 {
+					h.slots[slotID] = keyBytes
+				}
+			}
+		}
+	}
+	// Generate missing slots and persist
 	for i := 0; i < 8; i++ {
-		key := make([]byte, 32)
-		rand.Read(key)
-		h.slots[i] = key
+		if _, exists := h.slots[i]; !exists {
+			key := make([]byte, 32)
+			rand.Read(key)
+			h.slots[i] = key
+			database.Exec(`INSERT INTO hsm_slot_keys (slot_id, key_material) VALUES (?, ?)`, i, hex.EncodeToString(key))
+		}
 	}
 	return h
 }
