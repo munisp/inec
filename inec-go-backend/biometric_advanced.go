@@ -406,7 +406,7 @@ func (s *BiometricSDKRegistry) RegisterProvider(p *SDKProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.providers[p.Name] = p
-	s.db.Exec(`INSERT INTO biometric_sdk_providers (provider_name, sdk_version, modalities, license_type, api_endpoint, status) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("sdk_register", `INSERT INTO biometric_sdk_providers (provider_name, sdk_version, modalities, license_type, api_endpoint, status) VALUES (?,?,?,?,?,?)`,
 		p.Name, p.Version, strings.Join(p.Modalities, ","), p.License, p.Endpoint, p.Status)
 }
 
@@ -464,7 +464,7 @@ func (c *CancelableBiometricsManager) RevokeTemplate(vin, modality, reason strin
 	if err != nil {
 		return M{"status": "error", "detail": "no active transform found"}
 	}
-	c.db.Exec(`UPDATE cancelable_transforms SET revoked=1, revoked_at=CURRENT_TIMESTAMP, revocation_reason=? WHERE transform_id=?`, reason, transformID)
+	dbExecLog("revoke_transform", `UPDATE cancelable_transforms SET revoked=1, revoked_at=CURRENT_TIMESTAMP, revocation_reason=? WHERE transform_id=?`, reason, transformID)
 	newSeed := make([]byte, 32)
 	rand.Read(newSeed)
 	newTransformID := fmt.Sprintf("CT-%s-%s-v%d", vin[:8], modality[:2], version+1)
@@ -619,7 +619,7 @@ func (t *ThresholdAutoTuner) RunAnalysis(modality string) M {
 	rocJSON, _ := json.Marshal(rocPoints[:20])
 	detJSON, _ := json.Marshal(detPoints[:20])
 
-	t.db.Exec(`INSERT INTO threshold_tuning_runs (modality, genuine_pairs, impostor_pairs, optimal_threshold, eer, far_at_threshold, frr_at_threshold, auc, roc_points, det_points) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("threshold_tune", `INSERT INTO threshold_tuning_runs (modality, genuine_pairs, impostor_pairs, optimal_threshold, eer, far_at_threshold, frr_at_threshold, auc, roc_points, det_points) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		modality, genuinePairs, impostorPairs, bestThreshold, bestEER, farAtThresh, frrAtThresh, auc, string(rocJSON), string(detJSON))
 
 	return M{
@@ -679,7 +679,7 @@ func (d *DistributedDedupManager) StartDistributed(modality string, workers int,
 		if dups < 0 {
 			dups = 0
 		}
-		d.db.Exec(`INSERT INTO distributed_dedup_partitions (job_id, partition_key, worker_id, status, records_count, comparisons, duplicates, started_at, completed_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
+		dbExecLog("dedup_partition", `INSERT INTO distributed_dedup_partitions (job_id, partition_key, worker_id, status, records_count, comparisons, duplicates, started_at, completed_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
 			jobID, partKey, workerID, "completed", recs, comps, dups)
 		partitions = append(partitions, M{
 			"partition": partKey, "worker": workerID, "records": recs,
@@ -689,7 +689,7 @@ func (d *DistributedDedupManager) StartDistributed(modality string, workers int,
 		totalDups += dups
 	}
 
-	d.db.Exec(`UPDATE dedup_jobs SET status='completed', progress_percent=100, total_comparisons=?, duplicates_found=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
+	dbExecLog("dedup_complete", `UPDATE dedup_jobs SET status='completed', progress_percent=100, total_comparisons=?, duplicates_found=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
 		totalComps, totalDups, jobID)
 
 	return M{
@@ -733,13 +733,13 @@ func (p *PADModelManager) DeployUpdate(modelID, newVersion string) M {
 	// Get baseline accuracy from the model being superseded
 	var prevAcc float64
 	p.db.QueryRow(`SELECT COALESCE(accuracy, 0.95) FROM pad_models WHERE model_id=?`, modelID).Scan(&prevAcc)
-	p.db.Exec(`UPDATE pad_models SET status='superseded' WHERE model_id=?`, modelID)
+	dbExecLog("pad_supersede", `UPDATE pad_models SET status='superseded' WHERE model_id=?`, modelID)
 	newModelID := fmt.Sprintf("%s-v%s", modelID[:strings.LastIndex(modelID, "-v")], newVersion)
 	// New version improves accuracy by ~0.5-2% over previous (diminishing returns near 1.0)
 	acc := math.Min(prevAcc+0.005*(1.0-prevAcc), 0.999)
 	flr := 0.001 * (1.0 - acc) * 10 // FAR decreases as accuracy improves
 	fsr := 0.01 * (1.0 - acc) * 5
-	p.db.Exec(`INSERT INTO pad_models (model_id, modality, model_version, algorithm, attack_types, accuracy, false_live_rate, false_spoof_rate, model_size_kb, status) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("pad_deploy", `INSERT INTO pad_models (model_id, modality, model_version, algorithm, attack_types, accuracy, false_live_rate, false_spoof_rate, model_size_kb, status) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		newModelID, "multi_modal", newVersion, "deep_cnn_ensemble",
 		"silicone_mold,printed_photo,3d_mask,deepfake,screen_replay,latex_finger",
 		acc, flr, fsr, 2560, "active")
@@ -780,7 +780,7 @@ func (q *BiometricQualityGateway) EvaluateCapture(deviceID, vin, modality string
 		}
 		// Estimate bandwidth saved: higher quality images are larger (15-25KB based on quality)
 		bwSaved := 15.0 + (1.0-quality)*20.0
-		q.db.Exec(`INSERT INTO quality_gateway_rejections (device_id, voter_vin, modality, nfiq2_score, quality_score, rejection_reason, threshold_applied, bandwidth_saved_kb) VALUES (?,?,?,?,?,?,?,?)`,
+		dbExecLog("quality_reject", `INSERT INTO quality_gateway_rejections (device_id, voter_vin, modality, nfiq2_score, quality_score, rejection_reason, threshold_applied, bandwidth_saved_kb) VALUES (?,?,?,?,?,?,?,?)`,
 			deviceID, vin, modality, nfiq, quality, strings.Join(reasons, "; "), threshold, bwSaved)
 		return M{
 			"passed": false, "quality": quality, "threshold": threshold, "nfiq2": nfiq,
@@ -852,7 +852,7 @@ func (o *OfflineEnrollmentQueue) GetStats() M {
 }
 
 func (o *OfflineEnrollmentQueue) TriggerSync(deviceID string) M {
-	result, _ := o.db.Exec(`UPDATE offline_enrollment_queue SET sync_status='synced', synced_at=CURRENT_TIMESTAMP, sync_attempts=sync_attempts+1 WHERE device_id=? AND sync_status='pending'`, deviceID)
+	result, _ := db.Exec(`UPDATE offline_enrollment_queue SET sync_status='synced', synced_at=CURRENT_TIMESTAMP, sync_attempts=sync_attempts+1 WHERE device_id=? AND sync_status='pending'`, deviceID)
 	affected, _ := result.RowsAffected()
 	return M{"device_id": deviceID, "synced_count": affected, "status": "sync_complete"}
 }
@@ -1006,7 +1006,7 @@ func (n *NISTBenchmarkRunner) RunBenchmark(benchType, modality string) M {
 		tmplSize = 512
 	}
 
-	n.db.Exec(`INSERT INTO nist_benchmark_results (benchmark_type, modality, dataset, total_subjects, total_comparisons, fnmr_at_fmr_001, fnmr_at_fmr_01, fnmr_at_fmr_1, eer, throughput_per_sec, template_size_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("nist_bench", `INSERT INTO nist_benchmark_results (benchmark_type, modality, dataset, total_subjects, total_comparisons, fnmr_at_fmr_001, fnmr_at_fmr_01, fnmr_at_fmr_1, eer, throughput_per_sec, template_size_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		benchType, modality, dataset, subjects, comparisons, fnmrFMR001, fnmrFMR01, fnmrFMR1, eer, throughput, tmplSize)
 
 	return M{
@@ -1124,7 +1124,7 @@ func (k *EnrollmentKioskManager) StartSession(deviceID, vin string) M {
 		{"step": 7, "name": "dedup_check", "description": "Run 1:N deduplication against gallery"},
 		{"step": 8, "name": "confirmation", "description": "Review and confirm enrollment data"},
 	}
-	k.db.Exec(`INSERT INTO kiosk_sessions (session_id, device_id, voter_vin, current_step, total_steps, step_name) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("kiosk_start", `INSERT INTO kiosk_sessions (session_id, device_id, voter_vin, current_step, total_steps, step_name) VALUES (?,?,?,?,?,?)`,
 		sessionID, deviceID, vin, 1, 8, "identity_verification")
 	return M{"session_id": sessionID, "device_id": deviceID, "voter_vin": vin, "steps": steps, "current_step": 1, "status": "in_progress"}
 }
@@ -1156,7 +1156,7 @@ func (k *EnrollmentKioskManager) AdvanceStep(sessionID string) M {
 		newStatus = "completed"
 	}
 	newStepName := stepNames[nextStep-1]
-	k.db.Exec(`UPDATE kiosk_sessions SET current_step=?, step_name=?, status=?, guidance_messages=? WHERE session_id=?`,
+	dbExecLog("kiosk_step", `UPDATE kiosk_sessions SET current_step=?, step_name=?, status=?, guidance_messages=? WHERE session_id=?`,
 		nextStep, newStepName, newStatus, guidance[nextStep-1], sessionID)
 
 	return M{
@@ -1223,7 +1223,7 @@ func (m *MultiInstanceEnrollment) EnrollFingers(vin string, fingers []string, pr
 
 		// Generate deterministic template hash from VIN + finger position
 		hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-enroll", vin, f)))
-		m.db.Exec(`INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
+		dbExecLog("multi_finger", `INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
 			vin, f, idx, hex.EncodeToString(hash[:16]), quality, nfiq, advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
 		enrolled = append(enrolled, M{
 			"finger": f, "index": idx, "quality": quality,
@@ -1294,7 +1294,7 @@ func (p *PrivacyPreservingMatcher) SecureMatch(vin, modality string) M {
 	matched := templateExists > 0
 	computeTime := int(time.Since(start).Milliseconds())
 
-	p.db.Exec(`INSERT INTO privacy_preserving_ops (operation_type, encryption_scheme, voter_vin, modality, computation_time_ms, template_never_decrypted, result_encrypted) VALUES (?,?,?,?,?,?,?)`,
+	dbExecLog("privacy_op", `INSERT INTO privacy_preserving_ops (operation_type, encryption_scheme, voter_vin, modality, computation_time_ms, template_never_decrypted, result_encrypted) VALUES (?,?,?,?,?,?,?)`,
 		"secure_match", "paillier_homomorphic", vin, modality, computeTime, 1, 1)
 
 	// Log the match attempt
@@ -1302,7 +1302,7 @@ func (p *PrivacyPreservingMatcher) SecureMatch(vin, modality string) M {
 	if matched {
 		isGenuine = 1
 	}
-	p.db.Exec(`INSERT INTO biometric_match_log (voter_vin, modality, match_score, is_genuine, created_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)`,
+	dbExecLog("match_log", `INSERT INTO biometric_match_log (voter_vin, modality, match_score, is_genuine, created_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)`,
 		vin, modality, qualityScore, isGenuine)
 
 	return M{

@@ -228,6 +228,15 @@ func dbExecTimeout(timeoutMs int, query string, args ...interface{}) (sql.Result
 	return dbExecCtx(ctx, query, args...)
 }
 
+// dbExecLog executes a write query and logs errors (fire-and-forget with observability).
+// Use for non-critical writes (audit logs, metrics, caches) where failure is acceptable but should be visible.
+func dbExecLog(label string, query string, args ...interface{}) {
+	_, err := db.Exec(query, args...)
+	if err != nil {
+		log.Error().Err(err).Str("op", label).Msg("db.Exec failed")
+	}
+}
+
 func dbCachedQuery(query string, args ...interface{}) (*sql.Rows, error) {
 	start := time.Now()
 	stmt := stmtCache.get(query)

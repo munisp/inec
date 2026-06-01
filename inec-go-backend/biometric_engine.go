@@ -554,7 +554,7 @@ func (v *BiometricVault) GenerateKey(purpose string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	v.db.Exec(`INSERT INTO biometric_vault_keys (key_id, encrypted_key, purpose) VALUES (?,?,?)`,
+	dbExecLog("vault_key", `INSERT INTO biometric_vault_keys (key_id, encrypted_key, purpose) VALUES (?,?,?)`,
 		keyID, encKey, purpose)
 	v.logAudit("key_generate", keyID, "", "", "", true, "")
 	return keyID, nil
@@ -606,8 +606,8 @@ func (v *BiometricVault) RotateKey(oldKeyID string) (string, error) {
 		return "", err
 	}
 
-	v.db.Exec(`UPDATE biometric_vault_keys SET status='rotated', rotated_at=CURRENT_TIMESTAMP WHERE key_id=?`, oldKeyID)
-	v.db.Exec(`UPDATE biometric_vault_keys SET rotation_count=(SELECT rotation_count FROM biometric_vault_keys WHERE key_id=?)+1 WHERE key_id=?`, oldKeyID, newKeyID)
+	dbExecLog("vault_rotate", `UPDATE biometric_vault_keys SET status='rotated', rotated_at=CURRENT_TIMESTAMP WHERE key_id=?`, oldKeyID)
+	dbExecLog("vault_rotate", `UPDATE biometric_vault_keys SET rotation_count=(SELECT rotation_count FROM biometric_vault_keys WHERE key_id=?)+1 WHERE key_id=?`, oldKeyID, newKeyID)
 	v.logAudit("key_rotate", oldKeyID, "", "", "", true, "rotated to "+newKeyID)
 	return newKeyID, nil
 }
@@ -898,7 +898,7 @@ func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
 	pipeline := M{"voter_vin": vin, "modality": modality, "stages": []M{}}
 	stages := []M{}
 
-	e.db.Exec(`INSERT INTO abis_enrollment_pipeline (voter_vin, stage, modality, device_id) VALUES (?,?,?,?)`,
+	dbExecLog("abis_enroll", `INSERT INTO abis_enrollment_pipeline (voter_vin, stage, modality, device_id) VALUES (?,?,?,?)`,
 		vin, "capture", modality, deviceID)
 
 	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
@@ -936,26 +936,26 @@ func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
 		stages = append(stages, M{"stage": "capture", "status": "complete", "iris_bits": code.Bits})
 	}
 
-	e.db.Exec(`UPDATE abis_enrollment_pipeline SET stage='quality_check', quality_passed=1 WHERE voter_vin=? AND modality=? AND stage='capture'`, vin, modality)
+	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='quality_check', quality_passed=1 WHERE voter_vin=? AND modality=? AND stage='capture'`, vin, modality)
 	qualityPassed := quality >= 0.4
 	stages = append(stages, M{"stage": "quality_check", "passed": qualityPassed, "score": quality})
 
 	if !qualityPassed {
-		e.db.Exec(`UPDATE abis_enrollment_pipeline SET stage='failed', error_detail='quality_check_failed' WHERE voter_vin=? AND modality=?`, vin, modality)
+		dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='failed', error_detail='quality_check_failed' WHERE voter_vin=? AND modality=?`, vin, modality)
 		pipeline["status"] = "failed"
 		pipeline["error"] = "quality_check_failed"
 		pipeline["stages"] = stages
 		return pipeline
 	}
 
-	e.db.Exec(`UPDATE abis_enrollment_pipeline SET stage='template_extract', template_extracted=1 WHERE voter_vin=? AND modality=?`, vin, modality)
+	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='template_extract', template_extracted=1 WHERE voter_vin=? AND modality=?`, vin, modality)
 	stages = append(stages, M{"stage": "template_extract", "status": "complete", "template_size": len(templateBytes)})
 
-	e.db.Exec(`UPDATE abis_enrollment_pipeline SET stage='dedup_check' WHERE voter_vin=? AND modality=?`, vin, modality)
+	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='dedup_check' WHERE voter_vin=? AND modality=?`, vin, modality)
 	dedupClear := rng.Float64() > 0.02
 	stages = append(stages, M{"stage": "dedup_check", "cleared": dedupClear})
 
-	e.db.Exec(`UPDATE abis_enrollment_pipeline SET stage='vault_store', dedup_cleared=1 WHERE voter_vin=? AND modality=?`, vin, modality)
+	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='vault_store', dedup_cleared=1 WHERE voter_vin=? AND modality=?`, vin, modality)
 	err := e.vault.StoreTemplate(vin, modality, templateBytes, quality, meta)
 	if err != nil {
 		stages = append(stages, M{"stage": "vault_store", "status": "failed", "error": err.Error()})
@@ -965,7 +965,7 @@ func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
 	}
 	stages = append(stages, M{"stage": "vault_store", "status": "complete", "encrypted": true})
 
-	e.db.Exec(`UPDATE abis_enrollment_pipeline SET stage='complete', vault_stored=1, completed_at=CURRENT_TIMESTAMP WHERE voter_vin=? AND modality=?`, vin, modality)
+	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='complete', vault_stored=1, completed_at=CURRENT_TIMESTAMP WHERE voter_vin=? AND modality=?`, vin, modality)
 
 	pipeline["status"] = "complete"
 	pipeline["quality"] = quality
@@ -1152,7 +1152,7 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 
 	rows, err := d.db.Query(`SELECT voter_vin FROM biometric_templates WHERE modality=? ORDER BY voter_vin`, primaryMod)
 	if err != nil {
-		d.db.Exec(`UPDATE dedup_jobs SET status='failed', error_detail=? WHERE id=?`, err.Error(), jobID)
+		dbExecLog("dedup_update", `UPDATE dedup_jobs SET status='failed', error_detail=? WHERE id=?`, err.Error(), jobID)
 		return
 	}
 	var vins []string
@@ -1202,17 +1202,17 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 					decision = "not_duplicate"
 				}
 
-				d.db.Exec(`INSERT INTO dedup_candidates (job_id, source_vin, candidate_vin, fingerprint_score, facial_score, iris_score, fused_score, fusion_method, decision) VALUES (?,?,?,?,?,?,?,?,?)`,
+				dbExecLog("dedup_candidate", `INSERT INTO dedup_candidates (job_id, source_vin, candidate_vin, fingerprint_score, facial_score, iris_score, fused_score, fusion_method, decision) VALUES (?,?,?,?,?,?,?,?,?)`,
 					jobID, vins[i], candVin, fpScore, faceScore, irisScore, fusedScore, fusionMethod, decision)
 			}
 		}
 
 		progress := float64(i+1) / float64(batchSize) * 100
-		d.db.Exec(`UPDATE dedup_jobs SET progress_percent=?, total_comparisons=?, duplicates_found=? WHERE id=?`,
+		dbExecLog("dedup_update", `UPDATE dedup_jobs SET progress_percent=?, total_comparisons=?, duplicates_found=? WHERE id=?`,
 			progress, totalComparisons, dupsFound, jobID)
 	}
 
-	d.db.Exec(`UPDATE dedup_jobs SET status='completed', progress_percent=100, total_comparisons=?, duplicates_found=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
+	dbExecLog("dedup_update", `UPDATE dedup_jobs SET status='completed', progress_percent=100, total_comparisons=?, duplicates_found=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
 		totalComparisons, dupsFound, jobID)
 }
 
@@ -1242,7 +1242,7 @@ func (r *BVASDeviceRegistry) RegisterDevice(deviceID, firmware string, modalitie
 		fpSensor = "capacitive_500dpi"
 	}
 
-	r.db.Exec(`INSERT INTO bvas_device_capabilities
+	dbExecLog("bvas_caps", `INSERT INTO bvas_device_capabilities
 		(device_id, firmware_version, supported_modalities, fingerprint_sensor, fingerprint_fap_level, camera_resolution, iris_sensor_type, nfc_capable, secure_element, last_calibrated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		deviceID, firmware, strings.Join(modalities, ","), fpSensor, fapLevel, camRes, irisSensor, nfc, secureElem)
@@ -1252,7 +1252,7 @@ func (r *BVASDeviceRegistry) RegisterDevice(deviceID, firmware string, modalitie
 
 func (r *BVASDeviceRegistry) InitiateCapture(deviceID, vin, modality string) M {
 	sessionID := fmt.Sprintf("CAP-%s-%d", deviceID, time.Now().UnixNano())
-	r.db.Exec(`INSERT INTO bvas_capture_sessions (session_id, device_id, voter_vin, modality, status) VALUES (?,?,?,?,?)`,
+	dbExecLog("bvas_session", `INSERT INTO bvas_capture_sessions (session_id, device_id, voter_vin, modality, status) VALUES (?,?,?,?,?)`,
 		sessionID, deviceID, vin, modality, "initiated")
 	return M{"session_id": sessionID, "device_id": deviceID, "status": "initiated", "modality": modality}
 }
@@ -1262,7 +1262,7 @@ func (r *BVASDeviceRegistry) CompleteCapture(sessionID string, quality float64, 
 	if quality < 0.4 {
 		status = "quality_failed"
 	}
-	r.db.Exec(`UPDATE bvas_capture_sessions SET capture_quality=?, nfiq2_score=?, image_width=?, image_height=?, image_dpi=?, status=?, processing_time_ms=? WHERE session_id=?`,
+	dbExecLog("bvas_capture", `UPDATE bvas_capture_sessions SET capture_quality=?, nfiq2_score=?, image_width=?, image_height=?, image_dpi=?, status=?, processing_time_ms=? WHERE session_id=?`,
 		quality, nfiq, width, height, dpi, status, mrand.Intn(300)+50, sessionID)
 	return M{"session_id": sessionID, "status": status, "quality": quality, "nfiq2": nfiq}
 }
@@ -1609,7 +1609,10 @@ func handleDedupResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "decision required")
 		return
 	}
-	db.Exec("UPDATE dedup_candidates SET decision=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?", req.Decision, req.Reviewer, id)
+	if _, err := db.Exec("UPDATE dedup_candidates SET decision=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?", req.Decision, req.Reviewer, id); err != nil {
+		writeError(w, 500, "failed to update dedup decision")
+		return
+	}
 	writeJSON(w, 200, M{"id": id, "decision": req.Decision, "status": "updated"})
 }
 

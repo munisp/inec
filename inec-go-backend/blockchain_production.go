@@ -188,8 +188,12 @@ func (p *PersistentTigerBeetle) CreateTransfer(debitAcct, creditAcct string, amo
 	if err != nil {
 		return "", err
 	}
-	p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct)
-	p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct)
+	if _, err2 := p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct); err2 != nil {
+		return txID, fmt.Errorf("debit account update failed: %w", err2)
+	}
+	if _, err2 := p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct); err2 != nil {
+		return txID, fmt.Errorf("credit account update failed: %w", err2)
+	}
 	return txID, nil
 }
 
@@ -206,9 +210,15 @@ func (p *PersistentTigerBeetle) PostTransfer(txID string) error {
 	if status != "PENDING" {
 		return fmt.Errorf("transfer not pending: %s", status)
 	}
-	p.db.Exec(`UPDATE tb_transfers SET status='POSTED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID)
-	p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending - ?, debits_posted = debits_posted + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, amount, debitAcct)
-	p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending - ?, credits_posted = credits_posted + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, amount, creditAcct)
+	if _, err = p.db.Exec(`UPDATE tb_transfers SET status='POSTED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID); err != nil {
+		return fmt.Errorf("post transfer failed: %w", err)
+	}
+	if _, err = p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending - ?, debits_posted = debits_posted + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, amount, debitAcct); err != nil {
+		return fmt.Errorf("debit post failed: %w", err)
+	}
+	if _, err = p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending - ?, credits_posted = credits_posted + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, amount, creditAcct); err != nil {
+		return fmt.Errorf("credit post failed: %w", err)
+	}
 	return nil
 }
 
@@ -223,10 +233,16 @@ func (p *PersistentTigerBeetle) VoidTransfer(txID string) error {
 		return fmt.Errorf("transfer not found: %s", txID)
 	}
 	if status == "PENDING" {
-		p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct)
-		p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct)
+		if _, err = p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct); err != nil {
+			return fmt.Errorf("void debit failed: %w", err)
+		}
+		if _, err = p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct); err != nil {
+			return fmt.Errorf("void credit failed: %w", err)
+		}
 	}
-	p.db.Exec(`UPDATE tb_transfers SET status='VOIDED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID)
+	if _, err = p.db.Exec(`UPDATE tb_transfers SET status='VOIDED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID); err != nil {
+		return fmt.Errorf("void transfer update failed: %w", err)
+	}
 	return nil
 }
 
@@ -433,7 +449,7 @@ func (f *HyperledgerFabricNetwork) SubmitTransaction(channelID, chaincodeID, fun
 		txID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
 		string(endorsersJSON), "AND('INECMSP.peer','Org1MSP.peer')", rwSet+"|sig:"+sig, "VALID")
 
-	f.db.Exec(`INSERT INTO chaincode_events (chaincode_id, event_name, tx_id, payload, block_number) VALUES (?,?,?,?,?)`,
+	dbExecLog("chaincode_event", `INSERT INTO chaincode_events (chaincode_id, event_name, tx_id, payload, block_number) VALUES (?,?,?,?,?)`,
 		chaincodeID, function, txID, string(argsJSON), blockNum)
 
 	return txID, blockNum, nil
@@ -583,7 +599,7 @@ func (s *IPFSContentStore) Store(data []byte, contentType string) (string, error
 	if err != nil {
 		return "", err
 	}
-	s.db.Exec(`INSERT INTO ipfs_pins (cid, node_id, pin_type) VALUES (?,?,?)`, cid, "node-local-1", "recursive")
+	dbExecLog("ipfs_pin", `INSERT INTO ipfs_pins (cid, node_id, pin_type) VALUES (?,?,?)`, cid, "node-local-1", "recursive")
 	return cid, nil
 }
 
@@ -765,7 +781,7 @@ func (m *MerkleTreeBuilder) BuildTree(leaves []string, treeType string) M {
 	}
 	rootHash := hashes[0]
 	leavesJSON, _ := json.Marshal(leaves)
-	m.db.Exec(`INSERT INTO merkle_trees (root_hash, tree_type, leaf_count, depth, leaves) VALUES (?,?,?,?,?)`,
+	dbExecLog("merkle_tree", `INSERT INTO merkle_trees (root_hash, tree_type, leaf_count, depth, leaves) VALUES (?,?,?,?,?)`,
 		rootHash, treeType, len(leaves), depth, string(leavesJSON))
 	return M{
 		"root_hash": rootHash, "depth": depth, "leaf_count": len(leaves),
