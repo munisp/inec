@@ -321,20 +321,119 @@ func (t *embeddedTigerBeetle) Status() MWStatus {
 
 func (t *embeddedTigerBeetle) Close() error { return nil }
 
+// dbBackedTigerBeetle persists transfers and accounts to PostgreSQL for durability.
+// This replaces the in-memory embedded mode when no real TigerBeetle cluster is available.
+type dbBackedTigerBeetle struct {
+	embedded *embeddedTigerBeetle
+}
+
+func newDBBackedTigerBeetle() *dbBackedTigerBeetle {
+	tb := &dbBackedTigerBeetle{embedded: newEmbeddedTigerBeetle()}
+	// Create persistent tables
+	db.Exec(`CREATE TABLE IF NOT EXISTS tb_accounts (
+		id TEXT PRIMARY KEY,
+		ledger INTEGER NOT NULL,
+		code INTEGER NOT NULL,
+		credits_posted INTEGER DEFAULT 0,
+		debits_posted INTEGER DEFAULT 0,
+		credits_pending INTEGER DEFAULT 0,
+		debits_pending INTEGER DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS tb_transfers (
+		id TEXT PRIMARY KEY,
+		debit_account_id TEXT NOT NULL,
+		credit_account_id TEXT NOT NULL,
+		amount INTEGER NOT NULL,
+		ledger INTEGER NOT NULL,
+		code INTEGER NOT NULL,
+		status TEXT DEFAULT 'PENDING',
+		user_data TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		posted_at TIMESTAMP
+	)`)
+	// Seed default accounts
+	db.Exec("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-operational', 1, 1)")
+	db.Exec("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-official', 2, 1)")
+	log.Info().Msg("TigerBeetle using DB-backed persistent ledger")
+	return tb
+}
+
+func (t *dbBackedTigerBeetle) CreateTransfer(ctx context.Context, transfer TBTransfer) (*TBTransfer, error) {
+	result, err := t.embedded.CreateTransfer(ctx, transfer)
+	if err != nil {
+		return nil, err
+	}
+	// Persist to DB
+	db.Exec(convertPlaceholders(
+		"INSERT OR IGNORE INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)"),
+		result.ID, result.DebitAccountID, result.CreditAccountID, result.Amount, result.Ledger, result.Code, result.Status, result.UserData)
+	return result, nil
+}
+
+func (t *dbBackedTigerBeetle) GetTransfer(ctx context.Context, transferID string) (*TBTransfer, error) {
+	return t.embedded.GetTransfer(ctx, transferID)
+}
+
+func (t *dbBackedTigerBeetle) VoidTransfer(ctx context.Context, transferID string) error {
+	if err := t.embedded.VoidTransfer(ctx, transferID); err != nil {
+		return err
+	}
+	db.Exec(convertPlaceholders("UPDATE tb_transfers SET status = 'VOIDED' WHERE id = ?"), transferID)
+	return nil
+}
+
+func (t *dbBackedTigerBeetle) PostTransfer(ctx context.Context, transferID string) error {
+	if err := t.embedded.PostTransfer(ctx, transferID); err != nil {
+		return err
+	}
+	db.Exec(convertPlaceholders("UPDATE tb_transfers SET status = 'POSTED', posted_at = CURRENT_TIMESTAMP WHERE id = ?"), transferID)
+	return nil
+}
+
+func (t *dbBackedTigerBeetle) CreateAccount(ctx context.Context, account TBAccount) error {
+	if err := t.embedded.CreateAccount(ctx, account); err != nil {
+		return err
+	}
+	db.Exec(convertPlaceholders("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES (?,?,?)"),
+		account.ID, account.Ledger, account.Code)
+	return nil
+}
+
+func (t *dbBackedTigerBeetle) GetAccount(ctx context.Context, accountID string) (*TBAccount, error) {
+	return t.embedded.GetAccount(ctx, accountID)
+}
+
+func (t *dbBackedTigerBeetle) LookupTransfers(ctx context.Context, accountID string, limit int) ([]TBTransfer, error) {
+	return t.embedded.LookupTransfers(ctx, accountID, limit)
+}
+
+func (t *dbBackedTigerBeetle) Status() MWStatus {
+	s := t.embedded.Status()
+	s.Mode = "db-backed"
+	s.Details = "persistent ledger (DB-backed; production: use tigerbeetle-go SDK with binary protocol)"
+	return s
+}
+
+func (t *dbBackedTigerBeetle) Close() error { return nil }
+
 func initTigerBeetleClient() TigerBeetleClient {
 	tbURL := envOrDefault("TIGERBEETLE_URL", "")
 	if tbURL != "" {
+		// NOTE: Real TigerBeetle uses a custom binary protocol on port 3000.
+		// The HTTP client here is for TigerBeetle's optional HTTP gateway (if deployed).
+		// For production, use github.com/tigerbeetle/tigerbeetle-go SDK directly.
 		client := &tbHTTPClient{
 			baseURL: tbURL,
 			client:  NewResilientHTTPClient("tigerbeetle"),
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Info().Str("url", tbURL).Msg("TigerBeetle connected")
+			log.Info().Str("url", tbURL).Msg("TigerBeetle HTTP gateway connected")
 			return client
 		}
-		log.Warn().Msg("TigerBeetle unreachable, falling back to embedded")
+		log.Warn().Msg("TigerBeetle unreachable, falling back to DB-backed mode")
 	}
-	log.Info().Msg("TigerBeetle using embedded local ledger")
-	return newEmbeddedTigerBeetle()
+	// Use DB-backed persistent ledger instead of volatile in-memory
+	return newDBBackedTigerBeetle()
 }

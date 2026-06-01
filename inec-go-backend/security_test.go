@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 	initSMSUSSDTables(db)
 	seedDatabase(db)
 	initMiddlewareTables(db)
+	initTokenBlacklist(db)
+	initActiveSessions(db)
+	initAPIKeyRotation(db)
+	initTracing()
 	mwHub = initMiddlewareHub()
 	code := m.Run()
 	testDB.Close()
@@ -833,4 +837,279 @@ func TestUserPromotionValidation(t *testing.T) {
 	if err3 == nil {
 		t.Error("role 'superadmin' should fail oneof validation")
 	}
+}
+
+// ── Session Revocation Tests ──
+
+func TestTokenBlacklistRevokeAndCheck(t *testing.T) {
+	jti := "test-jti-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	expiresAt := time.Now().Add(1 * time.Hour)
+
+	// Should not be blacklisted initially
+	if blacklist.isBlacklisted(jti) {
+		t.Error("new JTI should not be blacklisted")
+	}
+
+	// Revoke it
+	err := blacklist.revokeToken(jti, 1, expiresAt, "test")
+	if err != nil {
+		t.Fatalf("revokeToken failed: %v", err)
+	}
+
+	// Should now be blacklisted
+	if !blacklist.isBlacklisted(jti) {
+		t.Error("revoked JTI should be blacklisted")
+	}
+}
+
+func TestTokenBlacklistExpiredNotBlocked(t *testing.T) {
+	jti := "expired-jti-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	expiresAt := time.Now().Add(-1 * time.Hour) // Already expired
+
+	blacklist.revokeToken(jti, 1, expiresAt, "expired test")
+
+	// Expired token should NOT be considered blacklisted
+	if blacklist.isBlacklisted(jti) {
+		t.Error("expired JTI should not be considered blacklisted")
+	}
+}
+
+func TestLogoutEndpoint(t *testing.T) {
+	// Login first
+	loginBody := `{"username":"admin","password":"admin123"}`
+	loginReq := httptest.NewRequest("POST", "/auth/login", strings.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginW := httptest.NewRecorder()
+	handleLogin(loginW, loginReq)
+
+	if loginW.Code != 200 {
+		t.Fatalf("login failed: %d", loginW.Code)
+	}
+
+	var loginResp map[string]interface{}
+	json.Unmarshal(loginW.Body.Bytes(), &loginResp)
+	token := loginResp["access_token"].(string)
+
+	// Logout — use jwtAuthMiddleware wrapping to simulate real request chain
+	r := mux.NewRouter()
+	r.Use(jwtAuthMiddleware)
+	r.HandleFunc("/auth/logout", handleLogout).Methods("POST")
+
+	logoutReq := httptest.NewRequest("POST", "/auth/logout", nil)
+	logoutReq.Header.Set("Authorization", "Bearer "+token)
+	logoutW := httptest.NewRecorder()
+	r.ServeHTTP(logoutW, logoutReq)
+
+	if logoutW.Code != 200 {
+		t.Errorf("logout should return 200, got %d: %s", logoutW.Code, logoutW.Body.String())
+	}
+}
+
+// ── API Key Rotation Tests ──
+
+func TestAPIKeyRotation(t *testing.T) {
+	// Create a new key
+	newKey, err := rotateAPIKey("", 1, "test-key")
+	if err != nil {
+		t.Fatalf("rotateAPIKey failed: %v", err)
+	}
+	if newKey == "" {
+		t.Error("expected non-empty key")
+	}
+	if len(newKey) != 64 { // 32 bytes hex-encoded
+		t.Errorf("expected 64 char key, got %d", len(newKey))
+	}
+
+	// Verify it's valid
+	keyHash := hashAPIKey(newKey)
+	if !isAPIKeyValid(keyHash) {
+		t.Error("newly created key should be valid")
+	}
+
+	// Rotate it
+	newKey2, err := rotateAPIKey(keyHash, 1, "test-key-v2")
+	if err != nil {
+		t.Fatalf("second rotation failed: %v", err)
+	}
+	if newKey2 == newKey {
+		t.Error("rotated key should be different")
+	}
+
+	// Old key should be invalid
+	if isAPIKeyValid(keyHash) {
+		t.Error("old key should be deactivated after rotation")
+	}
+
+	// New key should be valid
+	newKeyHash2 := hashAPIKey(newKey2)
+	if !isAPIKeyValid(newKeyHash2) {
+		t.Error("rotated key should be valid")
+	}
+}
+
+// ── Geo-fencing Tests ──
+
+func TestHaversineDistance(t *testing.T) {
+	// Abuja to Lagos is approximately 530-540km
+	abujaLat, abujaLon := 9.0579, 7.4951
+	lagosLat, lagosLon := 6.5244, 3.3792
+
+	dist := haversineDistance(abujaLat, abujaLon, lagosLat, lagosLon)
+	if dist < 500000 || dist > 600000 { // 500-600km in meters
+		t.Errorf("Abuja-Lagos distance should be ~534km, got %.0fm", dist)
+	}
+
+	// Same point = 0 distance
+	zero := haversineDistance(9.0, 7.0, 9.0, 7.0)
+	if zero != 0 {
+		t.Errorf("same point distance should be 0, got %f", zero)
+	}
+}
+
+func TestGeofenceValidation(t *testing.T) {
+	// Create table and insert a test polling unit location
+	db.Exec(`CREATE TABLE IF NOT EXISTS polling_unit_locations (
+		polling_unit_code TEXT PRIMARY KEY,
+		latitude REAL NOT NULL,
+		longitude REAL NOT NULL,
+		geofence_radius_m INTEGER DEFAULT 500,
+		state_code TEXT,
+		lga_code TEXT
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS bvas_location_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bvas_serial TEXT NOT NULL,
+		polling_unit_code TEXT NOT NULL,
+		latitude REAL NOT NULL,
+		longitude REAL NOT NULL,
+		distance_from_pu_m REAL,
+		within_geofence BOOLEAN,
+		logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec("INSERT OR REPLACE INTO polling_unit_locations (polling_unit_code, latitude, longitude, geofence_radius_m) VALUES ('TEST-PU-001', 9.0579, 7.4951, 500)")
+
+	// Within geofence (same location)
+	result, err := validateGeofence(9.0579, 7.4951, "TEST-PU-001")
+	if err != nil {
+		t.Fatalf("validateGeofence failed: %v", err)
+	}
+	if !result.WithinGeofence {
+		t.Error("same location should be within geofence")
+	}
+	if result.DistanceMeters > 1 {
+		t.Errorf("distance should be ~0, got %f", result.DistanceMeters)
+	}
+
+	// Outside geofence (far away — ~534km from Abuja to Lagos)
+	result2, _ := validateGeofence(6.5244, 3.3792, "TEST-PU-001")
+	if result2.WithinGeofence {
+		t.Error("Lagos location should be outside Abuja 500m geofence")
+	}
+}
+
+func TestGeofenceNonExistentPU(t *testing.T) {
+	// Non-existent PU should default to allow
+	result, err := validateGeofence(9.0, 7.0, "NONEXISTENT-PU")
+	if err != nil {
+		t.Fatalf("should not error for non-existent PU: %v", err)
+	}
+	if !result.WithinGeofence {
+		t.Error("non-existent PU should allow by default")
+	}
+}
+
+// ── Auto-Collation Tests ──
+
+func TestAutoCollationDoesNotPanicOnMissingData(t *testing.T) {
+	// Should not panic when tables/data don't exist
+	checkAutoCollation(999, "NONEXISTENT-PU")
+}
+
+// ── Migration System Tests ──
+
+func TestMigrationsIdempotent(t *testing.T) {
+	// Running migrations multiple times should not error
+	err := runMigrations(db)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	err = runMigrations(db)
+	if err != nil {
+		t.Fatalf("second run (idempotent): %v", err)
+	}
+}
+
+// ── Tracing Tests ──
+
+func TestTracingConfigInitialized(t *testing.T) {
+	if tracingConfig == nil {
+		t.Fatal("tracingConfig should be initialized after initTracing()")
+	}
+	if tracingConfig.ServiceName == "" {
+		t.Error("service name should not be empty")
+	}
+}
+
+// ── Geofence Handler Tests ──
+
+func TestGeofenceCheckEndpoint(t *testing.T) {
+	// Ensure tables exist and insert test PU location
+	db.Exec(`CREATE TABLE IF NOT EXISTS polling_unit_locations (
+		polling_unit_code TEXT PRIMARY KEY,
+		latitude REAL NOT NULL, longitude REAL NOT NULL,
+		geofence_radius_m INTEGER DEFAULT 500, state_code TEXT, lga_code TEXT
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS bvas_location_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bvas_serial TEXT NOT NULL, polling_unit_code TEXT NOT NULL,
+		latitude REAL NOT NULL, longitude REAL NOT NULL,
+		distance_from_pu_m REAL, within_geofence BOOLEAN, logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec("INSERT OR REPLACE INTO polling_unit_locations (polling_unit_code, latitude, longitude, geofence_radius_m) VALUES ('GEO-TEST-01', 6.5244, 3.3792, 500)")
+
+	router := mux.NewRouter()
+	router.Use(jwtAuthMiddleware)
+	router.HandleFunc("/geofence/check", handleGeofenceCheck).Methods("POST")
+
+	// Get token
+	token := getTestToken(t, "admin")
+
+	// Within geofence
+	body := `{"bvas_serial":"BVAS-001","polling_unit_code":"GEO-TEST-01","latitude":6.5244,"longitude":3.3792}`
+	req := httptest.NewRequest("POST", "/geofence/check", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("within-geofence should return 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Outside geofence (far away)
+	body2 := `{"bvas_serial":"BVAS-002","polling_unit_code":"GEO-TEST-01","latitude":9.0579,"longitude":7.4951}`
+	req2 := httptest.NewRequest("POST", "/geofence/check", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer "+token)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	if w2.Code != 403 {
+		t.Errorf("outside-geofence should return 403, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
+func getTestToken(t *testing.T, role string) string {
+	t.Helper()
+	loginBody := fmt.Sprintf(`{"username":"%s","password":"%s123"}`, role, role)
+	req := httptest.NewRequest("POST", "/auth/login", bytes.NewBufferString(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handleLogin(w, req)
+	if w.Code != 200 {
+		t.Fatalf("getTestToken login failed for %s: %d %s", role, w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	return resp["access_token"].(string)
 }

@@ -1,0 +1,141 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: inec-backend-alerts
+  namespace: inec
+  labels:
+    app: inec-backend
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: inec-backend.availability
+      rules:
+        - alert: INECBackendDown
+          expr: up{job="inec-backend"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "INEC Backend is DOWN"
+            description: "No healthy backend pods responding for > 2 minutes"
+            runbook_url: "https://runbooks.inec.ng/backend-down"
+
+        - alert: INECBackendHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{job="inec-backend", status=~"5.."}[5m]))
+            / sum(rate(http_requests_total{job="inec-backend"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "High error rate on INEC Backend (> 5%)"
+            description: "{{ $value | humanizePercentage }} of requests returning 5xx"
+
+        - alert: INECBackendHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{job="inec-backend"}[5m])) by (le)
+            ) > 2.0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "P95 latency > 2s on INEC Backend"
+            description: "95th percentile response time is {{ $value }}s"
+
+    - name: inec-backend.security
+      rules:
+        - alert: INECWAFHighBlockRate
+          expr: |
+            sum(rate(waf_blocked_requests_total{job="inec-backend"}[5m])) > 10
+          for: 3m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "WAF blocking > 10 req/sec — possible attack"
+            description: "WAF is blocking {{ $value }} requests per second"
+
+        - alert: INECAuthBruteForce
+          expr: |
+            sum(rate(auth_failed_attempts_total{job="inec-backend"}[5m])) > 5
+          for: 2m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Possible brute force attack on auth endpoint"
+            description: "{{ $value }} failed auth attempts per second"
+
+        - alert: INECRateLimitExceeded
+          expr: |
+            sum(rate(rate_limited_requests_total{job="inec-backend"}[5m])) > 20
+          for: 5m
+          labels:
+            severity: info
+            team: platform
+          annotations:
+            summary: "Rate limiting triggered frequently"
+
+    - name: inec-backend.middleware
+      rules:
+        - alert: INECMiddlewareDisconnected
+          expr: |
+            inec_middleware_connected{job="inec-backend"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Middleware {{ $labels.component }} disconnected"
+            description: "{{ $labels.component }} has been disconnected for > 5 minutes"
+
+        - alert: INECDatabaseUnhealthy
+          expr: |
+            inec_database_healthy{job="inec-backend"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Database health check failing"
+            description: "Database has been unhealthy for > 1 minute"
+
+    - name: inec-backend.election
+      rules:
+        - alert: INECResultSubmissionStalled
+          expr: |
+            rate(inec_results_submitted_total[15m]) == 0
+            and on() (hour() >= 8 and hour() <= 18)
+          for: 30m
+          labels:
+            severity: warning
+            team: elections
+          annotations:
+            summary: "No results submitted in 30 minutes during election hours"
+            description: "Result submission pipeline may be stalled"
+
+        - alert: INECGeofenceViolationSpike
+          expr: |
+            sum(rate(geofence_violations_total[5m])) > 5
+          for: 5m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "High geofence violation rate — possible fraud"
+            description: "{{ $value }} geofence violations per second"
+
+        - alert: INECCollationDiscrepancy
+          expr: |
+            inec_collation_discrepancy_count > 0
+          for: 1m
+          labels:
+            severity: critical
+            team: elections
+          annotations:
+            summary: "Collation discrepancy detected"
+            description: "{{ $value }} results have mismatched collation totals"

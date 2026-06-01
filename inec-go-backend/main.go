@@ -63,6 +63,11 @@ func main() {
 	initPgpool()
 	go periodicPoolStats()
 
+	// Run versioned migrations
+	if err := runMigrations(db); err != nil {
+		log.Warn().Err(err).Msg("Migration runner encountered issues — falling back to initDB")
+	}
+
 	initDB(db)
 	seedDatabase(db)
 	seedBVASDevices(db)
@@ -76,6 +81,12 @@ func main() {
 	initBlockchainProduction(db)
 	initProductionUpgrades(db)
 	initMiddlewareTables(db)
+
+	// Security infrastructure
+	initTokenBlacklist(db)
+	initActiveSessions(db)
+	initAPIKeyRotation(db)
+	initTracing()
 
 	mwHub = initMiddlewareHub()
 
@@ -96,6 +107,15 @@ func main() {
 	r.HandleFunc("/auth/login", handleLogin).Methods("POST")
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 	r.HandleFunc("/auth/me", handleMe).Methods("GET")
+	r.HandleFunc("/auth/logout", writeAuth(handleLogout)).Methods("POST")
+	r.HandleFunc("/auth/sessions", readAuth(handleListSessions)).Methods("GET")
+	r.HandleFunc("/auth/sessions/revoke", writeAuth(handleRevokeSession)).Methods("POST")
+	r.HandleFunc("/auth/sessions/revoke-all", writeAuth(handleRevokeAllSessions)).Methods("POST")
+	r.HandleFunc("/auth/api-keys/rotate", adminOnly(handleRotateAPIKey)).Methods("POST")
+
+	// Geo-fencing
+	r.HandleFunc("/geofence/check", writeAuth(handleGeofenceCheck)).Methods("POST")
+	r.HandleFunc("/geofence/stats/{election_id}", readAuth(handleGeofenceStats)).Methods("GET")
 
 	// Elections — read auth for lists, write auth for mutations
 	r.HandleFunc("/elections", readAuth(handleListElections)).Methods("GET")

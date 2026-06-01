@@ -1,0 +1,97 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: inec-config
+  namespace: inec
+spec:
+  tracing:
+    samplingRate: "1"
+    otel:
+      endpointAddress: "tempo.observability.svc.cluster.local:4317"
+      isSecure: false
+      protocol: grpc
+  metric:
+    enabled: true
+  logging:
+    apiLogging:
+      enabled: true
+      obfuscateURLs: true
+  accessControl:
+    defaultAction: deny
+    policies:
+      - appId: inec-backend
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "inec"
+      - appId: inec-analytics
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "inec"
+        operations:
+          - name: /api/v1/*
+            httpVerb: ["GET", "POST"]
+            action: allow
+---
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore
+  namespace: inec
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: "redis-master.inec.svc.cluster.local:6379"
+    - name: redisPassword
+      secretKeyRef:
+        name: redis-secret
+        key: redis-password
+    - name: actorStateStore
+      value: "true"
+---
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: pubsub
+  namespace: inec
+spec:
+  type: pubsub.kafka
+  version: v1
+  metadata:
+    - name: brokers
+      value: "kafka-0.kafka-headless.inec.svc.cluster.local:9092"
+    - name: consumerGroup
+      value: "inec-backend"
+    - name: authType
+      value: "none"
+---
+apiVersion: dapr.io/v1alpha1
+kind: Subscription
+metadata:
+  name: result-submitted
+  namespace: inec
+spec:
+  pubsubname: pubsub
+  topic: result.submitted
+  route: /events/result-submitted
+---
+apiVersion: dapr.io/v1alpha1
+kind: Subscription
+metadata:
+  name: result-validated
+  namespace: inec
+spec:
+  pubsubname: pubsub
+  topic: result.validated
+  route: /events/result-validated
+---
+apiVersion: dapr.io/v1alpha1
+kind: Subscription
+metadata:
+  name: audit-event
+  namespace: inec
+spec:
+  pubsubname: pubsub
+  topic: audit.event
+  route: /events/audit

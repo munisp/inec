@@ -114,6 +114,29 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, user)
 }
 
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardAuth(w, r)
+	if !ok {
+		return
+	}
+	// Get JTI from token claims (if present)
+	jti, _ := claims["jti"].(string)
+	userIDStr, _ := claims["sub"].(string)
+	var userID int
+	fmt.Sscanf(userIDStr, "%d", &userID)
+
+	if jti != "" {
+		expiresAt := time.Now().Add(24 * time.Hour)
+		blacklist.revokeToken(jti, userID, expiresAt, "user_logout")
+	}
+
+	// Remove all sessions for this user from active sessions
+	db.Exec(convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
+
+	auditWrite("user_logout", "user", userIDStr, r, nil)
+	writeJSON(w, 200, M{"message": "logged out successfully"})
+}
+
 // ── Elections ──
 
 func handleListElections(w http.ResponseWriter, r *http.Request) {
@@ -362,6 +385,9 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		map[string]interface{}{"phase": "Pre-Validation", "polling_unit": req.PollingUnitCode, "tigerbeetle_id": tbID})
 
 	go broadcastWS(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID})
+
+	// Trigger auto-collation check (non-blocking)
+	go checkAutoCollation(req.ElectionID, req.PollingUnitCode)
 
 	go publishResultEvent(TopicResultSubmitted, resultID, req.PollingUnitCode, req.ElectionID, userID,
 		map[string]interface{}{"phase": "Pre-Validation", "tigerbeetle_id": tbID})

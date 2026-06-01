@@ -1,0 +1,213 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inec-backend
+  namespace: inec
+  labels:
+    app: inec-backend
+    version: v4.0
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: inec-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: inec-backend
+        version: v4.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8088"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: inec-backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: inec-backend
+          image: ghcr.io/munisp/ngapp/inec-backend:latest
+          ports:
+            - containerPort: 8088
+              name: http
+              protocol: TCP
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: database-url
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: jwt-secret
+            - name: REDIS_URL
+              value: "redis://redis-master.inec.svc.cluster.local:6379"
+            - name: KAFKA_BROKERS
+              value: "kafka-0.kafka-headless.inec.svc.cluster.local:9092"
+            - name: OPENSEARCH_URL
+              value: "http://opensearch-cluster.inec.svc.cluster.local:9200"
+            - name: KEYCLOAK_URL
+              value: "http://keycloak.inec.svc.cluster.local:8080"
+            - name: OTEL_ENABLED
+              value: "true"
+            - name: OTEL_EXPORTER_ENDPOINT
+              value: "http://tempo.observability.svc.cluster.local:4318"
+            - name: MTLS_ENABLED
+              value: "true"
+            - name: MTLS_CERT_FILE
+              value: "/etc/tls/tls.crt"
+            - name: MTLS_KEY_FILE
+              value: "/etc/tls/tls.key"
+            - name: MTLS_CA_FILE
+              value: "/etc/tls/ca.crt"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/tls
+              readOnly: true
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: inec-backend-tls
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: inec-backend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inec-backend
+  namespace: inec
+  labels:
+    app: inec-backend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8088
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 50051
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    app: inec-backend
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inec-backend
+  namespace: inec
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inec-backend
+  namespace: inec
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inec-backend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inec-backend
+  namespace: inec
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: inec-backend
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inec-backend
+  namespace: inec
+spec:
+  podSelector:
+    matchLabels:
+      app: inec-backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app: inec-frontend
+      ports:
+        - port: 8088
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 5432  # PostgreSQL
+        - port: 6379  # Redis
+        - port: 9092  # Kafka
+        - port: 9200  # OpenSearch
+        - port: 8080  # Keycloak
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - port: 53   # DNS
+          protocol: UDP
+        - port: 443  # HTTPS (external APIs)
