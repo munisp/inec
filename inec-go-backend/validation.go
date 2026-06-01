@@ -41,11 +41,14 @@ type CollationRequest struct {
 
 // BVASRegistration is the validated input for registering a BVAS device.
 type BVASRegistration struct {
-	DeviceID        string `json:"device_id" validate:"required"`
-	SerialNumber    string `json:"serial_number" validate:"required"`
-	PollingUnitCode string `json:"polling_unit_code"`
-	StateCode       string `json:"state_code"`
-	FirmwareVersion string `json:"firmware_version"`
+	DeviceID        string  `json:"device_id"`
+	SerialNumber    string  `json:"serial_number" validate:"required"`
+	PollingUnitCode string  `json:"polling_unit_code"`
+	ElectionID      int     `json:"election_id"`
+	StateCode       string  `json:"state_code"`
+	FirmwareVersion string  `json:"firmware_version"`
+	Latitude        float64 `json:"latitude"`
+	Longitude       float64 `json:"longitude"`
 }
 
 // VoterRegistration is the validated input for voter registration.

@@ -242,14 +242,11 @@ func handleRegisterBVASDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, err.Error())
 		return
 	}
-	var req struct {
-		SerialNumber    string  `json:"serial_number"`
-		PollingUnitCode string  `json:"polling_unit_code"`
-		ElectionID      int     `json:"election_id"`
-		Latitude        float64 `json:"latitude"`
-		Longitude       float64 `json:"longitude"`
+	var req BVASRegistration
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	var count int
 	db.QueryRow("SELECT COUNT(*) FROM bvas_devices WHERE serial_number=?", req.SerialNumber).Scan(&count)
