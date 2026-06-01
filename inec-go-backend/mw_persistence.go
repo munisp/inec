@@ -130,6 +130,12 @@ func initMiddlewareTables(database *sql.DB) {
 		details TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
+	CREATE TABLE IF NOT EXISTS waf_blocklist (
+		id SERIAL PRIMARY KEY,
+		ip_address TEXT UNIQUE NOT NULL,
+		reason TEXT,
+		blocked_at TEXT
+	);
 	CREATE TABLE IF NOT EXISTS mw_circuit_breaker_log (
 		id SERIAL PRIMARY KEY,
 		service TEXT NOT NULL,

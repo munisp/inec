@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -326,10 +327,15 @@ func wafMiddleware(next http.Handler) http.Handler {
 			ip = r.RemoteAddr
 		}
 
-		// Build full inspection path: URL path + query params
+		// Build full inspection path: URL path + decoded query params
 		fullPath := r.URL.Path
 		if r.URL.RawQuery != "" {
-			fullPath += "?" + r.URL.RawQuery
+			decoded, err := url.QueryUnescape(r.URL.RawQuery)
+			if err == nil {
+				fullPath += "?" + decoded
+			} else {
+				fullPath += "?" + r.URL.RawQuery
+			}
 		}
 
 		// Read request body for POST/PUT/PATCH inspection (limit to 64KB)
