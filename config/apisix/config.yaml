@@ -1,0 +1,19 @@
+apisix:
+  node_listen: 9080
+  enable_admin: true
+  admin_key:
+    - name: admin
+      key: "${APISIX_ADMIN_KEY}"
+      role: admin
+
+deployment:
+  admin:
+    admin_listen:
+      ip: 0.0.0.0
+      port: 9180
+
+plugin_attr:
+  prometheus:
+    export_addr:
+      ip: 0.0.0.0
+      port: 9091

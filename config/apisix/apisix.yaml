@@ -1,0 +1,118 @@
+routes:
+  - uri: /auth/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 10
+        burst: 5
+        key_type: var
+        key: remote_addr
+
+  - uri: /elections/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 30
+        burst: 10
+        key_type: var
+        key: remote_addr
+
+  - uri: /results/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 20
+        burst: 10
+        key_type: var
+        key: remote_addr
+
+  - uri: /geo/tiles/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      proxy-cache:
+        cache_ttl: 300
+      limit-req:
+        rate: 120
+        burst: 60
+        key_type: var
+        key: remote_addr
+
+  - uri: /geo/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 60
+        burst: 30
+        key_type: var
+        key: remote_addr
+
+  - uri: /dashboard/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 30
+        burst: 15
+        key_type: var
+        key: remote_addr
+
+  - uri: /audit/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 20
+        burst: 10
+        key_type: var
+        key: remote_addr
+
+  - uri: /incidents/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+    plugins:
+      limit-req:
+        rate: 15
+        burst: 5
+        key_type: var
+        key: remote_addr
+
+  - uri: /middleware/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+
+  - uri: /parties
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+
+  - uri: /healthz
+    upstream:
+      type: roundrobin
+      nodes:
+        "go-backend:8088": 1
+
+#END

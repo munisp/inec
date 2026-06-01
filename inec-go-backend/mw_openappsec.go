@@ -1,0 +1,397 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+// OpenAppSecClient provides Web Application Firewall (WAF) capabilities:
+// request inspection, bot detection, threat intelligence, and IP reputation.
+type OpenAppSecClient interface {
+	InspectRequest(ctx context.Context, req WAFRequest) (*WAFDecision, error)
+	GetThreatLog(ctx context.Context, limit int) ([]WAFEvent, error)
+	GetStats(ctx context.Context) (*WAFStats, error)
+	AddIPToBlocklist(ctx context.Context, ip, reason string) error
+	GetBlocklist(ctx context.Context) ([]BlocklistEntry, error)
+	Status() MWStatus
+}
+
+type WAFRequest struct {
+	SourceIP   string            `json:"source_ip"`
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body,omitempty"`
+	UserAgent  string            `json:"user_agent"`
+}
+
+type WAFDecision struct {
+	Action      string   `json:"action"` // allow, block, challenge
+	ThreatLevel string   `json:"threat_level"`
+	RulesMatched []string `json:"rules_matched"`
+	Score       int      `json:"score"`
+	RequestID   string   `json:"request_id"`
+}
+
+type WAFEvent struct {
+	ID          int    `json:"id"`
+	RequestID   string `json:"request_id"`
+	SourceIP    string `json:"source_ip"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	RuleID      string `json:"rule_id"`
+	Action      string `json:"action"`
+	ThreatLevel string `json:"threat_level"`
+	Details     string `json:"details"`
+	Timestamp   string `json:"timestamp"`
+}
+
+type WAFStats struct {
+	TotalRequests    int            `json:"total_requests"`
+	BlockedRequests  int            `json:"blocked_requests"`
+	ThreatsByLevel   map[string]int `json:"threats_by_level"`
+	TopBlockedIPs    []IPCount      `json:"top_blocked_ips"`
+	TopAttackVectors []AttackVector `json:"top_attack_vectors"`
+}
+
+type IPCount struct {
+	IP    string `json:"ip"`
+	Count int    `json:"count"`
+}
+
+type AttackVector struct {
+	Type  string `json:"type"`
+	Count int    `json:"count"`
+}
+
+type BlocklistEntry struct {
+	IP        string `json:"ip"`
+	Reason    string `json:"reason"`
+	AddedAt   string `json:"added_at"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// Embedded OpenAppSec WAF with SQL injection, XSS, path traversal detection
+type embeddedWAF struct {
+	mu        sync.RWMutex
+	blocklist map[string]BlocklistEntry
+}
+
+func newEmbeddedWAF() *embeddedWAF {
+	return &embeddedWAF{
+		blocklist: make(map[string]BlocklistEntry),
+	}
+}
+
+var sqlInjectionPatterns = []string{
+	"' OR ", "' AND ", "UNION SELECT", "DROP TABLE", "DELETE FROM",
+	"INSERT INTO", "UPDATE SET", "--", "/*", "*/", "xp_cmdshell",
+	"EXEC(", "EXECUTE(", "WAITFOR DELAY", "BENCHMARK(",
+}
+
+var xssPatterns = []string{
+	"<script", "javascript:", "onerror=", "onload=", "eval(",
+	"document.cookie", "window.location", "innerHTML",
+}
+
+var pathTraversalPatterns = []string{
+	"../", "..\\", "%2e%2e", "%252e%252e",
+	"/etc/passwd", "/etc/shadow", "cmd.exe",
+}
+
+func (w *embeddedWAF) InspectRequest(ctx context.Context, req WAFRequest) (*WAFDecision, error) {
+	decision := &WAFDecision{
+		Action:      "allow",
+		ThreatLevel: "none",
+		Score:       0,
+		RequestID:   fmt.Sprintf("waf-%d", time.Now().UnixNano()),
+	}
+
+	// Check blocklist
+	w.mu.RLock()
+	if _, blocked := w.blocklist[req.SourceIP]; blocked {
+		w.mu.RUnlock()
+		decision.Action = "block"
+		decision.ThreatLevel = "critical"
+		decision.RulesMatched = append(decision.RulesMatched, "IP_BLOCKLIST")
+		decision.Score = 100
+		w.logEvent(ctx, decision, req)
+		return decision, nil
+	}
+	w.mu.RUnlock()
+
+	checkStr := strings.ToUpper(req.Path + " " + req.Body + " " + req.UserAgent)
+
+	// SQL Injection detection
+	for _, pattern := range sqlInjectionPatterns {
+		if strings.Contains(checkStr, strings.ToUpper(pattern)) {
+			decision.RulesMatched = append(decision.RulesMatched, "SQLI_"+pattern)
+			decision.Score += 40
+		}
+	}
+
+	// XSS detection
+	for _, pattern := range xssPatterns {
+		if strings.Contains(checkStr, strings.ToUpper(pattern)) {
+			decision.RulesMatched = append(decision.RulesMatched, "XSS_DETECTED")
+			decision.Score += 30
+		}
+	}
+
+	// Path traversal detection
+	for _, pattern := range pathTraversalPatterns {
+		if strings.Contains(checkStr, strings.ToUpper(pattern)) {
+			decision.RulesMatched = append(decision.RulesMatched, "PATH_TRAVERSAL")
+			decision.Score += 50
+		}
+	}
+
+	// Determine action based on score
+	switch {
+	case decision.Score >= 80:
+		decision.Action = "block"
+		decision.ThreatLevel = "critical"
+	case decision.Score >= 40:
+		decision.Action = "block"
+		decision.ThreatLevel = "high"
+	case decision.Score >= 20:
+		decision.Action = "challenge"
+		decision.ThreatLevel = "medium"
+	case decision.Score > 0:
+		decision.ThreatLevel = "low"
+	}
+
+	if decision.Score > 0 {
+		w.logEvent(ctx, decision, req)
+	}
+
+	return decision, nil
+}
+
+func (w *embeddedWAF) logEvent(ctx context.Context, decision *WAFDecision, req WAFRequest) {
+	rulesJSON, _ := json.Marshal(decision.RulesMatched)
+	db.ExecContext(ctx,
+		`INSERT INTO mw_waf_events (request_id, source_ip, method, path, rule_id, action, threat_level, details)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		decision.RequestID, req.SourceIP, req.Method, req.Path,
+		string(rulesJSON), decision.Action, decision.ThreatLevel,
+		fmt.Sprintf("score=%d", decision.Score))
+}
+
+func (w *embeddedWAF) GetThreatLog(ctx context.Context, limit int) ([]WAFEvent, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, request_id, source_ip, method, path, rule_id, action, threat_level, details, created_at
+		 FROM mw_waf_events ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []WAFEvent
+	for rows.Next() {
+		var ev WAFEvent
+		if err := rows.Scan(&ev.ID, &ev.RequestID, &ev.SourceIP, &ev.Method, &ev.Path,
+			&ev.RuleID, &ev.Action, &ev.ThreatLevel, &ev.Details, &ev.Timestamp); err != nil {
+			continue
+		}
+		events = append(events, ev)
+	}
+	return events, nil
+}
+
+func (w *embeddedWAF) GetStats(ctx context.Context) (*WAFStats, error) {
+	stats := &WAFStats{
+		ThreatsByLevel: make(map[string]int),
+	}
+
+	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_waf_events`).Scan(&stats.TotalRequests)
+	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_waf_events WHERE action='block'`).Scan(&stats.BlockedRequests)
+
+	rows, _ := db.QueryContext(ctx, `SELECT threat_level, COUNT(*) FROM mw_waf_events GROUP BY threat_level`)
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var level string
+			var count int
+			rows.Scan(&level, &count)
+			stats.ThreatsByLevel[level] = count
+		}
+	}
+
+	rows2, _ := db.QueryContext(ctx,
+		`SELECT source_ip, COUNT(*) as cnt FROM mw_waf_events WHERE action='block' GROUP BY source_ip ORDER BY cnt DESC LIMIT 10`)
+	if rows2 != nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var ip string
+			var count int
+			rows2.Scan(&ip, &count)
+			stats.TopBlockedIPs = append(stats.TopBlockedIPs, IPCount{IP: ip, Count: count})
+		}
+	}
+
+	return stats, nil
+}
+
+func (w *embeddedWAF) AddIPToBlocklist(ctx context.Context, ip, reason string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.blocklist[ip] = BlocklistEntry{
+		IP:      ip,
+		Reason:  reason,
+		AddedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	return nil
+}
+
+func (w *embeddedWAF) GetBlocklist(ctx context.Context) ([]BlocklistEntry, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var entries []BlocklistEntry
+	for _, e := range w.blocklist {
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func (w *embeddedWAF) Status() MWStatus {
+	return MWStatus{
+		Name:      "OpenAppSec",
+		Connected: true,
+		Mode:      "embedded (rule-based WAF)",
+		Details:   "SQLi, XSS, path traversal detection",
+	}
+}
+
+func initOpenAppSecClient() OpenAppSecClient {
+	baseURL := os.Getenv("OPENAPPSEC_URL")
+	if baseURL != "" {
+		log.Printf("OpenAppSec: external mode configured at %s (not yet integrated)", baseURL)
+	}
+	log.Println("OpenAppSec: using embedded rule-based WAF")
+	return newEmbeddedWAF()
+}
+
+// WAF middleware for HTTP request inspection
+func wafMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mwHub == nil || mwHub.OpenAppSec == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
+
+		wafReq := WAFRequest{
+			SourceIP:  ip,
+			Method:    r.Method,
+			Path:      r.URL.Path,
+			UserAgent: r.UserAgent(),
+		}
+
+		decision, err := mwHub.OpenAppSec.InspectRequest(r.Context(), wafReq)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if decision.Action == "block" {
+			writeJSON(w, 403, M{
+				"error":        "request blocked by WAF",
+				"threat_level": decision.ThreatLevel,
+				"request_id":   decision.RequestID,
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// HTTP handlers
+func handleWAFInspect(w http.ResponseWriter, r *http.Request) {
+	var req WAFRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid request body")
+		return
+	}
+	decision, err := mwHub.OpenAppSec.InspectRequest(r.Context(), req)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, decision)
+}
+
+func handleWAFThreatLog(w http.ResponseWriter, r *http.Request) {
+	limit := queryParamInt(r, "limit", 50)
+	events, err := mwHub.OpenAppSec.GetThreatLog(r.Context(), limit)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	if events == nil {
+		events = []WAFEvent{}
+	}
+	writeJSON(w, 200, M{"events": events, "count": len(events)})
+}
+
+func handleWAFStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := mwHub.OpenAppSec.GetStats(r.Context())
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, stats)
+}
+
+func handleWAFBlocklist(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		var req struct {
+			IP     string `json:"ip"`
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "invalid request body")
+			return
+		}
+		if err := mwHub.OpenAppSec.AddIPToBlocklist(r.Context(), req.IP, req.Reason); err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 201, M{"blocked": true, "ip": req.IP})
+		return
+	}
+
+	entries, err := mwHub.OpenAppSec.GetBlocklist(r.Context())
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []BlocklistEntry{}
+	}
+	writeJSON(w, 200, M{"blocklist": entries})
+}
+
+func handleWAFStatus(w http.ResponseWriter, r *http.Request) {
+	status := mwHub.OpenAppSec.Status()
+	writeJSON(w, 200, M{
+		"name":       status.Name,
+		"connected":  status.Connected,
+		"mode":       status.Mode,
+		"details":    status.Details,
+		"rules":      []string{"SQL_INJECTION", "XSS", "PATH_TRAVERSAL", "IP_BLOCKLIST"},
+	})
+}

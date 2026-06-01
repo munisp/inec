@@ -1,0 +1,13 @@
+*.db
+*.db-shm
+*.db-wal
+inec-go-backend/inec-go-backend
+inec-backend/inec-go-backend
+test.db*
+app.db*
+bin/
+.env
+.env.local
+*.log
+node_modules/
+dist/

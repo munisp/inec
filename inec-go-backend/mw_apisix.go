@@ -1,0 +1,208 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+)
+
+type APISIXRoute struct {
+	ID      string                 `json:"id"`
+	URI     string                 `json:"uri"`
+	Methods []string               `json:"methods,omitempty"`
+	Plugins map[string]interface{} `json:"plugins,omitempty"`
+	Upstream map[string]interface{} `json:"upstream,omitempty"`
+}
+
+type APISIXClient interface {
+	RegisterRoute(ctx context.Context, route APISIXRoute) error
+	DeleteRoute(ctx context.Context, routeID string) error
+	GetRoutes(ctx context.Context) ([]APISIXRoute, error)
+	GetConfig() map[string]interface{}
+	Status() MWStatus
+	Close() error
+}
+
+type apisixHTTPClient struct {
+	baseURL string
+	apiKey  string
+	client  *http.Client
+}
+
+func (a *apisixHTTPClient) RegisterRoute(ctx context.Context, route APISIXRoute) error {
+	body, _ := json.Marshal(route)
+	url := fmt.Sprintf("%s/apisix/admin/routes/%s", a.baseURL, route.ID)
+	req, _ := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-KEY", a.apiKey)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (a *apisixHTTPClient) DeleteRoute(ctx context.Context, routeID string) error {
+	url := fmt.Sprintf("%s/apisix/admin/routes/%s", a.baseURL, routeID)
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	req.Header.Set("X-API-KEY", a.apiKey)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (a *apisixHTTPClient) GetRoutes(ctx context.Context) ([]APISIXRoute, error) {
+	url := fmt.Sprintf("%s/apisix/admin/routes", a.baseURL)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req.Header.Set("X-API-KEY", a.apiKey)
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		List []struct {
+			Value APISIXRoute `json:"value"`
+		} `json:"list"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	routes := make([]APISIXRoute, len(result.List))
+	for i, r := range result.List {
+		routes[i] = r.Value
+	}
+	return routes, nil
+}
+
+func (a *apisixHTTPClient) GetConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"mode":     "external",
+		"base_url": a.baseURL,
+		"routes":   apisixDefaultRoutes(),
+	}
+}
+
+func (a *apisixHTTPClient) Status() MWStatus {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", a.baseURL+"/apisix/admin/routes", nil)
+	req.Header.Set("X-API-KEY", a.apiKey)
+	lat, err := measureLatency(func() error {
+		resp, e := a.client.Do(req)
+		if e != nil {
+			return e
+		}
+		resp.Body.Close()
+		return nil
+	})
+	if err != nil {
+		return MWStatus{Name: "APISIX", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
+	}
+	return MWStatus{Name: "APISIX", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+}
+
+func (a *apisixHTTPClient) Close() error { return nil }
+
+type embeddedAPISIX struct {
+	routes []APISIXRoute
+}
+
+func newEmbeddedAPISIX() *embeddedAPISIX {
+	return &embeddedAPISIX{routes: apisixDefaultRoutes()}
+}
+
+func (a *embeddedAPISIX) RegisterRoute(_ context.Context, route APISIXRoute) error {
+	for i, r := range a.routes {
+		if r.ID == route.ID {
+			a.routes[i] = route
+			return nil
+		}
+	}
+	a.routes = append(a.routes, route)
+	return nil
+}
+
+func (a *embeddedAPISIX) DeleteRoute(_ context.Context, routeID string) error {
+	for i, r := range a.routes {
+		if r.ID == routeID {
+			a.routes = append(a.routes[:i], a.routes[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (a *embeddedAPISIX) GetRoutes(_ context.Context) ([]APISIXRoute, error) {
+	return a.routes, nil
+}
+
+func (a *embeddedAPISIX) GetConfig() map[string]interface{} {
+	return map[string]interface{}{
+		"mode":   "embedded",
+		"routes": a.routes,
+		"plugins": map[string]interface{}{
+			"rate_limiting": map[string]interface{}{
+				"tiles":   "60 req/s",
+				"metrics": "10 req/s",
+				"results": "20 req/s",
+				"reports": "5 req/s",
+			},
+			"jwt_auth":        "enabled",
+			"cors":            "enabled",
+			"gzip":            "enabled",
+			"security_headers": "enabled",
+		},
+	}
+}
+
+func (a *embeddedAPISIX) Status() MWStatus {
+	return MWStatus{
+		Name: "APISIX", Connected: true, Mode: "embedded",
+		Latency: "0.0ms",
+		Details: fmt.Sprintf("local gateway config, %d routes, rate limiting + JWT + CORS + gzip active", len(a.routes)),
+	}
+}
+
+func (a *embeddedAPISIX) Close() error { return nil }
+
+func apisixDefaultRoutes() []APISIXRoute {
+	return []APISIXRoute{
+		{ID: "auth", URI: "/auth/*", Methods: []string{"POST", "GET"}, Plugins: map[string]interface{}{"limit-req": map[string]interface{}{"rate": 10, "burst": 5}}},
+		{ID: "elections", URI: "/elections/*", Methods: []string{"GET", "POST", "PATCH"}, Plugins: map[string]interface{}{"jwt-auth": map[string]interface{}{}, "limit-req": map[string]interface{}{"rate": 30, "burst": 10}}},
+		{ID: "results", URI: "/results/*", Methods: []string{"GET", "POST"}, Plugins: map[string]interface{}{"jwt-auth": map[string]interface{}{}, "limit-req": map[string]interface{}{"rate": 20, "burst": 10}}},
+		{ID: "geo", URI: "/geo/*", Methods: []string{"GET"}, Plugins: map[string]interface{}{"limit-req": map[string]interface{}{"rate": 60, "burst": 30}}},
+		{ID: "tiles", URI: "/geo/tiles/*", Methods: []string{"GET"}, Plugins: map[string]interface{}{"proxy-cache": map[string]interface{}{"cache_ttl": 300}, "limit-req": map[string]interface{}{"rate": 120, "burst": 60}}},
+		{ID: "dashboard", URI: "/dashboard/*", Methods: []string{"GET", "POST"}, Plugins: map[string]interface{}{"limit-req": map[string]interface{}{"rate": 30, "burst": 15}}},
+		{ID: "audit", URI: "/audit/*", Methods: []string{"GET"}, Plugins: map[string]interface{}{"jwt-auth": map[string]interface{}{}, "limit-req": map[string]interface{}{"rate": 20, "burst": 10}}},
+		{ID: "incidents", URI: "/incidents/*", Methods: []string{"GET", "POST", "PATCH"}, Plugins: map[string]interface{}{"jwt-auth": map[string]interface{}{}, "limit-req": map[string]interface{}{"rate": 15, "burst": 5}}},
+		{ID: "websocket", URI: "/results/ws/*", Plugins: map[string]interface{}{"websocket": map[string]interface{}{}}},
+		{ID: "middleware", URI: "/middleware/*", Methods: []string{"GET"}, Plugins: map[string]interface{}{"jwt-auth": map[string]interface{}{}}},
+	}
+}
+
+func initAPISIXClient() APISIXClient {
+	apisixURL := envOrDefault("APISIX_ADMIN_URL", "")
+	if apisixURL != "" {
+		apiKey := envOrDefault("APISIX_API_KEY", "edd1c9f034335f136f87ad84b625c8f1")
+		client := &apisixHTTPClient{
+			baseURL: apisixURL,
+			apiKey:  apiKey,
+			client:  &http.Client{Timeout: 5 * time.Second},
+		}
+		s := client.Status()
+		if s.Connected {
+			log.Println("[APISIX] Connected to external APISIX at", apisixURL)
+			return client
+		}
+		log.Println("[APISIX] External APISIX unreachable, falling back to embedded")
+	}
+	log.Println("[APISIX] Using embedded gateway configuration")
+	return newEmbeddedAPISIX()
+}
