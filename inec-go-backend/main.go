@@ -555,6 +555,29 @@ func newRateLimiter() *rateLimiterStore {
 }
 
 func (rl *rateLimiterStore) allow(key string, limit int, window time.Duration) bool {
+	// Try Redis-backed rate limiting for multi-replica consistency
+	if mwHub != nil && mwHub.Redis != nil {
+		return rl.allowRedis(key, limit, window)
+	}
+	return rl.allowLocal(key, limit, window)
+}
+
+func (rl *rateLimiterStore) allowRedis(key string, limit int, window time.Duration) bool {
+	ctx := context.Background()
+	redisKey := "ratelimit:" + key
+	count, err := mwHub.Redis.Incr(ctx, redisKey)
+	if err != nil {
+		// Fall back to local on Redis error
+		return rl.allowLocal(key, limit, window)
+	}
+	if count == 1 {
+		// First request in window — set expiry
+		mwHub.Redis.Expire(ctx, redisKey, window)
+	}
+	return int(count) <= limit
+}
+
+func (rl *rateLimiterStore) allowLocal(key string, limit int, window time.Duration) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := time.Now()

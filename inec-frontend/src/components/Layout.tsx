@@ -65,27 +65,29 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
         </div>
       </div>
-      <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
+      <nav className="flex-1 p-2 space-y-1 overflow-y-auto" aria-label="Main navigation" role="navigation">
         {NAV_ITEMS.map((item: any) => {
           const isActive = currentPage === item.path;
           return (
             <div key={item.path}>
               {item.section && (
-                <div className="px-3 pt-3 pb-1">
+                <div className="px-3 pt-3 pb-1" role="separator">
                   <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">{item.section}</span>
                 </div>
               )}
               <button
                 onClick={() => { onNavigate(item.path); setSidebarOpen(false); }}
+                aria-current={isActive ? 'page' : undefined}
+                aria-label={`Navigate to ${item.label}`}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                   isActive
                     ? 'bg-green-50 text-green-800 font-medium'
                     : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900'
                 }`}
               >
-                <item.icon className={`w-4 h-4 ${isActive ? 'text-green-700' : ''}`} />
+                <item.icon className={`w-4 h-4 ${isActive ? 'text-green-700' : ''}`} aria-hidden="true" />
                 {item.label}
-                {isActive && <ChevronRight className="w-4 h-4 ml-auto" />}
+                {isActive && <ChevronRight className="w-4 h-4 ml-auto" aria-hidden="true" />}
               </button>
             </div>
           );

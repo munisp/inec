@@ -530,13 +530,13 @@ func TestTokenWithWrongSecretRejected(t *testing.T) {
 func TestRateLimiterWindowExpiry(t *testing.T) {
 	rl := newRateLimiter()
 
-	// Fill to limit with very short window
+	// Fill to limit with very short window (use allowLocal to test sliding window logic)
 	for i := 0; i < 3; i++ {
-		rl.allow("test-key", 3, 50*time.Millisecond)
+		rl.allowLocal("test-key", 3, 50*time.Millisecond)
 	}
 
 	// Should be blocked
-	if rl.allow("test-key", 3, 50*time.Millisecond) {
+	if rl.allowLocal("test-key", 3, 50*time.Millisecond) {
 		t.Error("should be rate limited")
 	}
 
@@ -544,7 +544,7 @@ func TestRateLimiterWindowExpiry(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 
 	// Should be allowed again
-	if !rl.allow("test-key", 3, 50*time.Millisecond) {
+	if !rl.allowLocal("test-key", 3, 50*time.Millisecond) {
 		t.Error("should be allowed after window expiry")
 	}
 }
