@@ -1,10 +1,17 @@
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8088';
 
-function getToken(): string | null {
-  return localStorage.getItem('token');
+export class ApiError extends Error {
+  constructor(public status: number, public detail: string) {
+    super(detail);
+    this.name = 'ApiError';
+  }
 }
 
-async function request(path: string, options: RequestInit = {}) {
+function getToken(): string | null {
+  return localStorage.getItem('token') || localStorage.getItem('inec_token');
+}
+
+async function request(path: string, options: RequestInit = {}, retries = 2) {
   const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -12,12 +19,25 @@ async function request(path: string, options: RequestInit = {}) {
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || 'Request failed');
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        if (attempt < retries && res.status >= 500) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        throw new ApiError(res.status, err.detail || err.error || 'Request failed');
+      }
+      return res.json();
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
   }
-  return res.json();
+  throw new Error('request failed after retries');
 }
 
 export const api = {

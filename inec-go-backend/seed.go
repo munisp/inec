@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"math/rand"
 )
 
@@ -213,7 +213,7 @@ func seedDatabase(db *sql.DB) {
 
 	rows, err := db.Query("SELECT code FROM polling_units ORDER BY RANDOM() LIMIT 800")
 	if err != nil {
-		log.Printf("seedDatabase: polling_units query failed: %v", err)
+		log.Warn().Err(err).Msg("seedDatabase: polling_units query failed")
 		return
 	}
 	var samplePUs []string

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"sync"
 	"time"
@@ -202,11 +202,11 @@ func initDaprClient() DaprClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[Dapr] Connected to sidecar at", daprURL)
+			log.Info().Str("url", daprURL).Msg("Dapr connected")
 			return client
 		}
-		log.Println("[Dapr] Sidecar unreachable, falling back to embedded")
+		log.Warn().Msg("Dapr sidecar unreachable, falling back to embedded")
 	}
-	log.Println("[Dapr] Using embedded local state/pubsub")
+	log.Info().Msg("Dapr using embedded local state/pubsub")
 	return newEmbeddedDapr()
 }

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"time"
 )
@@ -221,11 +221,11 @@ func initLakehouseClient() LakehouseClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[Lakehouse] Connected to external Lakehouse at", lakehouseURL)
+			log.Info().Str("url", lakehouseURL).Msg("Lakehouse connected")
 			return client
 		}
-		log.Println("[Lakehouse] External Lakehouse unreachable, falling back to embedded")
+		log.Warn().Msg("Lakehouse unreachable, falling back to embedded")
 	}
-	log.Println("[Lakehouse] Using embedded SQLite analytics")
+	log.Info().Msg("Lakehouse using embedded SQLite analytics")
 	return &embeddedLakehouse{}
 }

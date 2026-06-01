@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"strings"
 
 	"github.com/lib/pq"
@@ -74,14 +74,14 @@ func openPgCompat(dsn string) *sql.DB {
 func openDatabase(dsn string) *sql.DB {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		usePostgres = true
-		log.Println("Using PostgreSQL database")
+		log.Info().Msg("Using PostgreSQL database")
 		return openPgCompat(dsn)
 	}
 	usePostgres = false
-	log.Println("Using SQLite database (fallback)")
+	log.Info().Msg("Using SQLite database (fallback)")
 	d, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		log.Fatal("SQLite connection failed: ", err)
+		log.Fatal().Err(err).Msg("SQLite connection failed")
 	}
 	d.Exec("PRAGMA journal_mode=WAL")
 	d.Exec("PRAGMA foreign_keys=ON")
@@ -99,7 +99,7 @@ func execMulti(database *sql.DB, multiSQL string) {
 	if !usePostgres {
 		multiSQL = convertDDLForSQLite(multiSQL)
 		if _, err := database.Exec(multiSQL); err != nil {
-			log.Printf("execMulti(sqlite) warning: %v", err)
+			log.Warn().Err(err).Msg("execMulti(sqlite) warning")
 		}
 		return
 	}
@@ -110,7 +110,7 @@ func execMulti(database *sql.DB, multiSQL string) {
 			continue
 		}
 		if _, err := database.Exec(s); err != nil {
-			log.Printf("execMulti warning: %v (stmt: %.80s...)", err, s)
+			log.Warn().Err(err).Msg("execMulti warning")
 		}
 	}
 }

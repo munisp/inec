@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { I18nProvider } from '@/lib/i18n';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import Layout from '@/components/Layout';
 import LoginPage from '@/pages/LoginPage';
 import DashboardPage from '@/pages/DashboardPage';
@@ -65,7 +66,9 @@ function AppContent() {
 
   return (
     <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
-      {pages[currentPage] || <DashboardPage />}
+      <ErrorBoundary>
+        {pages[currentPage] || <DashboardPage />}
+      </ErrorBoundary>
     </Layout>
   );
 }

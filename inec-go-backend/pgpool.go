@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
 	"strings"
@@ -80,19 +80,18 @@ func initPgpool() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn != "" && strings.Contains(dsn, "pgpool") {
 		pgpoolEnabled = true
-		log.Println("Pgpool-II detected in DATABASE_URL — monitoring enabled")
+		log.Info().Msg("Pgpool-II detected in DATABASE_URL — monitoring enabled")
 	} else if pgpoolHost != "pgpool" || os.Getenv("PGPOOL_ENABLED") == "true" {
 		pgpoolEnabled = true
-		log.Println("Pgpool-II monitoring enabled via env config")
+		log.Info().Msg("Pgpool-II monitoring enabled via env config")
 	}
 
 	if pgpoolEnabled {
 		go pgpoolHealthCheckLoop()
 		go pgpoolNodeMonitorLoop()
-		log.Printf("Pgpool-II integration initialized: host=%s port=%s pcp=%s:%s",
-			pgpoolHost, pgpoolPort, pgpoolPCPHost, pgpoolPCPPort)
+		log.Info().Str("host", pgpoolHost).Str("port", pgpoolPort).Msg("Pgpool-II integration initialized")
 	} else {
-		log.Println("Pgpool-II not configured — running in direct-connect mode")
+		log.Info().Msg("Pgpool-II not configured — running in direct-connect mode")
 	}
 }
 
@@ -121,7 +120,7 @@ func pgpoolRunHealthCheck() {
 			pgpoolMetrics.mu.Lock()
 			pgpoolMetrics.PrimaryHealthy = false
 			pgpoolMetrics.mu.Unlock()
-			log.Printf("PGPOOL_HEALTH: primary ping failed: %v", err)
+			log.Warn().Err(err).Msg("Pgpool primary ping failed")
 		} else {
 			pgpoolMetrics.mu.Lock()
 			pgpoolMetrics.PrimaryHealthy = true
@@ -134,7 +133,7 @@ func pgpoolRunHealthCheck() {
 			pgpoolMetrics.mu.Lock()
 			pgpoolMetrics.ReplicaHealthy = false
 			pgpoolMetrics.mu.Unlock()
-			log.Printf("PGPOOL_HEALTH: replica ping failed: %v", err)
+			log.Warn().Err(err).Msg("Pgpool replica ping failed")
 		} else {
 			pgpoolMetrics.mu.Lock()
 			pgpoolMetrics.ReplicaHealthy = true

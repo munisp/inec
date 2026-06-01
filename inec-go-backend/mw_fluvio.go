@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"sync"
 	"time"
@@ -164,11 +164,11 @@ func initFluvioClient() FluvioClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[Fluvio] Connected to external Fluvio at", fluvioURL)
+			log.Info().Str("url", fluvioURL).Msg("Fluvio connected")
 			return client
 		}
-		log.Println("[Fluvio] External Fluvio unreachable, falling back to embedded")
+		log.Warn().Msg("Fluvio unreachable, falling back to embedded")
 	}
-	log.Println("[Fluvio] Using embedded in-memory streaming")
+	log.Info().Msg("Fluvio using embedded in-memory streaming")
 	return newEmbeddedFluvio()
 }

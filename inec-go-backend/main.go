@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +18,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
+	"github.com/rs/zerolog/log"
 	_ "modernc.org/sqlite"
 )
 
@@ -35,6 +35,13 @@ var (
 )
 
 func main() {
+	// Initialize structured logging
+	initLogger()
+	// Initialize input validation
+	initValidator()
+	// Initialize Prometheus metrics
+	initMetrics()
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dbPath := os.Getenv("DB_PATH")
@@ -48,9 +55,9 @@ func main() {
 	defer db.Close()
 
 	if err := db.Ping(); err != nil {
-		log.Fatal("Database connection failed: ", err)
+		log.Fatal().Err(err).Msg("Database connection failed")
 	}
-	log.Println("Database connected")
+	log.Info().Msg("Database connected")
 
 	initScaledDB(db)
 	initPgpool()
@@ -410,7 +417,26 @@ func main() {
 	r.HandleFunc("/middleware/waf/stats", handleWAFStats).Methods("GET")
 	r.HandleFunc("/middleware/waf/blocklist", handleWAFBlocklist).Methods("GET", "POST")
 
-	handler := corsMiddleware(securityHeaders(wafMiddleware(requestSizeLimit(rateLimitMiddleware(gzipMiddleware(r))))))
+	// INEC Domain Logic — Form Validation, Collation, Reconciliation
+	r.HandleFunc("/inec/ec8a/submit", handleSubmitEC8A).Methods("POST")
+	r.HandleFunc("/inec/collation", handleHierarchicalCollation).Methods("GET")
+	r.HandleFunc("/inec/reconciliation/ballot", handleBallotReconciliation).Methods("GET")
+	r.HandleFunc("/inec/reconciliation/dual-ledger", handleDualLedgerReconciliation).Methods("GET")
+
+	// Prometheus metrics endpoint
+	r.Handle("/metrics", metricsHandler()).Methods("GET")
+
+	// Middleware chain: request ID → access log → metrics → CORS → auth → security → WAF → rate limit → gzip → size limit
+	handler := requestIDMiddleware(
+		accessLogMiddleware(
+			metricsMiddleware(
+				corsProductionMiddleware(
+					jwtAuthMiddleware(
+						securityHeaders(
+							wafMiddleware(
+								requestSizeLimit(
+									rateLimitMiddleware(
+						gzipMiddleware(r))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -430,14 +456,14 @@ func main() {
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("INEC Go Backend listening on %s", addr)
+		log.Info().Str("addr", addr).Msg("INEC Go Backend listening")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+			log.Fatal().Err(err).Msg("Server failed")
 		}
 	}()
 
 	<-done
-	log.Println("Shutting down gracefully...")
+	log.Info().Msg("Shutting down gracefully...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -448,13 +474,13 @@ func main() {
 	}
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("Forced shutdown: %v", err)
+		log.Error().Err(err).Msg("Forced shutdown")
 	}
 
 	if db != nil {
 		db.Close()
 	}
-	log.Println("Server stopped")
+	log.Info().Msg("Server stopped")
 }
 
 type M map[string]interface{}

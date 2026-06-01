@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log"
+	"github.com/rs/zerolog/log"
 	"time"
 )
 
@@ -148,7 +148,7 @@ func initMiddlewareTables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_mw_mojaloop_phase ON mw_mojaloop_transactions(phase);
 	`
 	execMulti(database, schema)
-	log.Println("Middleware persistence tables initialized")
+	log.Info().Msg("Middleware persistence tables initialized")
 }
 
 // Cache operations backed by mw_cache

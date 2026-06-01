@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"time"
 )
@@ -198,11 +198,11 @@ func initAPISIXClient() APISIXClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[APISIX] Connected to external APISIX at", apisixURL)
+			log.Info().Str("url", apisixURL).Msg("APISIX connected")
 			return client
 		}
-		log.Println("[APISIX] External APISIX unreachable, falling back to embedded")
+		log.Warn().Msg("APISIX unreachable, falling back to embedded")
 	}
-	log.Println("[APISIX] Using embedded gateway configuration")
+	log.Info().Msg("APISIX using embedded gateway config")
 	return newEmbeddedAPISIX()
 }

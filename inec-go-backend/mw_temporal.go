@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"sync"
 	"time"
@@ -234,11 +234,11 @@ func initTemporalClient() TemporalClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[Temporal] Connected to external Temporal at", temporalURL)
+			log.Info().Str("url", temporalURL).Msg("Temporal connected")
 			return client
 		}
-		log.Println("[Temporal] External Temporal unreachable, falling back to embedded")
+		log.Warn().Msg("Temporal unreachable, falling back to embedded")
 	}
-	log.Println("[Temporal] Using embedded local workflow engine")
+	log.Info().Msg("Temporal using embedded local workflow engine")
 	return newEmbeddedTemporal()
 }

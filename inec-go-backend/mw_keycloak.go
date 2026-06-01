@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Nerzal/gocloak/v13"
+	"github.com/rs/zerolog/log"
 )
 
 type KeycloakUser struct {
@@ -170,12 +172,111 @@ func (k *embeddedKeycloak) Status() MWStatus {
 
 func (k *embeddedKeycloak) Close() error { return nil }
 
+// --- Real Keycloak client using gocloak ---
+
+type goClockKeycloak struct {
+	client       *gocloak.GoCloak
+	realm        string
+	clientID     string
+	clientSecret string
+}
+
+func newGoClockKeycloak(baseURL, realm, clientID, clientSecret string) *goClockKeycloak {
+	client := gocloak.NewClient(baseURL)
+	return &goClockKeycloak{
+		client:       client,
+		realm:        realm,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+	}
+}
+
+func (g *goClockKeycloak) ValidateToken(ctx context.Context, token string) (*KeycloakUser, error) {
+	rptResult, err := g.client.RetrospectToken(ctx, token, g.clientID, g.clientSecret, g.realm)
+	if err != nil {
+		return nil, fmt.Errorf("token introspection failed: %w", err)
+	}
+	if rptResult.Active == nil || !*rptResult.Active {
+		return nil, fmt.Errorf("token is not active")
+	}
+	info, err := g.client.GetUserInfo(ctx, token, g.realm)
+	if err != nil {
+		return nil, fmt.Errorf("get user info failed: %w", err)
+	}
+	user := &KeycloakUser{
+		Realm: g.realm,
+		Role:  "public",
+	}
+	if info.Sub != nil {
+		user.ID = *info.Sub
+	}
+	if info.PreferredUsername != nil {
+		user.Username = *info.PreferredUsername
+	}
+	if info.Email != nil {
+		user.Email = *info.Email
+	}
+	if info.Name != nil {
+		user.FullName = *info.Name
+	}
+	return user, nil
+}
+
+func (g *goClockKeycloak) GetUserInfo(ctx context.Context, token string) (*KeycloakUser, error) {
+	return g.ValidateToken(ctx, token)
+}
+
+func (g *goClockKeycloak) IntrospectToken(ctx context.Context, token string) (map[string]interface{}, error) {
+	rptResult, err := g.client.RetrospectToken(ctx, token, g.clientID, g.clientSecret, g.realm)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"active": rptResult.Active != nil && *rptResult.Active,
+	}, nil
+}
+
+func (g *goClockKeycloak) Status() MWStatus {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	lat, err := measureLatency(func() error {
+		_, e := g.client.GetServerInfo(ctx, func() string {
+			token, _ := g.client.LoginClient(ctx, g.clientID, g.clientSecret, g.realm)
+			if token != nil {
+				return token.AccessToken
+			}
+			return ""
+		}())
+		return e
+	})
+	if err != nil {
+		return MWStatus{Name: "Keycloak", Connected: false, Mode: "gocloak (unreachable)", Details: err.Error()}
+	}
+	return MWStatus{Name: "Keycloak", Connected: true, Mode: "native gocloak", Latency: fmtLatency(lat), Details: "realm: " + g.realm + ", OIDC, token introspection"}
+}
+
+func (g *goClockKeycloak) Close() error { return nil }
+
+// --- Init ---
+
 func initKeycloakClient() KeycloakClient {
 	kcURL := envOrDefault("KEYCLOAK_URL", "")
 	if kcURL != "" {
 		realm := envOrDefault("KEYCLOAK_REALM", "inec")
 		clientID := envOrDefault("KEYCLOAK_CLIENT_ID", "inec-backend")
 		clientSecret := envOrDefault("KEYCLOAK_CLIENT_SECRET", "")
+
+		// Try gocloak first
+		if clientSecret != "" {
+			gc := newGoClockKeycloak(kcURL, realm, clientID, clientSecret)
+			s := gc.Status()
+			if s.Connected {
+				log.Info().Str("url", kcURL).Str("realm", realm).Msg("Keycloak connected via gocloak")
+				return gc
+			}
+		}
+
+		// Fall back to HTTP client
 		client := &keycloakHTTPClient{
 			baseURL:      kcURL,
 			realm:        realm,
@@ -185,11 +286,11 @@ func initKeycloakClient() KeycloakClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[Keycloak] Connected to external Keycloak at", kcURL, "realm:", realm)
+			log.Info().Str("url", kcURL).Str("realm", realm).Msg("Keycloak connected via HTTP")
 			return client
 		}
-		log.Println("[Keycloak] External Keycloak unreachable, falling back to local JWT")
+		log.Warn().Str("url", kcURL).Msg("Keycloak unreachable, falling back to local JWT")
 	}
-	log.Println("[Keycloak] Using embedded local JWT validation")
+	log.Info().Msg("Keycloak using embedded local JWT validation")
 	return &embeddedKeycloak{}
 }

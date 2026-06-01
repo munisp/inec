@@ -17,7 +17,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
+	"github.com/rs/zerolog/log"
 	"math"
 	"math/big"
 	mrand "math/rand"
@@ -184,7 +184,7 @@ func initProductionUpgrades(database *sql.DB) {
 	prodTB = NewProductionTBEngine(database)
 
 	seedProductionUpgrades(database)
-	log.Println("[ProductionUpgrades] All production components initialized")
+	log.Info().Msg("All production components initialized")
 }
 
 type ProductionHSM struct {
@@ -230,7 +230,7 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 		mode:     mode,
 	}
 
-	log.Printf("[HSM] Production HSM initialized in %s mode (P-384 ECDSA, AES-256-GCM)", mode)
+	log.Info().Str("mode", mode).Msg("Production HSM initialized")
 	return hsm
 }
 
@@ -528,7 +528,7 @@ func NewProductionSMSGateway(database *sql.DB) *ProductionSMSGateway {
 	if gw.apiKey != "" {
 		mode = "live (" + provider + ")"
 	}
-	log.Printf("[SMS] Production gateway initialized: provider=%s mode=%s shortcode=%s", provider, mode, gw.shortCode)
+	log.Info().Str("provider", provider).Str("mode", mode).Msg("SMS gateway initialized")
 	return gw
 }
 
@@ -705,7 +705,7 @@ func NewProductionPADEngine(database *sql.DB) *ProductionPADEngine {
 		_ = mid
 	}
 
-	log.Println("[PAD] Production PAD engine initialized with 3 models (ISO 30107 Level 2-3)")
+	log.Info().Msg("PAD engine initialized with 3 models")
 	return engine
 }
 
@@ -1201,11 +1201,11 @@ func seedProductionUpgrades(database *sql.DB) {
 		for _, purpose := range []string{"template_encryption", "signing", "key_wrapping", "biometric_vault", "result_signing"} {
 			prodHSM.GenerateKey(purpose, "AES", 256)
 		}
-		log.Println("[HSM] Seeded 5 production keys")
+		log.Info().Msg("HSM: Seeded 5 production keys")
 	}
 
 	if prodPAD != nil {
-		log.Println("[PAD] Seeded 3 PAD models (fingerprint, facial, iris)")
+		log.Info().Msg("PAD: Seeded 3 models")
 	}
 }
 

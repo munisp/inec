@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
 	"strconv"
@@ -24,10 +24,10 @@ func init() {
 	s := os.Getenv("JWT_SECRET")
 	if s == "" {
 		// Generate a random secret at startup if none provided (dev mode only)
-		log.Println("WARNING: JWT_SECRET not set — using random ephemeral key. Set JWT_SECRET env var in production.")
+		log.Warn().Msg("JWT_SECRET not set — using random ephemeral key")
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
-			log.Fatal("failed to generate random JWT secret: ", err)
+			log.Fatal().Err(err).Msg("failed to generate random JWT secret")
 		}
 		s = base64.RawURLEncoding.EncodeToString(b)
 	}

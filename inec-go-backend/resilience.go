@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"math"
 	"net/http"
 	"sync"
@@ -52,7 +52,7 @@ func (cb *CircuitBreaker) Allow() bool {
 		if time.Since(cb.lastFailure) > cb.resetTimeout {
 			cb.state = cbHalfOpen
 			cb.successes = 0
-			log.Printf("[circuit-breaker] %s: open → half-open", cb.name)
+			log.Info().Str("breaker", cb.name).Msg("circuit breaker: open → half-open")
 			return true
 		}
 		return false
@@ -70,7 +70,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 		cb.successes++
 		if cb.successes >= cb.halfOpenMax {
 			cb.state = cbClosed
-			log.Printf("[circuit-breaker] %s: half-open → closed", cb.name)
+			log.Info().Str("breaker", cb.name).Msg("circuit breaker: half-open → closed")
 		}
 	}
 }
@@ -82,7 +82,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	cb.lastFailure = time.Now()
 	if cb.failures >= cb.threshold {
 		cb.state = cbOpen
-		log.Printf("[circuit-breaker] %s: closed → open (failures=%d)", cb.name, cb.failures)
+		log.Warn().Str("breaker", cb.name).Int("failures", cb.failures).Msg("circuit breaker: closed → open")
 	}
 }
 

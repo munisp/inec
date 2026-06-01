@@ -7,7 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
 	"time"
@@ -335,12 +335,12 @@ func initMojaloopClient() MojaloopClient {
 		}
 		_, err := client.PartyLookup(context.Background(), "MSISDN", "test")
 		if err == nil {
-			log.Println("Mojaloop: external connection established")
+			log.Info().Msg("Mojaloop connected to external service")
 			return client
 		}
 		log.Printf("Mojaloop: external connection failed (%v), using embedded", err)
 	}
-	log.Println("Mojaloop: using embedded DB-backed implementation")
+	log.Info().Msg("Mojaloop using embedded DB-backed implementation")
 	return &embeddedMojaloop{}
 }
 

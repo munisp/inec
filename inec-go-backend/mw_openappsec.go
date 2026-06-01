@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net"
 	"net/http"
 	"os"
@@ -276,7 +276,7 @@ func initOpenAppSecClient() OpenAppSecClient {
 	if baseURL != "" {
 		log.Printf("OpenAppSec: external mode configured at %s (not yet integrated)", baseURL)
 	}
-	log.Println("OpenAppSec: using embedded rule-based WAF")
+	log.Info().Msg("OpenAppSec using embedded rule-based WAF")
 	return newEmbeddedWAF()
 }
 

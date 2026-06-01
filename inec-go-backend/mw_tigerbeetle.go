@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -309,11 +309,11 @@ func initTigerBeetleClient() TigerBeetleClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[TigerBeetle] Connected to external TigerBeetle at", tbURL)
+			log.Info().Str("url", tbURL).Msg("TigerBeetle connected")
 			return client
 		}
-		log.Println("[TigerBeetle] External TigerBeetle unreachable, falling back to embedded")
+		log.Warn().Msg("TigerBeetle unreachable, falling back to embedded")
 	}
-	log.Println("[TigerBeetle] Using embedded local ledger")
+	log.Info().Msg("TigerBeetle using embedded local ledger")
 	return newEmbeddedTigerBeetle()
 }

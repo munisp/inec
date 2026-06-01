@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type PermifyCheck struct {
@@ -192,11 +193,11 @@ func initPermifyClient() PermifyClient {
 		}
 		s := client.Status()
 		if s.Connected {
-			log.Println("[Permify] Connected to external Permify at", permifyURL)
+			log.Info().Str("url", permifyURL).Msg("Permify connected via HTTP")
 			return client
 		}
-		log.Println("[Permify] External Permify unreachable, falling back to local RBAC")
+		log.Warn().Str("url", permifyURL).Msg("Permify unreachable, falling back to local RBAC")
 	}
-	log.Println("[Permify] Using embedded local RBAC")
+	log.Info().Msg("Permify using embedded local RBAC")
 	return &embeddedPermify{}
 }

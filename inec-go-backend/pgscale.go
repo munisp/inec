@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
 	"strings"
@@ -164,10 +164,10 @@ func initScaledDB(primary *sql.DB) {
 		replica.SetConnMaxLifetime(5 * time.Minute)
 		replica.SetConnMaxIdleTime(30 * time.Second)
 		if err := replica.Ping(); err != nil {
-			log.Printf("WARNING: Read replica connection failed: %v, using primary for reads", err)
+			log.Warn().Err(err).Msg("Read replica connection failed, using primary for reads")
 		} else {
 			dbReader = replica
-			log.Println("Read replica connected — reads will be routed to replica")
+			log.Info().Msg("Read replica connected — reads will be routed to replica")
 		}
 	}
 
@@ -176,8 +176,7 @@ func initScaledDB(primary *sql.DB) {
 	if t := os.Getenv("SLOW_QUERY_THRESHOLD_MS"); t != "" {
 		fmt.Sscanf(t, "%d", &slowQueryThresholdMs)
 	}
-	log.Printf("DB scaling initialized: slow_query_threshold=%dms, primary_max_conn=%d",
-		slowQueryThresholdMs, primary.Stats().MaxOpenConnections)
+	log.Info().Int64("slow_query_threshold_ms", slowQueryThresholdMs).Int("max_open", primary.Stats().MaxOpenConnections).Msg("DB scaling initialized")
 }
 
 func dbQueryCtx(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
@@ -188,7 +187,7 @@ func dbQueryCtx(ctx context.Context, query string, args ...interface{}) (*sql.Ro
 	dbMetrics.recordRead(time.Since(start), isReplica)
 	d := time.Since(start)
 	if d.Milliseconds() > slowQueryThresholdMs {
-		log.Printf("SLOW_QUERY read=%dms q=%.120s", d.Milliseconds(), query)
+		log.Warn().Int64("ms", d.Milliseconds()).Msg("SLOW_QUERY read")
 	}
 	return rows, err
 }
@@ -201,7 +200,7 @@ func dbQueryRowCtx(ctx context.Context, query string, args ...interface{}) *sql.
 	dbMetrics.recordRead(time.Since(start), isReplica)
 	d := time.Since(start)
 	if d.Milliseconds() > slowQueryThresholdMs {
-		log.Printf("SLOW_QUERY read_row=%dms q=%.120s", d.Milliseconds(), query)
+		log.Warn().Int64("ms", d.Milliseconds()).Msg("SLOW_QUERY read_row")
 	}
 	return row
 }
@@ -212,7 +211,7 @@ func dbExecCtx(ctx context.Context, query string, args ...interface{}) (sql.Resu
 	dbMetrics.recordWrite(time.Since(start))
 	d := time.Since(start)
 	if d.Milliseconds() > slowQueryThresholdMs {
-		log.Printf("SLOW_QUERY write=%dms q=%.120s", d.Milliseconds(), query)
+		log.Warn().Int64("ms", d.Milliseconds()).Msg("SLOW_QUERY write")
 	}
 	return res, err
 }
@@ -270,7 +269,7 @@ func dbBatchInsert(table string, columns []string, rows [][]interface{}) error {
 
 	for _, row := range rows {
 		if _, err := stmt.Exec(row...); err != nil {
-			log.Printf("batch insert warning: %v", err)
+			log.Warn().Err(err).Msg("batch insert warning")
 		}
 	}
 	dbMetrics.recordWrite(time.Since(start))
@@ -332,13 +331,10 @@ func periodicPoolStats() {
 	for {
 		time.Sleep(60 * time.Second)
 		stats := dbWriter.Stats()
-		log.Printf("DB_POOL primary: open=%d in_use=%d idle=%d wait_count=%d wait_dur=%s",
-			stats.OpenConnections, stats.InUse, stats.Idle,
-			stats.WaitCount, stats.WaitDuration)
+		log.Info().Int("open", stats.OpenConnections).Int("in_use", stats.InUse).Int("idle", stats.Idle).Msg("DB_POOL primary")
 		if dbReader != nil && dbReader != dbWriter {
 			rs := dbReader.Stats()
-			log.Printf("DB_POOL replica: open=%d in_use=%d idle=%d wait_count=%d",
-				rs.OpenConnections, rs.InUse, rs.Idle, rs.WaitCount)
+			log.Info().Int("open", rs.OpenConnections).Int("in_use", rs.InUse).Int("idle", rs.Idle).Msg("DB_POOL replica")
 		}
 	}
 }

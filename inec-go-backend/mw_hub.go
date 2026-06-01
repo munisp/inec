@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type MiddlewareHub struct {
@@ -103,7 +104,7 @@ func (h *MiddlewareHub) GetAllStatus() []MWStatus {
 func (h *MiddlewareHub) logStatus() {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	log.Println("=== Middleware Status ===")
+	log.Info().Msg("=== Middleware Status ===")
 	for name, s := range h.status {
 		mode := s.Mode
 		if s.Connected {
@@ -111,9 +112,9 @@ func (h *MiddlewareHub) logStatus() {
 		} else {
 			mode += " [fallback]"
 		}
-		log.Printf("  %-14s %s", name, mode)
+		log.Info().Str("component", name).Str("mode", mode).Msg("middleware")
 	}
-	log.Println("========================")
+	log.Info().Msg("========================")
 }
 
 func (h *MiddlewareHub) HealthCheck() map[string]interface{} {
@@ -155,13 +156,20 @@ func fmtLatency(d time.Duration) string {
 
 // Shutdown closes all middleware connections gracefully.
 func (h *MiddlewareHub) Shutdown() {
-	log.Println("Shutting down middleware hub...")
-	// Each client is either an HTTP-based or embedded fallback —
-	// embedded ones hold no external connections to close.
-	// Log final status for diagnostic purposes.
+	log.Info().Msg("Shutting down middleware hub...")
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for name, s := range h.status {
-		log.Printf("  middleware shutdown: %-14s mode=%s connected=%v", name, s.Mode, s.Connected)
+		log.Info().Str("component", name).Str("mode", s.Mode).Bool("connected", s.Connected).Msg("middleware shutdown")
+	}
+	// Close real clients
+	if h.Redis != nil {
+		h.Redis.Close()
+	}
+	if h.Kafka != nil {
+		h.Kafka.Close()
+	}
+	if h.TigerBeetle != nil {
+		h.TigerBeetle.Close()
 	}
 }

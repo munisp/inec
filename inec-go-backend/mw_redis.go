@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 )
 
+// RedisClient defines the interface for Redis operations.
 type RedisClient interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
@@ -22,96 +24,86 @@ type RedisClient interface {
 	Close() error
 }
 
-type redisHTTPClient struct {
-	baseURL string
-	client  *http.Client
+// --- Real Redis client using go-redis ---
+
+type realRedisClient struct {
+	client *redis.Client
+	addr   string
 }
 
-func (r *redisHTTPClient) doCmd(ctx context.Context, cmd string, args ...string) (string, error) {
-	payload := map[string]interface{}{"command": cmd, "args": args}
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/exec", jsonReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var result struct {
-		Value string `json:"value"`
-		Error string `json:"error"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.Error != "" {
-		return "", fmt.Errorf("%s", result.Error)
-	}
-	return result.Value, nil
+func newRealRedisClient(addr, password string, db int) *realRedisClient {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         addr,
+		Password:     password,
+		DB:           db,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolSize:     20,
+		MinIdleConns: 5,
+	})
+	return &realRedisClient{client: rdb, addr: addr}
 }
 
-func (r *redisHTTPClient) Get(ctx context.Context, key string) (string, error) {
-	return r.doCmd(ctx, "GET", key)
+func (r *realRedisClient) Get(ctx context.Context, key string) (string, error) {
+	return r.client.Get(ctx, key).Result()
 }
 
-func (r *redisHTTPClient) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
-	v := fmt.Sprintf("%v", value)
-	if ttl > 0 {
-		_, err := r.doCmd(ctx, "SETEX", key, fmt.Sprintf("%d", int(ttl.Seconds())), v)
-		return err
-	}
-	_, err := r.doCmd(ctx, "SET", key, v)
-	return err
+func (r *realRedisClient) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	return r.client.Set(ctx, key, value, ttl).Err()
 }
 
-func (r *redisHTTPClient) Del(ctx context.Context, keys ...string) error {
-	_, err := r.doCmd(ctx, "DEL", keys...)
-	return err
+func (r *realRedisClient) Del(ctx context.Context, keys ...string) error {
+	return r.client.Del(ctx, keys...).Err()
 }
 
-func (r *redisHTTPClient) Publish(ctx context.Context, channel string, message interface{}) error {
+func (r *realRedisClient) Publish(ctx context.Context, channel string, message interface{}) error {
 	v, _ := json.Marshal(message)
-	_, err := r.doCmd(ctx, "PUBLISH", channel, string(v))
-	return err
+	return r.client.Publish(ctx, channel, string(v)).Err()
 }
 
-func (r *redisHTTPClient) Subscribe(ctx context.Context, channel string, handler func(string)) error {
+func (r *realRedisClient) Subscribe(ctx context.Context, channel string, handler func(string)) error {
+	sub := r.client.Subscribe(ctx, channel)
+	go func() {
+		ch := sub.Channel()
+		for msg := range ch {
+			handler(msg.Payload)
+		}
+	}()
 	return nil
 }
 
-func (r *redisHTTPClient) Incr(ctx context.Context, key string) (int64, error) {
-	v, err := r.doCmd(ctx, "INCR", key)
-	if err != nil {
-		return 0, err
-	}
-	var n int64
-	fmt.Sscanf(v, "%d", &n)
-	return n, nil
+func (r *realRedisClient) Incr(ctx context.Context, key string) (int64, error) {
+	return r.client.Incr(ctx, key).Result()
 }
 
-func (r *redisHTTPClient) Expire(ctx context.Context, key string, ttl time.Duration) error {
-	_, err := r.doCmd(ctx, "EXPIRE", key, fmt.Sprintf("%d", int(ttl.Seconds())))
-	return err
+func (r *realRedisClient) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	return r.client.Expire(ctx, key, ttl).Err()
 }
 
-func (r *redisHTTPClient) Ping() MWStatus {
+func (r *realRedisClient) Ping() MWStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	lat, err := measureLatency(func() error {
-		_, e := r.doCmd(ctx, "PING")
-		return e
+		return r.client.Ping(ctx).Err()
 	})
 	if err != nil {
 		return MWStatus{Name: "Redis", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
 	}
-	return MWStatus{Name: "Redis", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+	return MWStatus{Name: "Redis", Connected: true, Mode: "native go-redis", Latency: fmtLatency(lat), Details: "connection pool, pub/sub, TTL"}
 }
 
-func (r *redisHTTPClient) Close() error { return nil }
+func (r *realRedisClient) Close() error {
+	return r.client.Close()
+}
+
+// --- Embedded fallback (in-memory) ---
 
 type embeddedRedis struct {
-	mu      sync.RWMutex
-	store   map[string]redisEntry
-	subs    map[string][]func(string)
-	subsMu  sync.RWMutex
+	mu     sync.RWMutex
+	store  map[string]redisEntry
+	subs   map[string][]func(string)
+	subsMu sync.RWMutex
 }
 
 type redisEntry struct {
@@ -220,20 +212,36 @@ func (r *embeddedRedis) Ping() MWStatus {
 
 func (r *embeddedRedis) Close() error { return nil }
 
+// --- Init ---
+
 func initRedisClient() RedisClient {
-	redisURL := envOrDefault("REDIS_URL", "")
-	if redisURL != "" {
-		client := &redisHTTPClient{
-			baseURL: redisURL,
-			client:  &http.Client{Timeout: 5 * time.Second},
+	redisAddr := envOrDefault("REDIS_ADDR", "")
+	if redisAddr == "" {
+		// Try legacy REDIS_URL
+		redisURL := envOrDefault("REDIS_URL", "")
+		if redisURL != "" {
+			// Parse redis://host:port or just host:port
+			redisAddr = redisURL
+			if len(redisAddr) > 7 && redisAddr[:7] == "redis://" {
+				redisAddr = redisAddr[8:]
+			}
+			if len(redisAddr) > 8 && redisAddr[:8] == "http://" {
+				redisAddr = redisAddr[7:]
+			}
 		}
+	}
+
+	if redisAddr != "" {
+		password := envOrDefault("REDIS_PASSWORD", "")
+		client := newRealRedisClient(redisAddr, password, 0)
 		s := client.Ping()
 		if s.Connected {
-			log.Println("[Redis] Connected to external Redis at", redisURL)
+			log.Info().Str("addr", redisAddr).Msg("Redis connected via go-redis")
 			return client
 		}
-		log.Println("[Redis] External Redis unreachable, falling back to embedded")
+		log.Warn().Str("addr", redisAddr).Msg("Redis unreachable, falling back to embedded")
+		client.Close()
 	}
-	log.Println("[Redis] Using embedded in-memory store")
+	log.Info().Msg("Redis using embedded in-memory store")
 	return newEmbeddedRedis()
 }
