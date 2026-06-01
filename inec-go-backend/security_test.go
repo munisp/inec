@@ -574,3 +574,257 @@ func TestAllowedSelfRegRoles(t *testing.T) {
 		}
 	}
 }
+
+// ── Election CRUD Tests ──
+
+func TestCreateElectionRequiresAuth(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/elections", writeAuth(handleCreateElection)).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	body := `{"title":"Test Election","election_type":"presidential","election_date":"2027-02-15"}`
+	req := httptest.NewRequest("POST", "/elections", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 401 {
+		t.Errorf("expected 401 without auth, got %d", w.Code)
+	}
+}
+
+func TestListElectionsWithAuth(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/elections", readAuth(handleListElections)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "testuser", "role": "public", "full_name": "Test",
+	})
+	req := httptest.NewRequest("GET", "/elections", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200 with auth, got %d", w.Code)
+	}
+	var body []interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+}
+
+// ── Result Submit Requires Auth ──
+
+func TestResultSubmitRequiresAuth(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/results/submit", writeAuth(handleSubmitResult)).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	req := httptest.NewRequest("POST", "/results/submit", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 401 {
+		t.Errorf("expected 401 without auth, got %d", w.Code)
+	}
+}
+
+// ── Audit Trail Endpoint Tests ──
+
+func TestAuditTrailReturnsData(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/audit/trail", readAuth(handleAuditTrail)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin1", "role": "admin", "full_name": "Admin",
+	})
+	req := httptest.NewRequest("GET", "/audit/trail", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// ── Domain Logic: Collation Aggregation ──
+
+func TestCollationAggregatesCorrectly(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/inec/collation", readAuth(handleHierarchicalCollation)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "officer1", "role": "collation_officer", "full_name": "Officer",
+	})
+	req := httptest.NewRequest("GET", "/inec/collation?election_id=1&level=state&code=LA", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// ── Domain Logic: Ballot Reconciliation ──
+
+func TestBallotReconciliationEndpoint(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/inec/reconciliation/ballot", readAuth(handleBallotReconciliation)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin1", "role": "admin", "full_name": "Admin",
+	})
+	req := httptest.NewRequest("GET", "/inec/reconciliation/ballot?election_id=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// ── Finalize Result Requires Admin ──
+
+func TestFinalizeResultRequiresAdmin(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/results/{id:[0-9]+}/finalize", adminOnly(handleFinalizeResult)).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	// Officer (not admin) should get 403
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "2", "username": "officer", "role": "presiding_officer", "full_name": "Officer",
+	})
+	req := httptest.NewRequest("POST", "/results/1/finalize", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 403 {
+		t.Errorf("expected 403 for non-admin, got %d", w.Code)
+	}
+}
+
+// ── BVAS Registration Requires Write Auth ──
+
+func TestBVASRegistrationRequiresAuth(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/bvas/devices", writeAuth(handleRegisterBVASDevice)).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	req := httptest.NewRequest("POST", "/bvas/devices", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 401 {
+		t.Errorf("expected 401 without auth, got %d", w.Code)
+	}
+}
+
+// ── Incident Creation Requires Write Auth ──
+
+func TestIncidentCreationRequiresAuth(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/incidents", writeAuth(handleCreateIncident)).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	req := httptest.NewRequest("POST", "/incidents", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 401 {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+// ── Middleware Status Public ──
+
+func TestMiddlewareStatusAccessible(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
+
+	req := httptest.NewRequest("GET", "/middleware/status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if components, ok := body["components"].([]interface{}); ok {
+		if len(components) < 10 {
+			t.Errorf("expected at least 10 middleware components, got %d", len(components))
+		}
+	}
+}
+
+// ── Dashboard Stats Requires Auth ──
+
+func TestDashboardStatsRequiresAuth(t *testing.T) {
+	r := mux.NewRouter()
+	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	req := httptest.NewRequest("GET", "/dashboard/stats", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 401 {
+		t.Errorf("expected 401 without auth, got %d", w.Code)
+	}
+}
+
+// ── Election Validation Tests ──
+
+func TestElectionCreateValidation(t *testing.T) {
+	ec := ElectionCreate{Title: "T", ElectionType: "presidential", ElectionDate: "2027-01-01"}
+	err := validate.Struct(ec)
+	if err == nil {
+		t.Error("title 'T' (1 char) should fail min=3 validation")
+	}
+
+	ec2 := ElectionCreate{Title: "2027 Presidential Election", ElectionType: "presidential", ElectionDate: "2027-02-15"}
+	err2 := validate.Struct(ec2)
+	if err2 != nil {
+		t.Errorf("valid election should pass: %v", err2)
+	}
+
+	ec3 := ElectionCreate{Title: "Test", ElectionType: "invalid_type", ElectionDate: "2027-01-01"}
+	err3 := validate.Struct(ec3)
+	if err3 == nil {
+		t.Error("invalid election_type should fail oneof validation")
+	}
+}
+
+// ── User Promotion Validation ──
+
+func TestUserPromotionValidation(t *testing.T) {
+	up := UserPromotion{UserID: 0, Role: "admin"}
+	err := validate.Struct(up)
+	if err == nil {
+		t.Error("user_id 0 should fail gt=0 validation")
+	}
+
+	up2 := UserPromotion{UserID: 5, Role: "admin"}
+	err2 := validate.Struct(up2)
+	if err2 != nil {
+		t.Errorf("valid promotion should pass: %v", err2)
+	}
+
+	up3 := UserPromotion{UserID: 5, Role: "superadmin"}
+	err3 := validate.Struct(up3)
+	if err3 == nil {
+		t.Error("role 'superadmin' should fail oneof validation")
+	}
+}

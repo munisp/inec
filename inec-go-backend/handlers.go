@@ -1279,7 +1279,10 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 
 func handlePostClientMetric(w http.ResponseWriter, r *http.Request) {
 	var payload map[string]interface{}
-	json.NewDecoder(r.Body).Decode(&payload)
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if payload == nil {
 		payload = map[string]interface{}{}
 	}

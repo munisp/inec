@@ -97,21 +97,21 @@ func main() {
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 	r.HandleFunc("/auth/me", handleMe).Methods("GET")
 
-	// Elections
-	r.HandleFunc("/elections", handleListElections).Methods("GET")
-	r.HandleFunc("/elections/{id:[0-9]+}", handleGetElection).Methods("GET")
-	r.HandleFunc("/elections", handleCreateElection).Methods("POST")
-	r.HandleFunc("/elections/{id:[0-9]+}", handleUpdateElection).Methods("PATCH")
-	r.HandleFunc("/elections/{id:[0-9]+}/stats", handleElectionStats).Methods("GET")
+	// Elections — read auth for lists, write auth for mutations
+	r.HandleFunc("/elections", readAuth(handleListElections)).Methods("GET")
+	r.HandleFunc("/elections/{id:[0-9]+}", readAuth(handleGetElection)).Methods("GET")
+	r.HandleFunc("/elections", writeAuth(handleCreateElection)).Methods("POST")
+	r.HandleFunc("/elections/{id:[0-9]+}", writeAuth(handleUpdateElection)).Methods("PATCH")
+	r.HandleFunc("/elections/{id:[0-9]+}/stats", readAuth(handleElectionStats)).Methods("GET")
 
 	// Results
 	r.HandleFunc("/results/ws/updates", handleWSUpdates)
-	r.HandleFunc("/results/submit", handleSubmitResult).Methods("POST")
-	r.HandleFunc("/results/{id:[0-9]+}/validate", handleValidateResult).Methods("POST")
-	r.HandleFunc("/results/{id:[0-9]+}/finalize", handleFinalizeResult).Methods("POST")
-	r.HandleFunc("/results/{id:[0-9]+}/dispute", handleDisputeResult).Methods("POST")
-	r.HandleFunc("/results", handleListResults).Methods("GET")
-	r.HandleFunc("/results/{id:[0-9]+}", handleGetResult).Methods("GET")
+	r.HandleFunc("/results/submit", writeAuth(handleSubmitResult)).Methods("POST")
+	r.HandleFunc("/results/{id:[0-9]+}/validate", writeAuth(handleValidateResult)).Methods("POST")
+	r.HandleFunc("/results/{id:[0-9]+}/finalize", adminOnly(handleFinalizeResult)).Methods("POST")
+	r.HandleFunc("/results/{id:[0-9]+}/dispute", writeAuth(handleDisputeResult)).Methods("POST")
+	r.HandleFunc("/results", readAuth(handleListResults)).Methods("GET")
+	r.HandleFunc("/results/{id:[0-9]+}", readAuth(handleGetResult)).Methods("GET")
 
 	// Geo
 	r.HandleFunc("/geo/states", handleListStates).Methods("GET")
@@ -125,25 +125,25 @@ func main() {
 	r.HandleFunc("/geo/reports/polling-units.csv", handleExportCSV).Methods("GET")
 	r.HandleFunc("/geo/reports/polling-units.geojson", handleExportGeoJSON).Methods("GET")
 
-	// Dashboard
-	r.HandleFunc("/dashboard/stats", handleDashboardStats).Methods("GET")
-	r.HandleFunc("/dashboard/live-feed", handleLiveFeed).Methods("GET")
-	r.HandleFunc("/dashboard/collation", handleCollation).Methods("GET")
-	r.HandleFunc("/dashboard/metrics/client", handlePostClientMetric).Methods("POST")
-	r.HandleFunc("/dashboard/metrics/client/recent", handleRecentClientMetrics).Methods("GET")
+	// Dashboard — read auth for data, write auth for metrics
+	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")
+	r.HandleFunc("/dashboard/live-feed", readAuth(handleLiveFeed)).Methods("GET")
+	r.HandleFunc("/dashboard/collation", readAuth(handleCollation)).Methods("GET")
+	r.HandleFunc("/dashboard/metrics/client", readAuth(handlePostClientMetric)).Methods("POST")
+	r.HandleFunc("/dashboard/metrics/client/recent", readAuth(handleRecentClientMetrics)).Methods("GET")
 
-	// Audit
-	r.HandleFunc("/audit/trail", handleAuditTrail).Methods("GET")
-	r.HandleFunc("/audit/verify/{id:[0-9]+}", handleVerifyResult).Methods("GET")
-	r.HandleFunc("/audit/stats", handleAuditStats).Methods("GET")
+	// Audit — read auth for viewing
+	r.HandleFunc("/audit/trail", readAuth(handleAuditTrail)).Methods("GET")
+	r.HandleFunc("/audit/verify/{id:[0-9]+}", readAuth(handleVerifyResult)).Methods("GET")
+	r.HandleFunc("/audit/stats", readAuth(handleAuditStats)).Methods("GET")
 
-	// Incidents
-	r.HandleFunc("/incidents", handleCreateIncident).Methods("POST")
-	r.HandleFunc("/incidents", handleListIncidents).Methods("GET")
-	r.HandleFunc("/incidents/{id:[0-9]+}", handleUpdateIncident).Methods("PATCH")
+	// Incidents — write auth for create/update, read for listing
+	r.HandleFunc("/incidents", writeAuth(handleCreateIncident)).Methods("POST")
+	r.HandleFunc("/incidents", readAuth(handleListIncidents)).Methods("GET")
+	r.HandleFunc("/incidents/{id:[0-9]+}", writeAuth(handleUpdateIncident)).Methods("PATCH")
 
 	// Parties
-	r.HandleFunc("/parties", handleListParties).Methods("GET")
+	r.HandleFunc("/parties", readAuth(handleListParties)).Methods("GET")
 
 	// BVAS — auth required
 	r.HandleFunc("/bvas/devices", readAuth(handleListBVASDevices)).Methods("GET")
@@ -383,41 +383,41 @@ func main() {
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
 	r.HandleFunc("/middleware/health", handleMiddlewareHealth).Methods("GET")
-	r.HandleFunc("/middleware/kafka/topics", handleKafkaTopics).Methods("GET")
-	r.HandleFunc("/middleware/temporal/workflows", handleTemporalWorkflows).Methods("GET")
-	r.HandleFunc("/middleware/temporal/workflows/{id}", handleTemporalWorkflowStatus).Methods("GET")
-	r.HandleFunc("/middleware/tigerbeetle/accounts", handleTBAccounts).Methods("GET")
-	r.HandleFunc("/middleware/tigerbeetle/transfers", handleTBTransfers).Methods("GET")
-	r.HandleFunc("/middleware/apisix/routes", handleAPISIXRoutes).Methods("GET")
-	r.HandleFunc("/middleware/apisix/config", handleAPISIXConfig).Methods("GET")
-	r.HandleFunc("/middleware/permify/check", handlePermifyCheck).Methods("POST")
-	r.HandleFunc("/middleware/fluvio/topics", handleFluvioTopics).Methods("GET")
-	r.HandleFunc("/middleware/fluvio/consume/{topic}", handleFluvioConsume).Methods("GET")
-	r.HandleFunc("/middleware/lakehouse/analytics/{election_id}/{type}", handleLakehouseAnalytics).Methods("GET")
-	r.HandleFunc("/middleware/lakehouse/tables", handleLakehouseTables).Methods("GET")
-	r.HandleFunc("/middleware/redis/stats", handleRedisStats).Methods("GET")
+	r.HandleFunc("/middleware/kafka/topics", readAuth(handleKafkaTopics)).Methods("GET")
+	r.HandleFunc("/middleware/temporal/workflows", readAuth(handleTemporalWorkflows)).Methods("GET")
+	r.HandleFunc("/middleware/temporal/workflows/{id}", readAuth(handleTemporalWorkflowStatus)).Methods("GET")
+	r.HandleFunc("/middleware/tigerbeetle/accounts", readAuth(handleTBAccounts)).Methods("GET")
+	r.HandleFunc("/middleware/tigerbeetle/transfers", readAuth(handleTBTransfers)).Methods("GET")
+	r.HandleFunc("/middleware/apisix/routes", readAuth(handleAPISIXRoutes)).Methods("GET")
+	r.HandleFunc("/middleware/apisix/config", readAuth(handleAPISIXConfig)).Methods("GET")
+	r.HandleFunc("/middleware/permify/check", writeAuth(handlePermifyCheck)).Methods("POST")
+	r.HandleFunc("/middleware/fluvio/topics", readAuth(handleFluvioTopics)).Methods("GET")
+	r.HandleFunc("/middleware/fluvio/consume/{topic}", readAuth(handleFluvioConsume)).Methods("GET")
+	r.HandleFunc("/middleware/lakehouse/analytics/{election_id}/{type}", readAuth(handleLakehouseAnalytics)).Methods("GET")
+	r.HandleFunc("/middleware/lakehouse/tables", readAuth(handleLakehouseTables)).Methods("GET")
+	r.HandleFunc("/middleware/redis/stats", adminOnly(handleRedisStats)).Methods("GET")
 
 	// Mojaloop — 4-Phase Transaction Pattern
 	r.HandleFunc("/middleware/mojaloop/status", handleMojaStatus).Methods("GET")
 	r.HandleFunc("/middleware/mojaloop/parties", handleMojaPartyLookup).Methods("GET")
-	r.HandleFunc("/middleware/mojaloop/quotes", handleMojaCreateQuote).Methods("POST")
-	r.HandleFunc("/middleware/mojaloop/transfers", handleMojaCreateTransfer).Methods("POST")
-	r.HandleFunc("/middleware/mojaloop/settlements", handleMojaSettle).Methods("POST")
-	r.HandleFunc("/middleware/mojaloop/transactions", handleMojaTransactions).Methods("GET")
+	r.HandleFunc("/middleware/mojaloop/quotes", writeAuth(handleMojaCreateQuote)).Methods("POST")
+	r.HandleFunc("/middleware/mojaloop/transfers", writeAuth(handleMojaCreateTransfer)).Methods("POST")
+	r.HandleFunc("/middleware/mojaloop/settlements", adminOnly(handleMojaSettle)).Methods("POST")
+	r.HandleFunc("/middleware/mojaloop/transactions", readAuth(handleMojaTransactions)).Methods("GET")
 
 	// OpenSearch — Full-text Search
-	r.HandleFunc("/middleware/opensearch/status", handleOpenSearchStatus).Methods("GET")
-	r.HandleFunc("/middleware/opensearch/search", handleOpenSearchSearch).Methods("GET")
-	r.HandleFunc("/middleware/opensearch/index", handleOpenSearchIndex).Methods("POST")
-	r.HandleFunc("/middleware/opensearch/indices", handleOpenSearchIndices).Methods("GET")
-	r.HandleFunc("/middleware/opensearch/stats", handleOpenSearchStats).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/status", readAuth(handleOpenSearchStatus)).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/search", readAuth(handleOpenSearchSearch)).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/index", writeAuth(handleOpenSearchIndex)).Methods("POST")
+	r.HandleFunc("/middleware/opensearch/indices", readAuth(handleOpenSearchIndices)).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/stats", readAuth(handleOpenSearchStats)).Methods("GET")
 
 	// OpenAppSec — WAF
-	r.HandleFunc("/middleware/waf/status", handleWAFStatus).Methods("GET")
-	r.HandleFunc("/middleware/waf/inspect", handleWAFInspect).Methods("POST")
-	r.HandleFunc("/middleware/waf/threats", handleWAFThreatLog).Methods("GET")
-	r.HandleFunc("/middleware/waf/stats", handleWAFStats).Methods("GET")
-	r.HandleFunc("/middleware/waf/blocklist", handleWAFBlocklist).Methods("GET", "POST")
+	r.HandleFunc("/middleware/waf/status", adminOnly(handleWAFStatus)).Methods("GET")
+	r.HandleFunc("/middleware/waf/inspect", adminOnly(handleWAFInspect)).Methods("POST")
+	r.HandleFunc("/middleware/waf/threats", adminOnly(handleWAFThreatLog)).Methods("GET")
+	r.HandleFunc("/middleware/waf/stats", adminOnly(handleWAFStats)).Methods("GET")
+	r.HandleFunc("/middleware/waf/blocklist", adminOnly(handleWAFBlocklist)).Methods("GET", "POST")
 
 	// INEC Domain Logic — Form Validation, Collation, Reconciliation — auth required
 	r.HandleFunc("/inec/ec8a/submit", writeAuth(handleSubmitEC8A)).Methods("POST")
@@ -426,7 +426,7 @@ func main() {
 	r.HandleFunc("/inec/reconciliation/dual-ledger", readAuth(handleDualLedgerReconciliation)).Methods("GET")
 
 	// Admin user management
-	r.HandleFunc("/admin/users/promote", handlePromoteUser).Methods("POST")
+	r.HandleFunc("/admin/users/promote", adminOnly(handlePromoteUser)).Methods("POST")
 
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")

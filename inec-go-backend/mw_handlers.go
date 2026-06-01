@@ -86,7 +86,10 @@ func handleAPISIXConfig(w http.ResponseWriter, r *http.Request) {
 
 func handlePermifyCheck(w http.ResponseWriter, r *http.Request) {
 	var check PermifyCheck
-	json.NewDecoder(r.Body).Decode(&check)
+	if err := json.NewDecoder(r.Body).Decode(&check); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	ctx := context.Background()
 	allowed, err := mwHub.Permify.Check(ctx, check)
 	if err != nil {
