@@ -354,8 +354,6 @@ export const api = {
   // Stakeholder engagement
   resolveGrievance: (id: number, resolution: string) =>
     request(`/stakeholders/grievances/${id}`, { method: 'PATCH', body: JSON.stringify({ resolution, status: 'resolved' }) }),
-  sendNotification: (title: string, body: string, targetType?: string) =>
-    request('/stakeholders/notifications', { method: 'POST', body: JSON.stringify({ title, body, target_type: targetType || 'all' }) }),
 
   getStakeholderStats: () => request('/stakeholders/stats'),
   getStakeholders: (type?: string, status?: string) => {

@@ -37,10 +37,10 @@ export default function StakeholderPage() {
     if (!notifForm.title || !notifForm.body) return;
     setSending(true);
     try {
-      await api.sendNotification(notifForm.title, notifForm.body);
+      await api.sendNotification({ title: notifForm.title, body: notifForm.body, target_type: 'all' });
       setNotifForm({ title: '', body: '' });
       api.getPushNotifications().then(setNotifications);
-    } catch { /* handled */ }
+    } catch (e) { void e; }
     setSending(false);
   };
 
