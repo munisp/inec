@@ -285,7 +285,7 @@ func handleIngestionSubmit(w http.ResponseWriter, r *http.Request) {
 		Payload        map[string]interface{} `json:"payload"`
 		IdempotencyKey string                 `json:"idempotency_key"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Type == "" {
 		req.Type = "result_submission"
 	}
@@ -317,7 +317,7 @@ func handleBatchUpload(w http.ResponseWriter, r *http.Request) {
 			RejectedVotes    int `json:"rejected_votes"`
 		} `json:"results"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	if len(req.Results) == 0 {
 		writeError(w, 400, "No results in batch")
@@ -388,7 +388,7 @@ func handleOfflineSync(w http.ResponseWriter, r *http.Request) {
 			Timestamp string                 `json:"timestamp"`
 		} `json:"items"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")

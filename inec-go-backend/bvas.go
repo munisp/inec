@@ -264,6 +264,7 @@ func handleRegisterBVASDevice(w http.ResponseWriter, r *http.Request) {
 
 	db.Exec(`INSERT INTO bvas_devices (id, serial_number, polling_unit_code, election_id, status, latitude, longitude) VALUES (?,?,?,?,'registered',?,?)`,
 		devID, req.SerialNumber, req.PollingUnitCode, req.ElectionID, req.Latitude, req.Longitude)
+	auditWrite("BVAS_DEVICE_REGISTERED", "bvas_device", devID, r, map[string]interface{}{"serial": req.SerialNumber, "pu_code": req.PollingUnitCode})
 
 	writeJSON(w, 200, M{"id": devID, "message": "BVAS device registered"})
 }
@@ -291,6 +292,7 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	vals = append(vals, id)
 	db.Exec("UPDATE bvas_devices SET "+strings.Join(updates, ",")+",last_sync_at=CURRENT_TIMESTAMP WHERE id=?", vals...)
+	auditWrite("BVAS_DEVICE_UPDATED", "bvas_device", id, r, req)
 	writeJSON(w, 200, M{"message": "Device updated"})
 }
 
@@ -326,6 +328,7 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		boolToInt(req.BiometricMatch), boolToInt(req.PVCVerified), req.Method)
 
 	db.Exec("UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
+	auditWrite("BVAS_ACCREDITATION", "bvas_accreditation", fmt.Sprintf("%d", lid), r, map[string]interface{}{"device_id": req.DeviceID, "pu_code": req.PollingUnitCode, "biometric_match": req.BiometricMatch})
 
 	go broadcastWS(M{"type": "bvas_accreditation", "pu_code": req.PollingUnitCode, "device_id": req.DeviceID, "election_id": req.ElectionID})
 

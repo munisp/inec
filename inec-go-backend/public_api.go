@@ -313,7 +313,7 @@ func handlePublicAPIKeys(w http.ResponseWriter, r *http.Request) {
 			Name  string `json:"name"`
 			Owner string `json:"owner"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 		if req.Name == "" || req.Owner == "" {
 			writeError(w, 400, "name and owner required")
 			return
