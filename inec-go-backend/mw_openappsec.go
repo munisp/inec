@@ -177,6 +177,9 @@ func (w *embeddedWAF) InspectRequest(ctx context.Context, req WAFRequest) (*WAFD
 }
 
 func (w *embeddedWAF) logEvent(ctx context.Context, decision *WAFDecision, req WAFRequest) {
+	if db == nil {
+		return
+	}
 	rulesJSON, _ := json.Marshal(decision.RulesMatched)
 	db.ExecContext(ctx,
 		`INSERT INTO mw_waf_events (request_id, source_ip, method, path, rule_id, action, threat_level, details)
