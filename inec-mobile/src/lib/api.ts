@@ -139,6 +139,91 @@ export const observerApi = {
 
   partyDashboard: (party: string) =>
     api<PartyDashboard>(`/observer/party-dashboard?party=${party}`),
+
+  submitVideo: (form: FormData) =>
+    api<{ video_url: string; status: string; analysis?: VideoAnalysis }>('/observer/video', {
+      method: 'POST',
+      body: form,
+    }),
+};
+
+// ── KYC & Liveness API ──
+
+export interface KYCResult {
+  user_id: number;
+  status: 'verified' | 'pending_review' | 'rejected' | 'requires_liveness' | 'not_started';
+  identity_match_score: number;
+  document_verified: boolean;
+  face_match_score: number;
+  liveness_passed: boolean;
+  risk_score: number;
+  checks_performed: string[];
+  flags: string[];
+  verification_timestamp: string;
+}
+
+export interface LivenessResult {
+  user_id: number;
+  passed: boolean;
+  confidence: number;
+  method: string;
+  anti_spoofing_score: number;
+  checks: Array<{ name: string; passed: boolean; value?: number; note?: string }>;
+  timestamp: string;
+}
+
+export interface VideoAnalysis {
+  duration_seconds: number;
+  frame_count: number;
+  fps: number;
+  resolution: { width: number; height: number };
+  key_frames_extracted: number;
+  anomalies_detected: Array<{ frame: number; timestamp_sec: number; type: string; description?: string }>;
+  ballot_counting_events: Array<{ frame: number; timestamp_sec: number; type: string }>;
+  integrity_score: number;
+  analysis_summary: string;
+}
+
+export interface DocumentAnalysis {
+  report_id: number;
+  ocr: {
+    serial_number: string | null;
+    polling_unit_code: string | null;
+    party_results: Array<{ party_code: string; votes: number; confidence: number }>;
+    total_valid_votes: number | null;
+    confidence_score: number;
+    extraction_warnings: string[];
+  };
+  vlm: {
+    is_valid_ec8a: boolean;
+    tampering_detected: boolean;
+    tampering_confidence: number;
+    tampering_indicators: string[];
+    document_quality: string;
+    completeness_score: number;
+    analysis_summary: string;
+  };
+  combined_confidence: number;
+  requires_manual_review: boolean;
+}
+
+export const kycApi = {
+  verify: (form: FormData) =>
+    api<KYCResult>('/kyc/verify', { method: 'POST', body: form }),
+
+  liveness: (form: FormData) =>
+    api<LivenessResult>('/kyc/liveness', { method: 'POST', body: form }),
+
+  status: (userId: number) =>
+    api<KYCResult>(`/kyc/status?user_id=${userId}`),
+};
+
+export const documentAIApi = {
+  analyze: (reportId: number) =>
+    api<DocumentAnalysis>(`/document-ai/analyze?report_id=${reportId}`, { method: 'POST' }),
+
+  status: (reportId: number) =>
+    api<{ report_id: number; status: string; ocr_confidence?: number; tampering_detected?: boolean }>(`/document-ai/status?report_id=${reportId}`),
 };
 
 export { API_URL };

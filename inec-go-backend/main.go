@@ -88,6 +88,7 @@ func main() {
 	initAPIKeyRotation(db)
 	initTracing()
 	initObserverTables()
+	initDocumentAISchema()
 
 	mwHub = initMiddlewareHub()
 
@@ -198,6 +199,16 @@ func main() {
 	r.HandleFunc("/observer/check-in", adminOrOfficer(handleObserverCheckIn)).Methods("POST")
 	r.HandleFunc("/observer/stats", readAuth(handleObserverStats)).Methods("GET")
 	r.HandleFunc("/observer/party-dashboard", readAuth(handlePartyDashboard)).Methods("GET")
+	r.HandleFunc("/observer/video", adminOrOfficer(handleUploadVideo)).Methods("POST")
+
+	// Document AI — PaddleOCR, VLM, DocLing analysis
+	r.HandleFunc("/document-ai/analyze", adminOnly(handleAnalyzePhoto)).Methods("POST")
+	r.HandleFunc("/document-ai/status", readAuth(handleDocumentAnalysisStatus)).Methods("GET")
+
+	// KYC & Liveness — identity verification for platform users
+	r.HandleFunc("/kyc/verify", adminOnly(handleKYCVerify)).Methods("POST")
+	r.HandleFunc("/kyc/liveness", readAuth(handleLivenessCheck)).Methods("POST")
+	r.HandleFunc("/kyc/status", readAuth(handleKYCStatus)).Methods("GET")
 
 	// SMS/USSD Gateway — auth required
 	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
