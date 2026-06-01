@@ -455,17 +455,17 @@ func TestVoterRegistrationValidation(t *testing.T) {
 }
 
 func TestIncidentReportValidation(t *testing.T) {
-	// Missing required title
+	// Missing required incident_type and description
 	body := bytes.NewReader([]byte(`{"severity":"high"}`))
 	req := httptest.NewRequest("POST", "/test", body)
 	var dest IncidentReport
 	err := decodeAndValidate(req, &dest)
 	if err == nil {
-		t.Error("incident without title should fail validation")
+		t.Error("incident without incident_type should fail validation")
 	}
 
 	// Valid input
-	body2 := bytes.NewReader([]byte(`{"title":"Ballot Box Snatching","description":"Armed men seized ballot boxes","severity":"critical"}`))
+	body2 := bytes.NewReader([]byte(`{"election_id":1,"incident_type":"ballot_snatching","description":"Armed men seized ballot boxes","severity":"critical"}`))
 	req2 := httptest.NewRequest("POST", "/test", body2)
 	var dest2 IncidentReport
 	err2 := decodeAndValidate(req2, &dest2)

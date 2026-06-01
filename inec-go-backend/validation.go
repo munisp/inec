@@ -25,10 +25,11 @@ type ResultSubmission struct {
 
 // IncidentReport is the validated input for reporting an incident.
 type IncidentReport struct {
-	Title           string `json:"title" validate:"required,min=5,max=200"`
-	Description     string `json:"description" validate:"max=2000"`
-	Severity        string `json:"severity" validate:"required,oneof=low medium high critical"`
+	ElectionID      int    `json:"election_id" validate:"gt=0"`
 	PollingUnitCode string `json:"polling_unit_code"`
+	IncidentType    string `json:"incident_type" validate:"required,min=3,max=100"`
+	Description     string `json:"description" validate:"required,min=5,max=2000"`
+	Severity        string `json:"severity" validate:"oneof=low medium high critical"`
 	StateCode       string `json:"state_code"`
 }
 

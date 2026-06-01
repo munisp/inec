@@ -147,19 +147,9 @@ func handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, err.Error())
 		return
 	}
-	var req struct {
-		Title        string  `json:"title"`
-		ElectionType string  `json:"election_type"`
-		ElectionDate string  `json:"election_date"`
-		Description  *string `json:"description"`
-		Status       string  `json:"status"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
-		return
-	}
-	if req.Title == "" || req.ElectionType == "" || req.ElectionDate == "" {
-		writeError(w, 400, "title, election_type, and election_date are required")
+	var req ElectionCreate
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
 	if req.Status == "" {
@@ -1387,19 +1377,9 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "Not authenticated")
 		return
 	}
-	var req struct {
-		ElectionID      int     `json:"election_id"`
-		PollingUnitCode *string `json:"polling_unit_code"`
-		IncidentType    string  `json:"incident_type"`
-		Description     string  `json:"description"`
-		Severity        string  `json:"severity"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
-		return
-	}
-	if req.IncidentType == "" || req.Description == "" {
-		writeError(w, 400, "incident_type and description are required")
+	var req IncidentReport
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
 	if req.Severity == "" {
@@ -1407,8 +1387,24 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 	}
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
-	lid := insertReturningID(db, "INSERT INTO incidents (election_id, polling_unit_code, reported_by, incident_type, description, severity) VALUES (?,?,?,?,?,?)",
+
+	tx, txErr := db.Begin()
+	if txErr != nil {
+		writeError(w, 500, "transaction start failed")
+		return
+	}
+	res, insErr := tx.Exec("INSERT INTO incidents (election_id, polling_unit_code, reported_by, incident_type, description, severity) VALUES (?,?,?,?,?,?)",
 		req.ElectionID, req.PollingUnitCode, uid, req.IncidentType, req.Description, req.Severity)
+	if insErr != nil {
+		tx.Rollback()
+		writeError(w, 500, "failed to create incident")
+		return
+	}
+	lid, _ := res.LastInsertId()
+	if commitErr := tx.Commit(); commitErr != nil {
+		writeError(w, 500, "transaction commit failed")
+		return
+	}
 	auditWrite("INCIDENT_CREATED", "incident", fmt.Sprintf("%d", lid), r, map[string]interface{}{"type": req.IncidentType, "severity": req.Severity})
 
 	go func() {

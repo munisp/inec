@@ -477,7 +477,7 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vin := fmt.Sprintf("VIN%04d%08d", rand.Intn(9999), time.Now().UnixNano()%100000000)
-	bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.BiometricData+vin)))
+	bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.BiometricData)))
 
 	var dupCount int
 	db.QueryRow("SELECT COUNT(*) FROM voters WHERE biometric_hash=?", bioHash[:32]).Scan(&dupCount)
