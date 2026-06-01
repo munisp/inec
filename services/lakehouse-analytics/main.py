@@ -18,7 +18,7 @@ import duckdb
 import httpx
 import numpy as np
 import structlog
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI
 from pydantic import BaseModel
 from scipy import stats as scipy_stats
 from sklearn.ensemble import IsolationForest
