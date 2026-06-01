@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -21,7 +23,13 @@ var jwtSecret []byte
 func init() {
 	s := os.Getenv("JWT_SECRET")
 	if s == "" {
-		s = "inec-election-platform-secret-key-2027"
+		// Generate a random secret at startup if none provided (dev mode only)
+		log.Println("WARNING: JWT_SECRET not set — using random ephemeral key. Set JWT_SECRET env var in production.")
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			log.Fatal("failed to generate random JWT secret: ", err)
+		}
+		s = base64.RawURLEncoding.EncodeToString(b)
 	}
 	jwtSecret = []byte(s)
 }

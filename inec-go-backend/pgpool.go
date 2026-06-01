@@ -661,8 +661,8 @@ th{background:#f1f8f4;color:#1a5f2a}.badge{padding:.2em .6em;border-radius:4px;f
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
-	fmt.Fprintf(w, tmpl)
-	fmt.Fprintf(w, `<div class="card"><h2>Cluster Status</h2>`)
+	fmt.Fprint(w, tmpl)
+	fmt.Fprint(w, `<div class="card"><h2>Cluster Status</h2>`)
 
 	statusClass := "healthy"
 	if !pgpoolMetrics.PgpoolHealthy {

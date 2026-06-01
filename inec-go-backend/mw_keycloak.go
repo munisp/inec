@@ -37,7 +37,10 @@ type keycloakHTTPClient struct {
 
 func (k *keycloakHTTPClient) ValidateToken(ctx context.Context, token string) (*KeycloakUser, error) {
 	url := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", k.baseURL, k.realm)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := k.client.Do(req)
 	if err != nil {
@@ -48,7 +51,9 @@ func (k *keycloakHTTPClient) ValidateToken(ctx context.Context, token string) (*
 		return nil, fmt.Errorf("token validation failed: %d", resp.StatusCode)
 	}
 	var info map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&info)
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
 	user := &KeycloakUser{
 		ID:       fmt.Sprintf("%v", info["sub"]),
 		Username: fmt.Sprintf("%v", info["preferred_username"]),
@@ -80,15 +85,20 @@ func (k *keycloakHTTPClient) GetUserInfo(ctx context.Context, token string) (*Ke
 func (k *keycloakHTTPClient) IntrospectToken(ctx context.Context, token string) (map[string]interface{}, error) {
 	url := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token/introspect", k.baseURL, k.realm)
 	body := fmt.Sprintf("token=%s&client_id=%s&client_secret=%s", token, k.clientID, k.clientSecret)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := k.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("introspect token: %w", err)
 	}
 	defer resp.Body.Close()
 	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
 	return result, nil
 }
 
@@ -96,7 +106,10 @@ func (k *keycloakHTTPClient) Status() MWStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	url := fmt.Sprintf("%s/realms/%s/.well-known/openid-configuration", k.baseURL, k.realm)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return MWStatus{Name: "Keycloak", Connected: false, Mode: "external (error)", Details: err.Error()}
+	}
 	lat, err := measureLatency(func() error {
 		resp, e := k.client.Do(req)
 		if e != nil {

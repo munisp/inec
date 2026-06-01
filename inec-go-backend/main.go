@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -65,18 +68,20 @@ func main() {
 	initAIProxy()
 	initBlockchainProduction(db)
 	initProductionUpgrades(db)
+	initMiddlewareTables(db)
 
 	mwHub = initMiddlewareHub()
 
+	// Seed search indices after hub is ready
+	go seedSearchIndices(db)
+	// Start background cache cleanup
+	go cleanupExpiredCache()
+
 	r := mux.NewRouter()
 
-	// Health
-	r.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, M{"status": "ok"})
-	}).Methods("GET")
-	r.HandleFunc("/readiness", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, M{"ready": true})
-	}).Methods("GET")
+	// Health — deep checks
+	r.HandleFunc("/healthz", handleDeepHealthCheck).Methods("GET")
+	r.HandleFunc("/readiness", handleReadinessCheck).Methods("GET")
 	r.HandleFunc("/db/metrics", handleDBMetrics).Methods("GET")
 	r.HandleFunc("/db/pool", handleDBPoolStats).Methods("GET")
 
@@ -383,14 +388,73 @@ func main() {
 	r.HandleFunc("/middleware/lakehouse/tables", handleLakehouseTables).Methods("GET")
 	r.HandleFunc("/middleware/redis/stats", handleRedisStats).Methods("GET")
 
-	handler := corsMiddleware(securityHeaders(rateLimitMiddleware(gzipMiddleware(r))))
+	// Mojaloop — 4-Phase Transaction Pattern
+	r.HandleFunc("/middleware/mojaloop/status", handleMojaStatus).Methods("GET")
+	r.HandleFunc("/middleware/mojaloop/parties", handleMojaPartyLookup).Methods("GET")
+	r.HandleFunc("/middleware/mojaloop/quotes", handleMojaCreateQuote).Methods("POST")
+	r.HandleFunc("/middleware/mojaloop/transfers", handleMojaCreateTransfer).Methods("POST")
+	r.HandleFunc("/middleware/mojaloop/settlements", handleMojaSettle).Methods("POST")
+	r.HandleFunc("/middleware/mojaloop/transactions", handleMojaTransactions).Methods("GET")
+
+	// OpenSearch — Full-text Search
+	r.HandleFunc("/middleware/opensearch/status", handleOpenSearchStatus).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/search", handleOpenSearchSearch).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/index", handleOpenSearchIndex).Methods("POST")
+	r.HandleFunc("/middleware/opensearch/indices", handleOpenSearchIndices).Methods("GET")
+	r.HandleFunc("/middleware/opensearch/stats", handleOpenSearchStats).Methods("GET")
+
+	// OpenAppSec — WAF
+	r.HandleFunc("/middleware/waf/status", handleWAFStatus).Methods("GET")
+	r.HandleFunc("/middleware/waf/inspect", handleWAFInspect).Methods("POST")
+	r.HandleFunc("/middleware/waf/threats", handleWAFThreatLog).Methods("GET")
+	r.HandleFunc("/middleware/waf/stats", handleWAFStats).Methods("GET")
+	r.HandleFunc("/middleware/waf/blocklist", handleWAFBlocklist).Methods("GET", "POST")
+
+	handler := corsMiddleware(securityHeaders(wafMiddleware(requestSizeLimit(rateLimitMiddleware(gzipMiddleware(r))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	fmt.Println("INEC Go Backend listening on", addr)
-	log.Fatal(http.ListenAndServe(addr, handler))
+
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// Graceful shutdown
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("INEC Go Backend listening on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	<-done
+	log.Println("Shutting down gracefully...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Close middleware connections
+	if mwHub != nil {
+		mwHub.Shutdown()
+	}
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Forced shutdown: %v", err)
+	}
+
+	if db != nil {
+		db.Close()
+	}
+	log.Println("Server stopped")
 }
 
 type M map[string]interface{}
@@ -457,11 +521,25 @@ func (rl *rateLimiterStore) allow(key string, limit int, window time.Duration) b
 	return true
 }
 
+func requestSizeLimit(next http.Handler) http.Handler {
+	const maxBody = 10 << 20 // 10 MB
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxBody {
+			writeError(w, 413, "request body too large")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	limits := []struct {
 		prefix string
 		limit  int
 	}{
+		{"/auth/login", 5},
+		{"/auth/register", 3},
 		{"/geo/tiles", 60},
 		{"/dashboard/metrics", 10},
 		{"/results", 20},
@@ -552,3 +630,60 @@ func queryParamInt(r *http.Request, key string, def int) int {
 	fmt.Sscanf(v, "%d", &i)
 	return i
 }
+
+// Deep health check — verifies DB, middleware, disk
+func handleDeepHealthCheck(w http.ResponseWriter, r *http.Request) {
+	checks := M{}
+	allOK := true
+
+	// Database check
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		checks["database"] = M{"status": "unhealthy", "error": err.Error()}
+		allOK = false
+	} else {
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&count); err != nil {
+			checks["database"] = M{"status": "degraded", "error": err.Error()}
+			allOK = false
+		} else {
+			checks["database"] = M{"status": "healthy"}
+		}
+	}
+
+	// Middleware subsystem checks
+	if mwHub != nil {
+		mwChecks := M{}
+		for name, st := range mwHub.status {
+			mwChecks[name] = M{"connected": st.Connected, "mode": st.Mode}
+			if !st.Connected {
+				allOK = false
+			}
+		}
+		checks["middleware"] = mwChecks
+	}
+
+	// Memory / uptime info
+	checks["uptime"] = time.Since(serverStartTime).String()
+
+	status := 200
+	result := "healthy"
+	if !allOK {
+		status = 503
+		result = "degraded"
+	}
+	writeJSON(w, status, M{"status": result, "checks": checks})
+}
+
+func handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		writeJSON(w, 503, M{"ready": false, "error": "database unreachable"})
+		return
+	}
+	writeJSON(w, 200, M{"ready": true})
+}
+
+var serverStartTime = time.Now()

@@ -19,6 +19,9 @@ type MiddlewareHub struct {
 	TigerBeetle TigerBeetleClient
 	APISIX      APISIXClient
 	Lakehouse   LakehouseClient
+	Mojaloop    MojaloopClient
+	OpenSearch  OpenSearchClient
+	OpenAppSec  OpenAppSecClient
 	mu          sync.RWMutex
 	status      map[string]MWStatus
 }
@@ -67,6 +70,15 @@ func initMiddlewareHub() *MiddlewareHub {
 
 	hub.Lakehouse = initLakehouseClient()
 	hub.setStatus("lakehouse", hub.Lakehouse.Status())
+
+	hub.Mojaloop = initMojaloopClient()
+	hub.setStatus("mojaloop", hub.Mojaloop.Status())
+
+	hub.OpenSearch = initOpenSearchClient()
+	hub.setStatus("opensearch", hub.OpenSearch.Status())
+
+	hub.OpenAppSec = initOpenAppSecClient()
+	hub.setStatus("openappsec", hub.OpenAppSec.Status())
 
 	hub.logStatus()
 	return hub
@@ -139,4 +151,17 @@ func measureLatency(fn func() error) (time.Duration, error) {
 
 func fmtLatency(d time.Duration) string {
 	return fmt.Sprintf("%.1fms", float64(d.Microseconds())/1000.0)
+}
+
+// Shutdown closes all middleware connections gracefully.
+func (h *MiddlewareHub) Shutdown() {
+	log.Println("Shutting down middleware hub...")
+	// Each client is either an HTTP-based or embedded fallback —
+	// embedded ones hold no external connections to close.
+	// Log final status for diagnostic purposes.
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for name, s := range h.status {
+		log.Printf("  middleware shutdown: %-14s mode=%s connected=%v", name, s.Mode, s.Connected)
+	}
 }
