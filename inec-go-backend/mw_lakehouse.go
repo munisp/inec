@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -112,31 +113,108 @@ type embeddedLakehouse struct{}
 
 func (l *embeddedLakehouse) Query(_ context.Context, query LakehouseQuery) (*LakehouseResult, error) {
 	t0 := time.Now()
-	rows := make([]map[string]interface{}, 0)
-	result := &LakehouseResult{
-		Columns: []string{"info"},
-		Rows:    rows,
-		Count:   0,
-		QueryMs: float64(time.Since(t0).Microseconds()) / 1000.0,
+
+	// Execute the actual query against the embedded DB (with safety checks)
+	q := strings.TrimSpace(query.Query)
+	if q == "" {
+		q = "SELECT r.id, r.election_id, r.polling_unit_code, r.status, r.submitted_at FROM results r LIMIT 100"
 	}
 
-	dbRows, _ := db.Query("SELECT r.id, r.election_id, r.polling_unit_code, r.status, r.submitted_at FROM results r LIMIT 100")
-	allResults := scanRows(dbRows)
-	for _, r := range allResults {
-		rows = append(rows, r)
+	// Only allow SELECT queries for safety
+	upper := strings.ToUpper(q)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
+		return &LakehouseResult{
+			Columns: []string{"error"},
+			Rows:    []map[string]interface{}{{"error": "only SELECT queries allowed"}},
+			Count:   0,
+			QueryMs: float64(time.Since(t0).Microseconds()) / 1000.0,
+		}, nil
 	}
-	result.Rows = rows
-	result.Count = len(rows)
-	result.QueryMs = float64(time.Since(t0).Microseconds()) / 1000.0
-	return result, nil
+
+	// Apply named parameters by replacing :name with values inline (read-only is safe)
+	for k, v := range query.Parameters {
+		placeholder := ":" + k
+		q = strings.ReplaceAll(q, placeholder, fmt.Sprintf("'%v'", v))
+	}
+
+	dbRows, err := db.Query(q)
+	if err != nil {
+		return &LakehouseResult{
+			Columns: []string{"error"},
+			Rows:    []map[string]interface{}{{"error": err.Error()}},
+			Count:   0,
+			QueryMs: float64(time.Since(t0).Microseconds()) / 1000.0,
+		}, nil
+	}
+
+	// Extract column names
+	cols, _ := dbRows.Columns()
+	rows := make([]map[string]interface{}, 0)
+	for dbRows.Next() {
+		values := make([]interface{}, len(cols))
+		valuePtrs := make([]interface{}, len(cols))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := dbRows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+		row := make(map[string]interface{})
+		for i, col := range cols {
+			val := values[i]
+			if b, ok := val.([]byte); ok {
+				row[col] = string(b)
+			} else {
+				row[col] = val
+			}
+		}
+		rows = append(rows, row)
+	}
+	dbRows.Close()
+
+	return &LakehouseResult{
+		Columns: cols,
+		Rows:    rows,
+		Count:   len(rows),
+		QueryMs: float64(time.Since(t0).Microseconds()) / 1000.0,
+	}, nil
 }
 
-func (l *embeddedLakehouse) Ingest(_ context.Context, _ string, _ []map[string]interface{}) error {
+func (l *embeddedLakehouse) Ingest(_ context.Context, table string, records []map[string]interface{}) error {
+	if len(records) == 0 || table == "" {
+		return nil
+	}
+	// Build and execute INSERT for each record into the audit_log for traceability
+	for _, rec := range records {
+		data, _ := json.Marshal(rec)
+		db.Exec("INSERT INTO audit_log (action, details, performed_by, performed_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
+			"lakehouse_ingest:"+table, string(data), "system")
+	}
+	log.Info().Str("table", table).Int("count", len(records)).Msg("lakehouse ingested records")
 	return nil
 }
 
 func (l *embeddedLakehouse) GetTables(_ context.Context) ([]string, error) {
-	return []string{"results", "elections", "polling_units", "audit_log", "incidents", "collation_results"}, nil
+	tables := []string{}
+	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		// Fallback for PostgreSQL
+		rows, err = db.Query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+		if err != nil {
+			return []string{"results", "elections", "polling_units", "audit_log", "incidents", "collation_results"}, nil
+		}
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil {
+			tables = append(tables, name)
+		}
+	}
+	if len(tables) == 0 {
+		return []string{"results", "elections", "polling_units", "audit_log", "incidents", "collation_results"}, nil
+	}
+	return tables, nil
 }
 
 func (l *embeddedLakehouse) GetAnalytics(_ context.Context, electionID int, analysisType string) (map[string]interface{}, error) {

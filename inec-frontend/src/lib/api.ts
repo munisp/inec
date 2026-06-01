@@ -344,8 +344,18 @@ export const api = {
   getTrainingStats: () => request('/training/stats'),
   getTrainingEnrollments: (courseId?: number) =>
     request(`/training/enrollments${courseId ? `?course_id=${courseId}` : ''}`),
+  enrollInCourse: (courseId: number) =>
+    request('/training/enrollments', { method: 'POST', body: JSON.stringify({ course_id: courseId }) }),
+  completeTraining: (enrollmentId: number, score: number) =>
+    request(`/training/enrollments/${enrollmentId}/complete`, { method: 'POST', body: JSON.stringify({ score }) }),
   getTrainingCertificates: () => request('/training/certificates'),
   getVRScenarios: () => request('/training/vr-scenarios'),
+
+  // Stakeholder engagement
+  resolveGrievance: (id: number, resolution: string) =>
+    request(`/stakeholders/grievances/${id}`, { method: 'PATCH', body: JSON.stringify({ resolution, status: 'resolved' }) }),
+  sendNotification: (title: string, body: string, targetType?: string) =>
+    request('/stakeholders/notifications', { method: 'POST', body: JSON.stringify({ title, body, target_type: targetType || 'all' }) }),
 
   getStakeholderStats: () => request('/stakeholders/stats'),
   getStakeholders: (type?: string, status?: string) => {

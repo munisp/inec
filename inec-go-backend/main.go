@@ -373,6 +373,8 @@ func main() {
 	r.HandleFunc("/training/courses", readAuth(handleTrainingCourses)).Methods("GET")
 	r.HandleFunc("/training/stats", readAuth(handleTrainingStats)).Methods("GET")
 	r.HandleFunc("/training/enrollments", readAuth(handleTrainingEnrollments)).Methods("GET")
+	r.HandleFunc("/training/enrollments", writeAuth(handleEnrollTraining)).Methods("POST")
+	r.HandleFunc("/training/enrollments/{id:[0-9]+}/complete", writeAuth(handleCompleteTraining)).Methods("POST")
 	r.HandleFunc("/training/certificates", readAuth(handleTrainingCertificates)).Methods("GET")
 	r.HandleFunc("/training/vr-scenarios", readAuth(handleVRScenarios)).Methods("GET")
 
@@ -381,16 +383,25 @@ func main() {
 	r.HandleFunc("/stakeholders", readAuth(handleListStakeholders)).Methods("GET")
 	r.HandleFunc("/stakeholders/incidents", readAuth(handleStakeholderIncidents)).Methods("GET")
 	r.HandleFunc("/stakeholders/grievances", readAuth(handleListGrievances)).Methods("GET")
+	r.HandleFunc("/stakeholders/grievances/{id:[0-9]+}", adminOnly(handleResolveGrievance)).Methods("PATCH")
 	r.HandleFunc("/stakeholders/notifications", readAuth(handlePushNotifications)).Methods("GET")
 	r.HandleFunc("/stakeholders/notifications", adminOnly(handleSendNotification)).Methods("POST")
+	r.HandleFunc("/stakeholders/notifications/push", adminOnly(handleSendPushNotification)).Methods("POST")
 
 	// Phase 7 - AI Election Monitoring & Analytics — auth required
 	r.HandleFunc("/ai-monitoring/dashboard", readAuth(handleAIMonitoringDashboard)).Methods("GET")
 	r.HandleFunc("/ai-monitoring/predictions", readAuth(handleAIPredictions)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/predictions", writeAuth(handleCreateAIPrediction)).Methods("POST")
 	r.HandleFunc("/ai-monitoring/sentiment", readAuth(handleSentimentAnalysis)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/sentiment", writeAuth(handleCreateSentimentEntry)).Methods("POST")
 	r.HandleFunc("/ai-monitoring/misinformation", readAuth(handleMisinformationAlerts)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/misinformation", writeAuth(handleCreateMisinformationAlert)).Methods("POST")
+	r.HandleFunc("/ai-monitoring/misinformation/{id:[0-9]+}", writeAuth(handleUpdateMisinformationAlert)).Methods("PATCH")
 	r.HandleFunc("/ai-monitoring/security-threats", readAuth(handleSecurityThreats)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/security-threats", writeAuth(handleCreateSecurityThreat)).Methods("POST")
+	r.HandleFunc("/ai-monitoring/security-threats/{id:[0-9]+}", writeAuth(handleUpdateSecurityThreat)).Methods("PATCH")
 	r.HandleFunc("/ai-monitoring/cv-monitoring", readAuth(handleCVMonitoring)).Methods("GET")
+	r.HandleFunc("/ai-monitoring/cv-monitoring", writeAuth(handleCreateCVEvent)).Methods("POST")
 
 	// Pgpool-II Infrastructure — admin only
 	r.HandleFunc("/pgpool/status", adminOnly(handlePgpoolStatus)).Methods("GET")

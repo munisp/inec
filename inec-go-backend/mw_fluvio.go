@@ -93,63 +93,88 @@ func (f *fluvioHTTPClient) Status() MWStatus {
 func (f *fluvioHTTPClient) Close() error { return nil }
 
 type embeddedFluvio struct {
-	mu     sync.RWMutex
-	topics map[string][]FluvioRecord
+	mu sync.RWMutex
 }
 
 func newEmbeddedFluvio() *embeddedFluvio {
-	return &embeddedFluvio{
-		topics: make(map[string][]FluvioRecord),
-	}
+	// Create persistent event bus table
+	db.Exec(`CREATE TABLE IF NOT EXISTS event_bus (
+		id SERIAL PRIMARY KEY,
+		topic TEXT NOT NULL,
+		event_key TEXT,
+		payload TEXT NOT NULL,
+		offset_id INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_event_bus_topic ON event_bus(topic, offset_id)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS event_bus_topics (
+		topic TEXT PRIMARY KEY,
+		partitions INTEGER DEFAULT 1,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	return &embeddedFluvio{}
 }
 
 func (f *embeddedFluvio) Produce(_ context.Context, topic string, record FluvioRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	record.Timestamp = time.Now()
-	record.Offset = int64(len(f.topics[topic]))
-	f.topics[topic] = append(f.topics[topic], record)
-	if len(f.topics[topic]) > 50000 {
-		f.topics[topic] = f.topics[topic][len(f.topics[topic])-25000:]
-	}
+
+	// Get next offset for this topic
+	var maxOffset int64
+	db.QueryRow("SELECT COALESCE(MAX(offset_id), -1) FROM event_bus WHERE topic=?", topic).Scan(&maxOffset)
+	record.Offset = maxOffset + 1
+
+	payload, _ := json.Marshal(record.Value)
+	db.Exec("INSERT INTO event_bus (topic, event_key, payload, offset_id, created_at) VALUES (?,?,?,?,?)",
+		topic, record.Key, string(payload), record.Offset, record.Timestamp)
 	return nil
 }
 
 func (f *embeddedFluvio) Consume(_ context.Context, topic string, offset int64, limit int) ([]FluvioRecord, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	records := f.topics[topic]
-	if int(offset) >= len(records) {
-		return nil, nil
+
+	rows, err := db.Query("SELECT event_key, payload, offset_id, created_at FROM event_bus WHERE topic=? AND offset_id >= ? ORDER BY offset_id LIMIT ?",
+		topic, offset, limit)
+	if err != nil {
+		return nil, err
 	}
-	end := int(offset) + limit
-	if end > len(records) {
-		end = len(records)
+	defer rows.Close()
+
+	records := []FluvioRecord{}
+	for rows.Next() {
+		var r FluvioRecord
+		var payload string
+		var ts time.Time
+		if err := rows.Scan(&r.Key, &payload, &r.Offset, &ts); err != nil {
+			continue
+		}
+		json.Unmarshal([]byte(payload), &r.Value)
+		r.Timestamp = ts
+		records = append(records, r)
 	}
-	return records[offset:end], nil
+	return records, nil
 }
 
-func (f *embeddedFluvio) CreateTopic(_ context.Context, topic string, _ int) error {
+func (f *embeddedFluvio) CreateTopic(_ context.Context, topic string, partitions int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if _, ok := f.topics[topic]; !ok {
-		f.topics[topic] = make([]FluvioRecord, 0)
+	if partitions < 1 {
+		partitions = 1
 	}
+	db.Exec("INSERT INTO event_bus_topics (topic, partitions) VALUES (?,?) ON CONFLICT(topic) DO NOTHING", topic, partitions)
 	return nil
 }
 
 func (f *embeddedFluvio) Status() MWStatus {
-	f.mu.RLock()
-	topicCount := len(f.topics)
-	var recordCount int
-	for _, records := range f.topics {
-		recordCount += len(records)
-	}
-	f.mu.RUnlock()
+	var topicCount, recordCount int
+	db.QueryRow("SELECT COUNT(*) FROM event_bus_topics").Scan(&topicCount)
+	db.QueryRow("SELECT COUNT(*) FROM event_bus").Scan(&recordCount)
 	return MWStatus{
-		Name: "Fluvio", Connected: true, Mode: "embedded",
-		Latency: "0.0ms",
-		Details: fmt.Sprintf("in-memory streaming, %d topics, %d records", topicCount, recordCount),
+		Name: "Fluvio", Connected: true, Mode: "embedded_persistent",
+		Latency: "0.1ms",
+		Details: fmt.Sprintf("PostgreSQL-backed event bus, %d topics, %d records", topicCount, recordCount),
 	}
 }
 

@@ -1455,6 +1455,392 @@ func handleCVMonitoring(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"events": events, "by_type": byType})
 }
 
+// ══════════════════════════════════════════════════════════════
+// WRITE/CREATE APIs for AI Monitoring Features
+// ══════════════════════════════════════════════════════════════
+
+func handleCreateAIPrediction(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PredictionType string  `json:"prediction_type"`
+		TargetArea     string  `json:"target_area"`
+		TargetLevel    string  `json:"target_level"`
+		PredictedValue float64 `json:"predicted_value"`
+		Confidence     float64 `json:"confidence"`
+		ModelName      string  `json:"model_name"`
+		ElectionID     int     `json:"election_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.PredictionType == "" || req.TargetArea == "" {
+		writeError(w, 400, "prediction_type and target_area required")
+		return
+	}
+	validTypes := map[string]bool{"turnout": true, "security_threat": true, "result_anomaly": true, "violence_risk": true, "logistics": true}
+	if !validTypes[req.PredictionType] {
+		writeError(w, 400, "prediction_type must be one of: turnout, security_threat, result_anomaly, violence_risk, logistics")
+		return
+	}
+	if req.Confidence < 0 || req.Confidence > 1 {
+		writeError(w, 400, "confidence must be between 0 and 1")
+		return
+	}
+	if req.ModelName == "" {
+		req.ModelName = "xgboost-v1.0"
+	}
+	if req.ElectionID == 0 {
+		req.ElectionID = 1
+	}
+	id := insertReturningID(db, `INSERT INTO ai_predictions (prediction_type, target_area, target_level, predicted_value, confidence, model_name, election_id) VALUES (?,?,?,?,?,?,?)`,
+		req.PredictionType, req.TargetArea, req.TargetLevel, req.PredictedValue, req.Confidence, req.ModelName, req.ElectionID)
+	logAudit("AI_PREDICTION_CREATED", "ai_prediction", fmt.Sprintf("%d", id), 0, map[string]interface{}{"type": req.PredictionType, "area": req.TargetArea})
+	writeJSON(w, 201, M{"id": id, "message": "Prediction recorded"})
+}
+
+func handleCreateSentimentEntry(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Source      string  `json:"source"`
+		Content     string  `json:"content"`
+		Sentiment   string  `json:"sentiment"`
+		Score       float64 `json:"score"`
+		Topics      string  `json:"topics"`
+		Location    string  `json:"location"`
+		ElectionID  int     `json:"election_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.Source == "" || req.Content == "" {
+		writeError(w, 400, "source and content required")
+		return
+	}
+	validSentiments := map[string]bool{"positive": true, "negative": true, "neutral": true, "mixed": true}
+	if req.Sentiment != "" && !validSentiments[req.Sentiment] {
+		writeError(w, 400, "sentiment must be one of: positive, negative, neutral, mixed")
+		return
+	}
+	if req.Sentiment == "" {
+		// Auto-classify: simple keyword-based sentiment as baseline
+		negWords := []string{"violence", "fraud", "rigged", "stolen", "corrupt", "danger", "threat", "attack"}
+		posWords := []string{"peaceful", "transparent", "fair", "successful", "smooth", "organized"}
+		lower := strings.ToLower(req.Content)
+		negCount, posCount := 0, 0
+		for _, w := range negWords {
+			if strings.Contains(lower, w) {
+				negCount++
+			}
+		}
+		for _, w := range posWords {
+			if strings.Contains(lower, w) {
+				posCount++
+			}
+		}
+		if negCount > posCount {
+			req.Sentiment = "negative"
+			req.Score = -0.5 - float64(negCount)*0.1
+		} else if posCount > negCount {
+			req.Sentiment = "positive"
+			req.Score = 0.5 + float64(posCount)*0.1
+		} else {
+			req.Sentiment = "neutral"
+			req.Score = 0.0
+		}
+	}
+	if req.Score < -1 {
+		req.Score = -1
+	}
+	if req.Score > 1 {
+		req.Score = 1
+	}
+	if req.ElectionID == 0 {
+		req.ElectionID = 1
+	}
+	id := insertReturningID(db, `INSERT INTO sentiment_analysis (source, content_snippet, sentiment, score, topics, location, election_id, analyzed_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+		req.Source, req.Content, req.Sentiment, req.Score, req.Topics, req.Location, req.ElectionID)
+	writeJSON(w, 201, M{"id": id, "sentiment": req.Sentiment, "score": req.Score, "message": "Sentiment recorded"})
+}
+
+func handleCreateMisinformationAlert(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Content        string  `json:"content"`
+		SourcePlatform string  `json:"source_platform"`
+		Classification string  `json:"classification"`
+		Confidence     float64 `json:"confidence"`
+		Severity       string  `json:"severity"`
+		ReachEstimate  int     `json:"reach_estimate"`
+		FactCheck      string  `json:"fact_check"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.Content == "" || req.SourcePlatform == "" {
+		writeError(w, 400, "content and source_platform required")
+		return
+	}
+	validClassifications := map[string]bool{"fake_result": true, "false_claim": true, "manipulated_media": true, "impersonation": true, "incitement": true, "other": true}
+	if req.Classification != "" && !validClassifications[req.Classification] {
+		writeError(w, 400, "classification must be one of: fake_result, false_claim, manipulated_media, impersonation, incitement, other")
+		return
+	}
+	if req.Classification == "" {
+		req.Classification = "other"
+	}
+	if req.Severity == "" {
+		req.Severity = "medium"
+	}
+	if req.Confidence == 0 {
+		req.Confidence = 0.5
+	}
+	id := insertReturningID(db, `INSERT INTO misinformation_alerts (content, source_platform, classification, confidence, severity, reach_estimate, status, fact_check) VALUES (?,?,?,?,?,?,?,?)`,
+		req.Content, req.SourcePlatform, req.Classification, req.Confidence, req.Severity, req.ReachEstimate, "detected", req.FactCheck)
+	logAudit("MISINFO_ALERT_CREATED", "misinformation", fmt.Sprintf("%d", id), 0, map[string]interface{}{"platform": req.SourcePlatform, "classification": req.Classification})
+	writeJSON(w, 201, M{"id": id, "status": "detected", "message": "Misinformation alert created"})
+}
+
+func handleUpdateMisinformationAlert(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Status    string `json:"status"`
+		FactCheck string `json:"fact_check"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	validStatuses := map[string]bool{"detected": true, "investigating": true, "confirmed": true, "debunked": true, "escalated": true}
+	if req.Status != "" && !validStatuses[req.Status] {
+		writeError(w, 400, "status must be one of: detected, investigating, confirmed, debunked, escalated")
+		return
+	}
+	if req.Status != "" {
+		db.Exec("UPDATE misinformation_alerts SET status=? WHERE id=?", req.Status, id)
+	}
+	if req.FactCheck != "" {
+		db.Exec("UPDATE misinformation_alerts SET fact_check=? WHERE id=?", req.FactCheck, id)
+	}
+	logAudit("MISINFO_ALERT_UPDATED", "misinformation", id, 0, map[string]interface{}{"status": req.Status})
+	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Alert updated"})
+}
+
+func handleCreateSecurityThreat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ThreatType  string  `json:"threat_type"`
+		Location    string  `json:"location"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+		Severity    string  `json:"severity"`
+		Confidence  float64 `json:"confidence"`
+		AffectedPUs int     `json:"affected_pus"`
+		Description string  `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.ThreatType == "" || req.Location == "" {
+		writeError(w, 400, "threat_type and location required")
+		return
+	}
+	if req.Severity == "" {
+		req.Severity = "medium"
+	}
+	if req.Confidence == 0 {
+		req.Confidence = 0.5
+	}
+	id := insertReturningID(db, `INSERT INTO security_threats (threat_type, location, latitude, longitude, severity, confidence, affected_pus, status, description) VALUES (?,?,?,?,?,?,?,?,?)`,
+		req.ThreatType, req.Location, req.Latitude, req.Longitude, req.Severity, req.Confidence, req.AffectedPUs, "active", req.Description)
+	logAudit("SECURITY_THREAT_CREATED", "security_threat", fmt.Sprintf("%d", id), 0, map[string]interface{}{"type": req.ThreatType, "severity": req.Severity})
+	writeJSON(w, 201, M{"id": id, "status": "active", "message": "Security threat logged"})
+}
+
+func handleUpdateSecurityThreat(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	validStatuses := map[string]bool{"active": true, "monitoring": true, "mitigated": true, "resolved": true, "false_alarm": true}
+	if !validStatuses[req.Status] {
+		writeError(w, 400, "status must be one of: active, monitoring, mitigated, resolved, false_alarm")
+		return
+	}
+	db.Exec("UPDATE security_threats SET status=? WHERE id=?", req.Status, id)
+	logAudit("SECURITY_THREAT_UPDATED", "security_threat", id, 0, map[string]interface{}{"status": req.Status})
+	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Threat status updated"})
+}
+
+func handleCreateCVEvent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CameraID    string  `json:"camera_id"`
+		EventType   string  `json:"event_type"`
+		Value       float64 `json:"value"`
+		Description string  `json:"description"`
+		Confidence  float64 `json:"confidence"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.CameraID == "" || req.EventType == "" {
+		writeError(w, 400, "camera_id and event_type required")
+		return
+	}
+	validEvents := map[string]bool{"crowd_density": true, "queue_length": true, "suspicious_activity": true, "ballot_tampering": true, "unauthorized_access": true, "violence_detected": true}
+	if !validEvents[req.EventType] {
+		writeError(w, 400, "event_type must be one of: crowd_density, queue_length, suspicious_activity, ballot_tampering, unauthorized_access, violence_detected")
+		return
+	}
+	if req.Confidence == 0 {
+		req.Confidence = 0.8
+	}
+	id := insertReturningID(db, `INSERT INTO cv_monitoring (camera_id, event_type, value, description, confidence) VALUES (?,?,?,?,?)`,
+		req.CameraID, req.EventType, req.Value, req.Description, req.Confidence)
+	writeJSON(w, 201, M{"id": id, "camera_id": req.CameraID, "event_type": req.EventType, "message": "CV event recorded"})
+}
+
+func handleEnrollTraining(w http.ResponseWriter, r *http.Request) {
+	user, err := requireRole(r, "admin", "presiding_officer", "collation_officer", "returning_officer")
+	if err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
+	var req struct {
+		CourseID int `json:"course_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.CourseID == 0 {
+		writeError(w, 400, "course_id required")
+		return
+	}
+	// Verify course exists
+	var courseExists int
+	db.QueryRow("SELECT COUNT(*) FROM training_courses WHERE id=? AND is_active=1", req.CourseID).Scan(&courseExists)
+	if courseExists == 0 {
+		writeError(w, 404, "Course not found or inactive")
+		return
+	}
+	userSub, _ := user["sub"].(string)
+	userID, _ := strconv.Atoi(userSub)
+
+	// Check if already enrolled
+	var existing int
+	db.QueryRow("SELECT COUNT(*) FROM training_enrollments WHERE user_id=? AND course_id=?", userID, req.CourseID).Scan(&existing)
+	if existing > 0 {
+		writeError(w, 409, "Already enrolled in this course")
+		return
+	}
+	id := insertReturningID(db, `INSERT INTO training_enrollments (user_id, course_id, status, progress_percent, enrolled_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)`,
+		userID, req.CourseID, "in_progress", 0)
+	writeJSON(w, 201, M{"id": id, "course_id": req.CourseID, "status": "in_progress", "message": "Enrolled successfully"})
+}
+
+func handleCompleteTraining(w http.ResponseWriter, r *http.Request) {
+	user, err := requireRole(r, "admin", "presiding_officer", "collation_officer", "returning_officer")
+	if err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
+	enrollmentID := mux.Vars(r)["id"]
+	var req struct {
+		Score int `json:"score"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	userSub, _ := user["sub"].(string)
+	userID, _ := strconv.Atoi(userSub)
+
+	// Verify enrollment belongs to user
+	var courseID, passingScore int
+	err2 := db.QueryRow("SELECT te.course_id, tc.passing_score FROM training_enrollments te JOIN training_courses tc ON tc.id=te.course_id WHERE te.id=? AND te.user_id=?", enrollmentID, userID).Scan(&courseID, &passingScore)
+	if err2 != nil {
+		writeError(w, 404, "Enrollment not found")
+		return
+	}
+	status := "completed"
+	if req.Score < passingScore {
+		status = "failed"
+	}
+	db.Exec("UPDATE training_enrollments SET status=?, score=?, progress_percent=100, completed_at=CURRENT_TIMESTAMP WHERE id=?", status, req.Score, enrollmentID)
+
+	// Issue certificate if passed
+	if status == "completed" {
+		certID := fmt.Sprintf("CERT-%s-%d-%d", time.Now().Format("20060102"), userID, courseID)
+		blockchainHash := fmt.Sprintf("%x", sha256.Sum256([]byte(certID)))
+		eID, _ := strconv.Atoi(enrollmentID)
+		db.Exec(`INSERT INTO training_certificates (enrollment_id, user_id, course_id, certificate_id, blockchain_hash, score, issued_at, expires_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP, datetime('now', '+1 year'))`,
+			eID, userID, courseID, certID, blockchainHash, req.Score)
+		writeJSON(w, 200, M{"enrollment_id": enrollmentID, "status": status, "score": req.Score, "certificate_id": certID, "message": "Course completed and certificate issued"})
+		return
+	}
+	writeJSON(w, 200, M{"enrollment_id": enrollmentID, "status": status, "score": req.Score, "passing_score": passingScore, "message": "Course completed but score below passing threshold"})
+}
+
+func handleResolveGrievance(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Resolution string `json:"resolution"`
+		Status     string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	validStatuses := map[string]bool{"under_review": true, "resolved": true, "escalated": true, "dismissed": true}
+	if req.Status != "" && !validStatuses[req.Status] {
+		writeError(w, 400, "status must be one of: under_review, resolved, escalated, dismissed")
+		return
+	}
+	if req.Status == "" {
+		req.Status = "resolved"
+	}
+	db.Exec("UPDATE grievances SET status=?, resolution=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, req.Resolution, id)
+	logAudit("GRIEVANCE_RESOLVED", "grievance", id, 0, map[string]interface{}{"status": req.Status})
+	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Grievance updated"})
+}
+
+func handleSendPushNotification(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title      string   `json:"title"`
+		Body       string   `json:"body"`
+		Recipients []string `json:"recipients"`
+		Channel    string   `json:"channel"`
+		Priority   string   `json:"priority"`
+		ElectionID int      `json:"election_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.Title == "" || req.Body == "" {
+		writeError(w, 400, "title and body required")
+		return
+	}
+	if req.Channel == "" {
+		req.Channel = "push"
+	}
+	if req.Priority == "" {
+		req.Priority = "normal"
+	}
+	if len(req.Recipients) == 0 {
+		req.Recipients = []string{"all"}
+	}
+	recipientsJSON, _ := json.Marshal(req.Recipients)
+	id := insertReturningID(db, `INSERT INTO push_notifications (title, body, recipients, channel, priority, election_id, status, sent_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+		req.Title, req.Body, string(recipientsJSON), req.Channel, req.Priority, req.ElectionID, "sent")
+	writeJSON(w, 201, M{"id": id, "recipients": len(req.Recipients), "status": "sent", "message": "Notification dispatched"})
+}
+
 // helper to safely convert string to int
 func atoiSafe(s string) int {
 	v, _ := strconv.Atoi(s)

@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Users, AlertTriangle, FileWarning, Bell, QrCode, Shield } from 'lucide-react';
+import { Users, AlertTriangle, FileWarning, Bell, QrCode, Shield, CheckCircle, Send } from 'lucide-react';
 
 export default function StakeholderPage() {
   const [stats, setStats] = useState<any>(null);
@@ -20,6 +22,27 @@ export default function StakeholderPage() {
     api.getGrievances().then(setGrievances).catch(() => {});
     api.getPushNotifications().then(setNotifications).catch(() => {});
   }, []);
+
+  const [notifForm, setNotifForm] = useState({ title: '', body: '' });
+  const [sending, setSending] = useState(false);
+
+  const handleResolve = async (id: number) => {
+    const resolution = prompt('Enter resolution details:');
+    if (!resolution) return;
+    await api.resolveGrievance(id, resolution);
+    api.getGrievances().then(setGrievances);
+  };
+
+  const handleSendNotification = async () => {
+    if (!notifForm.title || !notifForm.body) return;
+    setSending(true);
+    try {
+      await api.sendNotification(notifForm.title, notifForm.body);
+      setNotifForm({ title: '', body: '' });
+      api.getPushNotifications().then(setNotifications);
+    } catch { /* handled */ }
+    setSending(false);
+  };
 
   const sevColors: Record<string, string> = {
     critical: 'bg-red-100 text-red-700',
@@ -146,7 +169,7 @@ export default function StakeholderPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="border-b text-left text-zinc-500">
-                    <th className="pb-2 pr-4">ID</th><th className="pb-2 pr-4">Stakeholder</th><th className="pb-2 pr-4">Type</th><th className="pb-2 pr-4">Subject</th><th className="pb-2 pr-4">Priority</th><th className="pb-2">Status</th>
+                    <th className="pb-2 pr-4">ID</th><th className="pb-2 pr-4">Stakeholder</th><th className="pb-2 pr-4">Type</th><th className="pb-2 pr-4">Subject</th><th className="pb-2 pr-4">Priority</th><th className="pb-2 pr-4">Status</th><th className="pb-2">Action</th>
                   </tr></thead>
                   <tbody>
                     {grievances?.grievances?.map((g: any) => (
@@ -158,8 +181,15 @@ export default function StakeholderPage() {
                         <td className="py-2 pr-4">
                           <Badge className={`text-xs ${g.priority === 'urgent' ? 'bg-red-100 text-red-700' : g.priority === 'high' ? 'bg-orange-100 text-orange-700' : 'bg-zinc-100 text-zinc-700'}`}>{g.priority}</Badge>
                         </td>
-                        <td className="py-2">
+                        <td className="py-2 pr-4">
                           <Badge variant={g.status === 'resolved' ? 'default' : 'outline'} className="text-xs">{g.status?.replace('_', ' ')}</Badge>
+                        </td>
+                        <td className="py-2">
+                          {g.status !== 'resolved' && (
+                            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => handleResolve(g.id)}>
+                              <CheckCircle className="w-3.5 h-3.5 mr-1" /> Resolve
+                            </Button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -171,6 +201,18 @@ export default function StakeholderPage() {
         </TabsContent>
 
         <TabsContent value="notifications">
+          <Card className="mb-4">
+            <CardContent className="pt-4">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2"><Send className="w-4 h-4" /> Send Notification</h4>
+              <div className="flex gap-2">
+                <Input placeholder="Title" value={notifForm.title} onChange={e => setNotifForm({ ...notifForm, title: e.target.value })} className="flex-1" />
+                <Input placeholder="Message body" value={notifForm.body} onChange={e => setNotifForm({ ...notifForm, body: e.target.value })} className="flex-[2]" />
+                <Button size="sm" onClick={handleSendNotification} disabled={sending || !notifForm.title || !notifForm.body}>
+                  {sending ? 'Sending...' : 'Send'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader><CardTitle className="text-sm">Push Notifications</CardTitle></CardHeader>
             <CardContent>

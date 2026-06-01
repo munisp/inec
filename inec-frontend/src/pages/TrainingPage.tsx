@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { GraduationCap, Award, Headset, BookOpen, Users, TrendingUp } from 'lucide-react';
+import { GraduationCap, Award, Headset, BookOpen, Users, TrendingUp, UserPlus } from 'lucide-react';
 
 export default function TrainingPage() {
   const [stats, setStats] = useState<any>(null);
@@ -20,6 +21,18 @@ export default function TrainingPage() {
     api.getVRScenarios().then(setScenarios).catch(() => {});
     api.getTrainingEnrollments().then(setEnrollments).catch(() => {});
   }, []);
+
+  const [enrolling, setEnrolling] = useState<number | null>(null);
+
+  const handleEnroll = async (courseId: number) => {
+    setEnrolling(courseId);
+    try {
+      await api.enrollInCourse(courseId);
+      api.getTrainingEnrollments().then(setEnrollments);
+      api.getTrainingStats().then(setStats);
+    } catch { /* handled by api */ }
+    setEnrolling(null);
+  };
 
   const typeColors: Record<string, string> = {
     vr_simulation: 'bg-purple-100 text-purple-700',
@@ -94,6 +107,9 @@ export default function TrainingPage() {
                     <div><p className="text-lg font-bold text-green-600">{c.completed}</p><p className="text-xs text-zinc-500">Completed</p></div>
                     <div><p className="text-lg font-bold">{c.avg_score}</p><p className="text-xs text-zinc-500">Avg Score</p></div>
                   </div>
+                  <Button size="sm" className="w-full mt-3" onClick={() => handleEnroll(c.id)} disabled={enrolling === c.id}>
+                    <UserPlus className="w-3.5 h-3.5 mr-1" /> {enrolling === c.id ? 'Enrolling...' : 'Enroll'}
+                  </Button>
                 </CardContent>
               </Card>
             ))}
