@@ -120,7 +120,7 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist each party result
+	// Persist result and party scores
 	tx, err := db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, 500, "database transaction failed")
@@ -128,13 +128,34 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// Insert main result row
+	var resultID int
+	err = tx.QueryRowContext(r.Context(),
+		`INSERT INTO results (election_id, polling_unit_code, status, total_valid_votes, rejected_votes, total_votes_cast, accredited_voters, submitted_at)
+		 VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7)
+		 ON CONFLICT (election_id, polling_unit_code) DO UPDATE SET
+		   total_valid_votes = EXCLUDED.total_valid_votes,
+		   rejected_votes = EXCLUDED.rejected_votes,
+		   total_votes_cast = EXCLUDED.total_votes_cast,
+		   accredited_voters = EXCLUDED.accredited_voters,
+		   submitted_at = EXCLUDED.submitted_at
+		 RETURNING id`,
+		form.ElectionID, form.PollingUnitCode, form.TotalValidVotes, form.RejectedBallots,
+		form.TotalVotesPolled, form.AccreditedVoters, time.Now()).Scan(&resultID)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("failed to insert result: %v", err))
+		return
+	}
+
+	// Insert party scores
 	for _, pr := range form.PartyResults {
 		_, err := tx.ExecContext(r.Context(),
-			`INSERT INTO results (election_id, polling_unit_code, party_code, votes, status, submitted_by, submitted_at)
-			 VALUES ($1, $2, $3, $4, 'pending', $5, $6)`,
-			form.ElectionID, form.PollingUnitCode, pr.PartyCode, pr.Votes, form.PresidingOfficerID, time.Now())
+			`INSERT INTO result_party_scores (result_id, party_code, votes)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (result_id, party_code) DO UPDATE SET votes = EXCLUDED.votes`,
+			resultID, pr.PartyCode, pr.Votes)
 		if err != nil {
-			writeError(w, 500, fmt.Sprintf("failed to insert result for party %s: %v", pr.PartyCode, err))
+			writeError(w, 500, fmt.Sprintf("failed to insert score for party %s: %v", pr.PartyCode, err))
 			return
 		}
 	}
@@ -218,11 +239,12 @@ func handleHierarchicalCollation(w http.ResponseWriter, r *http.Request) {
 
 func collateWard(ctx context.Context, electionID int, wardCode string) (*CollationLevel, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT r.party_code, SUM(r.votes) as total, COUNT(DISTINCT r.polling_unit_code) as pu_count
+		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code) as pu_count
 		 FROM results r
+		 JOIN result_party_scores rps ON rps.result_id = r.id
 		 JOIN polling_units pu ON r.polling_unit_code = pu.code
-		 WHERE r.election_id = $1 AND pu.ward_code = $2 AND r.status IN ('pending','verified')
-		 GROUP BY r.party_code`, electionID, wardCode)
+		 WHERE r.election_id = $1 AND pu.ward_code = $2 AND r.status IN ('pending','validated')
+		 GROUP BY rps.party_code`, electionID, wardCode)
 	if err != nil {
 		return nil, err
 	}
@@ -232,11 +254,13 @@ func collateWard(ctx context.Context, electionID int, wardCode string) (*Collati
 
 func collateLGA(ctx context.Context, electionID int, lgaCode string) (*CollationLevel, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT r.party_code, SUM(r.votes) as total, COUNT(DISTINCT r.polling_unit_code)
+		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code)
 		 FROM results r
+		 JOIN result_party_scores rps ON rps.result_id = r.id
 		 JOIN polling_units pu ON r.polling_unit_code = pu.code
-		 WHERE r.election_id = $1 AND pu.lga_code = $2 AND r.status IN ('pending','verified')
-		 GROUP BY r.party_code`, electionID, lgaCode)
+		 JOIN wards w ON pu.ward_code = w.code
+		 WHERE r.election_id = $1 AND w.lga_code = $2 AND r.status IN ('pending','validated')
+		 GROUP BY rps.party_code`, electionID, lgaCode)
 	if err != nil {
 		return nil, err
 	}
@@ -246,11 +270,14 @@ func collateLGA(ctx context.Context, electionID int, lgaCode string) (*Collation
 
 func collateState(ctx context.Context, electionID int, stateCode string) (*CollationLevel, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT r.party_code, SUM(r.votes) as total, COUNT(DISTINCT r.polling_unit_code)
+		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code)
 		 FROM results r
+		 JOIN result_party_scores rps ON rps.result_id = r.id
 		 JOIN polling_units pu ON r.polling_unit_code = pu.code
-		 WHERE r.election_id = $1 AND pu.state_code = $2 AND r.status IN ('pending','verified')
-		 GROUP BY r.party_code`, electionID, stateCode)
+		 JOIN wards w ON pu.ward_code = w.code
+		 JOIN lgas l ON w.lga_code = l.code
+		 WHERE r.election_id = $1 AND l.state_code = $2 AND r.status IN ('pending','validated')
+		 GROUP BY rps.party_code`, electionID, stateCode)
 	if err != nil {
 		return nil, err
 	}
@@ -260,10 +287,11 @@ func collateState(ctx context.Context, electionID int, stateCode string) (*Colla
 
 func collateNational(ctx context.Context, electionID int) (*CollationLevel, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT r.party_code, SUM(r.votes) as total, COUNT(DISTINCT r.polling_unit_code)
+		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code)
 		 FROM results r
-		 WHERE r.election_id = $1 AND r.status IN ('pending','verified')
-		 GROUP BY r.party_code`, electionID)
+		 JOIN result_party_scores rps ON rps.result_id = r.id
+		 WHERE r.election_id = $1 AND r.status IN ('pending','validated')
+		 GROUP BY rps.party_code`, electionID)
 	if err != nil {
 		return nil, err
 	}
@@ -319,15 +347,18 @@ func handleBallotReconciliation(w http.ResponseWriter, r *http.Request) {
 	stateCode := queryParam(r, "state_code", "")
 
 	query := `SELECT pu.code, pu.registered_voters,
-		COALESCE(SUM(r.votes), 0) as total_votes,
-		COUNT(r.id) as result_count
+		COALESCE(SUM(rps.votes), 0) as total_votes,
+		COUNT(DISTINCT rps.id) as result_count
 		FROM polling_units pu
 		LEFT JOIN results r ON pu.code = r.polling_unit_code AND r.election_id = $1
+		LEFT JOIN result_party_scores rps ON rps.result_id = r.id
+		JOIN wards w ON pu.ward_code = w.code
+		JOIN lgas l ON w.lga_code = l.code
 		WHERE 1=1`
 
 	args := []interface{}{electionID}
 	if stateCode != "" {
-		query += " AND pu.state_code = $2"
+		query += " AND l.state_code = $2"
 		args = append(args, stateCode)
 	}
 	query += " GROUP BY pu.code, pu.registered_voters ORDER BY pu.code"
@@ -392,8 +423,11 @@ func handleDualLedgerReconciliation(w http.ResponseWriter, r *http.Request) {
 
 	// Get PostgreSQL totals
 	rows, err := db.QueryContext(ctx,
-		`SELECT party_code, SUM(votes) FROM results WHERE election_id = $1 AND status IN ('pending','verified')
-		 GROUP BY party_code ORDER BY SUM(votes) DESC`, electionID)
+		`SELECT rps.party_code, SUM(rps.votes)
+		 FROM results r
+		 JOIN result_party_scores rps ON rps.result_id = r.id
+		 WHERE r.election_id = $1 AND r.status IN ('pending','validated')
+		 GROUP BY rps.party_code ORDER BY SUM(rps.votes) DESC`, electionID)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return

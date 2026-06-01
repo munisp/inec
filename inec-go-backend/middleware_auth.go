@@ -21,6 +21,7 @@ var publicPaths = map[string]bool{
 	"/ws":            true,
 	"/db/metrics":    true,
 	"/db/pool":       true,
+	"/metrics":       true,
 }
 
 // publicPrefixes are path prefixes accessible without auth.
