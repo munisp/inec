@@ -725,7 +725,7 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 		Template string  `json:"template"`
 		DeviceID string  `json:"device_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -792,7 +792,7 @@ func handleABISResolve(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Status == "" {
 		writeError(w, 400, "status required")
 		return
@@ -1217,7 +1217,7 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 		Body string `json:"body"`
 		Type string `json:"type"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Title == "" || req.Body == "" {
 		writeError(w, 400, "title and body required")
 		return

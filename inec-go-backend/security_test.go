@@ -16,7 +16,19 @@ import (
 
 func TestMain(m *testing.M) {
 	initValidator()
-	os.Exit(m.Run())
+	initMetrics()
+	// Set up an in-memory SQLite database for tests
+	testDB := openDatabase("file::memory:?cache=shared")
+	db = testDB
+	initScaledDB(db)
+	initPgpool()
+	initDB(db)
+	seedDatabase(db)
+	initMiddlewareTables(db)
+	mwHub = initMiddlewareHub()
+	code := m.Run()
+	testDB.Close()
+	os.Exit(code)
 }
 
 // ── Registration Security Tests ──

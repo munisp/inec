@@ -941,7 +941,7 @@ func handleFabricSubmitTx(w http.ResponseWriter, r *http.Request) {
 		Function  string   `json:"function"`
 		Args      []string `json:"args"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Channel == "" {
 		req.Channel = "inec-results"
 	}
@@ -964,7 +964,7 @@ func handleChaincodeValidateResult(w http.ResponseWriter, r *http.Request) {
 		TotalVotes int    `json:"total_votes"`
 		Accredited int    `json:"accredited"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.ResultID == 0 {
 		writeError(w, 400, "result_id required")
 		return
@@ -983,7 +983,7 @@ func handleChaincodeAggregate(w http.ResponseWriter, r *http.Request) {
 		AreaCode   string `json:"area_code"`
 		ElectionID int    `json:"election_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	result, err := chaincodeEngine.ExecuteAggregation(req.Level, req.AreaCode, req.ElectionID)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -1001,7 +1001,7 @@ func handleIPFSStore(w http.ResponseWriter, r *http.Request) {
 		Data        string `json:"data"`
 		ContentType string `json:"content_type"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Data == "" {
 		writeError(w, 400, "data required")
 		return
@@ -1104,7 +1104,7 @@ func handlePersistentTBCreateTransfer(w http.ResponseWriter, r *http.Request) {
 		Amount        int64  `json:"amount"`
 		UserData      string `json:"user_data"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.DebitAccount == "" {
 		req.DebitAccount = "inec-operational"
 	}
@@ -1123,7 +1123,7 @@ func handlePersistentTBPostTransfer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TransferID string `json:"transfer_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	err := persistentTB.PostTransfer(req.TransferID)
 	if err != nil {
 		writeError(w, 400, err.Error())
@@ -1137,7 +1137,7 @@ func handleMerkleTreeBuild(w http.ResponseWriter, r *http.Request) {
 		Leaves   []string `json:"leaves"`
 		TreeType string   `json:"tree_type"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if len(req.Leaves) == 0 {
 		writeError(w, 400, "leaves required")
 		return

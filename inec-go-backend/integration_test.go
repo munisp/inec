@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -140,10 +140,9 @@ func TestRequestSizeLimit(t *testing.T) {
 
 func TestWAFSQLInjection(t *testing.T) {
 	waf := newEmbeddedWAF()
-	ctx := fmt.Errorf("context")
-	_ = ctx
+	ctx := context.Background()
 
-	decision, err := waf.InspectRequest(nil, WAFRequest{
+	decision, err := waf.InspectRequest(ctx, WAFRequest{
 		SourceIP: "1.2.3.4",
 		Method:   "GET",
 		Path:     "/users?id=1' OR '1'='1",
@@ -198,7 +197,8 @@ func TestWAFBodyInspection(t *testing.T) {
 	waf := newEmbeddedWAF()
 
 	// SQL injection in body should be detected
-	decision, _ := waf.InspectRequest(nil, WAFRequest{
+	ctx := context.Background()
+	decision, _ := waf.InspectRequest(ctx, WAFRequest{
 		SourceIP: "10.0.0.1",
 		Method:   "POST",
 		Path:     "/api/v1/results",
@@ -209,7 +209,7 @@ func TestWAFBodyInspection(t *testing.T) {
 	}
 
 	// XSS in body should be detected
-	decision2, _ := waf.InspectRequest(nil, WAFRequest{
+	decision2, _ := waf.InspectRequest(ctx, WAFRequest{
 		SourceIP: "10.0.0.2",
 		Method:   "POST",
 		Path:     "/api/v1/comments",
@@ -220,7 +220,7 @@ func TestWAFBodyInspection(t *testing.T) {
 	}
 
 	// Clean request should pass
-	decision3, _ := waf.InspectRequest(nil, WAFRequest{
+	decision3, _ := waf.InspectRequest(ctx, WAFRequest{
 		SourceIP: "10.0.0.3",
 		Method:   "GET",
 		Path:     "/api/v1/results",
@@ -233,8 +233,8 @@ func TestWAFBodyInspection(t *testing.T) {
 func TestWAFQueryParamInspection(t *testing.T) {
 	waf := newEmbeddedWAF()
 
-	// SQL injection in query params should be detected
-	decision, _ := waf.InspectRequest(nil, WAFRequest{
+	ctx := context.Background()
+	decision, _ := waf.InspectRequest(ctx, WAFRequest{
 		SourceIP: "10.0.0.4",
 		Method:   "GET",
 		Path:     "/results?id=1 UNION SELECT * FROM users",
@@ -248,10 +248,11 @@ func TestWAFBlocklistPersistence(t *testing.T) {
 	waf := newEmbeddedWAF()
 
 	// Add IP to blocklist
-	waf.AddIPToBlocklist(nil, "192.168.1.100", "test block")
+	ctx := context.Background()
+	waf.AddIPToBlocklist(ctx, "192.168.1.100", "test block")
 
 	// Verify blocked
-	decision, _ := waf.InspectRequest(nil, WAFRequest{
+	decision, _ := waf.InspectRequest(ctx, WAFRequest{
 		SourceIP: "192.168.1.100",
 		Method:   "GET",
 		Path:     "/api/v1/results",
@@ -261,7 +262,7 @@ func TestWAFBlocklistPersistence(t *testing.T) {
 	}
 
 	// Verify blocklist retrieval
-	entries, _ := waf.GetBlocklist(nil)
+	entries, _ := waf.GetBlocklist(ctx)
 	found := false
 	for _, e := range entries {
 		if e.IP == "192.168.1.100" {

@@ -1338,7 +1338,7 @@ func handleABISEnroll(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		DeviceID string `json:"device_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1356,7 +1356,7 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		DeviceID string `json:"device_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1411,7 +1411,7 @@ func handlePADCheck(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		DeviceID string `json:"device_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1483,7 +1483,7 @@ func handleDedupStart(w http.ResponseWriter, r *http.Request) {
 		Modalities string  `json:"modalities"`
 		Threshold  float64 `json:"threshold"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Type == "" {
 		req.Type = "incremental"
 	}
@@ -1533,7 +1533,7 @@ func handleDedupResolve(w http.ResponseWriter, r *http.Request) {
 		Decision string `json:"decision"`
 		Reviewer string `json:"reviewer"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Decision == "" {
 		writeError(w, 400, "decision required")
 		return
@@ -1585,7 +1585,7 @@ func handleVaultRotateKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		KeyID string `json:"key_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.KeyID == "" {
 		writeError(w, 400, "key_id required")
 		return
@@ -1658,7 +1658,7 @@ func handleBVASRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		Modalities []string `json:"modalities"`
 		Meta       M        `json:"meta"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.DeviceID == "" || req.Firmware == "" {
 		writeError(w, 400, "device_id and firmware required")
 		return
@@ -1787,7 +1787,7 @@ func handleABISConfig(w http.ResponseWriter, r *http.Request) {
 		IrisFRR *float64 `json:"iris_frr"`
 		Fusion  *float64 `json:"fusion_threshold"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	if req.FpFAR != nil {
 		abisEngine.config.FingerprintFARThreshold = *req.FpFAR
@@ -1869,7 +1869,7 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 		VIN      string `json:"vin"`
 		DeviceID string `json:"device_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" {
 		writeError(w, 400, "vin required")
 		return

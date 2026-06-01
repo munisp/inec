@@ -470,7 +470,7 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 		PollingUnitCode string `json:"polling_unit_code"`
 		BiometricData   string `json:"biometric_data"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.FirstName == "" || req.LastName == "" || req.DateOfBirth == "" {
 		writeError(w, 400, "first_name, last_name, date_of_birth required")
 		return
@@ -570,7 +570,7 @@ func handleVoterTransfer(w http.ResponseWriter, r *http.Request) {
 		NewPollingUnitCode string `json:"new_polling_unit_code"`
 		Reason             string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	var oldPU string
 	err := db.QueryRow("SELECT polling_unit_code FROM voters WHERE vin=?", vin).Scan(&oldPU)
@@ -631,7 +631,7 @@ func handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		ElectionID   int    `json:"election_id"`
 		WorkflowType string `json:"workflow_type"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.WorkflowType == "" {
 		req.WorkflowType = "full_election"
 	}
@@ -705,7 +705,7 @@ func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
 		DeviceID string                   `json:"device_id"`
 		Items    []map[string]interface{} `json:"items"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
 		return
@@ -760,7 +760,7 @@ func handleBVASHeartbeat(w http.ResponseWriter, r *http.Request) {
 		FirmwareVersion string  `json:"firmware_version"`
 		UptimeSeconds   int     `json:"uptime_seconds"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
 		return
@@ -843,7 +843,7 @@ func handleBVASConflictResolve(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Resolution string `json:"resolution"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Resolution == "" {
 		req.Resolution = "accepted"
 	}
@@ -887,7 +887,7 @@ func handlePortalSync(w http.ResponseWriter, r *http.Request) {
 		SyncType   string `json:"sync_type"`
 		EntityType string `json:"entity_type"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.SyncType == "" {
 		req.SyncType = "pull"
 	}
@@ -972,7 +972,7 @@ func handleValidateEntity(w http.ResponseWriter, r *http.Request) {
 		EntityID   string                 `json:"entity_id"`
 		Data       map[string]interface{} `json:"data"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.EntityType == "" || req.EntityID == "" {
 		writeError(w, 400, "entity_type and entity_id required")
 		return
@@ -1136,7 +1136,7 @@ func handleTransitionElection(w http.ResponseWriter, r *http.Request) {
 		Phase string `json:"phase"`
 		Notes string `json:"notes"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	eidInt, _ := strconv.Atoi(eid)
 	db.Exec("INSERT INTO election_lifecycle (election_id, phase, transitioned_by, notes) VALUES (?,?,1,?)", eidInt, req.Phase, req.Notes)
@@ -1174,7 +1174,7 @@ func handleAssignStaff(w http.ResponseWriter, r *http.Request) {
 		AreaType   string `json:"area_type"`
 		AreaCode   string `json:"area_code"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	id := insertReturningID(db, `INSERT INTO election_staff_assignments (election_id, user_id, role, area_type, area_code) VALUES (?,?,?,?,?)`,
 		req.ElectionID, req.UserID, req.Role, req.AreaType, req.AreaCode)
@@ -1215,7 +1215,7 @@ func handleDispatchMaterial(w http.ResponseWriter, r *http.Request) {
 		Status         string `json:"status"`
 		TrackingNumber string `json:"tracking_number"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	updates := "status=?"
 	params := []interface{}{req.Status}

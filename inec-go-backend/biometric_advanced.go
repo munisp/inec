@@ -1371,7 +1371,7 @@ func handleHSMGenerateKey(w http.ResponseWriter, r *http.Request) {
 		Purpose string `json:"purpose"`
 		Slot    int    `json:"slot"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Purpose == "" {
 		req.Purpose = "template_encryption"
 	}
@@ -1433,7 +1433,7 @@ func handleCancelableRevoke(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		Reason   string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1449,7 +1449,7 @@ func handleThresholdTuning(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Modality string `json:"modality"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 		if req.Modality == "" {
 			req.Modality = "fingerprint"
 		}
@@ -1478,7 +1478,7 @@ func handleDistributedDedup(w http.ResponseWriter, r *http.Request) {
 		Workers   int     `json:"workers"`
 		Threshold float64 `json:"threshold"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Modality == "" {
 		req.Modality = "fingerprint"
 	}
@@ -1500,7 +1500,7 @@ func handlePADModelUpdate(w http.ResponseWriter, r *http.Request) {
 		ModelID    string `json:"model_id"`
 		NewVersion string `json:"new_version"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.ModelID == "" || req.NewVersion == "" {
 		writeError(w, 400, "model_id and new_version required")
 		return
@@ -1517,7 +1517,7 @@ func handleQualityGateway(w http.ResponseWriter, r *http.Request) {
 			Quality  float64 `json:"quality"`
 			NFIQ     int     `json:"nfiq2"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 		writeJSON(w, 200, qualityGateway.EvaluateCapture(req.DeviceID, req.VIN, req.Modality, req.Quality, req.NFIQ))
 		return
 	}
@@ -1532,7 +1532,7 @@ func handleBioOfflineSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceID string `json:"device_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
 		return
@@ -1546,7 +1546,7 @@ func handleScoreNormalize(w http.ResponseWriter, r *http.Request) {
 		Modality string  `json:"modality"`
 		NormType string  `json:"norm_type"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.NormType == "" {
 		req.NormType = "z_norm"
 	}
@@ -1566,7 +1566,7 @@ func handleNISTBenchmark(w http.ResponseWriter, r *http.Request) {
 			Type     string `json:"type"`
 			Modality string `json:"modality"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 		if req.Type == "" {
 			req.Type = "MINEX"
 		}
@@ -1595,7 +1595,7 @@ func handleKioskStart(w http.ResponseWriter, r *http.Request) {
 		DeviceID string `json:"device_id"`
 		VIN      string `json:"vin"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.DeviceID == "" {
 		req.DeviceID = "BVAS-001"
 	}
@@ -1618,7 +1618,7 @@ func handleMultiFingerEnroll(w http.ResponseWriter, r *http.Request) {
 		Fingers       []string `json:"fingers"`
 		PrimaryFinger string   `json:"primary_finger"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.VIN == "" {
 		writeError(w, 400, "vin required")
 		return
@@ -1646,7 +1646,7 @@ func handlePrivacyMatch(w http.ResponseWriter, r *http.Request) {
 		VIN      string `json:"vin"`
 		Modality string `json:"modality"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Modality == "" {
 		req.Modality = "fingerprint"
 	}

@@ -249,7 +249,7 @@ func handleRegisterBVASDevice(w http.ResponseWriter, r *http.Request) {
 		Latitude        float64 `json:"latitude"`
 		Longitude       float64 `json:"longitude"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	var count int
 	db.QueryRow("SELECT COUNT(*) FROM bvas_devices WHERE serial_number=?", req.SerialNumber).Scan(&count)
@@ -275,7 +275,7 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	id := mux.Vars(r)["id"]
 	var req map[string]interface{}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 
 	var updates []string
 	var vals []interface{}
@@ -304,7 +304,7 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		PVCVerified     bool   `json:"pvc_verified"`
 		Method          string `json:"method"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
 	if req.Method == "" {
 		req.Method = "biometric"
 	}
