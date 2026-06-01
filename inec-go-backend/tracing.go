@@ -135,6 +135,12 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
+func (sw *statusWriter) Flush() {
+	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // exportSpan sends the span to the configured exporter or logs it.
 func exportSpan(span *Span) {
 	if tracingConfig.ExporterURL != "" {

@@ -14,14 +14,15 @@ const userContextKey contextKey = "user"
 
 // publicPaths are endpoints that do not require authentication.
 var publicPaths = map[string]bool{
-	"/healthz":       true,
-	"/readiness":     true,
-	"/auth/login":    true,
-	"/auth/register": true,
-	"/ws":            true,
-	"/db/metrics":    true,
-	"/db/pool":       true,
-	"/metrics":       true,
+	"/healthz":         true,
+	"/readiness":       true,
+	"/auth/login":      true,
+	"/auth/register":   true,
+	"/ws":              true,
+	"/db/metrics":      true,
+	"/db/pool":         true,
+	"/metrics":         true,
+	"/observer/stream": true, // SSE uses query param auth (EventSource can't set headers)
 }
 
 // publicPrefixes are path prefixes accessible without auth.

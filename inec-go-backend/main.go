@@ -667,6 +667,11 @@ func gzipMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Skip gzip for SSE/streaming endpoints (they need raw Flusher access)
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Path == "/observer/stream" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		gz, _ := gzip.NewWriterLevel(w, gzip.DefaultCompression)
 		defer gz.Close()
 		w.Header().Set("Content-Encoding", "gzip")
