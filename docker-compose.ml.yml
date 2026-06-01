@@ -1,0 +1,96 @@
+version: "3.8"
+
+# INEC ML Infrastructure Stack
+# Run with: docker-compose -f docker-compose.ml.yml up
+
+services:
+  # Python ML Inference Server (PaddleOCR, InsightFace, CDCN, GNN)
+  ml-inference:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      - MODELS_DIR=/app/models
+      - PYTHONPATH=/app
+    volumes:
+      - ml-models:/app/models
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "4"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Rust High-Performance Inference Engine (ONNX Runtime, batch scoring)
+  rust-inference:
+    build:
+      context: ./services/inference-engine
+    ports:
+      - "8091:8091"
+    environment:
+      - MODELS_DIR=/app/models
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-inec_graph_2024}
+      - RUST_LOG=info
+    volumes:
+      - ml-models:/app/models
+    depends_on:
+      - neo4j
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "4"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Neo4j Graph Database (polling unit adjacency, fraud rings)
+  neo4j:
+    image: neo4j:5.17-community
+    ports:
+      - "7474:7474"  # Browser
+      - "7687:7687"  # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-inec_graph_2024}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+    volumes:
+      - neo4j-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # Model Training (run once to generate model weights)
+  train:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    command: >
+      bash -c "
+        python training/anomaly_detection/train.py --output /app/models &&
+        python training/liveness_pad/train.py --output /app/models --epochs 10 &&
+        python training/gnn_network/train.py --output /app/models --epochs 50 &&
+        python training/face_recognition/train.py --action metadata
+      "
+    volumes:
+      - ml-models:/app/models
+    profiles:
+      - training
+
+volumes:
+  ml-models:
+    name: inec-ml-models
+  neo4j-data:
+    name: inec-neo4j-data

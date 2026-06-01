@@ -220,6 +220,7 @@ func main() {
 	r.HandleFunc("/ai/benford", readAuth(handleAIBenford)).Methods("GET")
 	r.HandleFunc("/ai/integrity", readAuth(handleAIIntegrity)).Methods("GET")
 	r.HandleFunc("/ai/methods", readAuth(handleAIMethods)).Methods("GET")
+	r.HandleFunc("/ai/gnn/score", readAuth(handleGNNScore)).Methods("GET")
 	r.HandleFunc("/ai/proxy/anomalies", readAuth(handleAIProxy)).Methods("GET")
 	r.HandleFunc("/ai/fallback/anomalies", readAuth(handleAIFallbackAnomalies)).Methods("GET")
 

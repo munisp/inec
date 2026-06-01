@@ -1,0 +1,100 @@
+# INEC ML Model Configuration
+# All models run on CPU inference
+
+anomaly_detection:
+  model_type: xgboost
+  model_file: anomaly_xgboost.onnx
+  fallback_file: anomaly_xgboost.json
+  scaler_file: anomaly_scaler.pkl
+  n_features: 17
+  threshold: 0.5
+  feature_columns:
+    - registered_voters
+    - accredited_voters
+    - turnout_rate
+    - total_valid_votes
+    - rejected_votes
+    - party_a_votes
+    - party_b_votes
+    - party_a_share
+    - party_b_share
+    - vote_margin
+    - benford_deviation
+    - submission_delay_hours
+    - regional_mean_turnout
+    - turnout_vs_region
+    - rejected_rate
+    - overvoting_flag
+    - round_number_flag
+  training:
+    n_samples: 50000
+    anomaly_rate: 0.05
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+
+face_recognition:
+  model_pack: buffalo_l
+  embedding_dim: 512
+  detection_model: scrfd_10g
+  thresholds:
+    strict_kyc: 0.5
+    standard_verification: 0.4
+    deduplication: 0.6
+  inference:
+    det_size: [640, 640]
+    provider: CPUExecutionProvider
+
+liveness_pad:
+  model_type: cdcn
+  model_file: liveness_cdcn.onnx
+  input_shape: [1, 3, 256, 256]
+  output:
+    depth_map: [1, 1, 32, 32]
+    liveness_score: [1, 1]
+  threshold: 0.5
+  iso_30107_level: 2
+  training:
+    epochs: 50
+    batch_size: 32
+    learning_rate: 0.0001
+    optimizer: adamw
+    scheduler: cosine_annealing
+
+gnn_network:
+  model_type: gat
+  model_file: gnn_election.pt
+  architecture:
+    in_channels: 17
+    hidden_channels: 64
+    heads: 4
+    layers: 3
+    dropout: 0.3
+  graph:
+    max_distance_km: 5.0
+    edge_types: [geographic, same_ward, same_lga]
+  training:
+    epochs: 50
+    learning_rate: 0.001
+    weight_decay: 0.0001
+  neo4j:
+    uri: ${NEO4J_URI}
+    user: ${NEO4J_USER}
+    password: ${NEO4J_PASSWORD}
+
+paddleocr:
+  lang: en
+  use_angle_cls: true
+  use_gpu: false
+  det_db_thresh: 0.3
+  rec_char_type: EN
+  ec8a_patterns:
+    serial: "EC8A[/\\-]?\\w{2,4}[/\\-]?\\d{4}[/\\-]?\\d{4,}"
+    parties: [APC, PDP, LP, NNPP, ADC, SDP, APGA, YPP, ZLP, AA, APM, NRM]
+
+serving:
+  python_port: 8090
+  rust_port: 8091
+  max_batch_size: 1000
+  request_timeout_ms: 5000
+  models_dir: /app/models

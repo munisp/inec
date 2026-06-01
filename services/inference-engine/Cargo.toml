@@ -1,0 +1,40 @@
+[package]
+name = "inec-inference-engine"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance ML inference engine for INEC election platform"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# ML inference
+ort = { version = "2.0", features = ["load-dynamic"] }
+ndarray = "0.16"
+
+# Neo4j
+neo4rs = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Image processing
+image = "0.25"
+
+# Utilities
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Math
+nalgebra = "0.33"
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -13,3 +13,13 @@ bin/
 *.log
 node_modules/
 dist/
+
+# ML artifacts
+ml/models/
+ml/data/processed/
+*.onnx
+*.pt
+*.pkl
+inec-go-backend/coverage.out
+inec-go-backend/inec-go-backend
+inec-go-backend/uploads/
