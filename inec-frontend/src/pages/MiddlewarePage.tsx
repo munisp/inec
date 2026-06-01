@@ -74,7 +74,7 @@ export default function MiddlewarePage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-zinc-900">Middleware Status</h2>
-          <p className="text-sm text-zinc-500">10 enterprise middleware integrations</p>
+          <p className="text-sm text-zinc-500">{statuses.length || 13} enterprise middleware integrations</p>
         </div>
         {health && (
           <Badge variant="outline" className={health.status === 'healthy' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}>
@@ -218,6 +218,18 @@ export default function MiddlewarePage() {
             <div>
               <h4 className="font-semibold text-zinc-900 mb-1">Analytics</h4>
               <p className="text-zinc-600">Lakehouse (DuckDB/Delta Lake analytics)</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-zinc-900 mb-1">Payments</h4>
+              <p className="text-zinc-600">Mojaloop (ILP 4-phase: discovery, quote, transfer, settlement)</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-zinc-900 mb-1">Search</h4>
+              <p className="text-zinc-600">OpenSearch (full-text search, audit indexing)</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-zinc-900 mb-1">WAF</h4>
+              <p className="text-zinc-600">OpenAppSec (SQLi/XSS/path traversal, IP blocklist)</p>
             </div>
           </div>
         </CardContent>
