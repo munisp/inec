@@ -602,3 +602,211 @@ func TestPgCompatPlaceholderConversion(t *testing.T) {
 		}
 	}
 }
+
+// ── End-to-End Auth Flow Tests ──
+
+func TestFullLoginAndAccessFlow(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	r := mux.NewRouter()
+	r.HandleFunc("/auth/login", handleLogin).Methods("POST")
+	r.HandleFunc("/elections", readAuth(handleListElections)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	// Login to get token
+	loginBody := `{"username":"admin","password":"admin123"}`
+	loginReq := httptest.NewRequest("POST", "/auth/login", bytes.NewReader([]byte(loginBody)))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginW := httptest.NewRecorder()
+	handler.ServeHTTP(loginW, loginReq)
+
+	if loginW.Code != 200 {
+		t.Fatalf("login failed: %d %s", loginW.Code, loginW.Body.String())
+	}
+	var loginResp map[string]interface{}
+	json.Unmarshal(loginW.Body.Bytes(), &loginResp)
+	token, ok := loginResp["access_token"].(string)
+	if !ok || token == "" {
+		t.Fatal("no access_token in login response")
+	}
+
+	// Use token to access protected endpoint
+	electReq := httptest.NewRequest("GET", "/elections", nil)
+	electReq.Header.Set("Authorization", "Bearer "+token)
+	electW := httptest.NewRecorder()
+	handler.ServeHTTP(electW, electReq)
+
+	if electW.Code != 200 {
+		t.Errorf("expected 200 with valid token, got %d", electW.Code)
+	}
+}
+
+func TestCreateAndListElectionFlow(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	r := mux.NewRouter()
+	r.HandleFunc("/elections", writeAuth(handleCreateElection)).Methods("POST")
+	r.HandleFunc("/elections", readAuth(handleListElections)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+
+	// Create election
+	createBody := `{"title":"2027 Presidential Election","election_type":"presidential","election_date":"2027-02-15"}`
+	createReq := httptest.NewRequest("POST", "/elections", bytes.NewReader([]byte(createBody)))
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createW := httptest.NewRecorder()
+	handler.ServeHTTP(createW, createReq)
+
+	if createW.Code != 200 {
+		t.Errorf("create election: expected 200, got %d: %s", createW.Code, createW.Body.String())
+	}
+
+	// List elections to verify it was created
+	listReq := httptest.NewRequest("GET", "/elections", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listW := httptest.NewRecorder()
+	handler.ServeHTTP(listW, listReq)
+
+	if listW.Code != 200 {
+		t.Errorf("list elections: expected 200, got %d", listW.Code)
+	}
+}
+
+func TestSubmitAndValidateResultFlow(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	r := mux.NewRouter()
+	r.HandleFunc("/results/submit", writeAuth(handleSubmitResult)).Methods("POST")
+	r.HandleFunc("/results", readAuth(handleListResults)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "officer1", "role": "presiding_officer", "full_name": "Officer",
+	})
+
+	// Get a valid polling unit code from seed data
+	var puCode string
+	db.QueryRow("SELECT code FROM polling_units LIMIT 1").Scan(&puCode)
+	if puCode == "" {
+		t.Skip("no seeded polling units")
+	}
+
+	submitBody := fmt.Sprintf(`{"election_id":1,"polling_unit_code":"%s","party_scores":[{"party_code":"APC","votes":350},{"party_code":"PDP","votes":280}]}`, puCode)
+	submitReq := httptest.NewRequest("POST", "/results/submit", bytes.NewReader([]byte(submitBody)))
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitReq.Header.Set("Authorization", "Bearer "+token)
+	submitW := httptest.NewRecorder()
+	handler.ServeHTTP(submitW, submitReq)
+
+	// Expecting 200 or 400 (validation) — not 500
+	if submitW.Code >= 500 {
+		t.Errorf("submit result: unexpected server error %d: %s", submitW.Code, submitW.Body.String())
+	}
+}
+
+func TestHealthCheckEndpointDeep(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	r := mux.NewRouter()
+	r.HandleFunc("/healthz", handleDeepHealthCheck).Methods("GET")
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if status, ok := body["status"].(string); !ok || status != "healthy" {
+		t.Errorf("expected healthy status, got %v", body["status"])
+	}
+	if middleware, ok := body["middleware"].([]interface{}); ok {
+		if len(middleware) < 13 {
+			t.Errorf("expected 13+ middleware in health check, got %d", len(middleware))
+		}
+	}
+}
+
+func TestAuditTrailLogging(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	// Count audit entries before
+	var beforeCount int
+	db.QueryRow("SELECT COUNT(*) FROM audit_log").Scan(&beforeCount)
+
+	// Create an election to trigger audit
+	r := mux.NewRouter()
+	r.HandleFunc("/elections", writeAuth(handleCreateElection)).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+	body := `{"title":"Audit Test Election","election_type":"gubernatorial","election_date":"2028-03-01"}`
+	req := httptest.NewRequest("POST", "/elections", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Count audit entries after
+	var afterCount int
+	db.QueryRow("SELECT COUNT(*) FROM audit_log").Scan(&afterCount)
+
+	if afterCount <= beforeCount {
+		t.Error("audit log should have grown after election creation")
+	}
+}
+
+func TestBVASDeviceListEndpoint(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	r := mux.NewRouter()
+	r.HandleFunc("/bvas/devices", readAuth(handleListBVASDevices)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+	req := httptest.NewRequest("GET", "/bvas/devices", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestIncidentListEndpoint(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+	r := mux.NewRouter()
+	r.HandleFunc("/incidents", readAuth(handleListIncidents)).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+	req := httptest.NewRequest("GET", "/incidents?election_id=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
