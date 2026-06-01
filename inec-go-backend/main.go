@@ -189,13 +189,13 @@ func main() {
 
 	// Observer Monitoring — party agents, real-time streaming, photo uploads
 	r.HandleFunc("/observer/stream", handleSSEStream).Methods("GET")
-	r.HandleFunc("/observer/reports", writeAuth(handleObserverPhotoUpload)).Methods("POST")
+	r.HandleFunc("/observer/reports", adminOrOfficer(handleObserverPhotoUpload)).Methods("POST")
 	r.HandleFunc("/observer/reports", readAuth(handleListObserverReports)).Methods("GET")
 	r.HandleFunc("/observer/reports/{id:[0-9]+}/review", adminOnly(handleReviewObserverReport)).Methods("PATCH")
-	r.HandleFunc("/observer/alerts", writeAuth(handleCreateAlertRule)).Methods("POST")
+	r.HandleFunc("/observer/alerts", adminOrOfficer(handleCreateAlertRule)).Methods("POST")
 	r.HandleFunc("/observer/alerts", readAuth(handleListAlertRules)).Methods("GET")
-	r.HandleFunc("/observer/alerts/{id:[0-9]+}", writeAuth(handleDeleteAlertRule)).Methods("DELETE")
-	r.HandleFunc("/observer/check-in", writeAuth(handleObserverCheckIn)).Methods("POST")
+	r.HandleFunc("/observer/alerts/{id:[0-9]+}", adminOrOfficer(handleDeleteAlertRule)).Methods("DELETE")
+	r.HandleFunc("/observer/check-in", adminOrOfficer(handleObserverCheckIn)).Methods("POST")
 	r.HandleFunc("/observer/stats", readAuth(handleObserverStats)).Methods("GET")
 	r.HandleFunc("/observer/party-dashboard", readAuth(handlePartyDashboard)).Methods("GET")
 

@@ -46,8 +46,9 @@ export async function api<T = unknown>(
 }
 
 export interface LoginResponse {
-  token: string;
-  user: { id: number; username: string; role: string };
+  access_token: string;
+  token_type: string;
+  user: { id: number; username: string; role: string; full_name: string; staff_id: string };
 }
 
 export async function login(username: string, password: string): Promise<LoginResponse> {
@@ -55,7 +56,7 @@ export async function login(username: string, password: string): Promise<LoginRe
     method: 'POST',
     body: JSON.stringify({ username, password }),
   });
-  await setToken(data.token);
+  await setToken(data.access_token);
   return data;
 }
 
