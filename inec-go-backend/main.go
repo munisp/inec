@@ -451,18 +451,19 @@ func main() {
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")
 
-	// Middleware chain: request ID → access log → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
+	// Middleware chain: request ID → tracing → access log → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
 	handler := requestIDMiddleware(
-		accessLogMiddleware(
-			metricsMiddleware(
-				corsProductionMiddleware(
-					jwtAuthMiddleware(
-						csrfMiddleware(
-							enhancedSecurityHeaders(
-								wafMiddleware(
-									requestSizeLimit(
-										rateLimitMiddleware(
-							gzipMiddleware(r)))))))))))
+		tracingMiddleware(
+			accessLogMiddleware(
+				metricsMiddleware(
+					corsProductionMiddleware(
+						jwtAuthMiddleware(
+							csrfMiddleware(
+								enhancedSecurityHeaders(
+									wafMiddleware(
+										requestSizeLimit(
+											rateLimitMiddleware(
+								gzipMiddleware(r))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
