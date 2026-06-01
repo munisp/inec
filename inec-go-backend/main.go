@@ -87,6 +87,7 @@ func main() {
 	initActiveSessions(db)
 	initAPIKeyRotation(db)
 	initTracing()
+	initObserverTables()
 
 	mwHub = initMiddlewareHub()
 
@@ -185,6 +186,18 @@ func main() {
 	r.HandleFunc("/ingestion/dead-letter", readAuth(handleDeadLetterQueue)).Methods("GET")
 	r.HandleFunc("/ingestion/dead-letter/{id}/reprocess", adminOnly(handleReprocessDLQ)).Methods("POST")
 	r.HandleFunc("/ingestion/offline-queue", readAuth(handleOfflineSyncQueue)).Methods("GET")
+
+	// Observer Monitoring — party agents, real-time streaming, photo uploads
+	r.HandleFunc("/observer/stream", handleSSEStream).Methods("GET")
+	r.HandleFunc("/observer/reports", writeAuth(handleObserverPhotoUpload)).Methods("POST")
+	r.HandleFunc("/observer/reports", readAuth(handleListObserverReports)).Methods("GET")
+	r.HandleFunc("/observer/reports/{id:[0-9]+}/review", adminOnly(handleReviewObserverReport)).Methods("PATCH")
+	r.HandleFunc("/observer/alerts", writeAuth(handleCreateAlertRule)).Methods("POST")
+	r.HandleFunc("/observer/alerts", readAuth(handleListAlertRules)).Methods("GET")
+	r.HandleFunc("/observer/alerts/{id:[0-9]+}", writeAuth(handleDeleteAlertRule)).Methods("DELETE")
+	r.HandleFunc("/observer/check-in", writeAuth(handleObserverCheckIn)).Methods("POST")
+	r.HandleFunc("/observer/stats", readAuth(handleObserverStats)).Methods("GET")
+	r.HandleFunc("/observer/party-dashboard", readAuth(handlePartyDashboard)).Methods("GET")
 
 	// SMS/USSD Gateway — auth required
 	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
@@ -447,6 +460,9 @@ func main() {
 
 	// Admin user management
 	r.HandleFunc("/admin/users/promote", adminOnly(handlePromoteUser)).Methods("POST")
+
+	// Static file serving for observer photo uploads
+	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")

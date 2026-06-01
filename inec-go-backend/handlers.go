@@ -386,6 +386,12 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	go broadcastWS(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID})
 
+	// Broadcast to SSE observers
+	go NotifyResultSubmission(map[string]interface{}{
+		"result_id": resultID, "polling_unit_code": req.PollingUnitCode,
+		"election_id": req.ElectionID, "total_votes": totalCast,
+	})
+
 	// Trigger auto-collation check (non-blocking)
 	go checkAutoCollation(req.ElectionID, req.PollingUnitCode)
 

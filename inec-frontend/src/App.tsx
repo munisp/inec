@@ -29,6 +29,7 @@ import TrainingPage from '@/pages/TrainingPage';
 import StakeholderPage from '@/pages/StakeholderPage';
 import AIMonitoringPage from '@/pages/AIMonitoringPage';
 import ProductionPage from '@/pages/ProductionPage';
+import ObserverMonitoringPage from '@/pages/ObserverMonitoringPage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -62,6 +63,7 @@ function AppContent() {
     'stakeholders': <StakeholderPage />,
     'ai-monitoring': <AIMonitoringPage />,
     'production': <ProductionPage />,
+    'observer-monitoring': <ObserverMonitoringPage />,
   };
 
   return (

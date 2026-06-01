@@ -10,7 +10,7 @@ import {
   LayoutDashboard, Vote, FileBarChart, Shield, AlertTriangle,
   Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
   Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings,
-  ScanFace, Link2, GraduationCap, Users2, BarChart3
+  ScanFace, Link2, GraduationCap, Users2, BarChart3, Eye
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -38,6 +38,7 @@ const NAV_ITEMS = [
   { label: 'Training', icon: GraduationCap, path: 'training' },
   { label: 'Stakeholders', icon: Users2, path: 'stakeholders' },
   { label: 'AI Monitoring', icon: BarChart3, path: 'ai-monitoring' },
+  { label: 'Observer Monitor', icon: Eye, path: 'observer-monitoring', section: 'Monitoring' },
   { label: 'Production', icon: Shield, path: 'production', section: 'Infrastructure' },
 ];
 
