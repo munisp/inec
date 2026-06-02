@@ -11,6 +11,19 @@ function getToken(): string | null {
   return localStorage.getItem('token') || localStorage.getItem('inec_token');
 }
 
+function xhrFallback(path: string, method: string, headers: Record<string, string>, body?: string): unknown {
+  const xhr = new XMLHttpRequest();
+  xhr.open(method, `${API_URL}${path}`, false);
+  Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+  xhr.send(body || null);
+  if (xhr.status === 0) throw new Error('XHR failed: network error');
+  if (xhr.status >= 400) {
+    const err = (() => { try { return JSON.parse(xhr.responseText); } catch { return { detail: xhr.statusText }; } })();
+    throw new ApiError(xhr.status, err.detail || err.error || 'Request failed');
+  }
+  try { return JSON.parse(xhr.responseText); } catch { return xhr.responseText; }
+}
+
 async function request(path: string, options: RequestInit = {}, retries = 2) {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -33,6 +46,15 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
       return res.json();
     } catch (err) {
       if (err instanceof ApiError) throw err;
+      // Fallback to synchronous XHR when fetch() fails (e.g. in automation environments)
+      if (err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.')) {
+        try {
+          return xhrFallback(path, options.method || 'GET', headers, options.body as string | undefined);
+        } catch (xhrErr) {
+          if (xhrErr instanceof ApiError) throw xhrErr;
+          if (attempt === retries) throw xhrErr;
+        }
+      }
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
