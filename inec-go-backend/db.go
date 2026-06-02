@@ -25,7 +25,7 @@ func initDB(db *sql.DB) {
 		title TEXT NOT NULL,
 		election_type TEXT NOT NULL CHECK(election_type IN ('presidential','gubernatorial','senatorial','house_of_reps','state_assembly','local_government')),
 		election_date TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming','active','completed','cancelled')),
+		status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming','active','completed','cancelled','draft','scheduled','voting','collating','closed','disputed')),
 		description TEXT,
 		total_registered_voters INTEGER DEFAULT 0,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

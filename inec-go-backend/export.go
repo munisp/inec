@@ -206,13 +206,13 @@ func handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	limit := queryParamInt(r, "limit", 1000)
 	category := queryParam(r, "category", "")
 
-	query := "SELECT action, entity_type, entity_id, actor, details, created_at FROM audit_log"
+	query := "SELECT action, entity_type, COALESCE(entity_id,''), COALESCE(user_id,0), COALESCE(details,''), timestamp FROM audit_log"
 	args := []interface{}{}
 	if category != "" {
 		query += " WHERE action LIKE $1"
 		args = append(args, category+"%")
 	}
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit)
+	query += fmt.Sprintf(" ORDER BY timestamp DESC LIMIT %d", limit)
 
 	rows, err := db.QueryContext(r.Context(), query, args...)
 	if err != nil {
@@ -223,11 +223,12 @@ func handleAuditExport(w http.ResponseWriter, r *http.Request) {
 
 	var entries []M
 	for rows.Next() {
-		var action, entityType, entityID, actor, details, createdAt string
-		if rows.Scan(&action, &entityType, &entityID, &actor, &details, &createdAt) == nil {
+		var action, entityType, entityID, details, createdAt string
+		var userID int
+		if rows.Scan(&action, &entityType, &entityID, &userID, &details, &createdAt) == nil {
 			entries = append(entries, M{
 				"action": action, "entity_type": entityType, "entity_id": entityID,
-				"actor": actor, "details": details, "created_at": createdAt,
+				"user_id": userID, "details": details, "created_at": createdAt,
 			})
 		}
 	}

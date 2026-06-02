@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS elections (
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	CONSTRAINT chk_election_type CHECK (election_type IN ('presidential','gubernatorial','senatorial','house_of_reps','state_assembly','local_government')),
-	CONSTRAINT chk_election_status CHECK (status IN ('upcoming','active','completed','cancelled'))
+	CONSTRAINT chk_election_status CHECK (status IN ('upcoming','active','completed','cancelled','draft','scheduled','voting','collating','closed','disputed'))
 );
 CREATE TABLE IF NOT EXISTS results (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,7 +204,7 @@ DROP TABLE IF EXISTS polling_unit_locations;
 	},
 	{
 		Version:     5,
-		Description: "Row-level security policies (application-enforced)",
+		Description: "Row-level security policies (application-enforced) + expand election FSM states",
 		Up: `
 CREATE TABLE IF NOT EXISTS row_access_policies (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,6 +223,54 @@ INSERT OR IGNORE INTO row_access_policies (table_name, policy_name, role, condit
 	('incidents', 'reporter_own', 'observer', 'reported_by', 'SELF', 'read');
 `,
 		Down: `DROP TABLE IF EXISTS row_access_policies;`,
+	},
+	{
+		Version:     6,
+		Description: "Election FSM lifecycle states, dedup resolution, GPS spoofing, webhooks",
+		Up: `
+CREATE TABLE IF NOT EXISTS election_state_log (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	election_id INTEGER NOT NULL,
+	from_state TEXT NOT NULL,
+	to_state TEXT NOT NULL,
+	event TEXT NOT NULL,
+	actor TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS dedup_resolutions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	voter_a_vin TEXT NOT NULL,
+	voter_b_vin TEXT NOT NULL,
+	decision TEXT NOT NULL,
+	reason TEXT,
+	resolved_by TEXT,
+	resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS gps_spoof_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	device_id TEXT NOT NULL,
+	lat REAL NOT NULL,
+	lng REAL NOT NULL,
+	confidence REAL NOT NULL,
+	indicators TEXT,
+	detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	url TEXT NOT NULL,
+	events TEXT NOT NULL,
+	secret TEXT NOT NULL,
+	created_by TEXT,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	is_active INTEGER DEFAULT 1
+);
+`,
+		Down: `
+DROP TABLE IF EXISTS webhook_subscriptions;
+DROP TABLE IF EXISTS gps_spoof_events;
+DROP TABLE IF EXISTS dedup_resolutions;
+DROP TABLE IF EXISTS election_state_log;
+`,
 	},
 }
 
