@@ -1,18 +1,50 @@
 {
   "name": "INEC Election Platform",
-  "short_name": "INEC Platform",
-  "description": "Independent National Electoral Commission - Election Results Management & Observer Monitoring",
+  "short_name": "INEC",
+  "description": "Independent National Electoral Commission - Real-Time Election Results & Observer Monitoring",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#15803d",
   "orientation": "any",
   "categories": ["government", "utilities"],
+  "lang": "en-NG",
+  "dir": "ltr",
+  "scope": "/",
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/favicon.ico",
       "sizes": "64x64",
       "type": "image/x-icon"
     }
-  ]
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "url": "/?page=dashboard",
+      "description": "View election dashboard"
+    },
+    {
+      "name": "Live Results",
+      "short_name": "Results",
+      "url": "/?page=results",
+      "description": "View live election results"
+    },
+    {
+      "name": "Observer Monitor",
+      "short_name": "Observer",
+      "url": "/?page=observer-monitoring",
+      "description": "Observer monitoring feed"
+    },
+    {
+      "name": "Map View",
+      "short_name": "Map",
+      "url": "/?page=map",
+      "description": "Geographic results view"
+    }
+  ],
+  "screenshots": [],
+  "related_applications": []
 }

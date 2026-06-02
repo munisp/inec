@@ -1,36 +1,58 @@
-import { useState } from 'react';
+import { useState, useEffect, Suspense, lazy } from 'react';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import { I18nProvider } from '@/lib/i18n';
+import { ThemeProvider } from '@/components/ThemeProvider';
+import { ToastProvider } from '@/components/Toast';
+import { OfflineBanner } from '@/components/OfflineBanner';
+import { InstallPrompt } from '@/components/InstallPrompt';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import Layout from '@/components/Layout';
 import LoginPage from '@/pages/LoginPage';
-import DashboardPage from '@/pages/DashboardPage';
-import ElectionsPage from '@/pages/ElectionsPage';
-import ResultsPage from '@/pages/ResultsPage';
-import CollationPage from '@/pages/CollationPage';
-import PollingUnitsPage from '@/pages/PollingUnitsPage';
-import AuditPage from '@/pages/AuditPage';
-import IncidentsPage from '@/pages/IncidentsPage';
-import MapPage from '@/pages/MapPage';
-import MiddlewarePage from '@/pages/MiddlewarePage';
-import BVASPage from '@/pages/BVASPage';
-import AnomalyDetectionPage from '@/pages/AnomalyDetectionPage';
-import SMSVerificationPage from '@/pages/SMSVerificationPage';
-import PublicAPIPage from '@/pages/PublicAPIPage';
-import VoterRegistrationPage from '@/pages/VoterRegistrationPage';
-import WorkflowEnginePage from '@/pages/WorkflowEnginePage';
-import BVASSyncPage from '@/pages/BVASSyncPage';
-import PortalIntegrationPage from '@/pages/PortalIntegrationPage';
-import DataValidationPage from '@/pages/DataValidationPage';
-import AdminConsolePage from '@/pages/AdminConsolePage';
-import BiometricPage from '@/pages/BiometricPage';
-import BlockchainPage from '@/pages/BlockchainPage';
-import TrainingPage from '@/pages/TrainingPage';
-import StakeholderPage from '@/pages/StakeholderPage';
-import AIMonitoringPage from '@/pages/AIMonitoringPage';
-import ProductionPage from '@/pages/ProductionPage';
-import ObserverMonitoringPage from '@/pages/ObserverMonitoringPage';
-import DisputeResolutionPage from '@/pages/DisputeResolutionPage';
+import { DashboardSkeleton } from '@/components/Skeleton';
+
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
+const ElectionsPage = lazy(() => import('@/pages/ElectionsPage'));
+const ResultsPage = lazy(() => import('@/pages/ResultsPage'));
+const CollationPage = lazy(() => import('@/pages/CollationPage'));
+const PollingUnitsPage = lazy(() => import('@/pages/PollingUnitsPage'));
+const AuditPage = lazy(() => import('@/pages/AuditPage'));
+const IncidentsPage = lazy(() => import('@/pages/IncidentsPage'));
+const MapPage = lazy(() => import('@/pages/MapPage'));
+const MiddlewarePage = lazy(() => import('@/pages/MiddlewarePage'));
+const BVASPage = lazy(() => import('@/pages/BVASPage'));
+const AnomalyDetectionPage = lazy(() => import('@/pages/AnomalyDetectionPage'));
+const SMSVerificationPage = lazy(() => import('@/pages/SMSVerificationPage'));
+const PublicAPIPage = lazy(() => import('@/pages/PublicAPIPage'));
+const VoterRegistrationPage = lazy(() => import('@/pages/VoterRegistrationPage'));
+const WorkflowEnginePage = lazy(() => import('@/pages/WorkflowEnginePage'));
+const BVASSyncPage = lazy(() => import('@/pages/BVASSyncPage'));
+const PortalIntegrationPage = lazy(() => import('@/pages/PortalIntegrationPage'));
+const DataValidationPage = lazy(() => import('@/pages/DataValidationPage'));
+const AdminConsolePage = lazy(() => import('@/pages/AdminConsolePage'));
+const BiometricPage = lazy(() => import('@/pages/BiometricPage'));
+const BlockchainPage = lazy(() => import('@/pages/BlockchainPage'));
+const TrainingPage = lazy(() => import('@/pages/TrainingPage'));
+const StakeholderPage = lazy(() => import('@/pages/StakeholderPage'));
+const AIMonitoringPage = lazy(() => import('@/pages/AIMonitoringPage'));
+const ProductionPage = lazy(() => import('@/pages/ProductionPage'));
+const ObserverMonitoringPage = lazy(() => import('@/pages/ObserverMonitoringPage'));
+const DisputeResolutionPage = lazy(() => import('@/pages/DisputeResolutionPage'));
+
+function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    setShow(false);
+    const frame = requestAnimationFrame(() => setShow(true));
+    return () => cancelAnimationFrame(frame);
+  }, [page]);
+
+  return (
+    <div className={`transition-all duration-200 ease-out ${show ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1'}`}>
+      {children}
+    </div>
+  );
+}
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -71,7 +93,11 @@ function AppContent() {
   return (
     <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
       <ErrorBoundary>
-        {pages[currentPage] || <DashboardPage />}
+        <PageTransition page={currentPage}>
+          <Suspense fallback={<DashboardSkeleton />}>
+            {pages[currentPage] || <DashboardPage />}
+          </Suspense>
+        </PageTransition>
       </ErrorBoundary>
     </Layout>
   );
@@ -79,11 +105,17 @@ function AppContent() {
 
 function App() {
   return (
-    <AuthProvider>
-      <I18nProvider>
-        <AppContent />
-      </I18nProvider>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <I18nProvider>
+          <ToastProvider>
+            <OfflineBanner />
+            <AppContent />
+            <InstallPrompt />
+          </ToastProvider>
+        </I18nProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

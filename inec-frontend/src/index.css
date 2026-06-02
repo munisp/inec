@@ -3,7 +3,18 @@
 @tailwind utilities;
 @layer base {
   :root {
-    --radius: 0.5rem
+    --radius: 0.5rem;
   }
+  .dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-zinc-50 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 antialiased;
+  }
+  /* Smooth scrollbar for sidebar */
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 2px; }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb { background: #3f3f46; }
 }
 

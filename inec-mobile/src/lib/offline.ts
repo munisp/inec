@@ -71,6 +71,29 @@ export async function queueCheckIn(checkIn: {
   return result.lastInsertRowId;
 }
 
+export interface PendingReport {
+  id: number;
+  polling_unit_code: string;
+  description: string;
+  photo_uri: string | null;
+  created_at: string;
+}
+
+export async function getPendingReports(): Promise<PendingReport[]> {
+  const database = await getDb();
+  return database.getAllAsync<PendingReport>('SELECT * FROM pending_reports WHERE synced = 0 ORDER BY created_at DESC');
+}
+
+export async function savePendingReport(pollingUnitCode: string, description: string, photoUri: string): Promise<number> {
+  const database = await getDb();
+  const result = await database.runAsync(
+    `INSERT INTO pending_reports (polling_unit_code, election_id, report_type, photo_uri, description, latitude, longitude)
+     VALUES (?, 0, 'observer', ?, ?, 0, 0)`,
+    [pollingUnitCode, photoUri || null, description]
+  );
+  return result.lastInsertRowId;
+}
+
 export async function getPendingReportCount(): Promise<number> {
   const database = await getDb();
   const row = await database.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM pending_reports WHERE synced = 0');

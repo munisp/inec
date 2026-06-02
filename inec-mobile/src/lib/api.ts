@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8088';
+export const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8088';
 
 export async function getToken(): Promise<string | null> {
   return SecureStore.getItemAsync('auth_token');
@@ -81,12 +81,15 @@ export interface ObserverReport {
 }
 
 export interface AlertRule {
-  id: number;
+  id: string;
   user_id: number;
   party_code: string;
   state_code: string;
   lga_code: string;
   alert_type: string;
+  party?: string;
+  state?: string;
+  threshold?: number;
   is_active: number;
   created_at: string;
 }
@@ -128,13 +131,13 @@ export const observerApi = {
 
   alerts: () => api<AlertRule[]>('/observer/alerts'),
 
-  createAlert: (rule: { party_code: string; state_code: string; lga_code: string; alert_type: string }) =>
+  createAlert: (rule: { alert_type: string; party?: string; state?: string; threshold?: number; party_code?: string; state_code?: string; lga_code?: string }) =>
     api<{ rule_id: number; message: string }>('/observer/alerts', {
       method: 'POST',
       body: JSON.stringify(rule),
     }),
 
-  deleteAlert: (id: number) =>
+  deleteAlert: (id: string | number) =>
     api<{ message: string }>(`/observer/alerts/${id}`, { method: 'DELETE' }),
 
   partyDashboard: (party: string) =>
@@ -226,4 +229,3 @@ export const documentAIApi = {
     api<{ report_id: number; status: string; ocr_confidence?: number; tampering_detected?: boolean }>(`/document-ai/status?report_id=${reportId}`),
 };
 
-export { API_URL };
