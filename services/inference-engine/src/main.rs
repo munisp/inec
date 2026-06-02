@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use ndarray::{Array1, Array2};
+use ndarray::Array1;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -157,6 +157,42 @@ struct NeighborInfo {
     turnout: f64,
     distance_km: f64,
     flagged: bool,
+}
+
+#[derive(Deserialize)]
+struct GpsSpoofRequest {
+    device_id: String,
+    current_lat: f64,
+    current_lng: f64,
+    previous_lat: Option<f64>,
+    previous_lng: Option<f64>,
+    time_delta_seconds: Option<f64>,
+    accuracy: Option<f64>,
+    altitude: Option<f64>,
+    mock_provider: Option<bool>,
+    jitter_samples: Option<Vec<f64>>,
+    expected_lat: Option<f64>,
+    expected_lng: Option<f64>,
+    geofence_radius_m: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct GpsSpoofResponse {
+    device_id: String,
+    is_spoofed: bool,
+    confidence: f64,
+    indicators: Vec<SpoofIndicator>,
+    distance_from_expected_m: Option<f64>,
+    velocity_kmh: Option<f64>,
+    inference_time_us: u64,
+}
+
+#[derive(Serialize)]
+struct SpoofIndicator {
+    check: String,
+    result: String,
+    severity: String,
+    detail: String,
 }
 
 #[derive(Serialize)]
@@ -345,6 +381,143 @@ async fn compare_faces(
     }))
 }
 
+// Haversine distance in meters
+fn haversine_m(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+    let r = 6_371_000.0; // Earth radius in meters
+    let d_lat = (lat2 - lat1).to_radians();
+    let d_lng = (lng2 - lng1).to_radians();
+    let a = (d_lat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (d_lng / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+    r * c
+}
+
+async fn detect_gps_spoof(
+    Json(req): Json<GpsSpoofRequest>,
+) -> Json<GpsSpoofResponse> {
+    let start = std::time::Instant::now();
+    let mut indicators = Vec::new();
+    let mut spoof_score: f64 = 0.0;
+
+    // 1. Mock provider detection
+    if req.mock_provider.unwrap_or(false) {
+        indicators.push(SpoofIndicator {
+            check: "mock_provider".into(),
+            result: "FAIL".into(),
+            severity: "critical".into(),
+            detail: "Device reports mock location provider active".into(),
+        });
+        spoof_score += 0.9;
+    }
+
+    // 2. Accuracy check (GPS accuracy > 100m is suspicious)
+    if let Some(acc) = req.accuracy {
+        if acc > 100.0 || acc <= 0.0 {
+            indicators.push(SpoofIndicator {
+                check: "accuracy".into(),
+                result: "FAIL".into(),
+                severity: "high".into(),
+                detail: format!("GPS accuracy {}m is outside normal range (1-100m)", acc),
+            });
+            spoof_score += 0.3;
+        }
+    }
+
+    // 3. Altitude check (Nigeria max altitude ~2,419m at Chappal Waddi)
+    if let Some(alt) = req.altitude {
+        if alt < -50.0 || alt > 3000.0 {
+            indicators.push(SpoofIndicator {
+                check: "altitude".into(),
+                result: "FAIL".into(),
+                severity: "medium".into(),
+                detail: format!("Altitude {}m is outside Nigeria range (-50 to 3000)", alt),
+            });
+            spoof_score += 0.3;
+        }
+    }
+
+    // 4. Velocity check (teleportation detection)
+    let mut velocity_kmh = None;
+    if let (Some(prev_lat), Some(prev_lng), Some(dt)) =
+        (req.previous_lat, req.previous_lng, req.time_delta_seconds)
+    {
+        if dt > 0.0 {
+            let dist_m = haversine_m(prev_lat, prev_lng, req.current_lat, req.current_lng);
+            let v = (dist_m / dt) * 3.6; // m/s to km/h
+            velocity_kmh = Some(v);
+
+            if v > 500.0 {
+                indicators.push(SpoofIndicator {
+                    check: "teleportation".into(),
+                    result: "FAIL".into(),
+                    severity: "critical".into(),
+                    detail: format!("Velocity {:.0} km/h exceeds 500 km/h threshold (distance {:.0}m in {:.0}s)", v, dist_m, dt),
+                });
+                spoof_score += 0.8;
+            } else if v > 200.0 {
+                indicators.push(SpoofIndicator {
+                    check: "high_velocity".into(),
+                    result: "WARN".into(),
+                    severity: "medium".into(),
+                    detail: format!("Velocity {:.0} km/h is unusually high", v),
+                });
+                spoof_score += 0.2;
+            }
+        }
+    }
+
+    // 5. Geofence check (distance from expected polling unit location)
+    let mut distance_from_expected = None;
+    if let (Some(exp_lat), Some(exp_lng)) = (req.expected_lat, req.expected_lng) {
+        let dist = haversine_m(req.current_lat, req.current_lng, exp_lat, exp_lng);
+        distance_from_expected = Some(dist);
+        let radius = req.geofence_radius_m.unwrap_or(500.0);
+
+        if dist > radius {
+            indicators.push(SpoofIndicator {
+                check: "geofence".into(),
+                result: "FAIL".into(),
+                severity: "high".into(),
+                detail: format!("Device is {:.0}m from expected location (radius: {:.0}m)", dist, radius),
+            });
+            spoof_score += 0.5;
+        }
+    }
+
+    // 6. Jitter analysis (zero jitter = emulated GPS)
+    if let Some(ref samples) = req.jitter_samples {
+        if samples.len() >= 3 {
+            let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+            let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / samples.len() as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev < 0.0001 {
+                indicators.push(SpoofIndicator {
+                    check: "jitter".into(),
+                    result: "FAIL".into(),
+                    severity: "high".into(),
+                    detail: format!("GPS jitter std_dev={:.6} suggests emulated/static GPS", std_dev),
+                });
+                spoof_score += 0.4;
+            }
+        }
+    }
+
+    let confidence = spoof_score.min(1.0);
+    let is_spoofed = confidence > 0.5;
+    let elapsed = start.elapsed().as_micros() as u64;
+
+    Json(GpsSpoofResponse {
+        device_id: req.device_id,
+        is_spoofed,
+        confidence,
+        indicators,
+        distance_from_expected_m: distance_from_expected,
+        velocity_kmh,
+        inference_time_us: elapsed,
+    })
+}
+
 async fn query_graph(
     State(state): State<SharedState>,
     Json(req): Json<GraphQueryRequest>,
@@ -379,6 +552,7 @@ async fn main() {
         .route("/anomaly/batch", post(batch_predict))
         .route("/face/compare", post(compare_faces))
         .route("/graph/neighborhood", post(query_graph))
+        .route("/gps/spoof-detect", post(detect_gps_spoof))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

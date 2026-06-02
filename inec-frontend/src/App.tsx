@@ -30,6 +30,7 @@ import StakeholderPage from '@/pages/StakeholderPage';
 import AIMonitoringPage from '@/pages/AIMonitoringPage';
 import ProductionPage from '@/pages/ProductionPage';
 import ObserverMonitoringPage from '@/pages/ObserverMonitoringPage';
+import DisputeResolutionPage from '@/pages/DisputeResolutionPage';
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
@@ -64,6 +65,7 @@ function AppContent() {
     'ai-monitoring': <AIMonitoringPage />,
     'production': <ProductionPage />,
     'observer-monitoring': <ObserverMonitoringPage />,
+    'dispute-resolution': <DisputeResolutionPage />,
   };
 
   return (

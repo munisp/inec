@@ -747,3 +747,234 @@ func TestElectionStatesAreDistinct(t *testing.T) {
 		t.Errorf("expected 8 states, got %d", len(states))
 	}
 }
+
+// --- Dispute Resolution Tests ---
+
+func TestFileDisputeEndpoint(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	// Create election for dispute
+	res, _ := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Dispute Test','presidential','2026-12-01','active')")
+	elID, _ := res.LastInsertId()
+	defer db.Exec("DELETE FROM elections WHERE id=?", elID)
+
+	r := mux.NewRouter()
+	r.HandleFunc("/disputes", handleFileDispute).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"election_id": elID,
+		"category":    "overvoting",
+		"description": "More votes than registered voters at PU 001",
+		"party":       "APC",
+	})
+	req := httptest.NewRequest("POST", "/disputes", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 201 {
+		t.Errorf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "filed" {
+		t.Errorf("expected status 'filed', got '%v'", resp["status"])
+	}
+
+	// Clean up
+	if id, ok := resp["dispute_id"].(float64); ok {
+		db.Exec("DELETE FROM disputes WHERE id=?", int(id))
+	}
+}
+
+func TestFileDisputeInvalidCategory(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/disputes", handleFileDispute).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"election_id": 999,
+		"category":    "invalid_category",
+		"description": "test",
+	})
+	req := httptest.NewRequest("POST", "/disputes", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid category, got %d", w.Code)
+	}
+}
+
+func TestDisputeStatsEndpoint(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/disputes/stats", handleDisputeStats).Methods("GET")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+
+	req := httptest.NewRequest("GET", "/disputes/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if _, ok := resp["categories"]; !ok {
+		t.Error("expected categories in response")
+	}
+}
+
+func TestDisputeResolveWorkflow(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	// Insert a dispute directly
+	res, err := db.Exec("INSERT INTO disputes (election_id, filed_by, category, description) VALUES (1, 'observer1', 'overvoting', 'Test dispute')")
+	if err != nil {
+		t.Fatalf("failed to insert dispute: %v", err)
+	}
+	disputeID, _ := res.LastInsertId()
+	defer db.Exec("DELETE FROM disputes WHERE id=?", disputeID)
+
+	r := mux.NewRouter()
+	r.HandleFunc("/disputes/{id}/resolve", handleResolveDispute).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
+	})
+
+	// Step 1: Review
+	body, _ := json.Marshal(map[string]string{"action": "review", "assign_to": "officer1"})
+	req := httptest.NewRequest("POST", fmt.Sprintf("/disputes/%d/resolve", disputeID), bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify status changed
+	var status string
+	db.QueryRow("SELECT status FROM disputes WHERE id=?", disputeID).Scan(&status)
+	if status != "under_review" {
+		t.Errorf("expected 'under_review', got '%s'", status)
+	}
+
+	// Step 2: Resolve
+	body, _ = json.Marshal(map[string]string{"action": "resolve", "resolution": "Votes recounted and verified"})
+	req = httptest.NewRequest("POST", fmt.Sprintf("/disputes/%d/resolve", disputeID), bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("resolve: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	db.QueryRow("SELECT status FROM disputes WHERE id=?", disputeID).Scan(&status)
+	if status != "resolved" {
+		t.Errorf("expected 'resolved', got '%s'", status)
+	}
+}
+
+// --- Push Device Registration Tests ---
+
+func TestRegisterDeviceEndpoint(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/push/devices", handleRegisterDevice).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "observer", "role": "observer", "full_name": "Observer",
+	})
+
+	body, _ := json.Marshal(map[string]string{
+		"device_token": "test-token-123",
+		"platform":     "android",
+		"app_version":  "1.0.0",
+	})
+	req := httptest.NewRequest("POST", "/push/devices", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["platform"] != "android" {
+		t.Errorf("expected platform 'android', got '%v'", resp["platform"])
+	}
+
+	db.Exec("DELETE FROM push_devices WHERE device_token='test-token-123'")
+}
+
+func TestRegisterDeviceInvalidPlatform(t *testing.T) {
+	if db == nil {
+		t.Skip("database not initialized")
+	}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/push/devices", handleRegisterDevice).Methods("POST")
+	handler := jwtAuthMiddleware(r)
+
+	token, _ := createAccessToken(map[string]interface{}{
+		"sub": "1", "username": "observer", "role": "observer", "full_name": "Observer",
+	})
+
+	body, _ := json.Marshal(map[string]string{
+		"device_token": "test-token-456",
+		"platform":     "blackberry",
+	})
+	req := httptest.NewRequest("POST", "/push/devices", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid platform, got %d", w.Code)
+	}
+}

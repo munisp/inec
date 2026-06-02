@@ -39,6 +39,7 @@ const NAV_ITEMS = [
   { label: 'Stakeholders', icon: Users2, path: 'stakeholders' },
   { label: 'AI Monitoring', icon: BarChart3, path: 'ai-monitoring' },
   { label: 'Observer Monitor', icon: Eye, path: 'observer-monitoring', section: 'Monitoring' },
+  { label: 'Disputes', icon: Eye, path: 'dispute-resolution', section: 'Monitoring' },
   { label: 'Production', icon: Shield, path: 'production', section: 'Infrastructure' },
 ];
 
