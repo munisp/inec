@@ -31,9 +31,9 @@ func getEnvDefault(key, fallback string) string {
 // ── OCR Analysis Types ──
 
 type OCRRegion struct {
-	Text       string     `json:"text"`
-	Confidence float64    `json:"confidence"`
-	BBox       [][]int    `json:"bbox"`
+	Text       string  `json:"text"`
+	Confidence float64 `json:"confidence"`
+	BBox       [][]int `json:"bbox"`
 }
 
 type EC8AExtraction struct {
@@ -74,27 +74,27 @@ type DocLingTable struct {
 }
 
 type FullPhotoAnalysis struct {
-	ReportID         *int           `json:"report_id"`
-	OCR              EC8AExtraction `json:"ocr"`
-	VLM              VLMAnalysis    `json:"vlm"`
-	DocLing          M              `json:"docling"`
-	CombinedConf     float64        `json:"combined_confidence"`
-	RequiresReview   bool           `json:"requires_manual_review"`
-	Timestamp        string         `json:"timestamp"`
+	ReportID       *int           `json:"report_id"`
+	OCR            EC8AExtraction `json:"ocr"`
+	VLM            VLMAnalysis    `json:"vlm"`
+	DocLing        M              `json:"docling"`
+	CombinedConf   float64        `json:"combined_confidence"`
+	RequiresReview bool           `json:"requires_manual_review"`
+	Timestamp      string         `json:"timestamp"`
 }
 
 // ── Video Analysis Types ──
 
 type VideoAnalysis struct {
-	DurationSec     float64 `json:"duration_seconds"`
-	FrameCount      int     `json:"frame_count"`
-	FPS             float64 `json:"fps"`
-	Resolution      M       `json:"resolution"`
-	KeyFrames       int     `json:"key_frames_extracted"`
-	Anomalies       []M     `json:"anomalies_detected"`
-	BallotEvents    []M     `json:"ballot_counting_events"`
-	IntegrityScore  float64 `json:"integrity_score"`
-	Summary         string  `json:"analysis_summary"`
+	DurationSec    float64 `json:"duration_seconds"`
+	FrameCount     int     `json:"frame_count"`
+	FPS            float64 `json:"fps"`
+	Resolution     M       `json:"resolution"`
+	KeyFrames      int     `json:"key_frames_extracted"`
+	Anomalies      []M     `json:"anomalies_detected"`
+	BallotEvents   []M     `json:"ballot_counting_events"`
+	IntegrityScore float64 `json:"integrity_score"`
+	Summary        string  `json:"analysis_summary"`
 }
 
 // ── KYC Types ──
@@ -113,13 +113,13 @@ type KYCResult struct {
 }
 
 type LivenessResult struct {
-	UserID       int     `json:"user_id"`
-	Passed       bool    `json:"passed"`
-	Confidence   float64 `json:"confidence"`
-	Method       string  `json:"method"`
-	AntiSpoof    float64 `json:"anti_spoofing_score"`
-	Checks       []M     `json:"checks"`
-	Timestamp    string  `json:"timestamp"`
+	UserID     int     `json:"user_id"`
+	Passed     bool    `json:"passed"`
+	Confidence float64 `json:"confidence"`
+	Method     string  `json:"method"`
+	AntiSpoof  float64 `json:"anti_spoofing_score"`
+	Checks     []M     `json:"checks"`
+	Timestamp  string  `json:"timestamp"`
 }
 
 // ── Database Schema ──
@@ -183,7 +183,7 @@ func initDocumentAISchema() {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	`
-	db.Exec(schema)
+	dbExecLog("doc_ai_schema", schema)
 }
 
 // ── Handlers ──
@@ -217,7 +217,7 @@ func handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
 	analysis, err := callDocumentAIAnalyze(fileBytes, filepath.Base(filePath), reportID)
 	if err != nil {
 		// Fallback: store pending analysis record
-		db.Exec("INSERT INTO document_analyses (report_id, analysis_type, requires_review) VALUES (?, 'pending', 1)", reportID)
+		dbExecLog("doc_analysis", "INSERT INTO document_analyses (report_id, analysis_type, requires_review) VALUES (?, 'pending', 1)", reportID)
 		writeJSON(w, 202, M{
 			"report_id": reportID,
 			"status":    "queued",
@@ -230,7 +230,7 @@ func handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
 	// Persist analysis results
 	partyJSON, _ := json.Marshal(analysis.OCR.PartyResults)
 	warningsJSON, _ := json.Marshal(analysis.OCR.Warnings)
-	db.Exec(`INSERT INTO document_analyses 
+	dbExecLog("doc_analysis_insert", `INSERT INTO document_analyses 
 		(report_id, analysis_type, ocr_confidence, vlm_tampering_detected, vlm_quality, combined_confidence, requires_review, party_results_json, raw_ocr_text, warnings_json) 
 		VALUES (?, 'full', ?, ?, ?, ?, ?, ?, ?, ?)`,
 		reportID, analysis.OCR.ConfidenceScore,
@@ -240,9 +240,9 @@ func handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
 
 	// Update report status based on analysis
 	if analysis.VLM.TamperingDetected {
-		db.Exec("UPDATE observer_reports SET status='flagged' WHERE id=?", reportID)
+		dbExecLog("report_flag", "UPDATE observer_reports SET status='flagged' WHERE id=?", reportID)
 	} else if analysis.CombinedConf > 0.7 {
-		db.Exec("UPDATE observer_reports SET status='verified' WHERE id=?", reportID)
+		dbExecLog("report_verify", "UPDATE observer_reports SET status='verified' WHERE id=?", reportID)
 	}
 
 	writeJSON(w, 200, analysis)
@@ -310,7 +310,7 @@ func handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 	analysis, err := callVideoAnalyze(videoBytes, filename)
 	if err != nil {
 		// Save without analysis
-		db.Exec("INSERT INTO video_analyses (observer_id, filename, duration_sec, integrity_score, summary) VALUES (?, ?, 0, 0, ?)",
+		dbExecLog("video_err", "INSERT INTO video_analyses (observer_id, filename, duration_sec, integrity_score, summary) VALUES (?, ?, 0, 0, ?)",
 			userID, filename, "Analysis pending: "+err.Error())
 		writeJSON(w, 201, M{
 			"video_url": "/uploads/observer-videos/" + filename,
@@ -321,7 +321,7 @@ func handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist analysis
-	db.Exec(`INSERT INTO video_analyses 
+	dbExecLog("video_analysis_insert", `INSERT INTO video_analyses 
 		(observer_id, filename, duration_sec, frame_count, anomaly_count, ballot_event_count, integrity_score, summary) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		userID, filename, analysis.DurationSec, analysis.FrameCount,
@@ -329,9 +329,9 @@ func handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 		analysis.IntegrityScore, analysis.Summary)
 
 	writeJSON(w, 201, M{
-		"video_url":       "/uploads/observer-videos/" + filename,
-		"analysis":        analysis,
-		"status":          "analyzed",
+		"video_url": "/uploads/observer-videos/" + filename,
+		"analysis":  analysis,
+		"status":    "analyzed",
 	})
 }
 
@@ -407,7 +407,7 @@ func handleKYCVerify(w http.ResponseWriter, r *http.Request) {
 		idHash = idHash[:32]
 	}
 
-	db.Exec(`INSERT INTO kyc_verifications 
+	dbExecLog("kyc_verification", `INSERT INTO kyc_verifications 
 		(user_id, status, id_type, id_number_hash, identity_match_score, document_verified, face_match_score, liveness_passed, risk_score, checks_json, flags_json, verified_at) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		userID, result.Status, idType, idHash,
@@ -417,7 +417,7 @@ func handleKYCVerify(w http.ResponseWriter, r *http.Request) {
 		time.Now().UTC())
 
 	// Update user KYC status
-	db.Exec("UPDATE users SET kyc_status=? WHERE id=?", result.Status, userID)
+	dbExecLog("kyc_status", "UPDATE users SET kyc_status=? WHERE id=?", result.Status, userID)
 
 	writeJSON(w, 200, result)
 }
@@ -464,12 +464,12 @@ func handleLivenessCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Persist
 	lchecksJSON, _ := json.Marshal(result.Checks)
-	db.Exec(`INSERT INTO liveness_checks (user_id, passed, confidence, method, anti_spoofing_score, checks_json) VALUES (?, ?, ?, ?, ?, ?)`,
+	dbExecLog("liveness_check", `INSERT INTO liveness_checks (user_id, passed, confidence, method, anti_spoofing_score, checks_json) VALUES (?, ?, ?, ?, ?, ?)`,
 		userID, docAIBoolToInt(result.Passed), result.Confidence, method, result.AntiSpoof, string(lchecksJSON))
 
 	// Update KYC if liveness passes
 	if result.Passed {
-		db.Exec("UPDATE kyc_verifications SET liveness_passed=1 WHERE user_id=? ORDER BY id DESC LIMIT 1", userID)
+		dbExecLog("kyc_liveness", "UPDATE kyc_verifications SET liveness_passed=1 WHERE user_id=? ORDER BY id DESC LIMIT 1", userID)
 	}
 
 	writeJSON(w, 200, result)
@@ -495,9 +495,9 @@ func handleKYCStatus(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		writeJSON(w, 200, M{
-			"user_id":    userID,
-			"status":     "not_started",
-			"message":    "No KYC verification found for this user",
+			"user_id": userID,
+			"status":  "not_started",
+			"message": "No KYC verification found for this user",
 		})
 		return
 	}
@@ -509,16 +509,16 @@ func handleKYCStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, M{
 		"user_id":              userID,
-		"status":              status,
-		"id_type":             idType,
+		"status":               status,
+		"id_type":              idType,
 		"identity_match_score": identityScore,
 		"document_verified":    docVerified == 1,
 		"face_match_score":     faceScore,
 		"liveness_passed":      livenessPassed == 1,
-		"risk_score":          riskScore,
+		"risk_score":           riskScore,
 		"checks_performed":     checks,
-		"flags":               flags,
-		"verified_at":         verifiedAt,
+		"flags":                flags,
+		"verified_at":          verifiedAt,
 	})
 }
 
@@ -554,15 +554,15 @@ func handleDocumentAnalysisStatus(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal([]byte(warningsJSON), &warnings)
 
 	writeJSON(w, 200, M{
-		"report_id":            reportID,
-		"analysis_type":        analysisType,
-		"ocr_confidence":       ocrConf,
-		"tampering_detected":   tamperingDetected == 1,
-		"document_quality":     vlmQuality,
-		"combined_confidence":  combinedConf,
-		"requires_review":      requiresReview == 1,
-		"party_results":        partyResults,
-		"warnings":             warnings,
+		"report_id":           reportID,
+		"analysis_type":       analysisType,
+		"ocr_confidence":      ocrConf,
+		"tampering_detected":  tamperingDetected == 1,
+		"document_quality":    vlmQuality,
+		"combined_confidence": combinedConf,
+		"requires_review":     requiresReview == 1,
+		"party_results":       partyResults,
+		"warnings":            warnings,
 	})
 }
 
@@ -705,5 +705,3 @@ func callLivenessCheck(userID int, method string, videoBytes []byte) (*LivenessR
 	}
 	return &result, nil
 }
-
-

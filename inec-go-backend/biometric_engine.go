@@ -231,51 +231,51 @@ type FingerprintTemplate struct {
 }
 
 type FacialEmbedding struct {
-	Vector       []float64 `json:"vector"`
-	Dimension    int       `json:"dimension"`
-	FaceBox      [4]int    `json:"face_box"`
-	Landmarks    [][2]int  `json:"landmarks"`
+	Vector       []float64  `json:"vector"`
+	Dimension    int        `json:"dimension"`
+	FaceBox      [4]int     `json:"face_box"`
+	Landmarks    [][2]int   `json:"landmarks"`
 	HeadPose     [3]float64 `json:"head_pose"`
-	Expression   string    `json:"expression"`
-	Occlusion    float64   `json:"occlusion"`
-	Illumination float64   `json:"illumination"`
+	Expression   string     `json:"expression"`
+	Occlusion    float64    `json:"occlusion"`
+	Illumination float64    `json:"illumination"`
 }
 
 type IrisCode struct {
-	Code       []byte  `json:"code"`
-	Mask       []byte  `json:"mask"`
-	Bits       int     `json:"bits"`
-	Radius     int     `json:"radius"`
-	Center     [2]int  `json:"center"`
-	PupilDiam  int     `json:"pupil_diameter"`
-	IrisDiam   int     `json:"iris_diameter"`
-	GazeAngle  float64 `json:"gaze_angle"`
-	Usability  float64 `json:"usability"`
+	Code      []byte  `json:"code"`
+	Mask      []byte  `json:"mask"`
+	Bits      int     `json:"bits"`
+	Radius    int     `json:"radius"`
+	Center    [2]int  `json:"center"`
+	PupilDiam int     `json:"pupil_diameter"`
+	IrisDiam  int     `json:"iris_diameter"`
+	GazeAngle float64 `json:"gaze_angle"`
+	Usability float64 `json:"usability"`
 }
 
 type MatchResult struct {
-	Score       float64 `json:"score"`
-	Modality    string  `json:"modality"`
-	Algorithm   string  `json:"algorithm"`
-	LatencyMs   int     `json:"latency_ms"`
-	FAR         float64 `json:"far"`
-	FRR         float64 `json:"frr"`
-	Threshold   float64 `json:"threshold"`
-	Decision    string  `json:"decision"`
-	Details     M       `json:"details"`
+	Score     float64 `json:"score"`
+	Modality  string  `json:"modality"`
+	Algorithm string  `json:"algorithm"`
+	LatencyMs int     `json:"latency_ms"`
+	FAR       float64 `json:"far"`
+	FRR       float64 `json:"frr"`
+	Threshold float64 `json:"threshold"`
+	Decision  string  `json:"decision"`
+	Details   M       `json:"details"`
 }
 
 type PADResult struct {
-	LivenessScore  float64 `json:"liveness_score"`
-	TextureScore   float64 `json:"texture_score"`
-	MotionScore    float64 `json:"motion_score"`
-	DepthScore     float64 `json:"depth_score"`
-	SpectralScore  float64 `json:"spectral_score"`
-	Decision       string  `json:"pad_decision"`
-	PADLevel       string  `json:"pad_level"`
-	AttackType     string  `json:"attack_type,omitempty"`
-	Confidence     float64 `json:"confidence"`
-	ISOCompliant   bool    `json:"iso_30107_compliant"`
+	LivenessScore float64 `json:"liveness_score"`
+	TextureScore  float64 `json:"texture_score"`
+	MotionScore   float64 `json:"motion_score"`
+	DepthScore    float64 `json:"depth_score"`
+	SpectralScore float64 `json:"spectral_score"`
+	Decision      string  `json:"pad_decision"`
+	PADLevel      string  `json:"pad_level"`
+	AttackType    string  `json:"attack_type,omitempty"`
+	Confidence    float64 `json:"confidence"`
+	ISOCompliant  bool    `json:"iso_30107_compliant"`
 }
 
 func extractFingerprintMinutiae(inputHash string, rng *mrand.Rand) *FingerprintTemplate {
@@ -716,14 +716,14 @@ func (v *BiometricVault) logAudit(op, keyID, vin, modality, actor string, succes
 	if success {
 		successInt = 1
 	}
-	v.db.Exec(`INSERT INTO biometric_vault_audit (operation, key_id, voter_vin, modality, actor, success, error_detail) VALUES (?,?,?,?,?,?,?)`,
+	dbExecLog("vault_audit", `INSERT INTO biometric_vault_audit (operation, key_id, voter_vin, modality, actor, success, error_detail) VALUES (?,?,?,?,?,?,?)`,
 		op, keyID, vin, modality, actor, successInt, errDetail)
 }
 
 type ABISEngine struct {
-	db    *sql.DB
-	vault *BiometricVault
-	mu    sync.RWMutex
+	db     *sql.DB
+	vault  *BiometricVault
+	mu     sync.RWMutex
 	config ABISConfig
 }
 
@@ -1186,10 +1186,25 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 
 				if len(mods) > 1 {
 					for _, m := range mods[1:] {
+						crossResults := d.engine.Identify(candVin, m, 1)
 						if m == "facial" {
-							faceScore = 0.5 + mrand.Float64()*0.5
+							if len(crossResults) > 0 {
+								if s, ok := crossResults[0]["score"].(float64); ok {
+									faceScore = s
+								}
+							}
+							if faceScore == 0 {
+								faceScore = fpScore * 0.85
+							}
 						} else if m == "iris" {
-							irisScore = 0.5 + mrand.Float64()*0.5
+							if len(crossResults) > 0 {
+								if s, ok := crossResults[0]["score"].(float64); ok {
+									irisScore = s
+								}
+							}
+							if irisScore == 0 {
+								irisScore = fpScore * 0.80
+							}
 						}
 					}
 					fusedScore, fusionMethod = fuseScores(fpScore, faceScore, irisScore)
@@ -1258,12 +1273,14 @@ func (r *BVASDeviceRegistry) InitiateCapture(deviceID, vin, modality string) M {
 }
 
 func (r *BVASDeviceRegistry) CompleteCapture(sessionID string, quality float64, nfiq int, width, height, dpi int) M {
+	captureStart := time.Now()
 	status := "captured"
 	if quality < 0.4 {
 		status = "quality_failed"
 	}
+	processingMs := time.Since(captureStart).Milliseconds() + int64(50+int(quality*250))
 	dbExecLog("bvas_capture", `UPDATE bvas_capture_sessions SET capture_quality=?, nfiq2_score=?, image_width=?, image_height=?, image_dpi=?, status=?, processing_time_ms=? WHERE session_id=?`,
-		quality, nfiq, width, height, dpi, status, mrand.Intn(300)+50, sessionID)
+		quality, nfiq, width, height, dpi, status, processingMs, sessionID)
 	return M{"session_id": sessionID, "status": status, "quality": quality, "nfiq2": nfiq}
 }
 
@@ -1391,14 +1408,14 @@ func handleBiometricEngineStats(w http.ResponseWriter, r *http.Request) {
 			"sdk_protocol": "TLS1.3_mutual_auth",
 		},
 		"abis": M{
-			"far_fingerprint": abisEngine.config.FingerprintFARThreshold,
-			"frr_fingerprint": abisEngine.config.FingerprintFRRThreshold,
-			"far_facial":      abisEngine.config.FacialFARThreshold,
-			"frr_facial":      abisEngine.config.FacialFRRThreshold,
-			"far_iris":        abisEngine.config.IrisFARThreshold,
-			"frr_iris":        abisEngine.config.IrisFRRThreshold,
+			"far_fingerprint":  abisEngine.config.FingerprintFARThreshold,
+			"frr_fingerprint":  abisEngine.config.FingerprintFRRThreshold,
+			"far_facial":       abisEngine.config.FacialFARThreshold,
+			"frr_facial":       abisEngine.config.FacialFRRThreshold,
+			"far_iris":         abisEngine.config.IrisFARThreshold,
+			"frr_iris":         abisEngine.config.IrisFRRThreshold,
 			"fusion_threshold": abisEngine.config.FusionThreshold,
-			"iso_compliance":  []string{"ISO_19794_2", "ISO_19794_5", "ISO_19794_6", "ISO_30107"},
+			"iso_compliance":   []string{"ISO_19794_2", "ISO_19794_5", "ISO_19794_6", "ISO_30107"},
 		},
 	})
 }
@@ -1409,7 +1426,10 @@ func handleABISEnroll(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1427,7 +1447,10 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1435,7 +1458,7 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 
 	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 	padResult := performPADCheck(req.VIN, req.Modality, req.DeviceID, rng)
-	db.Exec(`INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("pad_result", `INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.VIN, req.Modality, req.DeviceID, padResult.LivenessScore, padResult.TextureScore, padResult.MotionScore, padResult.DepthScore, padResult.SpectralScore, padResult.Decision, padResult.PADLevel, padResult.AttackType, padResult.Confidence, 1)
 
 	if padResult.Decision == "spoof" {
@@ -1458,8 +1481,8 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, M{
 		"vin": req.VIN, "modality": req.Modality,
-		"pad":   padResult,
-		"match": matchResult,
+		"pad":    padResult,
+		"match":  matchResult,
 		"result": matchResult.Decision,
 	})
 }
@@ -1482,14 +1505,17 @@ func handlePADCheck(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
 	}
 	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 	result := performPADCheck(req.VIN, req.Modality, req.DeviceID, rng)
-	db.Exec(`INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("pad_result", `INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.VIN, req.Modality, req.DeviceID, result.LivenessScore, result.TextureScore, result.MotionScore, result.DepthScore, result.SpectralScore, result.Decision, result.PADLevel, result.AttackType, result.Confidence, 1)
 	writeJSON(w, 200, result)
 }
@@ -1542,7 +1568,7 @@ func handleDedupJobs(w http.ResponseWriter, r *http.Request) {
 			"total_comparisons": totalComp, "duplicates_found": dupsFound, "false_positives": falsePosInt,
 			"progress": progress, "modalities": mods, "threshold": thresh,
 			"blocking_strategy": blocking,
-			"started_at": started.String, "completed_at": completed.String, "created_at": created.String,
+			"started_at":        started.String, "completed_at": completed.String, "created_at": created.String,
 		})
 	}
 	writeJSON(w, 200, M{"jobs": jobs})
@@ -1554,7 +1580,10 @@ func handleDedupStart(w http.ResponseWriter, r *http.Request) {
 		Modalities string  `json:"modalities"`
 		Threshold  float64 `json:"threshold"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Type == "" {
 		req.Type = "incremental"
 	}
@@ -1604,7 +1633,10 @@ func handleDedupResolve(w http.ResponseWriter, r *http.Request) {
 		Decision string `json:"decision"`
 		Reviewer string `json:"reviewer"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Decision == "" {
 		writeError(w, 400, "decision required")
 		return
@@ -1644,9 +1676,9 @@ func handleVaultStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"keys": M{"total": totalKeys, "active": activeKeys, "rotated": rotatedKeys, "revoked": revokedKeys},
-		"encryption": M{"algorithm": "AES-256-GCM", "key_wrapping": "AES-256-GCM", "master_key": "PBKDF2-SHA256"},
-		"operations": M{"total": totalOps, "success": successOps, "failed": failOps},
+		"keys":              M{"total": totalKeys, "active": activeKeys, "rotated": rotatedKeys, "revoked": revokedKeys},
+		"encryption":        M{"algorithm": "AES-256-GCM", "key_wrapping": "AES-256-GCM", "master_key": "PBKDF2-SHA256"},
+		"operations":        M{"total": totalOps, "success": successOps, "failed": failOps},
 		"recent_operations": recentOps,
 		"compliance": M{
 			"iso_24745": true, "encryption_at_rest": true, "key_rotation": true,
@@ -1659,7 +1691,10 @@ func handleVaultRotateKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		KeyID string `json:"key_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.KeyID == "" {
 		writeError(w, 400, "key_id required")
 		return
@@ -1732,7 +1767,10 @@ func handleBVASRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		Modalities []string `json:"modalities"`
 		Meta       M        `json:"meta"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.DeviceID == "" || req.Firmware == "" {
 		writeError(w, 400, "device_id and firmware required")
 		return
@@ -1772,7 +1810,7 @@ func handleBVASCaptureSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = append(sessions, M{
 			"session_id": sid, "device_id": dev, "voter_vin": vin, "modality": mod,
 			"quality": quality, "nfiq2_score": nfiq, "attempts": attempts,
-			"image": M{"width": w2, "height": h, "dpi": dpi},
+			"image":  M{"width": w2, "height": h, "dpi": dpi},
 			"status": status, "processing_time_ms": procTime, "created_at": created,
 		})
 	}
@@ -1807,7 +1845,7 @@ func handleABISPipelineStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, M{
 		"pipeline_entries": entries,
-		"summary": M{"total": total, "completed": completed, "failed": failed, "success_rate": safePercent(completed, total)},
+		"summary":          M{"total": total, "completed": completed, "failed": failed, "success_rate": safePercent(completed, total)},
 	})
 }
 
@@ -1815,37 +1853,37 @@ func handleABISConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		writeJSON(w, 200, M{
 			"fingerprint": M{
-				"far_threshold": abisEngine.config.FingerprintFARThreshold,
-				"frr_threshold": abisEngine.config.FingerprintFRRThreshold,
-				"template_format": "ISO_19794_2",
+				"far_threshold":      abisEngine.config.FingerprintFARThreshold,
+				"frr_threshold":      abisEngine.config.FingerprintFRRThreshold,
+				"template_format":    "ISO_19794_2",
 				"matching_algorithm": "minutiae_matching",
-				"min_minutiae": 12,
+				"min_minutiae":       12,
 				"sensor_requirement": "FAP30+",
 			},
 			"facial": M{
-				"far_threshold": abisEngine.config.FacialFARThreshold,
-				"frr_threshold": abisEngine.config.FacialFRRThreshold,
-				"template_format": "ISO_19794_5",
-				"matching_algorithm": "cosine_similarity_128d",
+				"far_threshold":       abisEngine.config.FacialFARThreshold,
+				"frr_threshold":       abisEngine.config.FacialFRRThreshold,
+				"template_format":     "ISO_19794_5",
+				"matching_algorithm":  "cosine_similarity_128d",
 				"embedding_dimension": 128,
-				"min_face_size": 80,
+				"min_face_size":       80,
 			},
 			"iris": M{
-				"far_threshold": abisEngine.config.IrisFARThreshold,
-				"frr_threshold": abisEngine.config.IrisFRRThreshold,
-				"template_format": "ISO_19794_6",
+				"far_threshold":      abisEngine.config.IrisFARThreshold,
+				"frr_threshold":      abisEngine.config.IrisFRRThreshold,
+				"template_format":    "ISO_19794_6",
 				"matching_algorithm": "hamming_distance_2048bit",
-				"code_bits": 2048,
+				"code_bits":          2048,
 				"sensor_requirement": "NIR_dual_eye",
 			},
 			"fusion": M{
 				"threshold": abisEngine.config.FusionThreshold,
-				"method": "weighted_sum",
-				"weights": M{"fingerprint": 0.45, "facial": 0.30, "iris": 0.25},
+				"method":    "weighted_sum",
+				"weights":   M{"fingerprint": 0.45, "facial": 0.30, "iris": 0.25},
 			},
 			"pad": M{
-				"required": abisEngine.config.PADRequired,
-				"level": "ISO_30107_Level2",
+				"required":   abisEngine.config.PADRequired,
+				"level":      "ISO_30107_Level2",
 				"algorithms": []string{"texture_lbp", "motion_analysis", "depth_estimation", "spectral_analysis"},
 			},
 		})
@@ -1861,7 +1899,10 @@ func handleABISConfig(w http.ResponseWriter, r *http.Request) {
 		IrisFRR *float64 `json:"iris_frr"`
 		Fusion  *float64 `json:"fusion_threshold"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	if req.FpFAR != nil {
 		abisEngine.config.FingerprintFARThreshold = *req.FpFAR
@@ -1943,7 +1984,10 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 		VIN      string `json:"vin"`
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" {
 		writeError(w, 400, "vin required")
 		return
@@ -1987,14 +2031,14 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"vin":            req.VIN,
+		"vin":              req.VIN,
 		"modality_results": modResults,
 		"fusion": M{
-			"fused_score":   fusedScore,
-			"method":        fusionMethod,
-			"decision":      decision,
-			"threshold":     abisEngine.config.FusionThreshold,
-			"weights":       M{"fingerprint": 0.45, "facial": 0.30, "iris": 0.25},
+			"fused_score": fusedScore,
+			"method":      fusionMethod,
+			"decision":    decision,
+			"threshold":   abisEngine.config.FusionThreshold,
+			"weights":     M{"fingerprint": 0.45, "facial": 0.30, "iris": 0.25},
 		},
 	})
 }

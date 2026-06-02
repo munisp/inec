@@ -162,14 +162,38 @@ func (h *MiddlewareHub) Shutdown() {
 	for name, s := range h.status {
 		log.Info().Str("component", name).Str("mode", s.Mode).Bool("connected", s.Connected).Msg("middleware shutdown")
 	}
-	// Close real clients
-	if h.Redis != nil {
-		h.Redis.Close()
+	closers := []struct {
+		name string
+		fn   func() error
+	}{
+		{"Redis", safeClose(h.Redis)},
+		{"Kafka", safeClose(h.Kafka)},
+		{"Temporal", safeClose(h.Temporal)},
+		{"Dapr", safeClose(h.Dapr)},
+		{"Keycloak", safeClose(h.Keycloak)},
+		{"Permify", safeClose(h.Permify)},
+		{"Fluvio", safeClose(h.Fluvio)},
+		{"TigerBeetle", safeClose(h.TigerBeetle)},
+		{"APISIX", safeClose(h.APISIX)},
+		{"Lakehouse", safeClose(h.Lakehouse)},
+		{"Mojaloop", safeClose(h.Mojaloop)},
+		{"OpenSearch", safeClose(h.OpenSearch)},
+		{"OpenAppSec", safeClose(h.OpenAppSec)},
 	}
-	if h.Kafka != nil {
-		h.Kafka.Close()
+	for _, c := range closers {
+		if err := c.fn(); err != nil {
+			log.Warn().Err(err).Str("component", c.name).Msg("shutdown error")
+		}
 	}
-	if h.TigerBeetle != nil {
-		h.TigerBeetle.Close()
+}
+
+type closer interface{ Close() error }
+
+func safeClose(c closer) func() error {
+	return func() error {
+		if c == nil {
+			return nil
+		}
+		return c.Close()
 	}
 }

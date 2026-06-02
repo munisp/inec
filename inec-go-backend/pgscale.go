@@ -14,27 +14,27 @@ import (
 )
 
 var (
-	dbWriter  *sql.DB
-	dbReader  *sql.DB
-	dbMetrics *DBMetrics
-	stmtCache *PreparedStmtCache
+	dbWriter             *sql.DB
+	dbReader             *sql.DB
+	dbMetrics            *DBMetrics
+	stmtCache            *PreparedStmtCache
 	slowQueryThresholdMs int64 = 100
 )
 
 type DBMetrics struct {
-	mu              sync.RWMutex
-	TotalReads      int64
-	TotalWrites     int64
-	SlowQueries     int64
-	CacheHits       int64
-	CacheMisses     int64
-	ReplicaReads    int64
-	PrimaryReads    int64
-	AvgReadLatUs    int64
-	AvgWriteLatUs   int64
-	readLatTotal    int64
-	writeLatTotal   int64
-	PoolStats       map[string]interface{}
+	mu            sync.RWMutex
+	TotalReads    int64
+	TotalWrites   int64
+	SlowQueries   int64
+	CacheHits     int64
+	CacheMisses   int64
+	ReplicaReads  int64
+	PrimaryReads  int64
+	AvgReadLatUs  int64
+	AvgWriteLatUs int64
+	readLatTotal  int64
+	writeLatTotal int64
+	PoolStats     map[string]interface{}
 }
 
 func newDBMetrics() *DBMetrics {
@@ -75,34 +75,34 @@ func (m *DBMetrics) recordWrite(d time.Duration) {
 func (m *DBMetrics) snapshot() map[string]interface{} {
 	primary := dbWriter.Stats()
 	result := map[string]interface{}{
-		"total_reads":       atomic.LoadInt64(&m.TotalReads),
-		"total_writes":      atomic.LoadInt64(&m.TotalWrites),
-		"slow_queries":      atomic.LoadInt64(&m.SlowQueries),
-		"cache_hits":        atomic.LoadInt64(&m.CacheHits),
-		"cache_misses":      atomic.LoadInt64(&m.CacheMisses),
-		"replica_reads":     atomic.LoadInt64(&m.ReplicaReads),
-		"primary_reads":     atomic.LoadInt64(&m.PrimaryReads),
+		"total_reads":          atomic.LoadInt64(&m.TotalReads),
+		"total_writes":         atomic.LoadInt64(&m.TotalWrites),
+		"slow_queries":         atomic.LoadInt64(&m.SlowQueries),
+		"cache_hits":           atomic.LoadInt64(&m.CacheHits),
+		"cache_misses":         atomic.LoadInt64(&m.CacheMisses),
+		"replica_reads":        atomic.LoadInt64(&m.ReplicaReads),
+		"primary_reads":        atomic.LoadInt64(&m.PrimaryReads),
 		"avg_read_latency_us":  atomic.LoadInt64(&m.AvgReadLatUs),
 		"avg_write_latency_us": atomic.LoadInt64(&m.AvgWriteLatUs),
 		"primary_pool": map[string]interface{}{
-			"max_open":     primary.MaxOpenConnections,
-			"open":         primary.OpenConnections,
-			"in_use":       primary.InUse,
-			"idle":         primary.Idle,
-			"wait_count":   primary.WaitCount,
-			"wait_duration_ms": primary.WaitDuration.Milliseconds(),
-			"max_idle_closed":  primary.MaxIdleClosed,
+			"max_open":            primary.MaxOpenConnections,
+			"open":                primary.OpenConnections,
+			"in_use":              primary.InUse,
+			"idle":                primary.Idle,
+			"wait_count":          primary.WaitCount,
+			"wait_duration_ms":    primary.WaitDuration.Milliseconds(),
+			"max_idle_closed":     primary.MaxIdleClosed,
 			"max_lifetime_closed": primary.MaxLifetimeClosed,
 		},
 	}
 	if dbReader != nil && dbReader != dbWriter {
 		replica := dbReader.Stats()
 		result["replica_pool"] = map[string]interface{}{
-			"max_open":     replica.MaxOpenConnections,
-			"open":         replica.OpenConnections,
-			"in_use":       replica.InUse,
-			"idle":         replica.Idle,
-			"wait_count":   replica.WaitCount,
+			"max_open":         replica.MaxOpenConnections,
+			"open":             replica.OpenConnections,
+			"in_use":           replica.InUse,
+			"idle":             replica.Idle,
+			"wait_count":       replica.WaitCount,
 			"wait_duration_ms": replica.WaitDuration.Milliseconds(),
 		}
 	}
@@ -288,11 +288,11 @@ func dbBatchInsert(table string, columns []string, rows [][]interface{}) error {
 func handleDBMetrics(w http.ResponseWriter, r *http.Request) {
 	hasReplica := dbReader != nil && dbReader != dbWriter
 	data := M{
-		"engine":            map[bool]string{true: "postgresql", false: "sqlite"}[usePostgres],
-		"read_write_split":  hasReplica,
-		"stmt_cache_size":   stmtCache.size(),
+		"engine":                  map[bool]string{true: "postgresql", false: "sqlite"}[usePostgres],
+		"read_write_split":        hasReplica,
+		"stmt_cache_size":         stmtCache.size(),
 		"slow_query_threshold_ms": slowQueryThresholdMs,
-		"metrics":           dbMetrics.snapshot(),
+		"metrics":                 dbMetrics.snapshot(),
 		"scaling_patterns": M{
 			"read_replica_routing":    hasReplica,
 			"connection_pooling":      true,

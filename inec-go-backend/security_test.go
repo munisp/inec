@@ -380,8 +380,8 @@ func TestEnhancedSecurityHeaders(t *testing.T) {
 
 	expected := map[string]string{
 		"X-Content-Type-Options":    "nosniff",
-		"X-Frame-Options":          "DENY",
-		"X-XSS-Protection":        "1; mode=block",
+		"X-Frame-Options":           "DENY",
+		"X-XSS-Protection":          "1; mode=block",
 		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 	}
 
@@ -494,7 +494,7 @@ func TestPlaceholderConversion(t *testing.T) {
 		{"INSERT INTO t (a,b) VALUES (?,?)", "INSERT INTO t (a,b) VALUES ($1,$2)"},
 		{"SELECT * FROM t WHERE a=? AND b=?", "SELECT * FROM t WHERE a=$1 AND b=$2"},
 		{"SELECT 'hello?' FROM t WHERE id=?", "SELECT 'hello?' FROM t WHERE id=$1"}, // ? in string literal preserved
-		{"SELECT * FROM t", "SELECT * FROM t"},                                       // no placeholders
+		{"SELECT * FROM t", "SELECT * FROM t"},                                      // no placeholders
 	}
 
 	for _, tc := range cases {

@@ -106,8 +106,12 @@ func seedBVASDevices(database *sql.DB) {
 		var lat, lon sql.NullFloat64
 		puRows.Scan(&code, &lat, &lon)
 		latV, lonV := 0.0, 0.0
-		if lat.Valid { latV = lat.Float64 }
-		if lon.Valid { lonV = lon.Float64 }
+		if lat.Valid {
+			latV = lat.Float64
+		}
+		if lon.Valid {
+			lonV = lon.Float64
+		}
 		pus = append(pus, puInfo{code, latV, lonV})
 	}
 	puRows.Close()
@@ -243,7 +247,7 @@ func handleRegisterBVASDevice(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COALESCE(MAX(CAST(SUBSTR(id, 6) AS INTEGER)), 0) FROM bvas_devices").Scan(&maxID)
 	devID := fmt.Sprintf("BVAS-%05d", maxID+1)
 
-	db.Exec(`INSERT INTO bvas_devices (id, serial_number, polling_unit_code, election_id, status, latitude, longitude) VALUES (?,?,?,?,'registered',?,?)`,
+	dbExecLog("bvas_device", `INSERT INTO bvas_devices (id, serial_number, polling_unit_code, election_id, status, latitude, longitude) VALUES (?,?,?,?,'registered',?,?)`,
 		devID, req.SerialNumber, req.PollingUnitCode, req.ElectionID, req.Latitude, req.Longitude)
 	auditWrite("BVAS_DEVICE_REGISTERED", "bvas_device", devID, r, map[string]interface{}{"serial": req.SerialNumber, "pu_code": req.PollingUnitCode})
 
@@ -257,7 +261,10 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	id := mux.Vars(r)["id"]
 	var req map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	var updates []string
 	var vals []interface{}
@@ -272,7 +279,7 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vals = append(vals, id)
-	db.Exec("UPDATE bvas_devices SET "+strings.Join(updates, ",")+",last_sync_at=CURRENT_TIMESTAMP WHERE id=?", vals...)
+	dbExecLog("bvas_update", "UPDATE bvas_devices SET "+strings.Join(updates, ",")+",last_sync_at=CURRENT_TIMESTAMP WHERE id=?", vals...)
 	auditWrite("BVAS_DEVICE_UPDATED", "bvas_device", id, r, req)
 	writeJSON(w, 200, M{"message": "Device updated"})
 }
@@ -287,7 +294,10 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		PVCVerified     bool   `json:"pvc_verified"`
 		Method          string `json:"method"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Method == "" {
 		req.Method = "biometric"
 	}
@@ -308,7 +318,7 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		req.DeviceID, req.ElectionID, req.PollingUnitCode, pvcHash,
 		boolToInt(req.BiometricMatch), boolToInt(req.PVCVerified), req.Method)
 
-	db.Exec("UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
+	dbExecLog("bvas_device", "UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
 	auditWrite("BVAS_ACCREDITATION", "bvas_accreditation", fmt.Sprintf("%d", lid), r, map[string]interface{}{"device_id": req.DeviceID, "pu_code": req.PollingUnitCode, "biometric_match": req.BiometricMatch})
 
 	go broadcastWS(M{"type": "bvas_accreditation", "pu_code": req.PollingUnitCode, "device_id": req.DeviceID, "election_id": req.ElectionID})
@@ -501,7 +511,7 @@ func handleBVASAccreditationTimeline(w http.ResponseWriter, r *http.Request) {
 	eid := queryParamInt(r, "election_id", 1)
 	interval := queryParam(r, "interval", "hour")
 
-	pgFmtMap:= map[string]string{"minute": "YYYY-MM-DD HH24:MI", "hour": "YYYY-MM-DD HH24:00", "day": "YYYY-MM-DD"}
+	pgFmtMap := map[string]string{"minute": "YYYY-MM-DD HH24:MI", "hour": "YYYY-MM-DD HH24:00", "day": "YYYY-MM-DD"}
 	pgFmt := pgFmtMap[interval]
 	if pgFmt == "" {
 		pgFmt = pgFmtMap["hour"]

@@ -187,7 +187,7 @@ func (l *embeddedLakehouse) Ingest(_ context.Context, table string, records []ma
 	// Build and execute INSERT for each record into the audit_log for traceability
 	for _, rec := range records {
 		data, _ := json.Marshal(rec)
-		db.Exec("INSERT INTO audit_log (action, details, performed_by, performed_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
+		dbExecLog("audit_log", "INSERT INTO audit_log (action, details, performed_by, performed_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
 			"lakehouse_ingest:"+table, string(data), "system")
 	}
 	log.Info().Str("table", table).Int("count", len(records)).Msg("lakehouse ingested records")
@@ -220,8 +220,8 @@ func (l *embeddedLakehouse) GetTables(_ context.Context) ([]string, error) {
 func (l *embeddedLakehouse) GetAnalytics(_ context.Context, electionID int, analysisType string) (map[string]interface{}, error) {
 	t0 := time.Now()
 	result := map[string]interface{}{
-		"election_id": electionID,
-		"type":        analysisType,
+		"election_id":  electionID,
+		"type":         analysisType,
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 	}
 

@@ -267,12 +267,12 @@ func initElectionFSMSchema() {
 // --- Duplicate Voter Detection ---
 
 type DuplicateCandidate struct {
-	VoterAVIN     string  `json:"voter_a_vin"`
-	VoterBVIN     string  `json:"voter_b_vin"`
-	MatchType     string  `json:"match_type"`
-	Confidence    float64 `json:"confidence"`
-	Status        string  `json:"status"`
-	DetectedAt    string  `json:"detected_at"`
+	VoterAVIN  string  `json:"voter_a_vin"`
+	VoterBVIN  string  `json:"voter_b_vin"`
+	MatchType  string  `json:"match_type"`
+	Confidence float64 `json:"confidence"`
+	Status     string  `json:"status"`
+	DetectedAt string  `json:"detected_at"`
 }
 
 func handleDuplicateVoterScan(w http.ResponseWriter, r *http.Request) {
@@ -384,10 +384,10 @@ func handleDuplicateVoterResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		VoterAVIN  string `json:"voter_a_vin" validate:"required"`
-		VoterBVIN  string `json:"voter_b_vin" validate:"required"`
-		Decision   string `json:"decision" validate:"required"`
-		Reason     string `json:"reason"`
+		VoterAVIN string `json:"voter_a_vin" validate:"required"`
+		VoterBVIN string `json:"voter_b_vin" validate:"required"`
+		Decision  string `json:"decision" validate:"required"`
+		Reason    string `json:"reason"`
 	}
 	if err := decodeAndValidate(r, &req); err != nil {
 		writeError(w, 400, err.Error())
@@ -423,13 +423,13 @@ type GPSTrackPoint struct {
 }
 
 type SpoofingAnalysis struct {
-	IsSpoofed       bool     `json:"is_spoofed"`
-	Confidence      float64  `json:"confidence"`
-	Indicators      []string `json:"indicators"`
-	VelocityKmh     float64  `json:"velocity_kmh"`
-	AccuracyScore   float64  `json:"accuracy_score"`
-	JumpDetected    bool     `json:"jump_detected"`
-	MockProvider    bool     `json:"mock_provider"`
+	IsSpoofed     bool     `json:"is_spoofed"`
+	Confidence    float64  `json:"confidence"`
+	Indicators    []string `json:"indicators"`
+	VelocityKmh   float64  `json:"velocity_kmh"`
+	AccuracyScore float64  `json:"accuracy_score"`
+	JumpDetected  bool     `json:"jump_detected"`
+	MockProvider  bool     `json:"mock_provider"`
 }
 
 func analyzeGPSSpoofing(current, previous *GPSTrackPoint, deviceMeta map[string]interface{}) *SpoofingAnalysis {
@@ -574,11 +574,11 @@ type WebSocketHub struct {
 }
 
 type WSClient struct {
-	hub      *WebSocketHub
-	w        http.ResponseWriter
-	flusher  http.Flusher
-	done     chan struct{}
-	filters  map[string]string
+	hub     *WebSocketHub
+	w       http.ResponseWriter
+	flusher http.Flusher
+	done    chan struct{}
+	filters map[string]string
 }
 
 var wsHub *WebSocketHub
@@ -668,14 +668,14 @@ func sendDashboardUpdate(w http.ResponseWriter, flusher http.Flusher) {
 // --- OAuth2/OIDC Integration ---
 
 type OIDCConfig struct {
-	Issuer        string `json:"issuer"`
-	AuthURL       string `json:"authorize_url"`
-	TokenURL      string `json:"token_url"`
-	UserInfoURL   string `json:"userinfo_url"`
-	ClientID      string `json:"client_id"`
-	ClientSecret  string `json:"-"`
-	RedirectURI   string `json:"redirect_uri"`
-	Realm         string `json:"realm"`
+	Issuer       string `json:"issuer"`
+	AuthURL      string `json:"authorize_url"`
+	TokenURL     string `json:"token_url"`
+	UserInfoURL  string `json:"userinfo_url"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"-"`
+	RedirectURI  string `json:"redirect_uri"`
+	Realm        string `json:"realm"`
 }
 
 func getOIDCConfig() *OIDCConfig {
@@ -696,14 +696,14 @@ func getOIDCConfig() *OIDCConfig {
 func handleOIDCDiscovery(w http.ResponseWriter, r *http.Request) {
 	cfg := getOIDCConfig()
 	writeJSON(w, 200, M{
-		"issuer":                 cfg.Issuer,
-		"authorization_endpoint": cfg.AuthURL,
-		"token_endpoint":         cfg.TokenURL,
-		"userinfo_endpoint":      cfg.UserInfoURL,
-		"jwks_uri":               cfg.Issuer + "/protocol/openid-connect/certs",
-		"scopes_supported":       []string{"openid", "profile", "email", "roles"},
+		"issuer":                   cfg.Issuer,
+		"authorization_endpoint":   cfg.AuthURL,
+		"token_endpoint":           cfg.TokenURL,
+		"userinfo_endpoint":        cfg.UserInfoURL,
+		"jwks_uri":                 cfg.Issuer + "/protocol/openid-connect/certs",
+		"scopes_supported":         []string{"openid", "profile", "email", "roles"},
 		"response_types_supported": []string{"code", "token", "id_token"},
-		"grant_types_supported":  []string{"authorization_code", "refresh_token", "client_credentials"},
+		"grant_types_supported":    []string{"authorization_code", "refresh_token", "client_credentials"},
 	})
 }
 
@@ -732,10 +732,10 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Fallback: return config for client-side exchange
 	writeJSON(w, 200, M{
-		"message":    "OAuth2 callback received",
-		"code":       code[:min(8, len(code))] + "...",
-		"token_url":  cfg.TokenURL,
-		"client_id":  cfg.ClientID,
+		"message":   "OAuth2 callback received",
+		"code":      code[:min(8, len(code))] + "...",
+		"token_url": cfg.TokenURL,
+		"client_id": cfg.ClientID,
 	})
 }
 
@@ -801,7 +801,7 @@ func handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := mux.Vars(r)["id"]
-	db.Exec("DELETE FROM webhook_subscriptions WHERE id=?", id)
+	dbExecLog("webhook", "DELETE FROM webhook_subscriptions WHERE id=?", id)
 	writeJSON(w, 200, M{"deleted": true})
 }
 

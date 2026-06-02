@@ -11,10 +11,10 @@ import (
 )
 
 type APISIXRoute struct {
-	ID      string                 `json:"id"`
-	URI     string                 `json:"uri"`
-	Methods []string               `json:"methods,omitempty"`
-	Plugins map[string]interface{} `json:"plugins,omitempty"`
+	ID       string                 `json:"id"`
+	URI      string                 `json:"uri"`
+	Methods  []string               `json:"methods,omitempty"`
+	Plugins  map[string]interface{} `json:"plugins,omitempty"`
 	Upstream map[string]interface{} `json:"upstream,omitempty"`
 }
 
@@ -154,9 +154,9 @@ func (a *embeddedAPISIX) GetConfig() map[string]interface{} {
 				"results": "20 req/s",
 				"reports": "5 req/s",
 			},
-			"jwt_auth":        "enabled",
-			"cors":            "enabled",
-			"gzip":            "enabled",
+			"jwt_auth":         "enabled",
+			"cors":             "enabled",
+			"gzip":             "enabled",
 			"security_headers": "enabled",
 		},
 	}

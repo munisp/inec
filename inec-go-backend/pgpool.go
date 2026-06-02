@@ -25,33 +25,33 @@ var (
 )
 
 type PgpoolMetrics struct {
-	mu                 sync.RWMutex
-	LastHealthCheck    time.Time
-	PrimaryHealthy     bool
-	ReplicaHealthy     bool
-	PgpoolHealthy      bool
-	FailoverCount      int64
-	HealthCheckCount   int64
-	LoadBalanceReads   int64
-	LoadBalanceWrites  int64
-	CacheHitRatio      float64
-	ConnectionsActive  int64
-	ConnectionsIdle    int64
-	ConnectionsTotal   int64
+	mu                  sync.RWMutex
+	LastHealthCheck     time.Time
+	PrimaryHealthy      bool
+	ReplicaHealthy      bool
+	PgpoolHealthy       bool
+	FailoverCount       int64
+	HealthCheckCount    int64
+	LoadBalanceReads    int64
+	LoadBalanceWrites   int64
+	CacheHitRatio       float64
+	ConnectionsActive   int64
+	ConnectionsIdle     int64
+	ConnectionsTotal    int64
 	ReplicationLagBytes int64
-	BackendNodes       []PgpoolBackendNode
+	BackendNodes        []PgpoolBackendNode
 }
 
 type PgpoolBackendNode struct {
-	ID              int    `json:"id"`
-	Hostname        string `json:"hostname"`
-	Port            int    `json:"port"`
-	Status          string `json:"status"`
-	Role            string `json:"role"`
+	ID              int     `json:"id"`
+	Hostname        string  `json:"hostname"`
+	Port            int     `json:"port"`
+	Status          string  `json:"status"`
+	Role            string  `json:"role"`
 	Weight          float64 `json:"weight"`
-	SelectCount     int64  `json:"select_count"`
-	ReplicationLag  int64  `json:"replication_lag_bytes"`
-	LastStatusCheck string `json:"last_status_check"`
+	SelectCount     int64   `json:"select_count"`
+	ReplicationLag  int64   `json:"replication_lag_bytes"`
+	LastStatusCheck string  `json:"last_status_check"`
 }
 
 func initPgpool() {
@@ -256,8 +256,8 @@ func pgpoolQueryNodeStatus() {
 func handlePgpoolStatus(w http.ResponseWriter, r *http.Request) {
 	pgpoolMetrics.mu.RLock()
 	status := M{
-		"enabled":     pgpoolEnabled,
-		"healthy":     pgpoolMetrics.PgpoolHealthy,
+		"enabled": pgpoolEnabled,
+		"healthy": pgpoolMetrics.PgpoolHealthy,
 		"config": M{
 			"host":     pgpoolHost,
 			"port":     pgpoolPort,
@@ -265,11 +265,11 @@ func handlePgpoolStatus(w http.ResponseWriter, r *http.Request) {
 			"pcp_port": pgpoolPCPPort,
 		},
 		"health": M{
-			"primary_healthy":  pgpoolMetrics.PrimaryHealthy,
-			"replica_healthy":  pgpoolMetrics.ReplicaHealthy,
-			"pgpool_healthy":   pgpoolMetrics.PgpoolHealthy,
-			"last_check":       pgpoolMetrics.LastHealthCheck.Format(time.RFC3339),
-			"check_count":      atomic.LoadInt64(&pgpoolMetrics.HealthCheckCount),
+			"primary_healthy": pgpoolMetrics.PrimaryHealthy,
+			"replica_healthy": pgpoolMetrics.ReplicaHealthy,
+			"pgpool_healthy":  pgpoolMetrics.PgpoolHealthy,
+			"last_check":      pgpoolMetrics.LastHealthCheck.Format(time.RFC3339),
+			"check_count":     atomic.LoadInt64(&pgpoolMetrics.HealthCheckCount),
 		},
 		"backends": pgpoolMetrics.BackendNodes,
 		"connections": M{
@@ -278,25 +278,25 @@ func handlePgpoolStatus(w http.ResponseWriter, r *http.Request) {
 			"total":  pgpoolMetrics.ConnectionsTotal,
 		},
 		"replication": M{
-			"lag_bytes":    pgpoolMetrics.ReplicationLagBytes,
-			"lag_status":   replicationLagStatus(pgpoolMetrics.ReplicationLagBytes),
+			"lag_bytes":  pgpoolMetrics.ReplicationLagBytes,
+			"lag_status": replicationLagStatus(pgpoolMetrics.ReplicationLagBytes),
 		},
 		"load_balancing": M{
-			"mode":            "statement_level",
-			"active_reads":    pgpoolMetrics.LoadBalanceReads,
-			"active_writes":   pgpoolMetrics.LoadBalanceWrites,
-			"read_weight":     "replica:2, primary:1",
+			"mode":          "statement_level",
+			"active_reads":  pgpoolMetrics.LoadBalanceReads,
+			"active_writes": pgpoolMetrics.LoadBalanceWrites,
+			"read_weight":   "replica:2, primary:1",
 		},
 		"features": M{
-			"connection_pooling":           true,
-			"load_balancing":               true,
-			"streaming_replication_check":  true,
-			"automatic_failover":           pgpoolEnabled,
+			"connection_pooling":          true,
+			"load_balancing":              true,
+			"streaming_replication_check": true,
+			"automatic_failover":          pgpoolEnabled,
 			"auto_failback":               pgpoolEnabled,
-			"in_memory_query_cache":        true,
-			"statement_level_lb":           true,
+			"in_memory_query_cache":       true,
+			"statement_level_lb":          true,
 			"health_check":                true,
-			"connection_limit_queuing":     true,
+			"connection_limit_queuing":    true,
 		},
 	}
 	pgpoolMetrics.mu.RUnlock()
@@ -310,8 +310,8 @@ func handlePgpoolNodes(w http.ResponseWriter, r *http.Request) {
 	pgpoolMetrics.mu.RUnlock()
 
 	data := M{
-		"nodes":       nodes,
-		"total":       len(nodes),
+		"nodes":         nodes,
+		"total":         len(nodes),
 		"primary_count": countNodesByRole(nodes, "primary"),
 		"standby_count": countNodesByRole(nodes, "standby"),
 	}
@@ -356,33 +356,33 @@ func handlePgpoolHealth(w http.ResponseWriter, r *http.Request) {
 func handlePgpoolConfig(w http.ResponseWriter, r *http.Request) {
 	config := M{
 		"pgpool": M{
-			"version":                  "4.5",
-			"clustering_mode":          "streaming_replication",
-			"num_init_children":        64,
-			"max_pool":                 4,
-			"child_life_time":          300,
-			"connection_life_time":     0,
-			"client_idle_limit":        300,
-			"reserved_connections":     2,
-			"statement_level_lb":       true,
-			"memory_cache_enabled":     true,
-			"memqcache_total_size_mb":  64,
-			"memqcache_expire_sec":     15,
-			"auto_failover":            true,
-			"auto_failback":            true,
-			"health_check_period_sec":  10,
-			"sr_check_period_sec":      5,
-			"delay_threshold_bytes":    10000000,
+			"version":                 "4.5",
+			"clustering_mode":         "streaming_replication",
+			"num_init_children":       64,
+			"max_pool":                4,
+			"child_life_time":         300,
+			"connection_life_time":    0,
+			"client_idle_limit":       300,
+			"reserved_connections":    2,
+			"statement_level_lb":      true,
+			"memory_cache_enabled":    true,
+			"memqcache_total_size_mb": 64,
+			"memqcache_expire_sec":    15,
+			"auto_failover":           true,
+			"auto_failback":           true,
+			"health_check_period_sec": 10,
+			"sr_check_period_sec":     5,
+			"delay_threshold_bytes":   10000000,
 		},
 		"primary": M{
-			"host":             "pg-primary",
-			"port":             5432,
-			"weight":           1,
-			"max_connections":  200,
-			"shared_buffers":   "256MB",
-			"wal_level":        "replica",
-			"max_wal_senders":  5,
-			"wal_keep_size":    "256MB",
+			"host":            "pg-primary",
+			"port":            5432,
+			"weight":          1,
+			"max_connections": 200,
+			"shared_buffers":  "256MB",
+			"wal_level":       "replica",
+			"max_wal_senders": 5,
+			"wal_keep_size":   "256MB",
 		},
 		"replica": M{
 			"host":             "pg-replica",
@@ -417,20 +417,20 @@ func handlePgpoolMetricsEndpoint(w http.ResponseWriter, r *http.Request) {
 	combined := M{
 		"db_scaling_layer": baseMetrics,
 		"pgpool": M{
-			"enabled":           pgpoolEnabled,
-			"healthy":           pgpoolMetrics.PgpoolHealthy,
-			"primary_healthy":   pgpoolMetrics.PrimaryHealthy,
-			"replica_healthy":   pgpoolMetrics.ReplicaHealthy,
-			"health_checks":     atomic.LoadInt64(&pgpoolMetrics.HealthCheckCount),
-			"failover_count":    atomic.LoadInt64(&pgpoolMetrics.FailoverCount),
-			"replication_lag":   pgpoolMetrics.ReplicationLagBytes,
+			"enabled":            pgpoolEnabled,
+			"healthy":            pgpoolMetrics.PgpoolHealthy,
+			"primary_healthy":    pgpoolMetrics.PrimaryHealthy,
+			"replica_healthy":    pgpoolMetrics.ReplicaHealthy,
+			"health_checks":      atomic.LoadInt64(&pgpoolMetrics.HealthCheckCount),
+			"failover_count":     atomic.LoadInt64(&pgpoolMetrics.FailoverCount),
+			"replication_lag":    pgpoolMetrics.ReplicationLagBytes,
 			"connections_active": pgpoolMetrics.ConnectionsActive,
-			"connections_idle":  pgpoolMetrics.ConnectionsIdle,
-			"connections_total": pgpoolMetrics.ConnectionsTotal,
-			"backend_nodes":    len(pgpoolMetrics.BackendNodes),
+			"connections_idle":   pgpoolMetrics.ConnectionsIdle,
+			"connections_total":  pgpoolMetrics.ConnectionsTotal,
+			"backend_nodes":      len(pgpoolMetrics.BackendNodes),
 		},
 		"architecture": M{
-			"topology":  "primary-replica-pgpool",
+			"topology": "primary-replica-pgpool",
 			"layers": []string{
 				"Pgpool-II (connection pooling, load balancing, failover)",
 				"Go sql.DB pools (app-level pooling, read/write split)",
@@ -526,9 +526,9 @@ func handlePgpoolQueryCache(w http.ResponseWriter, r *http.Request) {
 			"block_size_bytes":  1048576,
 		},
 		"app_level_cache": M{
-			"enabled":        true,
-			"type":           "in-memory TTL",
-			"ttl_seconds":    15,
+			"enabled":     true,
+			"type":        "in-memory TTL",
+			"ttl_seconds": 15,
 			"cached_endpoints": []string{
 				"GET /dashboard/stats",
 				"GET /dashboard/collation",
@@ -591,31 +591,31 @@ func handlePgpoolDashboard(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		"replica": M{
-			"healthy":          pgpoolMetrics.ReplicaHealthy,
-			"host":             "pg-replica",
-			"role":             "read-only",
-			"replication_lag":  pgpoolMetrics.ReplicationLagBytes,
-			"lag_status":       replicationLagStatus(pgpoolMetrics.ReplicationLagBytes),
+			"healthy":         pgpoolMetrics.ReplicaHealthy,
+			"host":            "pg-replica",
+			"role":            "read-only",
+			"replication_lag": pgpoolMetrics.ReplicationLagBytes,
+			"lag_status":      replicationLagStatus(pgpoolMetrics.ReplicationLagBytes),
 			"pool": M{
 				"max_open": 50,
 				"max_idle": 25,
 			},
 		},
 		"pgpool": M{
-			"healthy":                  pgpoolMetrics.PgpoolHealthy,
-			"version":                  "4.5",
-			"clustering_mode":          "streaming_replication",
-			"load_balancing":           "statement_level",
-			"failover":                 "automatic",
-			"query_cache":              "shmem (64MB, 15s TTL)",
-			"max_connections":          256,
-			"pool_utilization_pct":     fmt.Sprintf("%.1f%%", poolUtilization),
+			"healthy":              pgpoolMetrics.PgpoolHealthy,
+			"version":              "4.5",
+			"clustering_mode":      "streaming_replication",
+			"load_balancing":       "statement_level",
+			"failover":             "automatic",
+			"query_cache":          "shmem (64MB, 15s TTL)",
+			"max_connections":      256,
+			"pool_utilization_pct": fmt.Sprintf("%.1f%%", poolUtilization),
 		},
 		"connections": M{
-			"active":            pgpoolMetrics.ConnectionsActive,
-			"idle":              pgpoolMetrics.ConnectionsIdle,
-			"total":             pgpoolMetrics.ConnectionsTotal,
-			"utilization_pct":   fmt.Sprintf("%.1f%%", poolUtilization),
+			"active":          pgpoolMetrics.ConnectionsActive,
+			"idle":            pgpoolMetrics.ConnectionsIdle,
+			"total":           pgpoolMetrics.ConnectionsTotal,
+			"utilization_pct": fmt.Sprintf("%.1f%%", poolUtilization),
 		},
 		"scaling_layers": []M{
 			{

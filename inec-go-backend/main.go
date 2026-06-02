@@ -549,7 +549,7 @@ func main() {
 									wafMiddleware(
 										requestSizeLimit(
 											rateLimitMiddleware(
-								gzipMiddleware(r))))))))))))
+												gzipMiddleware(r))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {

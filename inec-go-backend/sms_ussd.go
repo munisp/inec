@@ -83,7 +83,7 @@ func handleSMSVerify(w http.ResponseWriter, r *http.Request) {
 		response = "INEC Result Verification\nSend:\nRESULT <PU-CODE> - Get results\nVERIFY <PU-CODE> - Verify result\nSTATUS - Election status\nExample: RESULT AB-001-W001-PU001"
 	}
 
-	db.Exec(`INSERT INTO sms_verifications (phone, polling_unit_code, election_id, request_type, response_text, channel)
+	dbExecLog("db_op", `INSERT INTO sms_verifications (phone, polling_unit_code, election_id, request_type, response_text, channel)
 		VALUES (?,?,?,?,?,'sms')`, req.Phone, req.PollingUnitCode, electionID, reqType, response)
 
 	writeJSON(w, 200, M{"response": response, "phone": req.Phone, "channel": "sms"})
@@ -182,7 +182,7 @@ func handleUSSDGateway(w http.ResponseWriter, r *http.Request) {
 
 	if text == "" {
 		response = "CON Welcome to INEC Result Verification\n1. Check Result by PU Code\n2. Election Status\n3. Verify Result\n0. Exit"
-		db.Exec(`INSERT INTO ussd_sessions (id, phone, stage, data) VALUES (?,?,'main_menu','{}')`,
+		dbExecLog("db_op", `INSERT INTO ussd_sessions (id, phone, stage, data) VALUES (?,?,'main_menu','{}')`,
 			sessionID, req.PhoneNumber)
 	} else if len(parts) == 1 {
 		switch parts[0] {
@@ -217,7 +217,7 @@ func handleUSSDGateway(w http.ResponseWriter, r *http.Request) {
 		continueSession = false
 	}
 
-	db.Exec(`INSERT INTO sms_verifications (phone, request_type, response_text, channel)
+	dbExecLog("db_op", `INSERT INTO sms_verifications (phone, request_type, response_text, channel)
 		VALUES (?,?,?,'ussd')`, req.PhoneNumber, "ussd", response)
 
 	writeJSON(w, 200, M{
@@ -247,9 +247,9 @@ func handleSMSStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"total_sms":    totalSMS,
-		"total_ussd":   totalUSSD,
-		"today":        today,
-		"by_type":      byType,
+		"total_sms":  totalSMS,
+		"total_ussd": totalUSSD,
+		"today":      today,
+		"by_type":    byType,
 	})
 }

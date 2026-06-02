@@ -23,21 +23,21 @@ import (
 )
 
 var (
-	hsmManager           *HSMManager
-	sdkRegistry          *BiometricSDKRegistry
-	templateAgingMgr     *TemplateAgingManager
-	cancelableBioMgr     *CancelableBiometricsManager
-	thresholdTuner       *ThresholdAutoTuner
-	distributedDedupMgr  *DistributedDedupManager
-	padModelManager      *PADModelManager
-	qualityGateway       *BiometricQualityGateway
-	offlineQueueMgr      *OfflineEnrollmentQueue
-	scoreNormalizer      *MatchScoreNormalizer
-	nistBenchmark        *NISTBenchmarkRunner
-	bioAuditDashboard    *BiometricAuditDashboard
-	kioskModeManager     *EnrollmentKioskManager
-	multiFingerMgr       *MultiInstanceEnrollment
-	privacyMatcher       *PrivacyPreservingMatcher
+	hsmManager          *HSMManager
+	sdkRegistry         *BiometricSDKRegistry
+	templateAgingMgr    *TemplateAgingManager
+	cancelableBioMgr    *CancelableBiometricsManager
+	thresholdTuner      *ThresholdAutoTuner
+	distributedDedupMgr *DistributedDedupManager
+	padModelManager     *PADModelManager
+	qualityGateway      *BiometricQualityGateway
+	offlineQueueMgr     *OfflineEnrollmentQueue
+	scoreNormalizer     *MatchScoreNormalizer
+	nistBenchmark       *NISTBenchmarkRunner
+	bioAuditDashboard   *BiometricAuditDashboard
+	kioskModeManager    *EnrollmentKioskManager
+	multiFingerMgr      *MultiInstanceEnrollment
+	privacyMatcher      *PrivacyPreservingMatcher
 )
 
 func initBiometricAdvanced(database *sql.DB) {
@@ -342,10 +342,10 @@ func (h *HSMManager) GenerateKey(purpose string, slot int) (string, error) {
 	defer h.mu.Unlock()
 	start := time.Now()
 	keyID := fmt.Sprintf("HSM-%d-%s-%d", slot, purpose[:3], time.Now().UnixNano())
-	h.db.Exec(`INSERT INTO hsm_keys (key_id, hsm_slot, purpose, fips_level) VALUES (?,?,?,?)`,
+	dbExecLog("hsm_keys", `INSERT INTO hsm_keys (key_id, hsm_slot, purpose, fips_level) VALUES (?,?,?,?)`,
 		keyID, slot, purpose, "FIPS_140_2_L3")
 	latency := time.Since(start).Microseconds()
-	h.db.Exec(`INSERT INTO hsm_audit (operation, key_id, hsm_slot, success, latency_us) VALUES (?,?,?,?,?)`,
+	dbExecLog("hsm_audit", `INSERT INTO hsm_audit (operation, key_id, hsm_slot, success, latency_us) VALUES (?,?,?,?,?)`,
 		"key_generate", keyID, slot, 1, latency)
 	return keyID, nil
 }
@@ -411,7 +411,7 @@ func (s *BiometricSDKRegistry) RegisterProvider(p *SDKProvider) {
 }
 
 type TemplateAgingManager struct {
-	db        *sql.DB
+	db         *sql.DB
 	maxAgeDays int
 }
 
@@ -444,7 +444,7 @@ func (t *TemplateAgingManager) ScanAll() M {
 	valid = total - expired - nearExpiry
 	return M{
 		"total": total, "valid": valid, "near_expiry": nearExpiry, "expired": expired,
-		"max_age_policy_days": t.maxAgeDays,
+		"max_age_policy_days":       t.maxAgeDays,
 		"re_enrollment_window_days": 90,
 	}
 }
@@ -468,7 +468,7 @@ func (c *CancelableBiometricsManager) RevokeTemplate(vin, modality, reason strin
 	newSeed := make([]byte, 32)
 	rand.Read(newSeed)
 	newTransformID := fmt.Sprintf("CT-%s-%s-v%d", vin[:8], modality[:2], version+1)
-	c.db.Exec(`INSERT INTO cancelable_transforms (voter_vin, modality, transform_id, transform_type, transform_seed, version) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("cancel_xform", `INSERT INTO cancelable_transforms (voter_vin, modality, transform_id, transform_type, transform_seed, version) VALUES (?,?,?,?,?,?)`,
 		vin, modality, newTransformID, "biohashing", newSeed, version+1)
 	return M{
 		"status": "revoked", "old_transform": transformID, "new_transform": newTransformID,
@@ -625,11 +625,11 @@ func (t *ThresholdAutoTuner) RunAnalysis(modality string) M {
 	return M{
 		"modality": modality, "genuine_pairs": genuinePairs, "impostor_pairs": impostorPairs,
 		"optimal_threshold": math.Round(bestThreshold*1000) / 1000,
-		"eer": math.Round(bestEER*10000) / 10000,
-		"far_at_threshold": math.Round(farAtThresh*10000) / 10000,
-		"frr_at_threshold": math.Round(frrAtThresh*10000) / 10000,
-		"auc": math.Round(auc*10000) / 10000,
-		"roc_sample": rocPoints[:10], "det_sample": detPoints[:10],
+		"eer":               math.Round(bestEER*10000) / 10000,
+		"far_at_threshold":  math.Round(farAtThresh*10000) / 10000,
+		"frr_at_threshold":  math.Round(frrAtThresh*10000) / 10000,
+		"auc":               math.Round(auc*10000) / 10000,
+		"roc_sample":        rocPoints[:10], "det_sample": detPoints[:10],
 	}
 }
 
@@ -810,10 +810,10 @@ func (q *BiometricQualityGateway) GetStats() M {
 		byModality = append(byModality, M{"modality": mod, "rejections": cnt, "bandwidth_saved_kb": math.Round(bw*10) / 10, "avg_quality": math.Round(avgQ*100) / 100})
 	}
 	return M{
-		"total_rejections": totalRejections,
+		"total_rejections":         totalRejections,
 		"total_bandwidth_saved_kb": math.Round(totalBWSaved*10) / 10,
-		"thresholds": q.thresholds,
-		"by_modality": byModality,
+		"thresholds":               q.thresholds,
+		"by_modality":              byModality,
 	}
 }
 
@@ -846,7 +846,7 @@ func (o *OfflineEnrollmentQueue) GetStats() M {
 	return M{
 		"total": total, "pending": pending, "synced": synced, "failed": failed,
 		"conflicts": conflicts, "by_device": byDevice,
-		"sync_strategy": "automatic_on_connectivity_restore",
+		"sync_strategy":       "automatic_on_connectivity_restore",
 		"conflict_resolution": "server_wins_with_manual_review",
 	}
 }
@@ -864,11 +864,11 @@ type MatchScoreNormalizer struct {
 }
 
 type NormCohort struct {
-	MeanGenuine   float64
-	StdGenuine    float64
-	MeanImpostor  float64
-	StdImpostor   float64
-	SampleSize    int
+	MeanGenuine  float64
+	StdGenuine   float64
+	MeanImpostor float64
+	StdImpostor  float64
+	SampleSize   int
 }
 
 func NewMatchScoreNormalizer(database *sql.DB) *MatchScoreNormalizer {
@@ -1012,13 +1012,13 @@ func (n *NISTBenchmarkRunner) RunBenchmark(benchType, modality string) M {
 	return M{
 		"benchmark": benchType, "modality": modality, "dataset": dataset,
 		"subjects": subjects, "comparisons": comparisons,
-		"fnmr_at_fmr_0.01%": math.Round(fnmrFMR001*10000) / 10000,
-		"fnmr_at_fmr_0.1%":  math.Round(fnmrFMR01*10000) / 10000,
-		"fnmr_at_fmr_1%":    math.Round(fnmrFMR1*10000) / 10000,
-		"eer":                math.Round(eer*10000) / 10000,
-		"throughput_per_sec": math.Round(throughput),
+		"fnmr_at_fmr_0.01%":   math.Round(fnmrFMR001*10000) / 10000,
+		"fnmr_at_fmr_0.1%":    math.Round(fnmrFMR01*10000) / 10000,
+		"fnmr_at_fmr_1%":      math.Round(fnmrFMR1*10000) / 10000,
+		"eer":                 math.Round(eer*10000) / 10000,
+		"throughput_per_sec":  math.Round(throughput),
 		"template_size_bytes": tmplSize,
-		"nist_compliant": true,
+		"nist_compliant":      true,
 	}
 }
 
@@ -1099,8 +1099,8 @@ func (b *BiometricAuditDashboard) GetSummary() M {
 
 	return M{
 		"total_events": total,
-		"by_severity": M{"info": info, "warning": warn, "error": error2, "critical": critical},
-		"by_category": byCategory,
+		"by_severity":  M{"info": info, "warning": warn, "error": error2, "critical": critical},
+		"by_category":  byCategory,
 	}
 }
 
@@ -1233,7 +1233,7 @@ func (m *MultiInstanceEnrollment) EnrollFingers(vin string, fingers []string, pr
 
 	return M{
 		"voter_vin": vin, "total_fingers": len(enrolled), "enrolled": enrolled,
-		"primary_finger": primaryFinger,
+		"primary_finger":    primaryFinger,
 		"fallback_strategy": "sequential_try_next_best_quality",
 	}
 }
@@ -1269,9 +1269,9 @@ func (m *MultiInstanceEnrollment) GetStats() M {
 
 	return M{
 		"total_fingers": totalFingers, "total_voters": totalVoters,
-		"voters_with_all_10": withAllTen,
+		"voters_with_all_10":    withAllTen,
 		"avg_fingers_per_voter": math.Round(avgPerVoter*10) / 10,
-		"fallback_strategy": "sequential_by_quality_score",
+		"fallback_strategy":     "sequential_by_quality_score",
 	}
 }
 
@@ -1309,12 +1309,12 @@ func (p *PrivacyPreservingMatcher) SecureMatch(vin, modality string) M {
 		"voter_vin": vin, "modality": modality,
 		"encrypted_score": true, "score_available": matched,
 		"computation_time_ms": computeTime,
-		"encryption_scheme": "paillier_homomorphic",
-		"template_found": matched,
+		"encryption_scheme":   "paillier_homomorphic",
+		"template_found":      matched,
 		"properties": M{
-			"template_never_decrypted": true,
-			"server_never_sees_plaintext": true,
-			"result_encrypted_end_to_end": true,
+			"template_never_decrypted":       true,
+			"server_never_sees_plaintext":    true,
+			"result_encrypted_end_to_end":    true,
 			"zero_knowledge_proof_available": true,
 		},
 		"iso_24745_compliant": true,
@@ -1332,11 +1332,11 @@ func (p *PrivacyPreservingMatcher) GetStats() M {
 	return M{
 		"total_operations": total, "secure_matches": matchOps, "secure_enrollments": enrollOps,
 		"avg_computation_time_ms": math.Round(avgTime*10) / 10,
-		"encryption_schemes": []string{"paillier_homomorphic", "bgv_ckks", "secure_mpc"},
+		"encryption_schemes":      []string{"paillier_homomorphic", "bgv_ckks", "secure_mpc"},
 		"properties": M{
 			"template_never_in_plaintext": true,
-			"matching_on_encrypted_data": true,
-			"zero_knowledge_proofs": true,
+			"matching_on_encrypted_data":  true,
+			"zero_knowledge_proofs":       true,
 		},
 	}
 }
@@ -1410,8 +1410,8 @@ func seedBiometricAdvanced(database *sql.DB) {
 			nfiq := 1 + rng.Intn(5)
 			hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%d", vin, pos, rng.Int63())))
 			isPrimary := fi == 0
-						database.Exec(`INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
-							vin, pos, fi+1, hex.EncodeToString(hash[:16]), quality, nfiq, advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
+			database.Exec(`INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
+				vin, pos, fi+1, hex.EncodeToString(hash[:16]), quality, nfiq, advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
 		}
 	}
 
@@ -1443,7 +1443,9 @@ func seedBiometricAdvanced(database *sql.DB) {
 
 	devices := []string{"BVAS-001", "BVAS-002", "BVAS-003", "BVAS-004", "BVAS-005"}
 	qgLimit := 30
-	if qgLimit > len(vins) { qgLimit = len(vins) }
+	if qgLimit > len(vins) {
+		qgLimit = len(vins)
+	}
 	for i, vin := range vins[:qgLimit] {
 		dev := devices[i%len(devices)]
 		quality := 0.3 + rng.Float64()*0.3
@@ -1453,7 +1455,9 @@ func seedBiometricAdvanced(database *sql.DB) {
 	}
 
 	oqLimit := 20
-	if oqLimit > len(vins) { oqLimit = len(vins) }
+	if oqLimit > len(vins) {
+		oqLimit = len(vins)
+	}
 	for i, vin := range vins[:oqLimit] {
 		dev := devices[i%len(devices)]
 		hash := sha256.Sum256([]byte(vin))
@@ -1543,7 +1547,10 @@ func handleHSMGenerateKey(w http.ResponseWriter, r *http.Request) {
 		Purpose string `json:"purpose"`
 		Slot    int    `json:"slot"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Purpose == "" {
 		req.Purpose = "template_encryption"
 	}
@@ -1569,7 +1576,7 @@ func handleSDKProviders(w http.ResponseWriter, r *http.Request) {
 		providers = append(providers, M{
 			"name": name, "version": ver, "modalities": strings.Split(mods, ","),
 			"license": lic, "endpoint": ep.String, "status": status,
-			"accuracy": M{"fingerprint": accFp, "facial": accFace, "iris": accIris},
+			"accuracy":          M{"fingerprint": accFp, "facial": accFace, "iris": accIris},
 			"last_health_check": health.String, "registered_at": reg,
 		})
 	}
@@ -1605,7 +1612,10 @@ func handleCancelableRevoke(w http.ResponseWriter, r *http.Request) {
 		Modality string `json:"modality"`
 		Reason   string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -1621,7 +1631,10 @@ func handleThresholdTuning(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Modality string `json:"modality"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "invalid JSON")
+			return
+		}
 		if req.Modality == "" {
 			req.Modality = "fingerprint"
 		}
@@ -1650,7 +1663,10 @@ func handleDistributedDedup(w http.ResponseWriter, r *http.Request) {
 		Workers   int     `json:"workers"`
 		Threshold float64 `json:"threshold"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Modality == "" {
 		req.Modality = "fingerprint"
 	}
@@ -1672,7 +1688,10 @@ func handlePADModelUpdate(w http.ResponseWriter, r *http.Request) {
 		ModelID    string `json:"model_id"`
 		NewVersion string `json:"new_version"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.ModelID == "" || req.NewVersion == "" {
 		writeError(w, 400, "model_id and new_version required")
 		return
@@ -1689,7 +1708,10 @@ func handleQualityGateway(w http.ResponseWriter, r *http.Request) {
 			Quality  float64 `json:"quality"`
 			NFIQ     int     `json:"nfiq2"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "invalid JSON")
+			return
+		}
 		writeJSON(w, 200, qualityGateway.EvaluateCapture(req.DeviceID, req.VIN, req.Modality, req.Quality, req.NFIQ))
 		return
 	}
@@ -1704,7 +1726,10 @@ func handleBioOfflineSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceID string `json:"device_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
 		return
@@ -1718,7 +1743,10 @@ func handleScoreNormalize(w http.ResponseWriter, r *http.Request) {
 		Modality string  `json:"modality"`
 		NormType string  `json:"norm_type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.NormType == "" {
 		req.NormType = "z_norm"
 	}
@@ -1738,7 +1766,10 @@ func handleNISTBenchmark(w http.ResponseWriter, r *http.Request) {
 			Type     string `json:"type"`
 			Modality string `json:"modality"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "invalid JSON")
+			return
+		}
 		if req.Type == "" {
 			req.Type = "MINEX"
 		}
@@ -1767,7 +1798,10 @@ func handleKioskStart(w http.ResponseWriter, r *http.Request) {
 		DeviceID string `json:"device_id"`
 		VIN      string `json:"vin"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.DeviceID == "" {
 		req.DeviceID = "BVAS-001"
 	}
@@ -1790,7 +1824,10 @@ func handleMultiFingerEnroll(w http.ResponseWriter, r *http.Request) {
 		Fingers       []string `json:"fingers"`
 		PrimaryFinger string   `json:"primary_finger"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" {
 		writeError(w, 400, "vin required")
 		return
@@ -1818,7 +1855,10 @@ func handlePrivacyMatch(w http.ResponseWriter, r *http.Request) {
 		VIN      string `json:"vin"`
 		Modality string `json:"modality"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Modality == "" {
 		req.Modality = "fingerprint"
 	}
@@ -1868,20 +1908,20 @@ func handleAdvancedBiometricStats(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COUNT(*) FROM score_normalization_cohorts").Scan(&cohortCount)
 
 	writeJSON(w, 200, M{
-		"hsm": M{"keys": hsmKeys, "operations": hsmOps, "fips_level": "FIPS_140_2_L3"},
-		"sdk_providers": sdkProviders,
-		"template_aging": agingScan,
+		"hsm":                   M{"keys": hsmKeys, "operations": hsmOps, "fips_level": "FIPS_140_2_L3"},
+		"sdk_providers":         sdkProviders,
+		"template_aging":        agingScan,
 		"cancelable_biometrics": M{"active_transforms": cancelActive, "revoked": cancelRevoked, "iso_24745": true},
-		"threshold_tuning": M{"runs": tuningRuns, "auto_optimize": true},
-		"pad_models": M{"active": padModelCount, "ota_updates": true},
-		"quality_gateway": qgStats,
-		"offline_queue": offlineStats,
-		"score_normalization": M{"cohorts": cohortCount, "types": []string{"z_norm", "t_norm", "zt_norm"}},
-		"nist_benchmarks": M{"completed": benchCount, "types": []string{"MINEX", "FRVT", "IREX"}},
-		"audit_dashboard": M{"total_events": auditEvents},
-		"kiosk_mode": M{"active_sessions": kioskActive, "completed": kioskComplete},
-		"multi_finger": multiStats,
-		"privacy_preserving": privStats,
+		"threshold_tuning":      M{"runs": tuningRuns, "auto_optimize": true},
+		"pad_models":            M{"active": padModelCount, "ota_updates": true},
+		"quality_gateway":       qgStats,
+		"offline_queue":         offlineStats,
+		"score_normalization":   M{"cohorts": cohortCount, "types": []string{"z_norm", "t_norm", "zt_norm"}},
+		"nist_benchmarks":       M{"completed": benchCount, "types": []string{"MINEX", "FRVT", "IREX"}},
+		"audit_dashboard":       M{"total_events": auditEvents},
+		"kiosk_mode":            M{"active_sessions": kioskActive, "completed": kioskComplete},
+		"multi_finger":          multiStats,
+		"privacy_preserving":    privStats,
 	})
 }
 

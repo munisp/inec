@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	aiServiceURL       string // Python ML inference server
-	rustInferenceURL   string // Rust high-perf inference engine
+	aiServiceURL     string // Python ML inference server
+	rustInferenceURL string // Rust high-perf inference engine
 )
 
 func initAIProxy() {
@@ -109,7 +109,11 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, M{"anomalies": []M{}, "total_analyzed": 0, "error": "query failed"})
 		return
 	}
-	defer func() { if rows != nil { rows.Close() } }()
+	defer func() {
+		if rows != nil {
+			rows.Close()
+		}
+	}()
 
 	type puRecord struct {
 		code, name                          string
@@ -130,12 +134,12 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 		batchPayload := make([]M, 0, len(records))
 		for _, rec := range records {
 			batchPayload = append(batchPayload, M{
-				"registered_voters":     rec.registered,
-				"accredited_voters":     rec.accred,
-				"total_valid_votes":     rec.valid,
-				"rejected_votes":        rec.rejected,
-				"party_a_votes":         rec.valid / 2,
-				"party_b_votes":         rec.valid / 3,
+				"registered_voters":      rec.registered,
+				"accredited_voters":      rec.accred,
+				"total_valid_votes":      rec.valid,
+				"rejected_votes":         rec.rejected,
+				"party_a_votes":          rec.valid / 2,
+				"party_b_votes":          rec.valid / 3,
 				"submission_delay_hours": 3.0,
 				"regional_mean_turnout":  0.55,
 				"benford_deviation":      0.0,
@@ -161,18 +165,24 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 					isAnomaly, _ := resMap["is_anomaly"].(bool)
 					if isAnomaly {
 						severity := "low"
-						if score > 0.9 { severity = "critical" } else if score > 0.8 { severity = "high" } else if score > 0.6 { severity = "medium" }
+						if score > 0.9 {
+							severity = "critical"
+						} else if score > 0.8 {
+							severity = "high"
+						} else if score > 0.6 {
+							severity = "medium"
+						}
 						anomType := classifyAnomaly(records[i])
 						anomalies = append(anomalies, M{
 							"polling_unit_code": records[i].code,
-							"pu_name":          records[i].name,
-							"anomaly_type":     anomType,
-							"severity":         severity,
-							"score":            score,
-							"total_votes":      records[i].valid + records[i].rejected,
+							"pu_name":           records[i].name,
+							"anomaly_type":      anomType,
+							"severity":          severity,
+							"score":             score,
+							"total_votes":       records[i].valid + records[i].rejected,
 							"registered_voters": records[i].registered,
-							"model":            "xgboost-v1.0",
-							"description":      fmt.Sprintf("XGBoost model flagged %s (score: %.3f)", anomType, score),
+							"model":             "xgboost-v1.0",
+							"description":       fmt.Sprintf("XGBoost model flagged %s (score: %.3f)", anomType, score),
 						})
 					}
 				}
@@ -186,17 +196,23 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 			anomType, score := ruleBasedAnomalyScore(rec)
 			if score > 0.5 {
 				severity := "low"
-				if score > 0.9 { severity = "critical" } else if score > 0.8 { severity = "high" } else if score > 0.6 { severity = "medium" }
+				if score > 0.9 {
+					severity = "critical"
+				} else if score > 0.8 {
+					severity = "high"
+				} else if score > 0.6 {
+					severity = "medium"
+				}
 				anomalies = append(anomalies, M{
 					"polling_unit_code": rec.code,
-					"pu_name":          rec.name,
-					"anomaly_type":     anomType,
-					"severity":         severity,
-					"score":            score,
-					"total_votes":      rec.valid + rec.rejected,
+					"pu_name":           rec.name,
+					"anomaly_type":      anomType,
+					"severity":          severity,
+					"score":             score,
+					"total_votes":       rec.valid + rec.rejected,
 					"registered_voters": rec.registered,
-					"model":            "rule-based-fallback",
-					"description":      fmt.Sprintf("Rule-based detection: %s (score: %.3f)", anomType, score),
+					"model":             "rule-based-fallback",
+					"description":       fmt.Sprintf("Rule-based detection: %s (score: %.3f)", anomType, score),
 				})
 			}
 		}
@@ -221,7 +237,10 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 }
 
 // classifyAnomaly determines the type of anomaly based on data patterns.
-func classifyAnomaly(rec struct{ code, name string; registered, valid, rejected, accred int }) string {
+func classifyAnomaly(rec struct {
+	code, name                          string
+	registered, valid, rejected, accred int
+}) string {
 	if rec.valid > rec.accred {
 		return "overvoting"
 	}
@@ -239,7 +258,10 @@ func classifyAnomaly(rec struct{ code, name string; registered, valid, rejected,
 }
 
 // ruleBasedAnomalyScore computes anomaly score using business rules.
-func ruleBasedAnomalyScore(rec struct{ code, name string; registered, valid, rejected, accred int }) (string, float64) {
+func ruleBasedAnomalyScore(rec struct {
+	code, name                          string
+	registered, valid, rejected, accred int
+}) (string, float64) {
 	score := 0.0
 	anomType := "statistical_outlier"
 
@@ -319,11 +341,11 @@ func handleAIBenford(w http.ResponseWriter, r *http.Request) {
 		deviation := observed - expected[d]
 		chiSquare += (deviation * deviation) / expected[d]
 		digits[d-1] = M{
-			"digit":    d,
-			"expected": expected[d],
-			"observed": math.Round(observed*100) / 100,
+			"digit":     d,
+			"expected":  expected[d],
+			"observed":  math.Round(observed*100) / 100,
 			"deviation": math.Round(deviation*100) / 100,
-			"count":    digitCounts[d],
+			"count":     digitCounts[d],
 		}
 	}
 
@@ -353,8 +375,12 @@ func handleAIBenford(w http.ResponseWriter, r *http.Request) {
 }
 
 func firstDigitOf(n int) int {
-	if n < 0 { n = -n }
-	for n >= 10 { n /= 10 }
+	if n < 0 {
+		n = -n
+	}
+	for n >= 10 {
+		n /= 10
+	}
 	return n
 }
 
@@ -365,8 +391,12 @@ func chiSquarePValue(x float64, df int) float64 {
 	z := math.Pow(x/k, 1.0/3.0) - (1.0 - 2.0/(9.0*k))
 	z /= math.Sqrt(2.0 / (9.0 * k))
 	// Standard normal CDF approximation
-	if z > 6 { return 0.0 }
-	if z < -6 { return 1.0 }
+	if z > 6 {
+		return 0.0
+	}
+	if z < -6 {
+		return 1.0
+	}
 	return 1.0 - 0.5*(1.0+math.Erf(z/math.Sqrt2))
 }
 
@@ -386,7 +416,10 @@ func handleAIIntegrity(w http.ResponseWriter, r *http.Request) {
 			var v int
 			rows.Scan(&v)
 			d := firstDigitOf(v)
-			if d >= 1 { digitCounts[d]++; total++ }
+			if d >= 1 {
+				digitCounts[d]++
+				total++
+			}
 		}
 		if total > 20 {
 			expected := [10]float64{0, 30.1, 17.6, 12.5, 9.7, 7.9, 6.7, 5.8, 5.1, 4.6}
@@ -426,7 +459,13 @@ func handleAIIntegrity(w http.ResponseWriter, r *http.Request) {
 	overall := benfordScore*0.3 + complianceScore*0.25 + consistencyScore*0.25 + temporalScore*0.2
 
 	riskLevel := "low"
-	if overall < 60 { riskLevel = "critical" } else if overall < 75 { riskLevel = "high" } else if overall < 85 { riskLevel = "medium" }
+	if overall < 60 {
+		riskLevel = "critical"
+	} else if overall < 75 {
+		riskLevel = "high"
+	} else if overall < 85 {
+		riskLevel = "medium"
+	}
 
 	writeJSON(w, 200, M{
 		"overall_score": math.Round(overall*10) / 10,
@@ -463,45 +502,45 @@ func handleAIMethods(w http.ResponseWriter, r *http.Request) {
 		{
 			"name": "Benford's Law Analysis", "type": "statistical",
 			"description": "Real chi-square test on first-digit frequency of vote tallies",
-			"accuracy": modelAccuracy("benfords_law", 0.94), "status": "active", "implementation": "go_native",
+			"accuracy":    modelAccuracy("benfords_law", 0.94), "status": "active", "implementation": "go_native",
 		},
 		{
 			"name": "Rule-Based Anomaly Detection", "type": "rule_engine",
 			"description": "Overvoting, turnout spike, round-number, rejection rate checks",
-			"accuracy": modelAccuracy("rule_engine", 0.78), "status": "active", "implementation": "go_native",
+			"accuracy":    modelAccuracy("rule_engine", 0.78), "status": "active", "implementation": "go_native",
 		},
 		{
 			"name": "XGBoost Anomaly Detection", "type": "ml_model",
 			"description": "Gradient-boosted model trained on 50K samples, 17 features",
-			"accuracy": modelAccuracy("xgboost_anomaly", 0.92), "status": statusFromErr(anomalyErr),
+			"accuracy":    modelAccuracy("xgboost_anomaly", 0.92), "status": statusFromErr(anomalyErr),
 			"implementation": "rust_onnx", "inference_device": "cpu",
 			"model_file": "anomaly_xgboost.onnx",
 		},
 		{
 			"name": "ArcFace Face Verification", "type": "deep_learning",
 			"description": "512-d face embeddings (ResNet-100) for KYC identity matching",
-			"accuracy": modelAccuracy("arcface_verification", 0.998), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("arcface_verification", 0.998), "status": statusFromErr(pythonErr),
 			"implementation": "python_insightface", "inference_device": "cpu",
 			"model_file": "buffalo_l (InsightFace)",
 		},
 		{
 			"name": "CDCN Liveness Detection", "type": "deep_learning",
 			"description": "Central Difference Convolution Network for anti-spoofing",
-			"accuracy": modelAccuracy("cdcn_liveness", 0.95), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("cdcn_liveness", 0.95), "status": statusFromErr(pythonErr),
 			"implementation": "python_onnx", "inference_device": "cpu",
 			"model_file": "liveness_cdcn.onnx",
 		},
 		{
 			"name": "GNN Cross-PU Validation", "type": "graph_neural_network",
 			"description": "Graph Attention Network detecting anomalies via neighbor comparison",
-			"accuracy": modelAccuracy("gnn_crosspu", 0.89), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("gnn_crosspu", 0.89), "status": statusFromErr(pythonErr),
 			"implementation": "python_pytorch_geometric", "inference_device": "cpu",
 			"model_file": "gnn_election.pt",
 		},
 		{
 			"name": "PaddleOCR EC8A Extraction", "type": "ocr",
 			"description": "Pre-trained text recognition for result sheet digitization",
-			"accuracy": modelAccuracy("paddleocr_ec8a", 0.95), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("paddleocr_ec8a", 0.95), "status": statusFromErr(pythonErr),
 			"implementation": "python_paddleocr", "inference_device": "cpu",
 		},
 	}
@@ -510,7 +549,9 @@ func handleAIMethods(w http.ResponseWriter, r *http.Request) {
 }
 
 func statusFromErr(err error) string {
-	if err == nil { return "active" }
+	if err == nil {
+		return "active"
+	}
 	return "unavailable"
 }
 
@@ -531,7 +572,7 @@ func handleAIFallbackAnomalies(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type puData struct {
-		code, name                      string
+		code, name                  string
 		registered, votes, rejected int
 		turnout                     float64
 	}
@@ -554,7 +595,9 @@ func handleAIFallbackAnomalies(w http.ResponseWriter, r *http.Request) {
 	n := float64(len(data))
 	mean := sumTurnout / math.Max(n, 1)
 	stdDev := math.Sqrt(sumSq/math.Max(n, 1) - mean*mean)
-	if stdDev < 1 { stdDev = 1 }
+	if stdDev < 1 {
+		stdDev = 1
+	}
 
 	anomalies := []M{}
 	for _, d := range data {
@@ -578,13 +621,19 @@ func handleAIFallbackAnomalies(w http.ResponseWriter, r *http.Request) {
 
 		if anomType != "" {
 			severity := "low"
-			if score > 0.9 { severity = "critical" } else if score > 0.7 { severity = "high" } else if score > 0.5 { severity = "medium" }
+			if score > 0.9 {
+				severity = "critical"
+			} else if score > 0.7 {
+				severity = "high"
+			} else if score > 0.5 {
+				severity = "medium"
+			}
 			anomalies = append(anomalies, M{
 				"polling_unit_code": d.code, "pu_name": d.name,
 				"anomaly_type": anomType, "severity": severity,
 				"score": score, "total_votes": d.votes,
 				"registered_voters": d.registered,
-				"model": "rule-based-z-score",
+				"model":             "rule-based-z-score",
 			})
 		}
 	}
@@ -593,15 +642,17 @@ func handleAIFallbackAnomalies(w http.ResponseWriter, r *http.Request) {
 		"anomalies": anomalies, "total_analyzed": len(data),
 		"total_anomalies": len(anomalies), "fallback": true,
 		"mean_turnout": math.Round(mean*10) / 10,
-		"std_dev": math.Round(stdDev*10) / 10,
-		"summary": M{"critical": countBySeverity(anomalies, "critical"), "high": countBySeverity(anomalies, "high")},
+		"std_dev":      math.Round(stdDev*10) / 10,
+		"summary":      M{"critical": countBySeverity(anomalies, "critical"), "high": countBySeverity(anomalies, "high")},
 	})
 }
 
 func countBySeverity(anomalies []M, sev string) int {
 	count := 0
 	for _, a := range anomalies {
-		if a["severity"] == sev { count++ }
+		if a["severity"] == sev {
+			count++
+		}
 	}
 	return count
 }
@@ -695,8 +746,8 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeJSON(w, 200, M{
-			"error": "GNN service unavailable",
-			"fallback": true,
+			"error":       "GNN service unavailable",
+			"fallback":    true,
 			"total_nodes": len(nodes),
 		})
 		return
@@ -706,24 +757,26 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 	scored := []M{}
 	if scores, ok := result["scores"].([]interface{}); ok {
 		for i, s := range scores {
-			if i >= len(puCodes) { break }
+			if i >= len(puCodes) {
+				break
+			}
 			score, _ := s.(float64)
 			if score > 0.5 {
 				scored = append(scored, M{
 					"polling_unit_code": puCodes[i],
-					"anomaly_score":    score,
-					"flagged":          true,
+					"anomaly_score":     score,
+					"flagged":           true,
 				})
 			}
 		}
 	}
 
 	writeJSON(w, 200, M{
-		"flagged_units":  scored,
-		"total_nodes":    len(nodes),
-		"total_flagged":  len(scored),
-		"model":          "GAT-v1.0",
-		"n_anomalies":    result["n_anomalies"],
+		"flagged_units": scored,
+		"total_nodes":   len(nodes),
+		"total_flagged": len(scored),
+		"model":         "GAT-v1.0",
+		"n_anomalies":   result["n_anomalies"],
 	})
 }
 

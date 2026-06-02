@@ -137,7 +137,7 @@ func (bl *tokenBlacklist) periodicCleanup() {
 		bl.mu.Unlock()
 
 		// Clean DB too
-		db.Exec("DELETE FROM token_blacklist WHERE expires_at < CURRENT_TIMESTAMP")
+		dbExecLog("token_blacklist", "DELETE FROM token_blacklist WHERE expires_at < CURRENT_TIMESTAMP")
 	}
 }
 
@@ -169,7 +169,7 @@ func initActiveSessions(database *sql.DB) {
 func recordSession(jti string, userID int, expiresAt time.Time, r *http.Request) {
 	ip := stripPort(r.RemoteAddr)
 	ua := r.UserAgent()
-	db.Exec(convertPlaceholders(
+	dbExecLog("db_op", convertPlaceholders(
 		"INSERT INTO active_sessions (jti, user_id, ip_address, user_agent, expires_at) VALUES (?, ?, ?, ?, ?)"),
 		jti, userID, ip, ua, expiresAt)
 }
@@ -248,7 +248,7 @@ func isAPIKeyValid(keyHash string) bool {
 		return false
 	}
 	// Update last used
-	db.Exec(convertPlaceholders(
+	dbExecLog("db_op", convertPlaceholders(
 		"UPDATE api_key_metadata SET last_used_at = CURRENT_TIMESTAMP, usage_count = usage_count + 1 WHERE key_hash = ?"), keyHash)
 	return true
 }
@@ -310,7 +310,7 @@ func handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remove from active sessions
-	db.Exec(convertPlaceholders("DELETE FROM active_sessions WHERE jti = ? AND user_id = ?"), req.JTI, userID)
+	dbExecLog("active_sessions", convertPlaceholders("DELETE FROM active_sessions WHERE jti = ? AND user_id = ?"), req.JTI, userID)
 
 	auditWrite("session_revoked", "session", req.JTI, r, map[string]interface{}{"reason": req.Reason})
 	writeJSON(w, 200, map[string]interface{}{"message": "session revoked"})
@@ -326,7 +326,7 @@ func handleRevokeAllSessions(w http.ResponseWriter, r *http.Request) {
 	fmt.Sscanf(userIDStr, "%d", &userID)
 
 	blacklist.revokeAllForUser(userID)
-	db.Exec(convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
+	dbExecLog("active_sessions", convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
 
 	auditWrite("all_sessions_revoked", "user", userIDStr, r, nil)
 	writeJSON(w, 200, map[string]interface{}{"message": "all sessions revoked"})

@@ -14,29 +14,29 @@ import (
 type DisputeStatus string
 
 const (
-	DisputeStatusFiled      DisputeStatus = "filed"
+	DisputeStatusFiled       DisputeStatus = "filed"
 	DisputeStatusUnderReview DisputeStatus = "under_review"
-	DisputeStatusEscalated  DisputeStatus = "escalated"
-	DisputeStatusResolved   DisputeStatus = "resolved"
-	DisputeStatusDismissed  DisputeStatus = "dismissed"
+	DisputeStatusEscalated   DisputeStatus = "escalated"
+	DisputeStatusResolved    DisputeStatus = "resolved"
+	DisputeStatusDismissed   DisputeStatus = "dismissed"
 )
 
 type Dispute struct {
-	ID            int           `json:"id"`
-	ElectionID    int           `json:"election_id"`
-	PollingUnitCode string     `json:"polling_unit_code"`
-	FiledBy       string        `json:"filed_by"`
-	Party         string        `json:"party"`
-	Category      string        `json:"category"`
-	Description   string        `json:"description"`
-	Evidence      []string      `json:"evidence"`
-	Status        DisputeStatus `json:"status"`
-	AssignedTo    string        `json:"assigned_to"`
-	Resolution    string        `json:"resolution"`
-	ResolvedBy    string        `json:"resolved_by"`
-	FiledAt       string        `json:"filed_at"`
-	ResolvedAt    string        `json:"resolved_at"`
-	Priority      string        `json:"priority"`
+	ID              int           `json:"id"`
+	ElectionID      int           `json:"election_id"`
+	PollingUnitCode string        `json:"polling_unit_code"`
+	FiledBy         string        `json:"filed_by"`
+	Party           string        `json:"party"`
+	Category        string        `json:"category"`
+	Description     string        `json:"description"`
+	Evidence        []string      `json:"evidence"`
+	Status          DisputeStatus `json:"status"`
+	AssignedTo      string        `json:"assigned_to"`
+	Resolution      string        `json:"resolution"`
+	ResolvedBy      string        `json:"resolved_by"`
+	FiledAt         string        `json:"filed_at"`
+	ResolvedAt      string        `json:"resolved_at"`
+	Priority        string        `json:"priority"`
 }
 
 var disputeCategories = []string{
@@ -126,9 +126,9 @@ func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 	// Priority classification based on category
 	priority := "medium"
 	highPriority := map[string]bool{
-		"result_falsification":      true,
-		"ballot_stuffing":           true,
-		"voting_machine_tampering":  true,
+		"result_falsification":     true,
+		"ballot_stuffing":          true,
+		"voting_machine_tampering": true,
 	}
 	if highPriority[req.Category] {
 		priority = "high"

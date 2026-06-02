@@ -12,15 +12,15 @@ import (
 
 // CircuitBreaker implements the circuit breaker pattern for inter-service calls.
 type CircuitBreaker struct {
-	mu            sync.Mutex
-	name          string
-	state         cbState
-	failures      int
-	successes     int
-	threshold     int
-	resetTimeout  time.Duration
-	halfOpenMax   int
-	lastFailure   time.Time
+	mu           sync.Mutex
+	name         string
+	state        cbState
+	failures     int
+	successes    int
+	threshold    int
+	resetTimeout time.Duration
+	halfOpenMax  int
+	lastFailure  time.Time
 }
 
 type cbState int
@@ -139,9 +139,9 @@ func RetryWithBackoff(ctx context.Context, cfg RetryConfig, fn func() error) err
 
 // ResilientHTTPClient wraps http.Client with circuit breaker and retries.
 type ResilientHTTPClient struct {
-	Client  *http.Client
-	CB      *CircuitBreaker
-	Retry   RetryConfig
+	Client *http.Client
+	CB     *CircuitBreaker
+	Retry  RetryConfig
 }
 
 func NewResilientHTTPClient(name string) *ResilientHTTPClient {

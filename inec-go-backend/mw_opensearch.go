@@ -23,6 +23,7 @@ type OpenSearchClient interface {
 	ListIndices(ctx context.Context) ([]IndexInfo, error)
 	GetStats(ctx context.Context) (*SearchStats, error)
 	Status() MWStatus
+	Close() error
 }
 
 type SearchResult struct {
@@ -153,7 +154,7 @@ func (o *realOpenSearchClient) ListIndices(ctx context.Context) ([]IndexInfo, er
 	}
 	defer resp.Body.Close()
 	var indices []struct {
-		Index    string `json:"index"`
+		Index     string `json:"index"`
 		DocsCount string `json:"docs.count"`
 		StoreSize string `json:"store.size"`
 	}
@@ -176,9 +177,9 @@ func (o *realOpenSearchClient) GetStats(ctx context.Context) (*SearchStats, erro
 	}
 	defer resp.Body.Close()
 	var health struct {
-		Status         string `json:"status"`
-		NumberOfNodes  int    `json:"number_of_nodes"`
-		ActiveShards   int    `json:"active_primary_shards"`
+		Status        string `json:"status"`
+		NumberOfNodes int    `json:"number_of_nodes"`
+		ActiveShards  int    `json:"active_primary_shards"`
 	}
 	json.NewDecoder(resp.Body).Decode(&health)
 	return &SearchStats{
@@ -208,6 +209,8 @@ func (o *realOpenSearchClient) Status() MWStatus {
 // --- Embedded OpenSearch backed by DB full-text search ---
 
 type embeddedOpenSearch struct{}
+
+func (o *realOpenSearchClient) Close() error { return nil }
 
 func (o *embeddedOpenSearch) Index(ctx context.Context, indexName, docID string, body map[string]interface{}) error {
 	bodyJSON, err := json.Marshal(body)
@@ -284,6 +287,8 @@ func (o *embeddedOpenSearch) Status() MWStatus {
 }
 
 // --- Init ---
+
+func (o *embeddedOpenSearch) Close() error { return nil }
 
 func initOpenSearchClient() OpenSearchClient {
 	baseURL := os.Getenv("OPENSEARCH_URL")

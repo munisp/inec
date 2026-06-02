@@ -1,8 +1,8 @@
 package main
 
 import (
-	"crypto/aes"
 	"context"
+	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,11 +17,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"github.com/rs/zerolog/log"
+	"io"
 	"math"
 	"math/big"
-	mrand "math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -189,13 +188,13 @@ func initProductionUpgrades(database *sql.DB) {
 }
 
 type ProductionHSM struct {
-	db         *sql.DB
-	mu         sync.RWMutex
-	masterKey  []byte
-	ecdsaKey   *ecdsa.PrivateKey
-	keyCache   map[string][]byte
-	opsCount   int64
-	mode       string
+	db        *sql.DB
+	mu        sync.RWMutex
+	masterKey []byte
+	ecdsaKey  *ecdsa.PrivateKey
+	keyCache  map[string][]byte
+	opsCount  int64
+	mode      string
 }
 
 func NewProductionHSM(database *sql.DB) *ProductionHSM {
@@ -224,11 +223,11 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 	}
 
 	hsm := &ProductionHSM{
-		db:       database,
+		db:        database,
 		masterKey: mk,
-		ecdsaKey: ecKey,
-		keyCache: make(map[string][]byte),
-		mode:     mode,
+		ecdsaKey:  ecKey,
+		keyCache:  make(map[string][]byte),
+		mode:      mode,
 	}
 
 	log.Info().Str("mode", mode).Msg("Production HSM initialized")
@@ -299,7 +298,7 @@ func (h *ProductionHSM) Encrypt(keyID string, plaintext []byte) ([]byte, []byte,
 
 	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
 
-	h.db.Exec(`UPDATE hsm_keys SET usage_count = usage_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key_id = ?`, keyID)
+	dbExecLog("hsm_usage", `UPDATE hsm_keys SET usage_count = usage_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key_id = ?`, keyID)
 
 	return ciphertext, nonce, nil
 }
@@ -392,7 +391,7 @@ func (h *ProductionHSM) RotateKey(oldKeyID string) (string, error) {
 		return "", fmt.Errorf("key not found or not active: %s", oldKeyID)
 	}
 
-	h.db.Exec(`UPDATE hsm_keys SET status = 'rotated' WHERE key_id = ?`, oldKeyID)
+	dbExecLog("hsm_rotate", `UPDATE hsm_keys SET status = 'rotated' WHERE key_id = ?`, oldKeyID)
 	delete(h.keyCache, oldKeyID)
 
 	h.mu.Unlock()
@@ -421,19 +420,19 @@ func (h *ProductionHSM) GetStats() M {
 	h.db.QueryRow(`SELECT COUNT(*) FROM hsm_operations`).Scan(&totalOps)
 
 	return M{
-		"mode":         h.mode,
-		"algorithm":    "AES-256-GCM + P-384 ECDSA",
-		"total_keys":   totalKeys,
-		"active_keys":  activeKeys,
-		"rotated_keys": rotatedKeys,
-		"cache_size":   cacheSize,
-		"operations":   ops,
+		"mode":             h.mode,
+		"algorithm":        "AES-256-GCM + P-384 ECDSA",
+		"total_keys":       totalKeys,
+		"active_keys":      activeKeys,
+		"rotated_keys":     rotatedKeys,
+		"cache_size":       cacheSize,
+		"operations":       ops,
 		"total_ops_logged": totalOps,
-		"key_wrapping": "AES-256-GCM (master key wrapped)",
-		"signing":      "ECDSA P-384 with SHA-256",
-		"kdf":          "HMAC-SHA-512 key derivation",
-		"compliance":   []string{"FIPS 140-2 Level 1", "PKCS#11 compatible", "ISO 19795"},
-		"production":   true,
+		"key_wrapping":     "AES-256-GCM (master key wrapped)",
+		"signing":          "ECDSA P-384 with SHA-256",
+		"kdf":              "HMAC-SHA-512 key derivation",
+		"compliance":       []string{"FIPS 140-2 Level 1", "PKCS#11 compatible", "ISO 19795"},
+		"production":       true,
 	}
 }
 
@@ -478,20 +477,20 @@ func (h *ProductionHSM) logOperation(op, keyID, algo, inHash, outHash string, la
 	if !success {
 		successInt = 0
 	}
-	h.db.Exec(`INSERT INTO hsm_operations (operation, key_id, algorithm, input_hash, output_hash, latency_us, success, error_detail) VALUES (?,?,?,?,?,?,?,?)`,
+	dbExecLog("hsm_op", `INSERT INTO hsm_operations (operation, key_id, algorithm, input_hash, output_hash, latency_us, success, error_detail) VALUES (?,?,?,?,?,?,?,?)`,
 		op, keyID, algo, inHash, outHash, latencyUs, successInt, errDetail)
 }
 
 type ProductionSMSGateway struct {
-	db         *sql.DB
-	provider   string
-	apiKey     string
-	apiUser    string
-	shortCode  string
-	baseURL    string
-	mu         sync.Mutex
-	sentCount  int64
-	failCount  int64
+	db        *sql.DB
+	provider  string
+	apiKey    string
+	apiUser   string
+	shortCode string
+	baseURL   string
+	mu        sync.Mutex
+	sentCount int64
+	failCount int64
 }
 
 func NewProductionSMSGateway(database *sql.DB) *ProductionSMSGateway {
@@ -539,7 +538,7 @@ func (g *ProductionSMSGateway) SendSMS(phone, message string) (string, error) {
 
 	if g.apiKey == "" {
 		msgID := fmt.Sprintf("SIM-%d", time.Now().UnixNano())
-		g.db.Exec(`INSERT INTO sms_delivery_log (provider, message_id, phone, message, direction, status) VALUES (?,?,?,?,?,?)`,
+		dbExecLog("sms_log", `INSERT INTO sms_delivery_log (provider, message_id, phone, message, direction, status) VALUES (?,?,?,?,?,?)`,
 			"simulation", msgID, phone, message, "outbound", "simulated")
 		g.sentCount++
 		return msgID, nil
@@ -565,7 +564,7 @@ func (g *ProductionSMSGateway) SendSMS(phone, message string) (string, error) {
 		g.sentCount++
 	}
 
-	g.db.Exec(`INSERT INTO sms_delivery_log (provider, message_id, phone, message, direction, status) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("sms_log", `INSERT INTO sms_delivery_log (provider, message_id, phone, message, direction, status) VALUES (?,?,?,?,?,?)`,
 		g.provider, msgID, phone, message, "outbound", status)
 
 	return msgID, err
@@ -684,17 +683,17 @@ func NewProductionPADEngine(database *sql.DB) *ProductionPADEngine {
 			"fingerprint_pad_v3": {
 				Name: "FingerprintPAD", Version: "3.1", Modality: "fingerprint",
 				AttackTypes: []string{"printed_image", "latex_mold", "gelatin", "silicone", "3d_printed", "cadaver"},
-				Accuracy: 0.987, FAR: 0.001, FRR: 0.012, ISOLevel: "level3",
+				Accuracy:    0.987, FAR: 0.001, FRR: 0.012, ISOLevel: "level3",
 			},
 			"facial_pad_v3": {
 				Name: "FacialPAD", Version: "3.0", Modality: "facial",
 				AttackTypes: []string{"printed_photo", "screen_replay", "3d_mask", "deepfake", "morphed", "video_replay"},
-				Accuracy: 0.973, FAR: 0.003, FRR: 0.024, ISOLevel: "level2",
+				Accuracy:    0.973, FAR: 0.003, FRR: 0.024, ISOLevel: "level2",
 			},
 			"iris_pad_v2": {
 				Name: "IrisPAD", Version: "2.5", Modality: "iris",
 				AttackTypes: []string{"printed_iris", "contact_lens", "prosthetic_eye", "screen_display"},
-				Accuracy: 0.991, FAR: 0.0005, FRR: 0.009, ISOLevel: "level3",
+				Accuracy:    0.991, FAR: 0.0005, FRR: 0.009, ISOLevel: "level3",
 			},
 		},
 	}
@@ -742,7 +741,7 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 		}
 		confidence := livenessScore
 		if decision == "spoof" {
-			p.db.Exec(`INSERT INTO pad_attack_log (voter_vin, modality, attack_type, detection_score, texture_lbp_score, frequency_score, gradient_score, color_hist_score, motion_flow_score, depth_consistency, blocked) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			dbExecLog("pad_attack", `INSERT INTO pad_attack_log (voter_vin, modality, attack_type, detection_score, texture_lbp_score, frequency_score, gradient_score, color_hist_score, motion_flow_score, depth_consistency, blocked) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 				voterVIN, modality, attackType, livenessScore, livenessScore, livenessScore, livenessScore, livenessScore, 0.0, 0.0, 1)
 		}
 		return PADResult{
@@ -804,7 +803,7 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 	}
 
 	if decision == "spoof" {
-		p.db.Exec(`INSERT INTO pad_attack_log (voter_vin, modality, attack_type, detection_score, texture_lbp_score, frequency_score, gradient_score, color_hist_score, motion_flow_score, depth_consistency, blocked) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		dbExecLog("pad_attack", `INSERT INTO pad_attack_log (voter_vin, modality, attack_type, detection_score, texture_lbp_score, frequency_score, gradient_score, color_hist_score, motion_flow_score, depth_consistency, blocked) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			voterVIN, modality, attackType, livenessScore, textureLBP, frequencyScore, gradientScore, colorHistScore, motionScore, depthScore, 1)
 	}
 
@@ -924,8 +923,8 @@ func (p *ProductionPADEngine) GetStats() M {
 }
 
 type ProductionIPFSEngine struct {
-	db  *sql.DB
-	mu  sync.Mutex
+	db *sql.DB
+	mu sync.Mutex
 }
 
 func NewProductionIPFSEngine(database *sql.DB) *ProductionIPFSEngine {
@@ -958,7 +957,7 @@ func (i *ProductionIPFSEngine) StoreCIDv1(data []byte, contentType string) (stri
 		return "", err
 	}
 
-	i.db.Exec(`INSERT INTO ipfs_objects (cid, content_type, data_hash, size_bytes, pinned, pin_count) VALUES (?,?,?,?,1,3)`,
+	dbExecLog("ipfs_store", `INSERT INTO ipfs_objects (cid, content_type, data_hash, size_bytes, pinned, pin_count) VALUES (?,?,?,?,1,3)`,
 		cid, contentType, mhHex, len(data))
 
 	return cid, nil
@@ -998,15 +997,15 @@ func (i *ProductionIPFSEngine) GetStats() M {
 	i.db.QueryRow(`SELECT COALESCE(SUM(data_size),0) FROM ipfs_dag_nodes`).Scan(&totalSize)
 
 	return M{
-		"total_objects":   totalObjects,
-		"total_dag_nodes": totalDAGNodes,
-		"total_pinned":    totalPinned,
+		"total_objects":    totalObjects,
+		"total_dag_nodes":  totalDAGNodes,
+		"total_pinned":     totalPinned,
 		"total_size_bytes": totalSize,
-		"cid_version":     "CIDv1",
-		"codec_support":   []string{"dag-cbor", "dag-json", "raw"},
-		"multihash":       "sha2-256",
-		"replication":     3,
-		"production":      true,
+		"cid_version":      "CIDv1",
+		"codec_support":    []string{"dag-cbor", "dag-json", "raw"},
+		"multihash":        "sha2-256",
+		"replication":      3,
+		"production":       true,
 	}
 }
 
@@ -1036,6 +1035,7 @@ func (f *ProductionFabricEngine) SubmitWithEndorsement(channelID, chaincodeID, f
 
 	proposalHash := hex.EncodeToString(sha256.New().Sum([]byte(txData))[:16])
 
+	endorseStart := time.Now()
 	for idx, peer := range f.peers {
 		mspID := "INECMSP"
 		if idx == 2 {
@@ -1047,8 +1047,12 @@ func (f *ProductionFabricEngine) SubmitWithEndorsement(channelID, chaincodeID, f
 		r, s, _ := ecdsa.Sign(rand.Reader, f.ecdsaKey, sigHash[:])
 		sig := hex.EncodeToString(append(r.Bytes(), s.Bytes()...))
 
-		f.db.Exec(`INSERT INTO fabric_endorsement_log (tx_id, peer_id, msp_id, signature, proposal_hash, endorsement_time_ms) VALUES (?,?,?,?,?,?)`,
-			txID, peer, mspID, sig, proposalHash, 5+mrand.Intn(15))
+		endorseMs := time.Since(endorseStart).Milliseconds()
+		if endorseMs < 1 {
+			endorseMs = 1
+		}
+		dbExecLog("fabric_endorse", `INSERT INTO fabric_endorsement_log (tx_id, peer_id, msp_id, signature, proposal_hash, endorsement_time_ms) VALUES (?,?,?,?,?,?)`,
+			txID, peer, mspID, sig, proposalHash, endorseMs)
 	}
 
 	stateKey := fmt.Sprintf("%s|%s|%s", channelID, chaincodeID, function+"-"+txID)
@@ -1058,7 +1062,7 @@ func (f *ProductionFabricEngine) SubmitWithEndorsement(channelID, chaincodeID, f
 	f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0) FROM fabric_blocks`).Scan(&blockNum)
 	blockNum++
 
-	f.db.Exec(`INSERT INTO fabric_state_db (composite_key, channel_id, chaincode_id, key, value, version_block, version_tx) VALUES (?,?,?,?,?,?,?)`,
+	dbExecLog("fabric_state", `INSERT INTO fabric_state_db (composite_key, channel_id, chaincode_id, key, value, version_block, version_tx) VALUES (?,?,?,?,?,?,?)`,
 		stateKey, channelID, chaincodeID, function+"-"+txID, string(stateValue), blockNum, 0)
 
 	var prevHash string
@@ -1071,14 +1075,14 @@ func (f *ProductionFabricEngine) SubmitWithEndorsement(channelID, chaincodeID, f
 	blockData := fmt.Sprintf("%d-%s-%s", blockNum, prevHash, dataHash)
 	blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(blockData)))
 
-	f.db.Exec(`INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("fabric_block", `INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
 		blockNum, channelID, prevHash, dataHash, blockHash, 1)
 
 	argsJSON, _ := json.Marshal(args)
 	endorsersJSON, _ := json.Marshal(f.peers)
 	rwSet := fmt.Sprintf(`{"reads":[],"writes":[{"key":"%s","value":"%s"}]}`, function+"-"+txID, string(stateValue))
 
-	f.db.Exec(`INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		txID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
 		string(endorsersJSON), "AND('INECMSP.peer','ObserverMSP.peer')", rwSet, "VALID")
 
@@ -1117,12 +1121,12 @@ func (f *ProductionFabricEngine) VerifyEndorsements(txID string) (bool, M) {
 	policyMet := inecEndorsed && observerEndorsed
 
 	return policyMet, M{
-		"tx_id":         txID,
-		"endorsements":  endorsements,
-		"count":         count,
-		"policy_met":    policyMet,
-		"policy":        "AND('INECMSP.peer','ObserverMSP.peer')",
-		"production":    true,
+		"tx_id":        txID,
+		"endorsements": endorsements,
+		"count":        count,
+		"policy_met":   policyMet,
+		"policy":       "AND('INECMSP.peer','ObserverMSP.peer')",
+		"production":   true,
 	}
 }
 
@@ -1148,8 +1152,8 @@ func (f *ProductionFabricEngine) GetStats() M {
 }
 
 type ProductionTBEngine struct {
-	db  *sql.DB
-	mu  sync.Mutex
+	db *sql.DB
+	mu sync.Mutex
 }
 
 func NewProductionTBEngine(database *sql.DB) *ProductionTBEngine {
@@ -1177,14 +1181,14 @@ func (t *ProductionTBEngine) CreateTransferWithJournal(debitAcct, creditAcct str
 		return "", err
 	}
 
-	t.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct)
-	t.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct)
+	dbExecLog("tb_debit_pend", `UPDATE tb_accounts SET debits_pending = debits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct)
+	dbExecLog("tb_credit_pend", `UPDATE tb_accounts SET credits_pending = credits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct)
 
 	var debitBalance, creditBalance int64
 	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, debitAcct).Scan(&debitBalance)
 	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, creditAcct).Scan(&creditBalance)
 
-	t.db.Exec(`INSERT INTO tb_journal (transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit, idempotency_key) VALUES (?,?,?,?,?,?,?,?)`,
+	dbExecLog("tb_journal", `INSERT INTO tb_journal (transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit, idempotency_key) VALUES (?,?,?,?,?,?,?,?)`,
 		txID, "CREATED", debitAcct, creditAcct, amount, debitBalance, creditBalance, idempotencyKey)
 
 	return txID, nil
@@ -1205,15 +1209,15 @@ func (t *ProductionTBEngine) PostWithJournal(txID string) error {
 		return fmt.Errorf("transfer not pending: %s", status)
 	}
 
-	t.db.Exec(`UPDATE tb_transfers SET status='POSTED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID)
-	t.db.Exec(`UPDATE tb_accounts SET debits_pending=debits_pending-?, debits_posted=debits_posted+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, amount, amount, debitAcct)
-	t.db.Exec(`UPDATE tb_accounts SET credits_pending=credits_pending-?, credits_posted=credits_posted+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, amount, amount, creditAcct)
+	dbExecLog("tb_post", `UPDATE tb_transfers SET status='POSTED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID)
+	dbExecLog("tb_debit_post", `UPDATE tb_accounts SET debits_pending=debits_pending-?, debits_posted=debits_posted+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, amount, amount, debitAcct)
+	dbExecLog("tb_credit_post", `UPDATE tb_accounts SET credits_pending=credits_pending-?, credits_posted=credits_posted+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, amount, amount, creditAcct)
 
 	var debitBalance, creditBalance int64
 	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, debitAcct).Scan(&debitBalance)
 	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, creditAcct).Scan(&creditBalance)
 
-	t.db.Exec(`INSERT INTO tb_journal (transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit) VALUES (?,?,?,?,?,?,?)`,
+	dbExecLog("tb_journal", `INSERT INTO tb_journal (transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit) VALUES (?,?,?,?,?,?,?)`,
 		txID, "POSTED", debitAcct, creditAcct, amount, debitBalance, creditBalance)
 
 	return nil

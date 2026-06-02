@@ -30,11 +30,11 @@ type Span struct {
 
 // TracingConfig holds the configuration for distributed tracing.
 type TracingConfig struct {
-	Enabled         bool
-	ServiceName     string
-	ExporterURL     string
-	SampleRate      float64
-	MaxSpansPerSec  int
+	Enabled        bool
+	ServiceName    string
+	ExporterURL    string
+	SampleRate     float64
+	MaxSpansPerSec int
 }
 
 var tracingConfig *TracingConfig

@@ -31,33 +31,34 @@ type MojaloopClient interface {
 	// List transactions
 	ListTransactions(ctx context.Context, phase string, limit int) ([]MojaTransaction, error)
 	Status() MWStatus
+	Close() error
 }
 
 type MojaParty struct {
-	PartyType  string `json:"party_type"`
-	PartyID    string `json:"party_id"`
-	FSPName    string `json:"fsp_name"`
-	FSPID      string `json:"fsp_id"`
-	Name       string `json:"name"`
+	PartyType   string `json:"party_type"`
+	PartyID     string `json:"party_id"`
+	FSPName     string `json:"fsp_name"`
+	FSPID       string `json:"fsp_id"`
+	Name        string `json:"name"`
 	DateOfBirth string `json:"date_of_birth,omitempty"`
 }
 
 type MojaQuoteRequest struct {
-	QuoteID    string  `json:"quote_id"`
-	PayerFSP   string  `json:"payer_fsp"`
-	PayeeFSP   string  `json:"payee_fsp"`
-	Amount     float64 `json:"amount"`
-	Currency   string  `json:"currency"`
+	QuoteID  string  `json:"quote_id"`
+	PayerFSP string  `json:"payer_fsp"`
+	PayeeFSP string  `json:"payee_fsp"`
+	Amount   float64 `json:"amount"`
+	Currency string  `json:"currency"`
 }
 
 type MojaQuote struct {
-	QuoteID        string  `json:"quote_id"`
-	TransferAmount float64 `json:"transfer_amount"`
-	PayeeFee       float64 `json:"payee_fee"`
+	QuoteID         string  `json:"quote_id"`
+	TransferAmount  float64 `json:"transfer_amount"`
+	PayeeFee        float64 `json:"payee_fee"`
 	PayeeCommission float64 `json:"payee_commission"`
-	ILPPacket      string  `json:"ilp_packet"`
-	Condition      string  `json:"condition"`
-	Expiration     string  `json:"expiration"`
+	ILPPacket       string  `json:"ilp_packet"`
+	Condition       string  `json:"condition"`
+	Expiration      string  `json:"expiration"`
 }
 
 type MojaTransferRequest struct {
@@ -79,41 +80,41 @@ type MojaTransfer struct {
 }
 
 type MojaSettlement struct {
-	SettlementID string            `json:"settlement_id"`
-	State        string            `json:"state"`
-	Accounts     []MojaSettleAcct  `json:"accounts"`
-	CreatedAt    string            `json:"created_at"`
+	SettlementID string           `json:"settlement_id"`
+	State        string           `json:"state"`
+	Accounts     []MojaSettleAcct `json:"accounts"`
+	CreatedAt    string           `json:"created_at"`
 }
 
 type MojaSettleAcct struct {
-	FSPID   string  `json:"fsp_id"`
-	Credit  float64 `json:"credit"`
-	Debit   float64 `json:"debit"`
-	NetPos  float64 `json:"net_position"`
+	FSPID  string  `json:"fsp_id"`
+	Credit float64 `json:"credit"`
+	Debit  float64 `json:"debit"`
+	NetPos float64 `json:"net_position"`
 }
 
 type MojaTransaction struct {
-	ID            string  `json:"id"`
-	PayerFSP      string  `json:"payer_fsp"`
-	PayeeFSP      string  `json:"payee_fsp"`
-	Amount        float64 `json:"amount"`
-	Currency      string  `json:"currency"`
-	Phase         string  `json:"phase"`
-	QuoteID       string  `json:"quote_id,omitempty"`
-	TransferID    string  `json:"transfer_id,omitempty"`
-	SettlementID  string  `json:"settlement_id,omitempty"`
-	ILPPacket     string  `json:"ilp_packet,omitempty"`
-	Condition     string  `json:"condition,omitempty"`
-	Fulfilment    string  `json:"fulfilment,omitempty"`
-	ErrorInfo     string  `json:"error_info,omitempty"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
+	ID           string  `json:"id"`
+	PayerFSP     string  `json:"payer_fsp"`
+	PayeeFSP     string  `json:"payee_fsp"`
+	Amount       float64 `json:"amount"`
+	Currency     string  `json:"currency"`
+	Phase        string  `json:"phase"`
+	QuoteID      string  `json:"quote_id,omitempty"`
+	TransferID   string  `json:"transfer_id,omitempty"`
+	SettlementID string  `json:"settlement_id,omitempty"`
+	ILPPacket    string  `json:"ilp_packet,omitempty"`
+	Condition    string  `json:"condition,omitempty"`
+	Fulfilment   string  `json:"fulfilment,omitempty"`
+	ErrorInfo    string  `json:"error_info,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 }
 
 // HTTP client for real Mojaloop Switch
 type mojaHTTPClient struct {
-	client   *ResilientHTTPClient
-	baseURL  string
+	client  *ResilientHTTPClient
+	baseURL string
 }
 
 func (m *mojaHTTPClient) PartyLookup(ctx context.Context, partyType, partyID string) (*MojaParty, error) {
@@ -140,9 +141,9 @@ func (m *mojaHTTPClient) PartyLookup(ctx context.Context, partyType, partyID str
 
 func (m *mojaHTTPClient) CreateQuote(ctx context.Context, qr MojaQuoteRequest) (*MojaQuote, error) {
 	body, _ := json.Marshal(map[string]interface{}{
-		"quoteId":   qr.QuoteID,
-		"payer":     map[string]string{"partyIdType": "MSISDN", "partyIdentifier": qr.PayerFSP, "fspId": qr.PayerFSP},
-		"payee":     map[string]string{"partyIdType": "MSISDN", "partyIdentifier": qr.PayeeFSP, "fspId": qr.PayeeFSP},
+		"quoteId":    qr.QuoteID,
+		"payer":      map[string]string{"partyIdType": "MSISDN", "partyIdentifier": qr.PayerFSP, "fspId": qr.PayerFSP},
+		"payee":      map[string]string{"partyIdType": "MSISDN", "partyIdentifier": qr.PayeeFSP, "fspId": qr.PayeeFSP},
 		"amountType": "SEND",
 		"amount":     map[string]interface{}{"currency": qr.Currency, "amount": fmt.Sprintf("%.2f", qr.Amount)},
 	})
@@ -166,13 +167,13 @@ func (m *mojaHTTPClient) CreateQuote(ctx context.Context, qr MojaQuoteRequest) (
 
 func (m *mojaHTTPClient) CreateTransfer(ctx context.Context, tr MojaTransferRequest) (*MojaTransfer, error) {
 	body, _ := json.Marshal(map[string]interface{}{
-		"transferId":    tr.TransferID,
-		"payerFsp":      tr.PayerFSP,
-		"payeeFsp":      tr.PayeeFSP,
-		"amount":        map[string]interface{}{"currency": tr.Currency, "amount": fmt.Sprintf("%.2f", tr.Amount)},
-		"ilpPacket":     tr.ILPPacket,
-		"condition":     tr.Condition,
-		"expiration":    time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+		"transferId": tr.TransferID,
+		"payerFsp":   tr.PayerFSP,
+		"payeeFsp":   tr.PayeeFSP,
+		"amount":     map[string]interface{}{"currency": tr.Currency, "amount": fmt.Sprintf("%.2f", tr.Amount)},
+		"ilpPacket":  tr.ILPPacket,
+		"condition":  tr.Condition,
+		"expiration": time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/transfers", bytes.NewReader(body))
 	if err != nil {
@@ -270,6 +271,8 @@ func (m *mojaHTTPClient) Status() MWStatus {
 // Embedded Mojaloop implementation backed by PostgreSQL
 type embeddedMojaloop struct{}
 
+func (m *mojaHTTPClient) Close() error { return nil }
+
 func (m *embeddedMojaloop) PartyLookup(ctx context.Context, partyType, partyID string) (*MojaParty, error) {
 	return &MojaParty{
 		PartyType: partyType,
@@ -287,13 +290,13 @@ func (m *embeddedMojaloop) CreateQuote(ctx context.Context, req MojaQuoteRequest
 	condition := base64.StdEncoding.EncodeToString(hash[:])
 
 	quote := &MojaQuote{
-		QuoteID:        req.QuoteID,
-		TransferAmount: req.Amount,
-		PayeeFee:       req.Amount * 0.001,
+		QuoteID:         req.QuoteID,
+		TransferAmount:  req.Amount,
+		PayeeFee:        req.Amount * 0.001,
 		PayeeCommission: 0,
-		ILPPacket:      base64.StdEncoding.EncodeToString([]byte(ilpData)),
-		Condition:      condition,
-		Expiration:     time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+		ILPPacket:       base64.StdEncoding.EncodeToString([]byte(ilpData)),
+		Condition:       condition,
+		Expiration:      time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
 	}
 
 	// Persist to DB — advance phase to 'quote'
@@ -431,6 +434,8 @@ func (m *embeddedMojaloop) ListTransactions(ctx context.Context, phase string, l
 func (m *embeddedMojaloop) Status() MWStatus {
 	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "embedded (DB-backed)", Details: "4-phase ILP pattern"}
 }
+
+func (m *embeddedMojaloop) Close() error { return nil }
 
 func initMojaloopClient() MojaloopClient {
 	baseURL := os.Getenv("MOJALOOP_URL")

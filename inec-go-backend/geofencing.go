@@ -15,8 +15,8 @@ import (
 
 const (
 	earthRadiusKm      = 6371.0
-	defaultGeofenceM   = 500 // 500 meters default geofence radius
-	maxAllowedDistance  = 2000 // 2km absolute maximum
+	defaultGeofenceM   = 500  // 500 meters default geofence radius
+	maxAllowedDistance = 2000 // 2km absolute maximum
 )
 
 // GeoPoint represents a geographic coordinate.
@@ -85,7 +85,7 @@ func validateGeofence(bvasLat, bvasLon float64, pollingUnitCode string) (*Geofen
 	}
 
 	// Log the check
-	db.Exec(convertPlaceholders(
+	dbExecLog("db_op", convertPlaceholders(
 		"INSERT INTO bvas_location_logs (bvas_serial, polling_unit_code, latitude, longitude, distance_from_pu_m, within_geofence) VALUES (?, ?, ?, ?, ?, ?)"),
 		"", pollingUnitCode, bvasLat, bvasLon, distance, withinFence)
 
@@ -111,7 +111,7 @@ func handleGeofenceCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log with BVAS serial
-	db.Exec(convertPlaceholders(
+	dbExecLog("db_op", convertPlaceholders(
 		"UPDATE bvas_location_logs SET bvas_serial = ? WHERE polling_unit_code = ? AND bvas_serial = '' ORDER BY id DESC LIMIT 1"),
 		req.BVASSerial, req.PollingUnitCode)
 
@@ -138,12 +138,12 @@ func handleGeofenceStats(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COALESCE(AVG(distance_from_pu_m), 0) FROM bvas_location_logs WHERE within_geofence = 1").Scan(&avgDistance)
 
 	writeJSON(w, 200, map[string]interface{}{
-		"election_id":         electionID,
-		"total_checks":        totalChecks,
-		"violations":          violations,
-		"compliance_rate":     safePercentGeo(totalChecks-violations, totalChecks),
-		"avg_distance_m":      math.Round(avgDistance*100) / 100,
-		"geofence_default_m":  defaultGeofenceM,
+		"election_id":        electionID,
+		"total_checks":       totalChecks,
+		"violations":         violations,
+		"compliance_rate":    safePercentGeo(totalChecks-violations, totalChecks),
+		"avg_distance_m":     math.Round(avgDistance*100) / 100,
+		"geofence_default_m": defaultGeofenceM,
 	})
 }
 

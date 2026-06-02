@@ -27,13 +27,13 @@ type TBTransfer struct {
 }
 
 type TBAccount struct {
-	ID              string `json:"id"`
-	Ledger          int    `json:"ledger"`
-	Code            int    `json:"code"`
-	CreditsPosted   int64  `json:"credits_posted"`
-	DebitsPosted    int64  `json:"debits_posted"`
-	CreditsPending  int64  `json:"credits_pending"`
-	DebitsPending   int64  `json:"debits_pending"`
+	ID             string `json:"id"`
+	Ledger         int    `json:"ledger"`
+	Code           int    `json:"code"`
+	CreditsPosted  int64  `json:"credits_posted"`
+	DebitsPosted   int64  `json:"debits_posted"`
+	CreditsPending int64  `json:"credits_pending"`
+	DebitsPending  int64  `json:"debits_pending"`
 }
 
 type TigerBeetleClient interface {
@@ -353,8 +353,8 @@ func newDBBackedTigerBeetle() *dbBackedTigerBeetle {
 		posted_at TIMESTAMP
 	)`)
 	// Seed default accounts
-	db.Exec("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-operational', 1, 1)")
-	db.Exec("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-official', 2, 1)")
+	dbExecLog("tb_accounts", "INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-operational', 1, 1)")
+	dbExecLog("tb_accounts", "INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-official', 2, 1)")
 	log.Info().Msg("TigerBeetle using DB-backed persistent ledger")
 	return tb
 }
@@ -365,7 +365,7 @@ func (t *dbBackedTigerBeetle) CreateTransfer(ctx context.Context, transfer TBTra
 		return nil, err
 	}
 	// Persist to DB
-	db.Exec(convertPlaceholders(
+	dbExecLog("db_op", convertPlaceholders(
 		"INSERT OR IGNORE INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)"),
 		result.ID, result.DebitAccountID, result.CreditAccountID, result.Amount, result.Ledger, result.Code, result.Status, result.UserData)
 	return result, nil
@@ -379,7 +379,7 @@ func (t *dbBackedTigerBeetle) VoidTransfer(ctx context.Context, transferID strin
 	if err := t.embedded.VoidTransfer(ctx, transferID); err != nil {
 		return err
 	}
-	db.Exec(convertPlaceholders("UPDATE tb_transfers SET status = 'VOIDED' WHERE id = ?"), transferID)
+	dbExecLog("tb_transfers", convertPlaceholders("UPDATE tb_transfers SET status = 'VOIDED' WHERE id = ?"), transferID)
 	return nil
 }
 
@@ -387,7 +387,7 @@ func (t *dbBackedTigerBeetle) PostTransfer(ctx context.Context, transferID strin
 	if err := t.embedded.PostTransfer(ctx, transferID); err != nil {
 		return err
 	}
-	db.Exec(convertPlaceholders("UPDATE tb_transfers SET status = 'POSTED', posted_at = CURRENT_TIMESTAMP WHERE id = ?"), transferID)
+	dbExecLog("tb_transfers", convertPlaceholders("UPDATE tb_transfers SET status = 'POSTED', posted_at = CURRENT_TIMESTAMP WHERE id = ?"), transferID)
 	return nil
 }
 
@@ -395,7 +395,7 @@ func (t *dbBackedTigerBeetle) CreateAccount(ctx context.Context, account TBAccou
 	if err := t.embedded.CreateAccount(ctx, account); err != nil {
 		return err
 	}
-	db.Exec(convertPlaceholders("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES (?,?,?)"),
+	dbExecLog("tb_accounts", convertPlaceholders("INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES (?,?,?)"),
 		account.ID, account.Ledger, account.Code)
 	return nil
 }

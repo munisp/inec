@@ -20,11 +20,11 @@ import (
 )
 
 var (
-	fabricNetwork  *HyperledgerFabricNetwork
-	ipfsStore      *IPFSContentStore
-	persistentTB   *PersistentTigerBeetle
+	fabricNetwork   *HyperledgerFabricNetwork
+	ipfsStore       *IPFSContentStore
+	persistentTB    *PersistentTigerBeetle
 	chaincodeEngine *ChaincodeExecutionEngine
-	merkleBuilder  *MerkleTreeBuilder
+	merkleBuilder   *MerkleTreeBuilder
 )
 
 func initBlockchainProduction(database *sql.DB) {
@@ -167,14 +167,17 @@ func NewPersistentTigerBeetle(database *sql.DB) *PersistentTigerBeetle {
 }
 
 func (p *PersistentTigerBeetle) ensureAccounts() {
-	accounts := []struct{ id string; ledger, code int }{
+	accounts := []struct {
+		id           string
+		ledger, code int
+	}{
 		{"inec-operational", 1, 1},
 		{"inec-official", 2, 1},
 		{"inec-escrow", 3, 1},
 		{"inec-disputed", 4, 1},
 	}
 	for _, a := range accounts {
-		p.db.Exec(`INSERT INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
+		dbExecLog("tb_account", `INSERT INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
 	}
 }
 
@@ -320,8 +323,8 @@ func (p *PersistentTigerBeetle) GetStats() M {
 		"total_accounts": totalAccounts, "total_transfers": totalTransfers,
 		"posted": posted, "pending": pending, "voided": voided,
 		"total_posted_amount": totalAmount,
-		"accounts": accounts,
-		"double_entry": true, "acid_compliant": true,
+		"accounts":            accounts,
+		"double_entry":        true, "acid_compliant": true,
 	}
 }
 
@@ -442,10 +445,10 @@ func (f *HyperledgerFabricNetwork) SubmitTransaction(channelID, chaincodeID, fun
 	blockData := fmt.Sprintf("%d-%s-%s", blockNum, prevHash, dataHash)
 	blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(blockData)))
 
-	f.db.Exec(`INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("fabric_block", `INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
 		blockNum, channelID, prevHash, dataHash, blockHash, 1)
 
-	f.db.Exec(`INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+	dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		txID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
 		string(endorsersJSON), "AND('INECMSP.peer','Org1MSP.peer')", rwSet+"|sig:"+sig, "VALID")
 
@@ -541,8 +544,8 @@ func (f *HyperledgerFabricNetwork) GetNetworkStats() M {
 		"latest_block": latestBlock, "latest_hash": latestHash,
 		"peers": peers, "orderers": orderers, "chaincode": chaincode,
 		"total_peers": totalPeers, "total_orderers": totalOrderers,
-		"total_chaincode": totalChaincode,
-		"ecdsa_public_key": f.GetPublicKeyPEM(),
+		"total_chaincode":     totalChaincode,
+		"ecdsa_public_key":    f.GetPublicKeyPEM(),
 		"signature_algorithm": "ECDSA-P256-SHA256",
 	}
 }
@@ -624,9 +627,9 @@ func (s *IPFSContentStore) Verify(cid string) (M, error) {
 	return M{
 		"cid": cid, "content_type": ct, "data_hash": dh, "size_bytes": size,
 		"pinned": pinned == 1, "pin_count": pinCount,
-		"cid_valid": cid == expectedCID,
+		"cid_valid":         cid == expectedCID,
 		"content_addressed": true,
-		"created_at": created,
+		"created_at":        created,
 	}, nil
 }
 
@@ -658,9 +661,9 @@ func (s *IPFSContentStore) GetStats() M {
 }
 
 type ChaincodeExecutionEngine struct {
-	db      *sql.DB
-	fabric  *HyperledgerFabricNetwork
-	mu      sync.Mutex
+	db     *sql.DB
+	fabric *HyperledgerFabricNetwork
+	mu     sync.Mutex
 }
 
 func NewChaincodeExecutionEngine(database *sql.DB, fabric *HyperledgerFabricNetwork) *ChaincodeExecutionEngine {
@@ -720,11 +723,11 @@ func (c *ChaincodeExecutionEngine) ExecuteResultValidation(resultID int, puCode 
 
 	return M{
 		"tx_id": txID, "block_number": blockNum,
-		"chaincode": "result-validation-cc",
-		"validation_result": allPassed,
+		"chaincode":          "result-validation-cc",
+		"validation_result":  allPassed,
 		"conditions_checked": len(conditions),
-		"conditions": conditions,
-		"ipfs_cid": cid,
+		"conditions":         conditions,
+		"ipfs_cid":           cid,
 	}, nil
 }
 
@@ -982,7 +985,10 @@ func handleFabricSubmitTx(w http.ResponseWriter, r *http.Request) {
 		Function  string   `json:"function"`
 		Args      []string `json:"args"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Channel == "" {
 		req.Channel = "inec-results"
 	}
@@ -1005,7 +1011,10 @@ func handleChaincodeValidateResult(w http.ResponseWriter, r *http.Request) {
 		TotalVotes int    `json:"total_votes"`
 		Accredited int    `json:"accredited"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.ResultID == 0 {
 		writeError(w, 400, "result_id required")
 		return
@@ -1024,7 +1033,10 @@ func handleChaincodeAggregate(w http.ResponseWriter, r *http.Request) {
 		AreaCode   string `json:"area_code"`
 		ElectionID int    `json:"election_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	result, err := chaincodeEngine.ExecuteAggregation(req.Level, req.AreaCode, req.ElectionID)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -1042,7 +1054,10 @@ func handleIPFSStore(w http.ResponseWriter, r *http.Request) {
 		Data        string `json:"data"`
 		ContentType string `json:"content_type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Data == "" {
 		writeError(w, 400, "data required")
 		return
@@ -1146,7 +1161,10 @@ func handlePersistentTBCreateTransfer(w http.ResponseWriter, r *http.Request) {
 		Amount        int64  `json:"amount"`
 		UserData      string `json:"user_data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.DebitAccount == "" {
 		req.DebitAccount = "inec-operational"
 	}
@@ -1165,7 +1183,10 @@ func handlePersistentTBPostTransfer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TransferID string `json:"transfer_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	err := persistentTB.PostTransfer(req.TransferID)
 	if err != nil {
 		writeError(w, 400, err.Error())
@@ -1179,7 +1200,10 @@ func handleMerkleTreeBuild(w http.ResponseWriter, r *http.Request) {
 		Leaves   []string `json:"leaves"`
 		TreeType string   `json:"tree_type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if len(req.Leaves) == 0 {
 		writeError(w, 400, "leaves required")
 		return
@@ -1229,12 +1253,12 @@ func handleBlockchainProductionStats(w http.ResponseWriter, r *http.Request) {
 		"merkle_trees":     merkleCount,
 		"production_grade": true,
 		"components": M{
-			"hyperledger_fabric":  "persistent (SQLite-backed Fabric simulation with ECDSA signatures, endorsement, ordering)",
-			"tigerbeetle_ledger":  "persistent (SQLite WAL, ACID double-entry accounting)",
-			"ipfs_content_store":  "persistent (content-addressed SHA256, CIDv1-compatible)",
-			"smart_contracts":     "executable (chaincode with real validation logic)",
-			"merkle_trees":        "real (SHA256 binary Merkle tree construction and verification)",
-			"digital_signatures":  "real (ECDSA P-256 with PEM-encoded public keys)",
+			"hyperledger_fabric": "persistent (SQLite-backed Fabric simulation with ECDSA signatures, endorsement, ordering)",
+			"tigerbeetle_ledger": "persistent (SQLite WAL, ACID double-entry accounting)",
+			"ipfs_content_store": "persistent (content-addressed SHA256, CIDv1-compatible)",
+			"smart_contracts":    "executable (chaincode with real validation logic)",
+			"merkle_trees":       "real (SHA256 binary Merkle tree construction and verification)",
+			"digital_signatures": "real (ECDSA P-256 with PEM-encoded public keys)",
 		},
 	})
 }

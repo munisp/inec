@@ -242,8 +242,8 @@ func RegisterAPIRoute(ctx context.Context, path, upstream string, rateLimit int)
 		return nil
 	}
 	return mwHub.APISIX.RegisterRoute(ctx, APISIXRoute{
-		ID:  fmt.Sprintf("inec-%s", path),
-		URI: path,
+		ID:       fmt.Sprintf("inec-%s", path),
+		URI:      path,
 		Upstream: map[string]interface{}{"nodes": map[string]int{upstream: 1}, "type": "roundrobin"},
 		Plugins: map[string]interface{}{
 			"limit-req": map[string]interface{}{"rate": rateLimit, "burst": rateLimit * 2, "rejected_code": 429},
@@ -261,9 +261,9 @@ func PublishToFluvio(ctx context.Context, topic string, data interface{}) error 
 	record, ok := data.(FluvioRecord)
 	if !ok {
 		record = FluvioRecord{
-			Topic: topic,
-			Key:   topic,
-			Value: map[string]interface{}{"data": data},
+			Topic:     topic,
+			Key:       topic,
+			Value:     map[string]interface{}{"data": data},
 			Timestamp: time.Now(),
 		}
 	}

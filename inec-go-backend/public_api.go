@@ -75,12 +75,12 @@ func apiKeyAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		db.Exec("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?", keyID)
+		dbExecLog("api_keys", "UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?", keyID)
 
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		elapsed := time.Since(start).Seconds() * 1000
-		db.Exec(`INSERT INTO api_usage (api_key_id, endpoint, method, status_code, response_ms)
+		dbExecLog("api_usage", `INSERT INTO api_usage (api_key_id, endpoint, method, status_code, response_ms)
 			VALUES (?,?,?,200,?)`, keyID, r.URL.Path, r.Method, elapsed)
 	}
 }
@@ -313,7 +313,10 @@ func handlePublicAPIKeys(w http.ResponseWriter, r *http.Request) {
 			Name  string `json:"name"`
 			Owner string `json:"owner"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "invalid JSON")
+			return
+		}
 		if req.Name == "" || req.Owner == "" {
 			writeError(w, 400, "name and owner required")
 			return
@@ -321,7 +324,7 @@ func handlePublicAPIKeys(w http.ResponseWriter, r *http.Request) {
 		b := make([]byte, 32)
 		rand.Read(b)
 		key := "inec_" + hex.EncodeToString(b[:16])
-		db.Exec(`INSERT INTO api_keys (key_hash, name, owner, permissions, rate_limit)
+		dbExecLog("api_keys", `INSERT INTO api_keys (key_hash, name, owner, permissions, rate_limit)
 			VALUES (?, ?, ?, 'read', 100)`, key, req.Name, req.Owner)
 		writeJSON(w, 201, M{"api_key": key, "name": req.Name, "owner": req.Owner,
 			"permissions": "read", "rate_limit": 100, "note": "Store this key securely. It cannot be retrieved later."})
@@ -377,7 +380,7 @@ func handlePublicAPIDocs(w http.ResponseWriter, r *http.Request) {
 			"version":     "1.0.0",
 			"description": "Public API for third-party verification and monitoring of Nigerian election results",
 		},
-		"servers": []M{{"url": "/api/v1"}},
+		"servers":  []M{{"url": "/api/v1"}},
 		"security": []M{{"ApiKeyAuth": []string{}}},
 		"components": M{
 			"securitySchemes": M{
@@ -405,7 +408,7 @@ func handlePublicAPIDocs(w http.ResponseWriter, r *http.Request) {
 			"/results/{id}": M{
 				"get": M{"summary": "Get result detail with party votes", "tags": []string{"Results"},
 					"parameters": []M{{"name": "id", "in": "path", "required": true, "schema": M{"type": "integer"}}},
-					"responses": M{"200": M{"description": "Result detail"}}},
+					"responses":  M{"200": M{"description": "Result detail"}}},
 			},
 			"/states": M{
 				"get": M{"summary": "List all states", "tags": []string{"Geography"},
@@ -439,7 +442,7 @@ func handlePublicAPIDocs(w http.ResponseWriter, r *http.Request) {
 			"/ai/integrity": M{
 				"get": M{"summary": "Election integrity score (0-100)", "tags": []string{"AI Analytics"},
 					"parameters": []M{{"name": "election_id", "in": "query", "schema": M{"type": "integer"}}},
-					"responses": M{"200": M{"description": "Composite integrity score"}}},
+					"responses":  M{"200": M{"description": "Composite integrity score"}}},
 			},
 		},
 	}

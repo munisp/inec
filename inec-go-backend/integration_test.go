@@ -372,8 +372,8 @@ func TestSecurityHeaders(t *testing.T) {
 
 	expected := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
-		"Referrer-Policy":       "no-referrer-when-downgrade",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer-when-downgrade",
 	}
 
 	for header, value := range expected {

@@ -423,7 +423,11 @@ func seedPhase7Data(database *sql.DB) {
 			txHash, fmt.Sprintf("-%d hours", rng.Intn(168)))
 	}
 
-	courses := []struct{ title, ctype, role, diff string; dur, pass, mods int; mandatory bool }{
+	courses := []struct {
+		title, ctype, role, diff string
+		dur, pass, mods          int
+		mandatory                bool
+	}{
 		{"Election Day Procedures", "vr_simulation", "presiding_officer", "intermediate", 120, 80, 6, true},
 		{"BVAS Operation & Troubleshooting", "interactive", "ad_hoc_staff", "beginner", 90, 70, 5, true},
 		{"Result Collation Process", "vr_simulation", "collation_officer", "advanced", 150, 85, 8, true},
@@ -437,7 +441,9 @@ func seedPhase7Data(database *sql.DB) {
 	}
 	for _, c := range courses {
 		m := 0
-		if c.mandatory { m = 1 }
+		if c.mandatory {
+			m = 1
+		}
 		tx.Exec(`INSERT INTO training_courses (title, course_type, target_role, difficulty, duration_minutes, passing_score, modules_count, is_mandatory) VALUES (?,?,?,?,?,?,?,?)`,
 			c.title, c.ctype, c.role, c.diff, c.dur, c.pass, c.mods, m)
 	}
@@ -450,7 +456,9 @@ func seedPhase7Data(database *sql.DB) {
 		status := "in_progress"
 		if progress >= 100 {
 			status = "completed"
-			if score < 70 { status = "failed" }
+			if score < 70 {
+				status = "failed"
+			}
 		}
 		tx.Exec(`INSERT INTO training_enrollments (user_id, course_id, progress_percent, current_module, score, status, started_at, completed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL),CASE WHEN ?='completed' THEN NOW() + CAST(? AS INTERVAL) ELSE NULL END)`,
 			uid, cid, progress, 1+rng.Intn(5), score, status,
@@ -464,7 +472,10 @@ func seedPhase7Data(database *sql.DB) {
 		}
 	}
 
-	vrScenarios := []struct{ cid int; name, stype string }{
+	vrScenarios := []struct {
+		cid         int
+		name, stype string
+	}{
 		{1, "Standard Polling Day", "election_day"},
 		{1, "Equipment Malfunction", "equipment_setup"},
 		{3, "Multi-Level Collation", "result_collation"},
@@ -713,19 +724,22 @@ func handleBiometricStats(w http.ResponseWriter, r *http.Request) {
 		"duplicates_flagged": duplicates, "spoof_detections": spoofs,
 		"avg_quality": avgQuality, "total_verifications": totalVerif,
 		"matches": matches, "no_matches": noMatches, "avg_latency_ms": avgLatency,
-		"match_rate": safePercent(matches, totalVerif),
+		"match_rate":  safePercent(matches, totalVerif),
 		"by_modality": byModality,
 	})
 }
 
 func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		VIN      string  `json:"vin"`
-		Modality string  `json:"modality"`
-		Template string  `json:"template"`
-		DeviceID string  `json:"device_id"`
+		VIN      string `json:"vin"`
+		Modality string `json:"modality"`
+		Template string `json:"template"`
+		DeviceID string `json:"device_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.VIN == "" || req.Modality == "" {
 		writeError(w, 400, "vin and modality required")
 		return
@@ -747,9 +761,9 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	latency := 80 + rng.Intn(120)
 
-	db.Exec(`INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("biometric_verificati", `INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms) VALUES (?,?,?,?,?,?)`,
 		req.VIN, req.DeviceID, req.Modality, score, result, latency)
-	db.Exec(`UPDATE biometric_profiles SET last_verified_at=CURRENT_TIMESTAMP, match_count=match_count+1 WHERE voter_vin=?`, req.VIN)
+	dbExecLog("biometric_profiles", `UPDATE biometric_profiles SET last_verified_at=CURRENT_TIMESTAMP, match_count=match_count+1 WHERE voter_vin=?`, req.VIN)
 
 	writeJSON(w, 200, M{
 		"vin": req.VIN, "modality": req.Modality, "match_score": score,
@@ -792,12 +806,15 @@ func handleABISResolve(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Status == "" {
 		writeError(w, 400, "status required")
 		return
 	}
-	db.Exec("UPDATE abis_duplicate_checks SET status=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, id)
+	dbExecLog("abis_duplicate_check", "UPDATE abis_duplicate_checks SET status=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, id)
 	writeJSON(w, 200, M{"status": "updated", "id": id, "new_status": req.Status})
 }
 
@@ -854,7 +871,7 @@ func handleBlockchainStats(w http.ResponseWriter, r *http.Request) {
 		"total_blocks": totalBlocks, "validated": validated, "pending": pending,
 		"disputed": disputed, "integrity_rate": safePercent(validated, totalBlocks),
 		"smart_contracts": M{"total": totalContracts, "active": activeContracts, "executed": executedContracts},
-		"audit_entries": auditEntries, "by_level": byLevel,
+		"audit_entries":   auditEntries, "by_level": byLevel,
 	})
 }
 
@@ -898,7 +915,10 @@ func handleSmartContracts(w http.ResponseWriter, r *http.Request) {
 
 func handleBlockchainVerifyResult(w http.ResponseWriter, r *http.Request) {
 	resultID := mux.Vars(r)["result_id"]
-	var br struct{ ec8a, prev, blockHash, merkle, level, status string; idx, validators int }
+	var br struct {
+		ec8a, prev, blockHash, merkle, level, status string
+		idx, validators                              int
+	}
 	err := db.QueryRow("SELECT ec8a_hash, prev_hash, block_hash, merkle_root, level, validation_status, block_index, validator_count FROM blockchain_results WHERE result_id=?", resultID).Scan(
 		&br.ec8a, &br.prev, &br.blockHash, &br.merkle, &br.level, &br.status, &br.idx, &br.validators)
 	if err != nil {
@@ -999,7 +1019,7 @@ func handleTrainingStats(w http.ResponseWriter, r *http.Request) {
 		"total_courses": totalCourses, "total_enrollments": totalEnrollments,
 		"completed": completed, "failed": failed, "in_progress": inProgress,
 		"completion_rate": safePercent(completed, totalEnrollments),
-		"avg_score": avgScore, "certificates_issued": totalCerts,
+		"avg_score":       avgScore, "certificates_issued": totalCerts,
 		"vr_scenarios": vrScenarios, "by_type": byType,
 	})
 }
@@ -1100,8 +1120,8 @@ func handleStakeholderStats(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, M{
 		"total_stakeholders": total, "approved": approved, "pending": pending, "suspended": suspended,
-		"by_type": byType,
-		"incidents": M{"total": totalIncidents, "resolved": resolved, "critical": critical},
+		"by_type":    byType,
+		"incidents":  M{"total": totalIncidents, "resolved": resolved, "critical": critical},
 		"grievances": M{"total": totalGrievances, "resolved": gResolved},
 	})
 }
@@ -1211,19 +1231,26 @@ func handlePushNotifications(w http.ResponseWriter, r *http.Request) {
 
 func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TargetType string `json:"target_type"`
+		TargetType  string `json:"target_type"`
 		TargetValue string `json:"target_value"`
-		Title string `json:"title"`
-		Body string `json:"body"`
-		Type string `json:"type"`
+		Title       string `json:"title"`
+		Body        string `json:"body"`
+		Type        string `json:"type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Title == "" || req.Body == "" {
 		writeError(w, 400, "title and body required")
 		return
 	}
-	if req.Type == "" { req.Type = "info" }
-	if req.TargetType == "" { req.TargetType = "all" }
+	if req.Type == "" {
+		req.Type = "info"
+	}
+	if req.TargetType == "" {
+		req.TargetType = "all"
+	}
 
 	var recipients int
 	switch req.TargetType {
@@ -1235,7 +1262,7 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 		recipients = 1
 	}
 
-	db.Exec(`INSERT INTO push_notifications (target_type, target_value, title, body, notification_type, total_recipients) VALUES (?,?,?,?,?,?)`,
+	dbExecLog("push_notifications", `INSERT INTO push_notifications (target_type, target_value, title, body, notification_type, total_recipients) VALUES (?,?,?,?,?,?)`,
 		req.TargetType, req.TargetValue, req.Title, req.Body, req.Type, recipients)
 	writeJSON(w, 201, M{"status": "sent", "recipients": recipients})
 }
@@ -1272,9 +1299,9 @@ func handleAIMonitoringDashboard(w http.ResponseWriter, r *http.Request) {
 		"predictions": M{"total": totalPredictions, "turnout": turnoutPreds, "security": securityPreds},
 		"sentiment": M{"total": totalSentiment, "positive": positive, "negative": negative,
 			"positive_rate": safePercent(positive, totalSentiment)},
-		"misinformation": M{"total": totalMisinfo, "detected": detected, "debunked": debunked},
+		"misinformation":   M{"total": totalMisinfo, "detected": detected, "debunked": debunked},
 		"security_threats": M{"total": totalThreats, "active": activeThreats, "critical": criticalThreats},
-		"cv_monitoring": M{"total_events": cvEvents},
+		"cv_monitoring":    M{"total_events": cvEvents},
 	})
 }
 
@@ -1500,13 +1527,13 @@ func handleCreateAIPrediction(w http.ResponseWriter, r *http.Request) {
 
 func handleCreateSentimentEntry(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Source      string  `json:"source"`
-		Content     string  `json:"content"`
-		Sentiment   string  `json:"sentiment"`
-		Score       float64 `json:"score"`
-		Topics      string  `json:"topics"`
-		Location    string  `json:"location"`
-		ElectionID  int     `json:"election_id"`
+		Source     string  `json:"source"`
+		Content    string  `json:"content"`
+		Sentiment  string  `json:"sentiment"`
+		Score      float64 `json:"score"`
+		Topics     string  `json:"topics"`
+		Location   string  `json:"location"`
+		ElectionID int     `json:"election_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -1616,10 +1643,10 @@ func handleUpdateMisinformationAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Status != "" {
-		db.Exec("UPDATE misinformation_alerts SET status=? WHERE id=?", req.Status, id)
+		dbExecLog("misinformation_alert", "UPDATE misinformation_alerts SET status=? WHERE id=?", req.Status, id)
 	}
 	if req.FactCheck != "" {
-		db.Exec("UPDATE misinformation_alerts SET fact_check=? WHERE id=?", req.FactCheck, id)
+		dbExecLog("misinformation_alert", "UPDATE misinformation_alerts SET fact_check=? WHERE id=?", req.FactCheck, id)
 	}
 	logAudit("MISINFO_ALERT_UPDATED", "misinformation", id, 0, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Alert updated"})
@@ -1670,7 +1697,7 @@ func handleUpdateSecurityThreat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "status must be one of: active, monitoring, mitigated, resolved, false_alarm")
 		return
 	}
-	db.Exec("UPDATE security_threats SET status=? WHERE id=?", req.Status, id)
+	dbExecLog("security_threats", "UPDATE security_threats SET status=? WHERE id=?", req.Status, id)
 	logAudit("SECURITY_THREAT_UPDATED", "security_threat", id, 0, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Threat status updated"})
 }
@@ -1771,14 +1798,14 @@ func handleCompleteTraining(w http.ResponseWriter, r *http.Request) {
 	if req.Score < passingScore {
 		status = "failed"
 	}
-	db.Exec("UPDATE training_enrollments SET status=?, score=?, progress_percent=100, completed_at=CURRENT_TIMESTAMP WHERE id=?", status, req.Score, enrollmentID)
+	dbExecLog("training_enrollments", "UPDATE training_enrollments SET status=?, score=?, progress_percent=100, completed_at=CURRENT_TIMESTAMP WHERE id=?", status, req.Score, enrollmentID)
 
 	// Issue certificate if passed
 	if status == "completed" {
 		certID := fmt.Sprintf("CERT-%s-%d-%d", time.Now().Format("20060102"), userID, courseID)
 		blockchainHash := fmt.Sprintf("%x", sha256.Sum256([]byte(certID)))
 		eID, _ := strconv.Atoi(enrollmentID)
-		db.Exec(`INSERT INTO training_certificates (enrollment_id, user_id, course_id, certificate_id, blockchain_hash, score, issued_at, expires_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP, datetime('now', '+1 year'))`,
+		dbExecLog("training_certificate", `INSERT INTO training_certificates (enrollment_id, user_id, course_id, certificate_id, blockchain_hash, score, issued_at, expires_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP, datetime('now', '+1 year'))`,
 			eID, userID, courseID, certID, blockchainHash, req.Score)
 		writeJSON(w, 200, M{"enrollment_id": enrollmentID, "status": status, "score": req.Score, "certificate_id": certID, "message": "Course completed and certificate issued"})
 		return
@@ -1804,7 +1831,7 @@ func handleResolveGrievance(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "" {
 		req.Status = "resolved"
 	}
-	db.Exec("UPDATE grievances SET status=?, resolution=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, req.Resolution, id)
+	dbExecLog("grievances", "UPDATE grievances SET status=?, resolution=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, req.Resolution, id)
 	logAudit("GRIEVANCE_RESOLVED", "grievance", id, 0, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Grievance updated"})
 }

@@ -470,7 +470,10 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 		PollingUnitCode string `json:"polling_unit_code"`
 		BiometricData   string `json:"biometric_data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.FirstName == "" || req.LastName == "" || req.DateOfBirth == "" {
 		writeError(w, 400, "first_name, last_name, date_of_birth required")
 		return
@@ -555,7 +558,7 @@ func handleVoterVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "Voter not found")
 		return
 	}
-	db.Exec("UPDATE voters SET status='verified', verified_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE vin=?", vin)
+	dbExecLog("voter_verify", "UPDATE voters SET status='verified', verified_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE vin=?", vin)
 	logAudit("VOTER_VERIFIED", "voter", vin, 0, nil)
 	writeJSON(w, 200, M{"vin": vin, "status": "verified", "message": "Voter verified"})
 }
@@ -570,7 +573,10 @@ func handleVoterTransfer(w http.ResponseWriter, r *http.Request) {
 		NewPollingUnitCode string `json:"new_polling_unit_code"`
 		Reason             string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	var oldPU string
 	err := db.QueryRow("SELECT polling_unit_code FROM voters WHERE vin=?", vin).Scan(&oldPU)
@@ -586,7 +592,7 @@ func handleVoterTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db.Exec(`UPDATE voters SET polling_unit_code=?, ward_code=?, lga_code=?, state_code=?, status='transferred', updated_at=CURRENT_TIMESTAMP WHERE vin=?`,
+	dbExecLog("voter_transfer", `UPDATE voters SET polling_unit_code=?, ward_code=?, lga_code=?, state_code=?, status='transferred', updated_at=CURRENT_TIMESTAMP WHERE vin=?`,
 		req.NewPollingUnitCode, wardCode, lgaCode, stateCode, vin)
 
 	logAudit("VOTER_TRANSFERRED", "voter", vin, 0, map[string]interface{}{"from": oldPU, "to": req.NewPollingUnitCode, "reason": req.Reason})
@@ -631,7 +637,10 @@ func handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 		ElectionID   int    `json:"election_id"`
 		WorkflowType string `json:"workflow_type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.WorkflowType == "" {
 		req.WorkflowType = "full_election"
 	}
@@ -641,7 +650,7 @@ func handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	allPhases := []string{"planning", "registration", "accreditation", "voting", "collation", "declaration", "certification"}
 	for _, ph := range allPhases {
-		db.Exec("INSERT INTO ems_workflow_phases (workflow_id, phase, status) VALUES (?,?,'pending')", wfID, ph)
+		dbExecLog("wf_phase_init", "INSERT INTO ems_workflow_phases (workflow_id, phase, status) VALUES (?,?,'pending')", wfID, ph)
 	}
 
 	logAudit("WORKFLOW_CREATED", "workflow", fmt.Sprintf("%d", wfID), 0, map[string]interface{}{"type": req.WorkflowType, "election_id": req.ElectionID})
@@ -676,18 +685,18 @@ func handleAdvanceWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	nextPhase := phaseOrder[nextIdx]
 
-	db.Exec("UPDATE ems_workflow_phases SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE workflow_id=? AND phase=?", id, currentPhase)
-	db.Exec("UPDATE ems_workflow_phases SET status='in_progress', started_at=CURRENT_TIMESTAMP WHERE workflow_id=? AND phase=?", id, nextPhase)
+	dbExecLog("wf_phase_done2", "UPDATE ems_workflow_phases SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE workflow_id=? AND phase=?", id, currentPhase)
+	dbExecLog("wf_phase_start", "UPDATE ems_workflow_phases SET status='in_progress', started_at=CURRENT_TIMESTAMP WHERE workflow_id=? AND phase=?", id, nextPhase)
 
 	finalStatus := "active"
 	if nextPhase == "certification" {
 		finalStatus = "active"
 	}
-	db.Exec("UPDATE ems_workflows SET current_phase=?, status=? WHERE id=?", nextPhase, finalStatus, id)
+	dbExecLog("wf_advance", "UPDATE ems_workflows SET current_phase=?, status=? WHERE id=?", nextPhase, finalStatus, id)
 
 	if nextPhase == "certification" {
-		db.Exec("UPDATE ems_workflow_phases SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE workflow_id=? AND phase=?", id, nextPhase)
-		db.Exec("UPDATE ems_workflows SET current_phase='certification', status='completed', completed_at=CURRENT_TIMESTAMP WHERE id=?", id)
+		dbExecLog("wf_phase_done", "UPDATE ems_workflow_phases SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE workflow_id=? AND phase=?", id, nextPhase)
+		dbExecLog("wf_complete", "UPDATE ems_workflows SET current_phase='certification', status='completed', completed_at=CURRENT_TIMESTAMP WHERE id=?", id)
 	}
 
 	logAudit("WORKFLOW_ADVANCED", "workflow", id, 0, map[string]interface{}{"from": currentPhase, "to": nextPhase})
@@ -705,7 +714,10 @@ func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
 		DeviceID string                   `json:"device_id"`
 		Items    []map[string]interface{} `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
 		return
@@ -730,7 +742,7 @@ func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
 		db.QueryRow("SELECT COUNT(*) FROM bvas_sync_queue WHERE device_id=? AND payload=? AND status='synced'", req.DeviceID, string(payload)).Scan(&existingCount)
 		if existingCount > 0 {
 			conflicts++
-			db.Exec(`INSERT INTO bvas_sync_queue (device_id, sync_type, payload, priority, status, conflict_resolution) VALUES (?,?,?,?,'conflict','duplicate_detected')`,
+			dbExecLog("sync_conflict", `INSERT INTO bvas_sync_queue (device_id, sync_type, payload, priority, status, conflict_resolution) VALUES (?,?,?,?,'conflict','duplicate_detected')`,
 				req.DeviceID, syncType, string(payload), priority)
 			continue
 		}
@@ -744,7 +756,7 @@ func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	db.Exec("UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
+	dbExecLog("bvas_sync", "UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
 
 	writeJSON(w, 200, M{"device_id": req.DeviceID, "total": len(req.Items), "synced": synced, "conflicts": conflicts, "failed": failed})
 }
@@ -760,16 +772,19 @@ func handleBVASHeartbeat(w http.ResponseWriter, r *http.Request) {
 		FirmwareVersion string  `json:"firmware_version"`
 		UptimeSeconds   int     `json:"uptime_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
 		return
 	}
 
-	db.Exec(`INSERT INTO bvas_heartbeats (device_id, battery_level, signal_strength, gps_latitude, gps_longitude, sync_queue_size, firmware_version, uptime_seconds)
+	dbExecLog("bvas_heartbeat", `INSERT INTO bvas_heartbeats (device_id, battery_level, signal_strength, gps_latitude, gps_longitude, sync_queue_size, firmware_version, uptime_seconds)
 		VALUES (?,?,?,?,?,?,?,?)`,
 		req.DeviceID, req.BatteryLevel, req.SignalStrength, req.GPSLatitude, req.GPSLongitude, req.SyncQueueSize, req.FirmwareVersion, req.UptimeSeconds)
-	db.Exec("UPDATE bvas_devices SET battery_level=?, last_sync_at=CURRENT_TIMESTAMP, latitude=?, longitude=? WHERE id=?",
+	dbExecLog("bvas_battery", "UPDATE bvas_devices SET battery_level=?, last_sync_at=CURRENT_TIMESTAMP, latitude=?, longitude=? WHERE id=?",
 		req.BatteryLevel, req.GPSLatitude, req.GPSLongitude, req.DeviceID)
 
 	writeJSON(w, 200, M{"status": "ok", "device_id": req.DeviceID})
@@ -843,11 +858,14 @@ func handleBVASConflictResolve(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Resolution string `json:"resolution"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Resolution == "" {
 		req.Resolution = "accepted"
 	}
-	db.Exec("UPDATE bvas_sync_queue SET status='resolved', conflict_resolution=?, synced_at=CURRENT_TIMESTAMP WHERE id=?", req.Resolution, id)
+	dbExecLog("bvas_sync", "UPDATE bvas_sync_queue SET status='resolved', conflict_resolution=?, synced_at=CURRENT_TIMESTAMP WHERE id=?", req.Resolution, id)
 	writeJSON(w, 200, M{"id": id, "status": "resolved", "resolution": req.Resolution})
 }
 
@@ -887,7 +905,10 @@ func handlePortalSync(w http.ResponseWriter, r *http.Request) {
 		SyncType   string `json:"sync_type"`
 		EntityType string `json:"entity_type"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.SyncType == "" {
 		req.SyncType = "pull"
 	}
@@ -895,14 +916,25 @@ func handlePortalSync(w http.ResponseWriter, r *http.Request) {
 		req.EntityType = "result"
 	}
 
-	numSynced := 50 + rand.Intn(200)
-	numFailed := rand.Intn(3)
+	var numSynced int
+	switch req.EntityType {
+	case "result":
+		db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=(SELECT MAX(id) FROM elections)").Scan(&numSynced)
+	case "voter":
+		db.QueryRow("SELECT COUNT(*) FROM voters WHERE status='verified'").Scan(&numSynced)
+	default:
+		db.QueryRow("SELECT COUNT(*) FROM results").Scan(&numSynced)
+	}
+	if numSynced == 0 {
+		numSynced = 1
+	}
+	numFailed := 0
 
 	syncID := insertReturningID(db, `INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, records_synced, records_failed, status, completed_at)
 		VALUES (?,?,?,?,?,'completed',CURRENT_TIMESTAMP)`,
 		id, req.SyncType, req.EntityType, numSynced, numFailed)
 
-	db.Exec("UPDATE portal_connections SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", id)
+	dbExecLog("portal_sync", "UPDATE portal_connections SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", id)
 
 	logAudit("PORTAL_SYNC", "portal", id, 0, map[string]interface{}{"sync_type": req.SyncType, "entity": req.EntityType, "synced": numSynced})
 	writeJSON(w, 200, M{"sync_id": syncID, "records_synced": numSynced, "records_failed": numFailed, "status": "completed"})
@@ -972,7 +1004,10 @@ func handleValidateEntity(w http.ResponseWriter, r *http.Request) {
 		EntityID   string                 `json:"entity_id"`
 		Data       map[string]interface{} `json:"data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.EntityType == "" || req.EntityID == "" {
 		writeError(w, 400, "entity_type and entity_id required")
 		return
@@ -1004,7 +1039,7 @@ func handleValidateEntity(w http.ResponseWriter, r *http.Request) {
 		if rulePassed {
 			passedInt = 1
 		}
-		db.Exec(`INSERT INTO validation_results (entity_type, entity_id, rule_id, passed, severity, message) VALUES (?,?,?,?,?,?)`,
+		dbExecLog("validation_result", `INSERT INTO validation_results (entity_type, entity_id, rule_id, passed, severity, message) VALUES (?,?,?,?,?,?)`,
 			req.EntityType, req.EntityID, ruleID, passedInt, severity, msg)
 
 		results = append(results, M{
@@ -1084,7 +1119,7 @@ func handleValidationStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{
 		"total_rules": totalRules, "active_rules": activeRules,
 		"total_checks": totalChecks, "total_passed": totalPassed, "total_failed": totalFailed,
-		"pass_rate": safePercent(totalPassed, totalChecks),
+		"pass_rate":    safePercent(totalPassed, totalChecks),
 		"by_rule_type": scanRows(ruleTypeRows), "failures_by_severity": scanRows(severityRows),
 	})
 }
@@ -1136,10 +1171,13 @@ func handleTransitionElection(w http.ResponseWriter, r *http.Request) {
 		Phase string `json:"phase"`
 		Notes string `json:"notes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	eidInt, _ := strconv.Atoi(eid)
-	db.Exec("INSERT INTO election_lifecycle (election_id, phase, transitioned_by, notes) VALUES (?,?,1,?)", eidInt, req.Phase, req.Notes)
+	dbExecLog("election_lifecycle", "INSERT INTO election_lifecycle (election_id, phase, transitioned_by, notes) VALUES (?,?,1,?)", eidInt, req.Phase, req.Notes)
 	logAudit("ELECTION_TRANSITION", "election", eid, 0, map[string]interface{}{"phase": req.Phase})
 	writeJSON(w, 200, M{"election_id": eid, "phase": req.Phase, "message": "Election transitioned"})
 }
@@ -1174,7 +1212,10 @@ func handleAssignStaff(w http.ResponseWriter, r *http.Request) {
 		AreaType   string `json:"area_type"`
 		AreaCode   string `json:"area_code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	id := insertReturningID(db, `INSERT INTO election_staff_assignments (election_id, user_id, role, area_type, area_code) VALUES (?,?,?,?,?)`,
 		req.ElectionID, req.UserID, req.Role, req.AreaType, req.AreaCode)
@@ -1215,7 +1256,10 @@ func handleDispatchMaterial(w http.ResponseWriter, r *http.Request) {
 		Status         string `json:"status"`
 		TrackingNumber string `json:"tracking_number"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	updates := "status=?"
 	params := []interface{}{req.Status}
@@ -1231,7 +1275,7 @@ func handleDispatchMaterial(w http.ResponseWriter, r *http.Request) {
 		updates += ", acknowledged_at=CURRENT_TIMESTAMP"
 	}
 	params = append(params, id)
-	db.Exec("UPDATE election_materials SET "+updates+" WHERE id=?", params...)
+	dbExecLog("material_update", "UPDATE election_materials SET "+updates+" WHERE id=?", params...)
 
 	logAudit("MATERIAL_UPDATED", "material", id, 0, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Material updated"})

@@ -132,7 +132,7 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remove all sessions for this user from active sessions
-	db.Exec(convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
+	dbExecLog("active_sessions", convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
 
 	auditWrite("user_logout", "user", userIDStr, r, nil)
 	writeJSON(w, 200, M{"message": "logged out successfully"})
@@ -253,7 +253,7 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 		"election": election, "total_polling_units": totalPUs, "results_received": totalResults,
 		"results_finalized": finalized, "results_validated": validated, "results_pending": pending, "results_disputed": disputed,
 		"completion_percentage": comp,
-		"total_valid_votes": nullInt(validV), "total_rejected_votes": nullInt(rejectedV),
+		"total_valid_votes":     nullInt(validV), "total_rejected_votes": nullInt(rejectedV),
 		"total_votes_cast": nullInt(castV), "total_accredited_voters": nullInt(accreditedV),
 		"party_scores": partyScores,
 	})
@@ -283,7 +283,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ElectionID      int `json:"election_id"`
+		ElectionID      int    `json:"election_id"`
 		PollingUnitCode string `json:"polling_unit_code"`
 		PartyScores     []struct {
 			PartyCode string `json:"party_code"`
@@ -1084,7 +1084,7 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 			"finalized": statusMap["finalized"], "validated": statusMap["validated"],
 			"pending": statusMap["pending"], "disputed": statusMap["disputed"], "voided": statusMap["voided"],
 		},
-		"vote_totals": M{"valid": nullInt(validV), "rejected": nullInt(rejectedV), "cast": nullInt(castV), "accredited": nullInt(accreditedV)},
+		"vote_totals":  M{"valid": nullInt(validV), "rejected": nullInt(rejectedV), "cast": nullInt(castV), "accredited": nullInt(accreditedV)},
 		"party_scores": partyScores, "state_results": stateResults, "zone_results": zoneResults,
 		"dual_ledger": M{"tigerbeetle_posted": tbPosted, "hyperledger_confirmed": hlConfirmed, "total_results": resultsReceived, "reconciliation_variance": variance},
 	}

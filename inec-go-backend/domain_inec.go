@@ -14,18 +14,18 @@ import (
 
 // INEC Form EC8A — Polling Unit Result Sheet validation
 type FormEC8A struct {
-	ElectionID          int    `json:"election_id" validate:"required,gt=0"`
-	PollingUnitCode     string `json:"polling_unit_code" validate:"required"`
-	PresidingOfficerID  string `json:"presiding_officer_id" validate:"required"`
-	RegisteredVoters    int    `json:"registered_voters" validate:"required,gt=0"`
-	AccreditedVoters    int    `json:"accredited_voters" validate:"required,gte=0"`
-	TotalVotesPolled    int    `json:"total_votes_polled" validate:"required,gte=0"`
-	RejectedBallots     int    `json:"rejected_ballots" validate:"gte=0"`
-	TotalValidVotes     int    `json:"total_valid_votes" validate:"required,gte=0"`
+	ElectionID          int              `json:"election_id" validate:"required,gt=0"`
+	PollingUnitCode     string           `json:"polling_unit_code" validate:"required"`
+	PresidingOfficerID  string           `json:"presiding_officer_id" validate:"required"`
+	RegisteredVoters    int              `json:"registered_voters" validate:"required,gt=0"`
+	AccreditedVoters    int              `json:"accredited_voters" validate:"required,gte=0"`
+	TotalVotesPolled    int              `json:"total_votes_polled" validate:"required,gte=0"`
+	RejectedBallots     int              `json:"rejected_ballots" validate:"gte=0"`
+	TotalValidVotes     int              `json:"total_valid_votes" validate:"required,gte=0"`
 	PartyResults        []PartyVoteEntry `json:"party_results" validate:"required,min=1,dive"`
-	BVASSerialNumber    string `json:"bvas_serial_number"`
-	BiometricMatchCount int    `json:"biometric_match_count" validate:"gte=0"`
-	SubmittedAt         string `json:"submitted_at"`
+	BVASSerialNumber    string           `json:"bvas_serial_number"`
+	BiometricMatchCount int              `json:"biometric_match_count" validate:"gte=0"`
+	SubmittedAt         string           `json:"submitted_at"`
 }
 
 type PartyVoteEntry struct {
@@ -171,10 +171,10 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 			Topic: TopicResultSubmitted,
 			Key:   form.PollingUnitCode,
 			Value: map[string]interface{}{
-				"election_id":      form.ElectionID,
-				"polling_unit":     form.PollingUnitCode,
+				"election_id":       form.ElectionID,
+				"polling_unit":      form.PollingUnitCode,
 				"total_valid_votes": form.TotalValidVotes,
-				"party_count":      len(form.PartyResults),
+				"party_count":       len(form.PartyResults),
 			},
 		})
 	}
@@ -196,15 +196,15 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 // --- Hierarchical Collation ---
 
 type CollationLevel struct {
-	Level       string             `json:"level"`
-	Code        string             `json:"code"`
-	Name        string             `json:"name"`
-	PartyTotals map[string]int64   `json:"party_totals"`
-	TotalVotes  int64              `json:"total_votes"`
-	ChildCount  int                `json:"child_count"`
-	Status      string             `json:"status"`
-	CollatedAt  string             `json:"collated_at"`
-	CollatedBy  string             `json:"collated_by"`
+	Level       string           `json:"level"`
+	Code        string           `json:"code"`
+	Name        string           `json:"name"`
+	PartyTotals map[string]int64 `json:"party_totals"`
+	TotalVotes  int64            `json:"total_votes"`
+	ChildCount  int              `json:"child_count"`
+	Status      string           `json:"status"`
+	CollatedAt  string           `json:"collated_at"`
+	CollatedBy  string           `json:"collated_by"`
 }
 
 // handleHierarchicalCollation performs collation at ward → LGA → state → national levels.
@@ -330,15 +330,15 @@ func buildCollation(level, code string, rows *sql.Rows) (*CollationLevel, error)
 // --- Ballot Reconciliation ---
 
 type ReconciliationResult struct {
-	PollingUnitCode string  `json:"polling_unit_code"`
-	RegisteredVoters int    `json:"registered_voters"`
-	AccreditedVoters int    `json:"accredited_voters"`
-	TotalBallots     int    `json:"total_ballots"`
-	ValidBallots     int    `json:"valid_ballots"`
-	RejectedBallots  int    `json:"rejected_ballots"`
-	Discrepancy      int    `json:"discrepancy"`
+	PollingUnitCode  string  `json:"polling_unit_code"`
+	RegisteredVoters int     `json:"registered_voters"`
+	AccreditedVoters int     `json:"accredited_voters"`
+	TotalBallots     int     `json:"total_ballots"`
+	ValidBallots     int     `json:"valid_ballots"`
+	RejectedBallots  int     `json:"rejected_ballots"`
+	Discrepancy      int     `json:"discrepancy"`
 	DiscrepancyPct   float64 `json:"discrepancy_pct"`
-	Status           string `json:"status"`
+	Status           string  `json:"status"`
 }
 
 // handleBallotReconciliation verifies that ballot counts add up across polling units.
@@ -477,11 +477,11 @@ func handleDualLedgerReconciliation(w http.ResponseWriter, r *http.Request) {
 	log.Info().Str("status", status).Int("parties", len(pgTotals)).Msg("dual-ledger reconciliation")
 
 	writeJSON(w, 200, M{
-		"status":      status,
-		"pg_totals":   pgTotals,
-		"tb_totals":   tbTotals,
-		"mismatches":  mismatches,
-		"election_id": electionID,
+		"status":        status,
+		"pg_totals":     pgTotals,
+		"tb_totals":     tbTotals,
+		"mismatches":    mismatches,
+		"election_id":   electionID,
 		"reconciled_at": time.Now().UTC().Format(time.RFC3339),
 	})
 }

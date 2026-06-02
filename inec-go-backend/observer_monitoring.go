@@ -476,14 +476,14 @@ func handlePartyDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"party_code":         partyCode,
-		"total_votes":        totalVotes,
+		"party_code":                 partyCode,
+		"total_votes":                totalVotes,
 		"polling_units_with_results": totalPUs,
-		"total_polling_units": totalPollingUnits,
-		"coverage_pct":       round2(coverage),
-		"state_breakdown":    stateBreakdown,
-		"recent_results":     recentResults,
-		"observer_reports":   reportCount,
+		"total_polling_units":        totalPollingUnits,
+		"coverage_pct":               round2(coverage),
+		"state_breakdown":            stateBreakdown,
+		"recent_results":             recentResults,
+		"observer_reports":           reportCount,
 	})
 }
 
@@ -515,7 +515,7 @@ func handleObserverCheckIn(w http.ResponseWriter, r *http.Request) {
 	// Validate location against PU geofence
 	geoResult, _ := validateGeofence(req.Latitude, req.Longitude, req.PollingUnitCode)
 
-	db.Exec(
+	dbExecLog("db_op",
 		"INSERT INTO observer_check_ins (observer_id, polling_unit_code, latitude, longitude, device_info, within_geofence, checked_in_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
 		userID, req.PollingUnitCode, req.Latitude, req.Longitude, req.DeviceInfo, geoResult.WithinGeofence)
 
@@ -557,11 +557,11 @@ func handleObserverStats(w http.ResponseWriter, r *http.Request) {
 	sseHub.mu.RUnlock()
 
 	writeJSON(w, 200, M{
-		"total_observers":     totalObservers,
-		"active_check_ins":    activeCheckIns,
-		"reports_today":       reportsToday,
-		"active_alert_rules":  alertRules,
-		"active_sse_streams":  activeStreams,
+		"total_observers":    totalObservers,
+		"active_check_ins":   activeCheckIns,
+		"reports_today":      reportsToday,
+		"active_alert_rules": alertRules,
+		"active_sse_streams": activeStreams,
 	})
 }
 
@@ -616,6 +616,6 @@ func initObserverTables() {
 	}
 
 	for _, stmt := range statements {
-		db.Exec(stmt)
+		dbExecLog("db_op", stmt)
 	}
 }

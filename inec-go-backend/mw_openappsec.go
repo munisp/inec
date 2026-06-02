@@ -26,23 +26,24 @@ type OpenAppSecClient interface {
 	AddIPToBlocklist(ctx context.Context, ip, reason string) error
 	GetBlocklist(ctx context.Context) ([]BlocklistEntry, error)
 	Status() MWStatus
+	Close() error
 }
 
 type WAFRequest struct {
-	SourceIP   string            `json:"source_ip"`
-	Method     string            `json:"method"`
-	Path       string            `json:"path"`
-	Headers    map[string]string `json:"headers"`
-	Body       string            `json:"body,omitempty"`
-	UserAgent  string            `json:"user_agent"`
+	SourceIP  string            `json:"source_ip"`
+	Method    string            `json:"method"`
+	Path      string            `json:"path"`
+	Headers   map[string]string `json:"headers"`
+	Body      string            `json:"body,omitempty"`
+	UserAgent string            `json:"user_agent"`
 }
 
 type WAFDecision struct {
-	Action      string   `json:"action"` // allow, block, challenge
-	ThreatLevel string   `json:"threat_level"`
+	Action       string   `json:"action"` // allow, block, challenge
+	ThreatLevel  string   `json:"threat_level"`
 	RulesMatched []string `json:"rules_matched"`
-	Score       int      `json:"score"`
-	RequestID   string   `json:"request_id"`
+	Score        int      `json:"score"`
+	RequestID    string   `json:"request_id"`
 }
 
 type WAFEvent struct {
@@ -305,6 +306,8 @@ func (w *embeddedWAF) Status() MWStatus {
 	}
 }
 
+func (w *embeddedWAF) Close() error { return nil }
+
 func initOpenAppSecClient() OpenAppSecClient {
 	baseURL := os.Getenv("OPENAPPSEC_URL")
 	if baseURL != "" {
@@ -447,10 +450,10 @@ func handleWAFBlocklist(w http.ResponseWriter, r *http.Request) {
 func handleWAFStatus(w http.ResponseWriter, r *http.Request) {
 	status := mwHub.OpenAppSec.Status()
 	writeJSON(w, 200, M{
-		"name":       status.Name,
-		"connected":  status.Connected,
-		"mode":       status.Mode,
-		"details":    status.Details,
-		"rules":      []string{"SQL_INJECTION", "XSS", "PATH_TRAVERSAL", "IP_BLOCKLIST"},
+		"name":      status.Name,
+		"connected": status.Connected,
+		"mode":      status.Mode,
+		"details":   status.Details,
+		"rules":     []string{"SQL_INJECTION", "XSS", "PATH_TRAVERSAL", "IP_BLOCKLIST"},
 	})
 }

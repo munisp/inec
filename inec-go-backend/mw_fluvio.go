@@ -126,7 +126,7 @@ func (f *embeddedFluvio) Produce(_ context.Context, topic string, record FluvioR
 	record.Offset = maxOffset + 1
 
 	payload, _ := json.Marshal(record.Value)
-	db.Exec("INSERT INTO event_bus (topic, event_key, payload, offset_id, created_at) VALUES (?,?,?,?,?)",
+	dbExecLog("event_bus", "INSERT INTO event_bus (topic, event_key, payload, offset_id, created_at) VALUES (?,?,?,?,?)",
 		topic, record.Key, string(payload), record.Offset, record.Timestamp)
 	return nil
 }
@@ -163,7 +163,7 @@ func (f *embeddedFluvio) CreateTopic(_ context.Context, topic string, partitions
 	if partitions < 1 {
 		partitions = 1
 	}
-	db.Exec("INSERT INTO event_bus_topics (topic, partitions) VALUES (?,?) ON CONFLICT(topic) DO NOTHING", topic, partitions)
+	dbExecLog("event_bus", "INSERT INTO event_bus_topics (topic, partitions) VALUES (?,?) ON CONFLICT(topic) DO NOTHING", topic, partitions)
 	return nil
 }
 

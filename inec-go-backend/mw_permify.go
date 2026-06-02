@@ -12,10 +12,10 @@ import (
 )
 
 type PermifyCheck struct {
-	Subject    string `json:"subject"`
-	SubjectType string `json:"subject_type"`
-	Permission string `json:"permission"`
-	Resource   string `json:"resource"`
+	Subject      string `json:"subject"`
+	SubjectType  string `json:"subject_type"`
+	Permission   string `json:"permission"`
+	Resource     string `json:"resource"`
 	ResourceType string `json:"resource_type"`
 }
 
@@ -36,8 +36,8 @@ type permifyHTTPClient struct {
 
 func (p *permifyHTTPClient) Check(ctx context.Context, check PermifyCheck) (bool, error) {
 	body, _ := json.Marshal(map[string]interface{}{
-		"metadata": map[string]interface{}{"depth": 5},
-		"entity":   map[string]string{"type": check.ResourceType, "id": check.Resource},
+		"metadata":   map[string]interface{}{"depth": 5},
+		"entity":     map[string]string{"type": check.ResourceType, "id": check.Resource},
 		"permission": check.Permission,
 		"subject":    map[string]interface{}{"type": check.SubjectType, "id": check.Subject, "relation": ""},
 	})
@@ -95,10 +95,10 @@ func (p *permifyHTTPClient) DeleteRelationship(ctx context.Context, subject, sub
 
 func (p *permifyHTTPClient) LookupResources(ctx context.Context, subjectType, subjectID, permission, resourceType string) ([]string, error) {
 	body, _ := json.Marshal(map[string]interface{}{
-		"metadata":      map[string]interface{}{"depth": 5},
-		"entity_type":   resourceType,
-		"permission":    permission,
-		"subject":       map[string]interface{}{"type": subjectType, "id": subjectID, "relation": ""},
+		"metadata":    map[string]interface{}{"depth": 5},
+		"entity_type": resourceType,
+		"permission":  permission,
+		"subject":     map[string]interface{}{"type": subjectType, "id": subjectID, "relation": ""},
 	})
 	url := fmt.Sprintf("%s/v1/tenants/%s/permissions/lookup-entity", p.baseURL, p.tenantID)
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -136,11 +136,11 @@ func (p *permifyHTTPClient) Status() MWStatus {
 func (p *permifyHTTPClient) Close() error { return nil }
 
 var permifyRBAC = map[string]map[string]bool{
-	"admin":              {"submit_result": true, "validate_result": true, "finalize_result": true, "dispute_result": true, "create_election": true, "update_election": true, "view_audit": true, "manage_incidents": true, "export_data": true, "view_dashboard": true},
-	"presiding_officer":  {"submit_result": true, "view_dashboard": true},
-	"collation_officer":  {"validate_result": true, "finalize_result": true, "view_dashboard": true, "view_audit": true},
-	"observer":           {"dispute_result": true, "view_audit": true, "view_dashboard": true},
-	"public":             {"view_dashboard": true},
+	"admin":             {"submit_result": true, "validate_result": true, "finalize_result": true, "dispute_result": true, "create_election": true, "update_election": true, "view_audit": true, "manage_incidents": true, "export_data": true, "view_dashboard": true},
+	"presiding_officer": {"submit_result": true, "view_dashboard": true},
+	"collation_officer": {"validate_result": true, "finalize_result": true, "view_dashboard": true, "view_audit": true},
+	"observer":          {"dispute_result": true, "view_audit": true, "view_dashboard": true},
+	"public":            {"view_dashboard": true},
 }
 
 type embeddedPermify struct{}

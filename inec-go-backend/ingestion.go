@@ -159,7 +159,7 @@ func enqueueJob(jobType string, payload map[string]interface{}, idempotencyKey s
 	idempotencyStore[idempotencyKey] = id
 
 	payloadJSON, _ := json.Marshal(payload)
-	db.Exec("INSERT INTO ingestion_jobs (id, job_type, status, payload, idempotency_key, max_retries) VALUES (?,?,?,?,?,?)",
+	dbExecLog("ingestion_jobs", "INSERT INTO ingestion_jobs (id, job_type, status, payload, idempotency_key, max_retries) VALUES (?,?,?,?,?,?)",
 		id, jobType, "pending", string(payloadJSON), idempotencyKey, 3)
 
 	go processJob(id)
@@ -183,7 +183,7 @@ func processJob(jobID string) {
 		return
 	}
 
-	db.Exec("UPDATE ingestion_jobs SET status='in_progress' WHERE id=?", jobID)
+	dbExecLog("ingestion_jobs", "UPDATE ingestion_jobs SET status='in_progress' WHERE id=?", jobID)
 	start := time.Now()
 
 	var err error
@@ -212,16 +212,16 @@ func processJob(jobID string) {
 			Payload: job.Payload, FailedAt: time.Now(),
 		})
 		payloadJSON, _ := json.Marshal(job.Payload)
-		db.Exec("INSERT INTO dead_letter_queue (id, job_id, job_type, error_message, payload) VALUES (?,?,?,?,?)",
+		dbExecLog("dead_letter_queue", "INSERT INTO dead_letter_queue (id, job_id, job_type, error_message, payload) VALUES (?,?,?,?,?)",
 			dlID, jobID, job.Type, err.Error(), string(payloadJSON))
-		db.Exec("UPDATE ingestion_jobs SET status='dead_letter', error_message=?, retries=?, latency_ms=? WHERE id=?",
+		dbExecLog("ingestion_jobs", "UPDATE ingestion_jobs SET status='dead_letter', error_message=?, retries=?, latency_ms=? WHERE id=?",
 			err.Error(), job.Retries, float64(latency), jobID)
 	} else {
 		job.Status = "completed"
 		now := time.Now()
 		job.ProcessedAt = &now
 		ingestionProcessed++
-		db.Exec("UPDATE ingestion_jobs SET status='completed', processed_at=CURRENT_TIMESTAMP, retries=?, latency_ms=? WHERE id=?",
+		dbExecLog("ingestion_jobs", "UPDATE ingestion_jobs SET status='completed', processed_at=CURRENT_TIMESTAMP, retries=?, latency_ms=? WHERE id=?",
 			job.Retries, float64(latency), jobID)
 	}
 	ingestionMu.Unlock()
@@ -272,7 +272,7 @@ func processOfflineSync(payload map[string]interface{}) error {
 	syncType, _ := payload["sync_type"].(string)
 	deviceID, _ := payload["device_id"].(string)
 	payloadJSON, _ := json.Marshal(payload)
-	db.Exec("INSERT INTO offline_sync_queue (device_id, sync_type, payload, status) VALUES (?,?,?,'synced')",
+	dbExecLog("offline_sync_queue", "INSERT INTO offline_sync_queue (device_id, sync_type, payload, status) VALUES (?,?,?,'synced')",
 		deviceID, syncType, string(payloadJSON))
 	return nil
 }
@@ -285,7 +285,10 @@ func handleIngestionSubmit(w http.ResponseWriter, r *http.Request) {
 		Payload        map[string]interface{} `json:"payload"`
 		IdempotencyKey string                 `json:"idempotency_key"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 	if req.Type == "" {
 		req.Type = "result_submission"
 	}
@@ -317,7 +320,10 @@ func handleBatchUpload(w http.ResponseWriter, r *http.Request) {
 			RejectedVotes    int `json:"rejected_votes"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	if len(req.Results) == 0 {
 		writeError(w, 400, "No results in batch")
@@ -388,7 +394,10 @@ func handleOfflineSync(w http.ResponseWriter, r *http.Request) {
 			Timestamp string                 `json:"timestamp"`
 		} `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { writeError(w, 400, "invalid JSON"); return }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
 
 	if req.DeviceID == "" {
 		writeError(w, 400, "device_id required")
@@ -409,7 +418,7 @@ func handleOfflineSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	db.Exec("UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
+	dbExecLog("bvas_devices", "UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
 
 	writeJSON(w, 200, M{
 		"device_id": req.DeviceID,
@@ -443,13 +452,13 @@ func handleIngestionStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"total_jobs":        total,
-		"completed":         completed,
-		"failed":            failed,
-		"pending":           pending,
-		"in_progress":       inProgress,
-		"dead_letter_count": dlqCount,
-		"avg_latency_ms":    round2(avgLat),
+		"total_jobs":         total,
+		"completed":          completed,
+		"failed":             failed,
+		"pending":            pending,
+		"in_progress":        inProgress,
+		"dead_letter_count":  dlqCount,
+		"avg_latency_ms":     round2(avgLat),
 		"throughput_per_sec": round2(throughput),
 	})
 }
@@ -478,7 +487,7 @@ func handleReprocessDLQ(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal([]byte(payload), &payloadMap)
 
 	job, _ := enqueueJob(jobType, payloadMap, "")
-	db.Exec("UPDATE dead_letter_queue SET reprocessed=1, reprocessed_at=CURRENT_TIMESTAMP WHERE id=?", id)
+	dbExecLog("dead_letter_queue", "UPDATE dead_letter_queue SET reprocessed=1, reprocessed_at=CURRENT_TIMESTAMP WHERE id=?", id)
 
 	writeJSON(w, 200, M{"message": "Reprocessed", "new_job_id": job.ID})
 }
