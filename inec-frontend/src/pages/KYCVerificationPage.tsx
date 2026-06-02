@@ -39,7 +39,7 @@ export default function KYCVerificationPage() {
   useEffect(() => {
     fetch(`${API}/status?user_id=1`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setKycStatus(d); })
+      .then(d => { if (d && d.status !== 'not_started') setKycStatus(d); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -144,7 +144,7 @@ export default function KYCVerificationPage() {
               <div className="flex justify-between"><span className="text-sm text-zinc-600 dark:text-zinc-400">Document Verified</span><span className={kycStatus.document_verified ? 'text-green-600' : 'text-red-600'}>{kycStatus.document_verified ? 'Yes' : 'No'}</span></div>
               <div className="flex justify-between"><span className="text-sm text-zinc-600 dark:text-zinc-400">Liveness Passed</span><span className={kycStatus.liveness_passed ? 'text-green-600' : 'text-red-600'}>{kycStatus.liveness_passed ? 'Yes' : 'No'}</span></div>
             </div>
-            {kycStatus.flags.length > 0 && (
+            {kycStatus.flags && kycStatus.flags.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-1">
                 {kycStatus.flags.map((f, i) => <span key={i} className="px-2 py-0.5 bg-red-50 text-red-600 text-xs rounded-full font-medium">{f}</span>)}
               </div>
