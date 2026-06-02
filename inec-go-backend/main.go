@@ -89,8 +89,12 @@ func main() {
 	initTracing()
 	initObserverTables()
 	initDocumentAISchema()
+	initElectionFSMSchema()
+	initWebhookSchema()
 
 	mwHub = initMiddlewareHub()
+	wsHub = newWebSocketHub()
+	go wsHub.run()
 
 	// Seed search indices after hub is ready
 	go seedSearchIndices(db)
@@ -277,6 +281,35 @@ func main() {
 	// EMS - Admin Console / Election Lifecycle — auth required
 	r.HandleFunc("/ems/elections/{election_id}/lifecycle", readAuth(handleElectionLifecycle)).Methods("GET")
 	r.HandleFunc("/ems/elections/{election_id}/transition", adminOnly(handleTransitionElection)).Methods("POST")
+	r.HandleFunc("/ems/elections/{id}/fsm/transition", adminOnly(handleElectionFSMTransition)).Methods("POST")
+	r.HandleFunc("/ems/elections/{id}/fsm/diagram", readAuth(handleElectionFSMDiagram)).Methods("GET")
+	r.HandleFunc("/ems/elections/{id}/fsm/history", readAuth(handleElectionStateHistory)).Methods("GET")
+
+	// Duplicate Voter Detection
+	r.HandleFunc("/voters/duplicates/scan", adminOnly(handleDuplicateVoterScan)).Methods("POST")
+	r.HandleFunc("/voters/duplicates/resolve", adminOnly(handleDuplicateVoterResolve)).Methods("POST")
+
+	// GPS Spoofing Detection
+	r.HandleFunc("/geo/spoof-check", writeAuth(handleGPSSpoofCheck)).Methods("POST")
+
+	// Live Dashboard SSE
+	r.HandleFunc("/dashboard/stream", handleDashboardSSE).Methods("GET")
+
+	// OAuth2/OIDC
+	r.HandleFunc("/.well-known/openid-configuration", handleOIDCDiscovery).Methods("GET")
+	r.HandleFunc("/auth/oidc/callback", handleOIDCCallback).Methods("GET")
+
+	// Webhook Subscriptions
+	r.HandleFunc("/api/v1/webhooks", adminOnly(handleWebhookCreate)).Methods("POST")
+	r.HandleFunc("/api/v1/webhooks", readAuth(handleWebhookList)).Methods("GET")
+	r.HandleFunc("/api/v1/webhooks/{id}", adminOnly(handleWebhookDelete)).Methods("DELETE")
+
+	// Export endpoints (CSV/JSON)
+	r.HandleFunc("/export/results", readAuth(handleExportResults)).Methods("GET")
+	r.HandleFunc("/export/voters", adminOnly(handleExportVoters)).Methods("GET")
+	r.HandleFunc("/export/collation", readAuth(handleExportCollation)).Methods("GET")
+	r.HandleFunc("/export/audit", adminOnly(handleAuditExport)).Methods("GET")
+
 	r.HandleFunc("/ems/staff", readAuth(handleListStaffAssignments)).Methods("GET")
 	r.HandleFunc("/ems/staff", adminOnly(handleAssignStaff)).Methods("POST")
 	r.HandleFunc("/ems/materials", readAuth(handleListMaterials)).Methods("GET")

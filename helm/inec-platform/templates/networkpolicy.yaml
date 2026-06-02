@@ -1,0 +1,49 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-backend-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: inec-backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: inec-frontend
+        {{- range .Values.networkPolicy.ingress.allowedNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 50051
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+        - port: 9092
+          protocol: TCP
+        - port: 9200
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 443
+          protocol: TCP
+{{- end }}

@@ -1,0 +1,34 @@
+apiVersion: v2
+name: inec-platform
+description: INEC Election Management Platform - Full Stack Helm Chart
+type: application
+version: 1.0.0
+appVersion: "2.0.0"
+keywords:
+  - election
+  - inec
+  - nigeria
+  - voting
+maintainers:
+  - name: INEC DevOps
+dependencies:
+  - name: postgresql
+    version: "~15"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "~18"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: kafka
+    version: "~28"
+    repository: https://charts.bitnami.com/bitnami
+    condition: kafka.enabled
+  - name: opensearch
+    version: "~2"
+    repository: https://opensearch-project.github.io/helm-charts
+    condition: opensearch.enabled
+  - name: keycloak
+    version: "~21"
+    repository: https://charts.bitnami.com/bitnami
+    condition: keycloak.enabled
