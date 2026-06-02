@@ -80,6 +80,16 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="more"
+        options={{
+          title: 'More',
+          headerTitle: 'More',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="grid-outline" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

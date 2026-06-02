@@ -229,3 +229,97 @@ export const documentAIApi = {
     api<{ report_id: number; status: string; ocr_confidence?: number; tampering_detected?: boolean }>(`/document-ai/status?report_id=${reportId}`),
 };
 
+// ── Disputes API ──
+
+export interface Dispute {
+  id: number;
+  election_id: number;
+  polling_unit_code: string;
+  filed_by: string;
+  party: string;
+  category: string;
+  description: string;
+  evidence: string[];
+  status: string;
+  assigned_to: string;
+  resolution: string;
+  resolved_by: string;
+  filed_at: string;
+  resolved_at: string;
+  priority: string;
+}
+
+export interface DisputeStats {
+  total: number;
+  by_status: Record<string, number>;
+  by_priority: Record<string, number>;
+  categories: string[];
+}
+
+export const disputeApi = {
+  list: () => api<Dispute[]>('/disputes'),
+  stats: () => api<DisputeStats>('/disputes/stats'),
+  file: (data: { election_id: number; polling_unit_code: string; category: string; description: string; party?: string }) =>
+    api<Dispute>('/disputes', { method: 'POST', body: JSON.stringify(data) }),
+  updateStatus: (id: number, status: string, resolution?: string) =>
+    api<Dispute>(`/disputes/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, resolution }),
+    }),
+};
+
+// ── Elections & Results API ──
+
+export interface Election {
+  id: number;
+  name: string;
+  type: string;
+  date: string;
+  status: string;
+  total_polling_units: number;
+  results_submitted: number;
+  registered_voters: number;
+}
+
+export interface Result {
+  id: number;
+  election_id: number;
+  polling_unit_code: string;
+  polling_unit_name?: string;
+  state?: string;
+  lga?: string;
+  total_valid_votes: number;
+  rejected_votes: number;
+  total_votes_cast: number;
+  status: string;
+  submitted_at: string;
+  party_scores?: Array<{ party_code: string; votes: number }>;
+}
+
+export interface CollationSummary {
+  level: string;
+  area_code: string;
+  area_name: string;
+  total_votes: number;
+  total_valid: number;
+  total_rejected: number;
+  party_totals: Array<{ party_code: string; total_votes: number }>;
+  reporting_pct: number;
+}
+
+export const electionApi = {
+  list: () => api<Election[]>('/elections'),
+  results: (electionId: number) => api<Result[]>(`/results?election_id=${electionId}`),
+  collation: (electionId: number, level: string) =>
+    api<CollationSummary[]>(`/collation?election_id=${electionId}&level=${level}`),
+  dashboardStats: (electionId: number) =>
+    api<{ total_votes: number; results_count: number; polling_units: number; rejection_rate: number }>(`/dashboard/stats?election_id=${electionId}`),
+};
+
+// ── Scale Health API ──
+
+export const scaleApi = {
+  health: () => api<Record<string, unknown>>('/scale/health'),
+  middlewareModes: () => api<Array<{ Name: string; IsReal: boolean; Connection: string }>>('/middleware/modes'),
+};
+

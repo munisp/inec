@@ -37,6 +37,8 @@ const AIMonitoringPage = lazy(() => import('@/pages/AIMonitoringPage'));
 const ProductionPage = lazy(() => import('@/pages/ProductionPage'));
 const ObserverMonitoringPage = lazy(() => import('@/pages/ObserverMonitoringPage'));
 const DisputeResolutionPage = lazy(() => import('@/pages/DisputeResolutionPage'));
+const KYCVerificationPage = lazy(() => import('@/pages/KYCVerificationPage'));
+const ScaleHealthPage = lazy(() => import('@/pages/ScaleHealthPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -88,6 +90,8 @@ function AppContent() {
     'production': <ProductionPage />,
     'observer-monitoring': <ObserverMonitoringPage />,
     'dispute-resolution': <DisputeResolutionPage />,
+    'kyc-verification': <KYCVerificationPage />,
+    'scale-health': <ScaleHealthPage />,
   };
 
   return (

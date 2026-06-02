@@ -11,7 +11,8 @@ import {
   LayoutDashboard, Vote, FileBarChart, Shield, AlertTriangle,
   Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
   Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings,
-  ScanFace, Link2, GraduationCap, Users2, BarChart3, Eye, Sun, Moon, Monitor
+  ScanFace, Link2, GraduationCap, Users2, BarChart3, Eye, Sun, Moon, Monitor,
+  Activity, UserCheck
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -41,6 +42,8 @@ const NAV_ITEMS = [
   { label: 'AI Monitoring', icon: BarChart3, path: 'ai-monitoring' },
   { label: 'Observer Monitor', icon: Eye, path: 'observer-monitoring', section: 'Monitoring' },
   { label: 'Disputes', icon: Eye, path: 'dispute-resolution', section: 'Monitoring' },
+  { label: 'KYC Verification', icon: UserCheck, path: 'kyc-verification' },
+  { label: 'Scale Health', icon: Activity, path: 'scale-health', section: 'Infrastructure' },
   { label: 'Production', icon: Shield, path: 'production', section: 'Infrastructure' },
 ];
 
