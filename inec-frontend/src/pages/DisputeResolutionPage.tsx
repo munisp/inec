@@ -39,7 +39,7 @@ const priorityColors: Record<string, string> = {
   low: '#22c55e',
 };
 
-const API_BASE = '/api/v1';
+const API_BASE = '';
 
 export default function DisputeResolutionPage() {
   const [disputes, setDisputes] = useState<Dispute[]>([]);
