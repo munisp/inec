@@ -91,6 +91,8 @@ func main() {
 	initDocumentAISchema()
 	initElectionFSMSchema()
 	initWebhookSchema()
+	initDisputeSchema()
+	initPushNotificationSchema()
 
 	mwHub = initMiddlewareHub()
 	wsHub = newWebSocketHub()
@@ -309,6 +311,18 @@ func main() {
 	r.HandleFunc("/export/voters", adminOnly(handleExportVoters)).Methods("GET")
 	r.HandleFunc("/export/collation", readAuth(handleExportCollation)).Methods("GET")
 	r.HandleFunc("/export/audit", adminOnly(handleAuditExport)).Methods("GET")
+
+	// Dispute Resolution
+	r.HandleFunc("/disputes", writeAuth(handleFileDispute)).Methods("POST")
+	r.HandleFunc("/disputes", readAuth(handleListDisputes)).Methods("GET")
+	r.HandleFunc("/disputes/{id}/resolve", adminOnly(handleResolveDispute)).Methods("POST")
+	r.HandleFunc("/disputes/{id}/comments", writeAuth(handleDisputeComment)).Methods("POST")
+	r.HandleFunc("/disputes/stats", readAuth(handleDisputeStats)).Methods("GET")
+
+	// Push Notifications
+	r.HandleFunc("/push/devices", writeAuth(handleRegisterDevice)).Methods("POST")
+	r.HandleFunc("/push/send-targeted", adminOnly(handleSendPushNotification)).Methods("POST")
+	r.HandleFunc("/push/history", readAuth(handleNotificationHistory)).Methods("GET")
 
 	r.HandleFunc("/ems/staff", readAuth(handleListStaffAssignments)).Methods("GET")
 	r.HandleFunc("/ems/staff", adminOnly(handleAssignStaff)).Methods("POST")

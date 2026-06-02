@@ -596,24 +596,18 @@ func TestDashboardSSEEndpoint(t *testing.T) {
 		t.Skip("database not initialized")
 	}
 
+	// Use a cancellable context so we can cleanly stop the SSE handler.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
 	r := mux.NewRouter()
 	r.HandleFunc("/dashboard/stream", handleDashboardSSE).Methods("GET")
 
-	req := httptest.NewRequest("GET", "/dashboard/stream", nil)
+	req := httptest.NewRequest("GET", "/dashboard/stream", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
 
-	// Run in goroutine since SSE blocks
-	done := make(chan struct{})
-	go func() {
-		r.ServeHTTP(w, req)
-		close(done)
-	}()
-
-	// Wait briefly for first event or timeout
-	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-	}
+	// ServeHTTP will block until the context is cancelled.
+	r.ServeHTTP(w, req)
 
 	if w.Code != 200 {
 		t.Errorf("expected 200, got %d", w.Code)
