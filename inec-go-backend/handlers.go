@@ -374,12 +374,11 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
 		ec8aHash, tbID, "PENDING", "PENDING")
 
-	for _, ps := range req.PartyScores {
-		if _, err := tx.Exec(convertPlaceholders("INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)"), resultID, ps.PartyCode, ps.Votes); err != nil {
-			tx.Rollback()
-			writeError(w, 500, "failed to save party scores")
-			return
-		}
+	// Batch insert party scores (single multi-value INSERT on PostgreSQL)
+	if err := batchInsertPartyScores(tx, resultID, req.PartyScores); err != nil {
+		tx.Rollback()
+		writeError(w, 500, "failed to save party scores")
+		return
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "failed to commit result")
@@ -389,7 +388,12 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	logAudit("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", resultID), userID,
 		map[string]interface{}{"phase": "Pre-Validation", "polling_unit": req.PollingUnitCode, "tigerbeetle_id": tbID})
 
-	go broadcastWS(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID})
+	// Sharded WS broadcast: resolve PU → state for targeted fan-out
+	var puStateCode string
+	dbReadQueryRow(r.Context(), `SELECT s.code FROM polling_units pu
+		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code
+		JOIN states s ON s.code=l.state_code WHERE pu.code=?`, req.PollingUnitCode).Scan(&puStateCode)
+	go broadcastWSSharded(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID, "state_code": puStateCode}, puStateCode)
 
 	// Broadcast to SSE observers
 	go NotifyResultSubmission(map[string]interface{}{
@@ -413,7 +417,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		wfID = ws.WorkflowID
 	}
 
-	cacheDel(fmt.Sprintf("dashboard_stats_%d", req.ElectionID))
+	invalidateCollationCache(req.ElectionID)
 
 	writeJSON(w, 200, M{"id": resultID, "status": "pending", "tigerbeetle_transfer_id": tbID, "workflow_id": wfID, "phase": "Pre-Validation", "message": "Result submitted. Proceeding to Edge Validation."})
 }

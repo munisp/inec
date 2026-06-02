@@ -18,17 +18,26 @@ backend:
     port: 8080
   resources:
     requests:
-      memory: "256Mi"
-      cpu: "250m"
+      memory: "512Mi"
+      cpu: "500m"
     limits:
-      memory: "1Gi"
-      cpu: "1000m"
+      memory: "2Gi"
+      cpu: "2000m"
   env:
     PORT: "8080"
     DB_DRIVER: postgres
-    DB_HOST: "{{ .Release.Name }}-postgresql"
-    DB_PORT: "5432"
+    DB_HOST: "{{ .Release.Name }}-pgbouncer"
+    DB_PORT: "6432"
     DB_NAME: inec
+    DATABASE_REPLICA_URL: "postgresql://inec:$(DB_PASSWORD)@{{ .Release.Name }}-postgresql-read:5432/inec?sslmode=require"
+    PGBOUNCER_ENABLED: "true"
+    DB_MAX_OPEN_CONNS: "10"
+    DB_MAX_IDLE_CONNS: "5"
+    DB_REPLICA_MAX_OPEN_CONNS: "20"
+    DB_REPLICA_MAX_IDLE_CONNS: "10"
+    COLLATION_CACHE_TTL_SEC: "15"
+    INGESTION_QUEUE_CAPACITY: "50000"
+    SLOW_QUERY_THRESHOLD_MS: "100"
     REDIS_URL: "{{ .Release.Name }}-redis-master:6379"
     KAFKA_BROKERS: "{{ .Release.Name }}-kafka:9092"
     KEYCLOAK_URL: "http://{{ .Release.Name }}-keycloak:8080"
@@ -45,12 +54,14 @@ backend:
     OPENAPPSEC_URL: "http://{{ .Release.Name }}-openappsec:8082"
   autoscaling:
     enabled: true
-    minReplicas: 3
-    maxReplicas: 20
-    targetCPUUtilization: 70
-    targetMemoryUtilization: 80
+    minReplicas: 5
+    maxReplicas: 40
+    targetCPUUtilization: 60
+    targetMemoryUtilization: 70
+    scaleDown:
+      stabilizationWindowSeconds: 300
   podDisruptionBudget:
-    minAvailable: 2
+    minAvailable: 3
 
 # Frontend (Nginx + React)
 frontend:
@@ -130,6 +141,22 @@ ingress:
         - app.inec.gov.ng
 
 # Dependencies
+# PgBouncer — connection pooling between Go pods and PostgreSQL
+pgbouncer:
+  enabled: true
+  replicaCount: 2
+  poolMode: transaction
+  maxClientConn: 1000
+  defaultPoolSize: 50
+  reservePoolSize: 10
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+
 postgresql:
   enabled: true
   auth:
@@ -138,13 +165,31 @@ postgresql:
     existingSecret: inec-db-credentials
   primary:
     persistence:
-      size: 100Gi
+      size: 200Gi
     resources:
       requests:
-        memory: "512Mi"
-        cpu: "500m"
+        memory: "2Gi"
+        cpu: "2000m"
+      limits:
+        memory: "4Gi"
+        cpu: "4000m"
+    configuration: |
+      shared_buffers = '1GB'
+      effective_cache_size = '3GB'
+      work_mem = '16MB'
+      maintenance_work_mem = '256MB'
+      max_connections = 200
+      random_page_cost = 1.1
+      effective_io_concurrency = 200
+      wal_buffers = '64MB'
+      max_wal_size = '2GB'
+      checkpoint_completion_target = 0.9
   readReplicas:
-    replicaCount: 2
+    replicaCount: 3
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "1000m"
 
 redis:
   enabled: true

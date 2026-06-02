@@ -272,6 +272,46 @@ DROP TABLE IF EXISTS dedup_resolutions;
 DROP TABLE IF EXISTS election_state_log;
 `,
 	},
+	{
+		Version:     7,
+		Description: "Scale optimization indexes for election day (176K polling units)",
+		Up: `
+CREATE INDEX IF NOT EXISTS idx_results_election_status ON results(election_id, status);
+CREATE INDEX IF NOT EXISTS idx_results_pu_election ON results(polling_unit_code, election_id);
+CREATE INDEX IF NOT EXISTS idx_rps_result ON result_party_scores(result_id);
+CREATE INDEX IF NOT EXISTS idx_rps_party ON result_party_scores(party_code);
+CREATE INDEX IF NOT EXISTS idx_rps_result_party ON result_party_scores(result_id, party_code);
+CREATE INDEX IF NOT EXISTS idx_polling_units_ward ON polling_units(ward_code);
+CREATE INDEX IF NOT EXISTS idx_wards_lga ON wards(lga_code);
+CREATE INDEX IF NOT EXISTS idx_lgas_state ON lgas(state_code);
+CREATE INDEX IF NOT EXISTS idx_collation_election_level ON collation_results(election_id, level, area_code);
+CREATE INDEX IF NOT EXISTS idx_collation_level_area ON collation_results(level, area_code);
+CREATE INDEX IF NOT EXISTS idx_results_submitted_at ON results(submitted_at);
+CREATE INDEX IF NOT EXISTS idx_results_election_pu ON results(election_id, polling_unit_code);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_ingestion_status ON ingestion_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_ingestion_idem ON ingestion_jobs(idempotency_key);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_results_election_status;
+DROP INDEX IF EXISTS idx_results_pu_election;
+DROP INDEX IF EXISTS idx_rps_result;
+DROP INDEX IF EXISTS idx_rps_party;
+DROP INDEX IF EXISTS idx_rps_result_party;
+DROP INDEX IF EXISTS idx_polling_units_ward;
+DROP INDEX IF EXISTS idx_wards_lga;
+DROP INDEX IF EXISTS idx_lgas_state;
+DROP INDEX IF EXISTS idx_collation_election_level;
+DROP INDEX IF EXISTS idx_collation_level_area;
+DROP INDEX IF EXISTS idx_results_submitted_at;
+DROP INDEX IF EXISTS idx_results_election_pu;
+DROP INDEX IF EXISTS idx_audit_timestamp;
+DROP INDEX IF EXISTS idx_audit_action;
+DROP INDEX IF EXISTS idx_ingestion_status;
+DROP INDEX IF EXISTS idx_ingestion_idem;
+`,
+	},
 }
 
 // runMigrations executes all pending migrations in order.

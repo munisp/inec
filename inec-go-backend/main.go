@@ -60,8 +60,13 @@ func main() {
 	log.Info().Msg("Database connected")
 
 	initScaledDB(db)
+	initPgBouncerAwarePooling(db)
 	initPgpool()
 	go periodicPoolStats()
+	initRingBufferQueue()
+	initShardedWSHub()
+	initCollationCache()
+	go trackIngestionThroughput()
 
 	// Run versioned migrations
 	if err := runMigrations(db); err != nil {
@@ -97,6 +102,8 @@ func main() {
 	mwHub = initMiddlewareHub()
 	wsHub = newWebSocketHub()
 	go wsHub.run()
+	initDistributedRateLimiter()
+	detectMiddlewareModes()
 
 	// Seed search indices after hub is ready
 	go seedSearchIndices(db)
@@ -110,6 +117,8 @@ func main() {
 	r.HandleFunc("/readiness", handleReadinessCheck).Methods("GET")
 	r.HandleFunc("/db/metrics", handleDBMetrics).Methods("GET")
 	r.HandleFunc("/db/pool", handleDBPoolStats).Methods("GET")
+	r.HandleFunc("/scale/health", handleScaleHealth).Methods("GET")
+	r.HandleFunc("/middleware/modes", handleMiddlewareModes).Methods("GET")
 
 	// Auth
 	r.HandleFunc("/auth/login", handleLogin).Methods("POST")
@@ -134,6 +143,7 @@ func main() {
 
 	// Results
 	r.HandleFunc("/results/ws/updates", handleWSUpdates)
+	r.HandleFunc("/results/ws/updates/sharded", handleWSUpdatesSharded)
 	r.HandleFunc("/results/submit", writeAuth(handleSubmitResult)).Methods("POST")
 	r.HandleFunc("/results/{id:[0-9]+}/validate", writeAuth(handleValidateResult)).Methods("POST")
 	r.HandleFunc("/results/{id:[0-9]+}/finalize", adminOnly(handleFinalizeResult)).Methods("POST")

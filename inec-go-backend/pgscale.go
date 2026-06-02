@@ -149,9 +149,11 @@ func initScaledDB(primary *sql.DB) {
 	dbWriter = primary
 	dbReader = primary
 
+	// Pool tuning is handled by initPgBouncerAwarePooling() for production.
+	// Defaults here are safe fallback for dev/test.
 	if usePostgres {
-		primary.SetMaxOpenConns(25)
-		primary.SetMaxIdleConns(10)
+		primary.SetMaxOpenConns(envInt("DB_MAX_OPEN_CONNS", 50))
+		primary.SetMaxIdleConns(envInt("DB_MAX_IDLE_CONNS", 25))
 		primary.SetConnMaxLifetime(5 * time.Minute)
 		primary.SetConnMaxIdleTime(30 * time.Second)
 	}
@@ -159,8 +161,8 @@ func initScaledDB(primary *sql.DB) {
 	replicaDSN := os.Getenv("DATABASE_REPLICA_URL")
 	if replicaDSN != "" && usePostgres {
 		replica := openPgCompat(replicaDSN)
-		replica.SetMaxOpenConns(50)
-		replica.SetMaxIdleConns(25)
+		replica.SetMaxOpenConns(envInt("DB_REPLICA_MAX_OPEN_CONNS", 100))
+		replica.SetMaxIdleConns(envInt("DB_REPLICA_MAX_IDLE_CONNS", 50))
 		replica.SetConnMaxLifetime(5 * time.Minute)
 		replica.SetConnMaxIdleTime(30 * time.Second)
 		if err := replica.Ping(); err != nil {
