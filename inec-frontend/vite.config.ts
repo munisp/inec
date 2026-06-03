@@ -39,6 +39,11 @@ export default defineConfig({
       '/sms': 'http://localhost:8088',
       '/public-api': 'http://localhost:8088',
       '/geo': 'http://localhost:8088',
+      '/geofence': 'http://localhost:8088',
+      '/export': 'http://localhost:8088',
+      '/admin': 'http://localhost:8088',
+      '/db': 'http://localhost:8088',
+      '/pgpool': 'http://localhost:8088',
     },
   },
 })
