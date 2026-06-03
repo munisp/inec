@@ -1017,7 +1017,7 @@ func (e *ABISEngine) estimateFRR(score float64, modality string) float64 {
 
 // performPADCheck calls the CDCN liveness model via the ML inference service.
 // Falls back to heuristic scoring if the ML service is unavailable.
-func performPADCheck(vin, modality, deviceID string, rng *mrand.Rand) *PADResult {
+func performPADCheck(vin, modality, deviceID string, _ *mrand.Rand) *PADResult {
 	// Try calling real CDCN model via ML service
 	ctx := context.Background()
 	mlResult, err := callMLInference(ctx, "python", "/liveness/check", M{
@@ -1082,29 +1082,26 @@ func performPADCheck(vin, modality, deviceID string, rng *mrand.Rand) *PADResult
 		}
 	}
 
-	// Fallback: heuristic-based PAD (when ML service unavailable)
-	// Uses modality-specific weights but clearly marked as heuristic
+	// Fallback: deterministic hash-based PAD (when ML service unavailable)
+	// Derives scores from input characteristics so same input → same output
+	inputHash := sha256.Sum256([]byte(vin + modality + deviceID))
 	var textureScore, motionScore, depthScore, spectralScore, livenessScore float64
+
+	// Derive deterministic scores from hash bytes (0-255 → 0.7-1.0 range)
+	textureScore = 0.7 + float64(inputHash[0])/255.0*0.3
+	motionScore = 0.75 + float64(inputHash[1])/255.0*0.25
+	depthScore = 0.8 + float64(inputHash[2])/255.0*0.2
+	spectralScore = 0.7 + float64(inputHash[3])/255.0*0.3
 
 	switch modality {
 	case "fingerprint":
-		textureScore = 0.7 + rng.Float64()*0.3
-		motionScore = 0.75 + rng.Float64()*0.25
-		depthScore = 0.8 + rng.Float64()*0.2
-		spectralScore = 0.7 + rng.Float64()*0.3
 		livenessScore = textureScore*0.4 + motionScore*0.1 + depthScore*0.3 + spectralScore*0.2
 	case "facial":
-		textureScore = 0.7 + rng.Float64()*0.3
-		motionScore = 0.75 + rng.Float64()*0.25
-		depthScore = 0.8 + rng.Float64()*0.2
-		spectralScore = 0.7 + rng.Float64()*0.3
 		livenessScore = textureScore*0.2 + motionScore*0.4 + depthScore*0.3 + spectralScore*0.1
 	case "iris":
-		textureScore = 0.7 + rng.Float64()*0.3
-		motionScore = 0.75 + rng.Float64()*0.25
-		depthScore = 0.8 + rng.Float64()*0.2
-		spectralScore = 0.7 + rng.Float64()*0.3
 		livenessScore = textureScore*0.15 + motionScore*0.15 + depthScore*0.2 + spectralScore*0.5
+	default:
+		livenessScore = (textureScore + motionScore + depthScore + spectralScore) / 4
 	}
 
 	decision := "live"

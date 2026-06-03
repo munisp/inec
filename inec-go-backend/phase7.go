@@ -752,14 +752,42 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	score := 0.85 + rng.Float64()*0.15
-	result := "match"
-	if rng.Float64() < 0.05 {
-		score = 0.5 + rng.Float64()*0.3
-		result = "no_match"
+	start := time.Now()
+
+	// Use the ABIS engine for real template-based verification when vault has data
+	probeData, vaultErr := biometricVault.RetrieveTemplate(req.VIN, req.Modality)
+	var score float64
+	var result, algo string
+	if vaultErr == nil && len(probeData) > 0 {
+		matchResult := abisEngine.Verify(req.VIN, req.Modality, probeData)
+		score = matchResult.Score
+		result = matchResult.Decision
+		algo = matchResult.Algorithm
+	} else {
+		// Deterministic hash-based comparison from stored profile hashes
+		var storedHash string
+		switch req.Modality {
+		case "fingerprint":
+			storedHash = profile.fpHash
+		case "facial":
+			storedHash = profile.faceHash
+		case "iris":
+			storedHash = profile.irisHash
+		}
+		probeHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.VIN+req.Modality+req.Template)))
+		score = hashSimilarity(storedHash, probeHash)
+		algo = "hash_comparison"
+		if score >= 0.85 {
+			result = "match"
+		} else {
+			result = "no_match"
+		}
 	}
-	latency := 80 + rng.Intn(120)
+
+	latency := int(time.Since(start).Milliseconds())
+	if latency < 1 {
+		latency = 1
+	}
 
 	dbExecLog("biometric_verificati", `INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms) VALUES (?,?,?,?,?,?)`,
 		req.VIN, req.DeviceID, req.Modality, score, result, latency)
@@ -768,7 +796,29 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{
 		"vin": req.VIN, "modality": req.Modality, "match_score": score,
 		"result": result, "latency_ms": latency, "threshold": 0.85,
+		"algorithm": algo,
 	})
+}
+
+// hashSimilarity computes deterministic similarity between two hex hash strings
+func hashSimilarity(a, b string) float64 {
+	if a == "" || b == "" {
+		return 0
+	}
+	if a == b {
+		return 1.0
+	}
+	minLen := len(a)
+	if len(b) < minLen {
+		minLen = len(b)
+	}
+	matching := 0
+	for i := 0; i < minLen; i++ {
+		if a[i] == b[i] {
+			matching++
+		}
+	}
+	return float64(matching) / float64(minLen)
 }
 
 func handleABISDuplicates(w http.ResponseWriter, r *http.Request) {

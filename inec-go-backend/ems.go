@@ -479,7 +479,8 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vin := fmt.Sprintf("VIN%04d%08d", rand.Intn(9999), time.Now().UnixNano()%100000000)
+	vinHash := sha256.Sum256([]byte(fmt.Sprintf("%s%s%s%d", req.FirstName, req.LastName, req.DateOfBirth, time.Now().UnixNano())))
+	vin := fmt.Sprintf("VIN%04x%08x", vinHash[0:2], vinHash[2:6])
 	bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.BiometricData)))
 
 	var dupCount int
