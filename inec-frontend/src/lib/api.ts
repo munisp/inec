@@ -445,4 +445,94 @@ export const api = {
   getPgpoolMetrics: () => request('/pgpool/metrics'),
   getPgpoolReplication: () => request('/pgpool/replication'),
   getPgpoolDashboard: () => request('/pgpool/dashboard'),
+
+  // Auth / Session Management
+  getAuthSessions: () => request('/auth/sessions'),
+  revokeSession: (sessionId: string) =>
+    request('/auth/sessions/revoke', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
+  revokeAllSessions: () =>
+    request('/auth/sessions/revoke-all', { method: 'POST' }),
+  rotateAPIKey: () =>
+    request('/auth/api-keys/rotate', { method: 'POST' }),
+
+  // Geofencing
+  geofenceCheck: (lat: number, lng: number, puCode: string) =>
+    request('/geofence/check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, polling_unit_code: puCode }) }),
+  getGeofenceStats: (electionId: number) => request(`/geofence/stats/${electionId}`),
+
+  // GPS Spoofing Detection
+  gpsSpoofCheck: (lat: number, lng: number, deviceId: string, accuracy?: number) =>
+    request('/geo/spoof-check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, device_id: deviceId, accuracy }) }),
+
+  // Webhooks
+  getWebhooks: () => request('/api/v1/webhooks'),
+  createWebhook: (url: string, events: string[], secret?: string) =>
+    request('/api/v1/webhooks', { method: 'POST', body: JSON.stringify({ url, events, secret }) }),
+  deleteWebhook: (id: number) => request(`/api/v1/webhooks/${id}`, { method: 'DELETE' }),
+
+  // Exports
+  exportResults: (electionId: number, format?: string) =>
+    request(`/export/results?election_id=${electionId}${format ? `&format=${format}` : ''}`),
+  exportVoters: (stateCode?: string) =>
+    request(`/export/voters${stateCode ? `?state_code=${stateCode}` : ''}`),
+  exportCollation: (electionId: number, level?: string) =>
+    request(`/export/collation?election_id=${electionId}${level ? `&level=${level}` : ''}`),
+  exportAudit: (startDate?: string, endDate?: string) =>
+    request(`/export/audit${startDate ? `?start=${startDate}` : ''}${endDate ? `&end=${endDate}` : ''}`),
+
+  // Duplicate Voter Detection
+  scanDuplicateVoters: (stateCode?: string, modality?: string) =>
+    request('/voters/duplicates/scan', { method: 'POST', body: JSON.stringify({ state_code: stateCode, modality: modality || 'fingerprint' }) }),
+  resolveDuplicateVoter: (sourceVin: string, candidateVin: string, action: string) =>
+    request('/voters/duplicates/resolve', { method: 'POST', body: JSON.stringify({ source_vin: sourceVin, candidate_vin: candidateVin, action }) }),
+
+  // Admin User Management
+  promoteUser: (userId: number, role: string) =>
+    request('/admin/users/promote', { method: 'POST', body: JSON.stringify({ user_id: userId, role }) }),
+
+  // GNN
+  getGNNScore: (electionId: number) => request(`/ai/gnn/score?election_id=${electionId}`),
+
+  // Document AI
+  analyzeDocument: (reportId: number) =>
+    request(`/document-ai/analyze?report_id=${reportId}`, { method: 'POST' }),
+  getDocumentAnalysisStatus: (reportId?: number) =>
+    request(`/document-ai/status${reportId ? `?report_id=${reportId}` : ''}`),
+
+  // KYC (already exists in pages but not in api object)
+  kycVerify: (form: FormData) =>
+    request('/kyc/verify', { method: 'POST', body: form as unknown as string }),
+  kycLiveness: (form: FormData) =>
+    request('/kyc/liveness', { method: 'POST', body: form as unknown as string }),
+  kycStatus: (userId?: number) =>
+    request(`/kyc/status${userId ? `?user_id=${userId}` : ''}`),
+
+  // Mojaloop
+  getMojaStatus: () => request('/middleware/mojaloop/status'),
+  getMojaTransactions: () => request('/middleware/mojaloop/transactions'),
+  mojaPartyLookup: (partyId: string) => request(`/middleware/mojaloop/parties?party_id=${partyId}`),
+  mojaCreateQuote: (payerFsp: string, payeeFsp: string, amount: number, currency?: string) =>
+    request('/middleware/mojaloop/quotes', { method: 'POST', body: JSON.stringify({ payer_fsp: payerFsp, payee_fsp: payeeFsp, amount, currency }) }),
+
+  // OpenSearch
+  getOpenSearchStatus: () => request('/middleware/opensearch/status'),
+  getOpenSearchIndices: () => request('/middleware/opensearch/indices'),
+  getOpenSearchStats: () => request('/middleware/opensearch/stats'),
+  openSearchQuery: (query: string, index?: string) =>
+    request(`/middleware/opensearch/search?q=${encodeURIComponent(query)}${index ? `&index=${index}` : ''}`),
+
+  // WAF / OpenAppSec
+  getWAFStatus: () => request('/middleware/waf/status'),
+  getWAFStats: () => request('/middleware/waf/stats'),
+  getWAFThreats: () => request('/middleware/waf/threats'),
+  getWAFBlocklist: () => request('/middleware/waf/blocklist'),
+  addWAFBlock: (ip: string, reason?: string) =>
+    request('/middleware/waf/blocklist', { method: 'POST', body: JSON.stringify({ ip, reason }) }),
+
+  // Pgpool Config
+  getPgpoolConfig: () => request('/pgpool/config'),
+  getPgpoolQueryCache: () => request('/pgpool/cache'),
+
+  // OIDC
+  getOIDCConfig: () => request('/.well-known/openid-configuration'),
 };

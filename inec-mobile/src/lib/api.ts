@@ -323,3 +323,54 @@ export const scaleApi = {
   middlewareModes: () => api<Array<{ Name: string; IsReal: boolean; Connection: string }>>('/middleware/modes'),
 };
 
+// ── Geofencing API ──
+
+export interface GeofenceResult {
+  within_geofence: boolean;
+  distance_km: number;
+  polling_unit: string;
+  lat: number;
+  lng: number;
+}
+
+export interface SpoofCheckResult {
+  is_spoofed: boolean;
+  risk_score: number;
+  checks: Array<{ name: string; passed: boolean; detail: string }>;
+}
+
+export const geofenceApi = {
+  check: (lat: number, lng: number, puCode: string) =>
+    api<GeofenceResult>('/geofence/check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, polling_unit_code: puCode }) }),
+  stats: (electionId: number) => api<Record<string, unknown>>(`/geofence/stats/${electionId}`),
+  spoofCheck: (lat: number, lng: number, deviceId: string) =>
+    api<SpoofCheckResult>('/geo/spoof-check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, device_id: deviceId }) }),
+};
+
+// ── Voter Registration API ──
+
+export interface Voter {
+  id: number;
+  vin: string;
+  full_name: string;
+  state: string;
+  lga: string;
+  ward: string;
+  polling_unit_code: string;
+  date_of_birth: string;
+  gender: string;
+}
+
+export const voterApi = {
+  search: (query: string) => api<Voter[]>(`/voters/search?q=${encodeURIComponent(query)}`),
+  register: (data: { full_name: string; state: string; lga: string; ward: string; polling_unit_code: string; date_of_birth: string; gender: string }) =>
+    api<Voter>('/voter/register', { method: 'POST', body: JSON.stringify(data) }),
+};
+
+// ── Middleware Status API ──
+
+export const middlewareApi = {
+  status: () => api<{ middleware: Array<{ name: string; connected: boolean; mode: string }> }>('/middleware/status'),
+  health: () => api<Record<string, unknown>>('/middleware/health'),
+};
+

@@ -39,6 +39,12 @@ const ObserverMonitoringPage = lazy(() => import('@/pages/ObserverMonitoringPage
 const DisputeResolutionPage = lazy(() => import('@/pages/DisputeResolutionPage'));
 const KYCVerificationPage = lazy(() => import('@/pages/KYCVerificationPage'));
 const ScaleHealthPage = lazy(() => import('@/pages/ScaleHealthPage'));
+const GeofencingPage = lazy(() => import('@/pages/GeofencingPage'));
+const WebhookManagementPage = lazy(() => import('@/pages/WebhookManagementPage'));
+const UserManagementPage = lazy(() => import('@/pages/UserManagementPage'));
+const DuplicateDetectionPage = lazy(() => import('@/pages/DuplicateDetectionPage'));
+const DocumentAIPage = lazy(() => import('@/pages/DocumentAIPage'));
+const ExportCenterPage = lazy(() => import('@/pages/ExportCenterPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -92,6 +98,12 @@ function AppContent() {
     'dispute-resolution': <DisputeResolutionPage />,
     'kyc-verification': <KYCVerificationPage />,
     'scale-health': <ScaleHealthPage />,
+    'geofencing': <GeofencingPage />,
+    'webhooks': <WebhookManagementPage />,
+    'user-management': <UserManagementPage />,
+    'duplicate-detection': <DuplicateDetectionPage />,
+    'document-ai': <DocumentAIPage />,
+    'export-center': <ExportCenterPage />,
   };
 
   return (

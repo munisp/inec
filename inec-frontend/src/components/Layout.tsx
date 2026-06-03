@@ -12,7 +12,7 @@ import {
   Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
   Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings,
   ScanFace, Link2, GraduationCap, Users2, BarChart3, Eye, Sun, Moon, Monitor,
-  Activity, UserCheck
+  Activity, UserCheck, Crosshair, Webhook, UserCog, Copy, FileSearch, Download
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -43,8 +43,14 @@ const NAV_ITEMS = [
   { label: 'Observer Monitor', icon: Eye, path: 'observer-monitoring', section: 'Monitoring' },
   { label: 'Disputes', icon: Eye, path: 'dispute-resolution', section: 'Monitoring' },
   { label: 'KYC Verification', icon: UserCheck, path: 'kyc-verification' },
+  { label: 'Geofencing', icon: Crosshair, path: 'geofencing' },
+  { label: 'Document AI', icon: FileSearch, path: 'document-ai' },
+  { label: 'Duplicate Detection', icon: Copy, path: 'duplicate-detection' },
+  { label: 'Export Center', icon: Download, path: 'export-center' },
   { label: 'Scale Health', icon: Activity, path: 'scale-health', section: 'Infrastructure' },
   { label: 'Production', icon: Shield, path: 'production', section: 'Infrastructure' },
+  { label: 'Webhooks', icon: Webhook, path: 'webhooks', section: 'Admin' },
+  { label: 'User Mgmt', icon: UserCog, path: 'user-management', section: 'Admin' },
 ];
 
 interface LayoutProps {

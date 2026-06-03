@@ -23,6 +23,7 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
     items: [
       { id: 'elections', title: 'Elections', subtitle: 'View active elections', icon: 'podium-outline', color: '#166534', bg: '#dcfce7', route: '/elections' },
       { id: 'results', title: 'Results & Collation', subtitle: 'Live results by state and LGA', icon: 'bar-chart-outline', color: '#2563eb', bg: '#dbeafe', route: '/results' },
+      { id: 'voters', title: 'Voter Search', subtitle: 'Look up registered voters', icon: 'people-outline', color: '#0d9488', bg: '#ccfbf1', route: '/voter-search' },
     ],
   },
   {
@@ -30,6 +31,8 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
     items: [
       { id: 'kyc', title: 'KYC Verification', subtitle: 'Identity & liveness check', icon: 'person-circle-outline', color: '#7c3aed', bg: '#ede9fe', route: '/kyc' },
       { id: 'docai', title: 'Document AI', subtitle: 'Analyze EC8A result sheets', icon: 'scan-outline', color: '#0891b2', bg: '#cffafe', route: '/document-ai' },
+      { id: 'biometrics', title: 'Biometrics', subtitle: 'ABIS engine & fingerprint verification', icon: 'finger-print-outline', color: '#e11d48', bg: '#ffe4e6', route: '/biometrics' },
+      { id: 'geofencing', title: 'Geofencing', subtitle: 'GPS verification & spoof detection', icon: 'navigate-outline', color: '#ea580c', bg: '#fff7ed', route: '/geofencing' },
     ],
   },
   {
@@ -37,6 +40,7 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
     items: [
       { id: 'disputes', title: 'Disputes', subtitle: 'File & track election disputes', icon: 'shield-outline', color: '#dc2626', bg: '#fef2f2', route: '/disputes' },
       { id: 'scale', title: 'System Health', subtitle: 'Platform scale & performance', icon: 'pulse-outline', color: '#059669', bg: '#d1fae5', route: '/scale-health' },
+      { id: 'middleware', title: 'Middleware', subtitle: '13 enterprise integrations status', icon: 'layers-outline', color: '#6366f1', bg: '#eef2ff', route: '/middleware' },
     ],
   },
 ];

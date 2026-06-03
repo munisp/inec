@@ -30,6 +30,10 @@ export default function RootLayout() {
         <Stack.Screen name="results" options={{ title: 'Results & Collation' }} />
         <Stack.Screen name="document-ai" options={{ title: 'Document AI' }} />
         <Stack.Screen name="scale-health" options={{ title: 'System Health' }} />
+        <Stack.Screen name="geofencing" options={{ title: 'Geofencing' }} />
+        <Stack.Screen name="voter-search" options={{ title: 'Voter Search' }} />
+        <Stack.Screen name="middleware" options={{ title: 'Middleware' }} />
+        <Stack.Screen name="biometrics" options={{ title: 'Biometrics' }} />
       </Stack>
     </View>
   );

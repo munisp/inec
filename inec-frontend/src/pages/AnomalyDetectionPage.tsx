@@ -51,21 +51,24 @@ export default function AnomalyDetectionPage() {
   const [loading, setLoading] = useState(true);
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [summary, setSummary] = useState<Record<string, number>>({});
+  const [gnnScore, setGnnScore] = useState<Record<string, unknown> | null>(null);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [anomalyRes, integrityRes, benfordRes, methodsRes] = await Promise.all([
+      const [anomalyRes, integrityRes, benfordRes, methodsRes, gnnRes] = await Promise.all([
         api.getAIAnomalies(1, severityFilter || undefined).catch(() => ({ anomalies: [], summary: {} })),
         api.getAIIntegrity(1).catch(() => null),
         api.getAIBenford(1).catch(() => null),
         api.getAIMethods().catch(() => ({ methods: [] })),
+        api.getGNNScore(1).catch(() => null),
       ]);
       setAnomalies(anomalyRes?.anomalies || []);
       setSummary(anomalyRes?.summary || {});
       setIntegrity(integrityRes);
       setBenford(benfordRes);
       setMethods(methodsRes?.methods || []);
+      setGnnScore(gnnRes);
     } catch {
       // fallback
     }
@@ -167,6 +170,7 @@ export default function AnomalyDetectionPage() {
           <TabsTrigger value="benford">{t('benford_analysis')}</TabsTrigger>
           <TabsTrigger value="anomalies">{t('anomaly_list')}</TabsTrigger>
           <TabsTrigger value="methods">{t('ai_methods')}</TabsTrigger>
+          <TabsTrigger value="gnn">GNN Graph</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
@@ -282,6 +286,50 @@ export default function AnomalyDetectionPage() {
                   </tbody>
                 </table>
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="gnn" className="space-y-4">
+          <Card>
+            <CardHeader><CardTitle className="text-base">Graph Neural Network — Cross-PU Anomaly Detection</CardTitle></CardHeader>
+            <CardContent>
+              {gnnScore ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {Object.entries(gnnScore).filter(([k]) => typeof gnnScore[k] !== 'object' || gnnScore[k] === null).map(([k, v]) => (
+                      <div key={k}>
+                        <p className="text-xs text-zinc-500 capitalize">{k.replace(/_/g, ' ')}</p>
+                        <p className="text-lg font-bold">{typeof v === 'number' ? (v as number).toFixed(3) : String(v)}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {gnnScore.node_scores && Array.isArray(gnnScore.node_scores) && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Node Anomaly Scores</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                        {(gnnScore.node_scores as Array<{node: string; score: number}>).slice(0, 20).map((n, i) => (
+                          <div key={i} className={`p-2 rounded text-xs ${n.score > 0.7 ? 'bg-red-50 text-red-700' : n.score > 0.4 ? 'bg-yellow-50 text-yellow-700' : 'bg-green-50 text-green-700'}`}>
+                            <span className="font-mono">{n.node}</span>: {(n.score * 100).toFixed(0)}%
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {gnnScore.edges && Array.isArray(gnnScore.edges) && (gnnScore.edges as Array<{from: string; to: string; weight: number}>).length > 0 && (
+                    <div>
+                      <h4 className="text-sm font-medium mb-2">Suspicious Edges ({(gnnScore.edges as unknown[]).length})</h4>
+                      <div className="space-y-1 max-h-40 overflow-y-auto">
+                        {(gnnScore.edges as Array<{from: string; to: string; weight: number}>).slice(0, 15).map((e, i) => (
+                          <div key={i} className="text-xs font-mono text-zinc-600">{e.from} → {e.to} (weight: {e.weight?.toFixed(2)})</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-zinc-400 text-center py-8">GNN data not available — model may need training first</p>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
