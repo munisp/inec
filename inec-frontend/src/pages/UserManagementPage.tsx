@@ -1,16 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 
-interface User {
-  id: number;
-  username: string;
-  full_name: string;
-  role: string;
-  staff_id: string;
-  created_at: string;
-  last_login?: string;
-}
-
 interface Session {
   id: string;
   user_id: number;
@@ -29,7 +19,7 @@ export default function UserManagementPage() {
   const [revokeMsg, setRevokeMsg] = useState('');
 
   const loadSessions = useCallback(async () => {
-    try { const data = await api.getAuthSessions() as unknown as Session[]; setSessions(Array.isArray(data) ? data : []); } catch {}
+    try { const data = await api.getAuthSessions() as unknown as Session[]; setSessions(Array.isArray(data) ? data : []); } catch { /* ignore */ }
   }, []);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);

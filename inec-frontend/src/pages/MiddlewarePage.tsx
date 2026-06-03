@@ -40,7 +40,7 @@ export default function MiddlewarePage() {
         api.getMiddlewareHealth().catch(() => null),
       ]);
       const mwArr = statusRes?.middleware || (Array.isArray(statusRes) ? statusRes : []);
-      setStatuses(mwArr.map((m: any) => ({ name: m.name, status: m.connected ? 'connected' : 'disconnected', mode: m.mode, details: m.details })));
+      setStatuses(mwArr.map((m: Record<string, unknown>) => ({ name: String(m.name), status: m.connected ? 'connected' : 'disconnected', mode: String(m.mode || ''), details: m.details as Record<string, unknown> | undefined })));
       setHealth(healthRes ? { status: healthRes.all_connected ? 'healthy' : 'degraded', ...healthRes } : null);
 
       const [kt, rs, ar, lt, moja, mojaT, os, osI, waf, wafT] = await Promise.all([
@@ -55,21 +55,20 @@ export default function MiddlewarePage() {
         api.getWAFStatus().catch(() => null),
         api.getWAFThreats().catch(() => []),
       ]);
-      setKafkaTopics(Array.isArray(kt) ? kt : (kt as any)?.topics || []);
+      setKafkaTopics(Array.isArray(kt) ? kt : (kt as Record<string, unknown>)?.topics as unknown[] || []);
       const redisData = rs?.status || rs;
       setRedisStats(redisData && typeof redisData === 'object' && !Array.isArray(redisData)
         ? Object.fromEntries(Object.entries(redisData).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : v]))
         : null);
-      setApisixRoutes(Array.isArray(ar) ? ar : (ar as any)?.routes || []);
-      setLakehouseTables(Array.isArray(lt) ? lt : (lt as any)?.tables || []);
+      setApisixRoutes(Array.isArray(ar) ? ar : (ar as Record<string, unknown>)?.routes as unknown[] || []);
+      setLakehouseTables(Array.isArray(lt) ? lt : (lt as Record<string, unknown>)?.tables as unknown[] || []);
       setMojaStatus(moja);
-      setMojaTransactions(Array.isArray(mojaT) ? mojaT : (mojaT as any)?.transactions || []);
+      setMojaTransactions(Array.isArray(mojaT) ? mojaT : (mojaT as Record<string, unknown>)?.transactions as unknown[] || []);
       setOsStatus(os);
-      setOsIndices(Array.isArray(osI) ? osI : (osI as any)?.indices || []);
+      setOsIndices(Array.isArray(osI) ? osI : (osI as Record<string, unknown>)?.indices as unknown[] || []);
       setWafStatus(waf);
-      setWafThreats(Array.isArray(wafT) ? wafT : (wafT as any)?.threats || []);
-    } catch {
-    } finally {
+      setWafThreats(Array.isArray(wafT) ? wafT : (wafT as Record<string, unknown>)?.threats as unknown[] || []);
+    } catch { /* load error */ } finally {
       setLoading(false);
     }
   }
@@ -78,8 +77,8 @@ export default function MiddlewarePage() {
     if (!searchQuery) return;
     try {
       const res = await api.openSearchQuery(searchQuery);
-      setSearchResults(Array.isArray(res) ? res : (res as any)?.hits || []);
-    } catch { setSearchResults([]); }
+      setSearchResults(Array.isArray(res) ? res : (res as Record<string, unknown>)?.hits as unknown[] || []);
+    } catch { setSearchResults([]); /* ignore */ }
   };
 
   const statusColor = (s: string) => {
@@ -177,11 +176,12 @@ export default function MiddlewarePage() {
               <p className="text-sm text-zinc-500">Embedded routing active</p>
             ) : (
               <div className="space-y-1">
-                {apisixRoutes.map((r: any, i: number) => (
-                  <div key={i} className="text-xs font-mono text-zinc-700">
-                    {r.uri || r.id || JSON.stringify(r).slice(0, 60)}
-                  </div>
-                ))}
+                {apisixRoutes.map((r, i) => {
+                  const route = r as Record<string, unknown>;
+                  return <div key={i} className="text-xs font-mono text-zinc-700">
+                    {String(route.uri || route.id || JSON.stringify(r).slice(0, 60))}
+                  </div>;
+                })}
               </div>
             )}
           </CardContent>
@@ -221,9 +221,10 @@ export default function MiddlewarePage() {
                 {mojaTransactions.length > 0 && (
                   <div className="mt-2 pt-2 border-t">
                     <p className="text-xs text-zinc-500 mb-1">{mojaTransactions.length} recent transactions</p>
-                    {mojaTransactions.slice(0, 5).map((t: any, i: number) => (
-                      <div key={i} className="text-xs font-mono text-zinc-600">{t.id || t.transfer_id || JSON.stringify(t).slice(0, 80)}</div>
-                    ))}
+                    {mojaTransactions.slice(0, 5).map((t, i) => {
+                      const tx = t as Record<string, unknown>;
+                      return <div key={i} className="text-xs font-mono text-zinc-600">{String(tx.id || tx.transfer_id || JSON.stringify(t).slice(0, 80))}</div>;
+                    })}
                   </div>
                 )}
               </div>
@@ -246,9 +247,10 @@ export default function MiddlewarePage() {
             ) : <p className="text-sm text-zinc-500">OpenSearch embedded/not connected</p>}
             {osIndices.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
-                {osIndices.map((idx: any, i: number) => (
-                  <Badge key={i} variant="secondary" className="text-xs">{idx.name || idx.index || JSON.stringify(idx).slice(0, 30)}</Badge>
-                ))}
+                {osIndices.map((idx, i) => {
+                  const ix = idx as Record<string, unknown>;
+                  return <Badge key={i} variant="secondary" className="text-xs">{String(ix.name || ix.index || JSON.stringify(idx).slice(0, 30))}</Badge>;
+                })}
               </div>
             )}
             <div className="mt-3 flex gap-2">
@@ -257,7 +259,7 @@ export default function MiddlewarePage() {
             </div>
             {searchResults.length > 0 && (
               <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
-                {searchResults.slice(0, 10).map((r: any, i: number) => (
+                {searchResults.slice(0, 10).map((r, i) => (
                   <div key={i} className="text-xs font-mono text-zinc-600 truncate">{JSON.stringify(r).slice(0, 100)}</div>
                 ))}
               </div>
@@ -288,12 +290,13 @@ export default function MiddlewarePage() {
               <h4 className="text-sm font-semibold mb-2 text-zinc-700">Recent Threats ({wafThreats.length})</h4>
               {wafThreats.length > 0 ? (
                 <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {wafThreats.slice(0, 10).map((t: any, i: number) => (
-                    <div key={i} className="text-xs p-1 bg-red-50 rounded">
-                      <span className="font-medium text-red-700">{t.type || t.attack_type || 'threat'}</span>
-                      <span className="text-zinc-500 ml-2">{t.source_ip || ''} {t.timestamp || t.detected_at || ''}</span>
+                  {wafThreats.slice(0, 10).map((t, i) => {
+                    const threat = t as Record<string, unknown>;
+                    return <div key={i} className="text-xs p-1 bg-red-50 rounded">
+                      <span className="font-medium text-red-700">{String(threat.type || threat.attack_type || 'threat')}</span>
+                      <span className="text-zinc-500 ml-2">{String(threat.source_ip || '')} {String(threat.timestamp || threat.detected_at || '')}</span>
                     </div>
-                  ))}
+                  })}
                 </div>
               ) : <p className="text-sm text-zinc-500">No threats detected</p>}
             </div>

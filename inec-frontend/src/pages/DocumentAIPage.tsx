@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { api } from '@/lib/api';
 
 interface AnalysisResult {
@@ -39,7 +39,7 @@ export default function DocumentAIPage() {
     try {
       const res = await api.analyzeDocument(parseInt(reportId)) as unknown as AnalysisResult;
       setResult(res);
-    } catch {}
+    } catch { /* ignore */ }
     setLoading(false);
   };
 
@@ -48,7 +48,7 @@ export default function DocumentAIPage() {
     try {
       const res = await api.getDocumentAnalysisStatus(parseInt(reportId)) as unknown as AnalysisResult;
       setStatusResult(res);
-    } catch {}
+    } catch { /* ignore */ }
   };
 
   return (

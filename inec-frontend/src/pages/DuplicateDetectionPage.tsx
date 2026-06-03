@@ -30,7 +30,7 @@ export default function DuplicateDetectionPage() {
     try {
       const res = await api.scanDuplicateVoters(scanForm.stateCode || undefined, scanForm.modality) as unknown as ScanResult;
       setResult(res);
-    } catch {}
+    } catch { /* ignore */ }
     setScanning(false);
   };
 

@@ -46,7 +46,7 @@ export default function ExportCenterPage() {
       a.download = `inec-${type}-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {}
+    } catch { /* ignore */ }
     setDownloading(null);
   };
 
@@ -104,7 +104,7 @@ export default function ExportCenterPage() {
               className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50 text-sm">
               {downloading === exp.type ? 'Exporting...' : 'Download JSON'}
             </button>
-            {results[exp.type] && <p className="text-xs text-green-600 dark:text-green-400 mt-2">Export ready — file downloaded.</p>}
+            {results[exp.type] ? <p className="text-xs text-green-600 dark:text-green-400 mt-2">Export ready — file downloaded.</p> : null}
           </div>
         ))}
       </div>

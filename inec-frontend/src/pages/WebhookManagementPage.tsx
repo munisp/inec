@@ -36,12 +36,12 @@ export default function WebhookManagementPage() {
     try {
       await api.createWebhook(form.url, form.events, form.secret || undefined);
       setShowForm(false); setForm({ url: '', events: [], secret: '' }); load();
-    } catch {}
+    } catch { /* ignore */ }
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this webhook?')) return;
-    try { await api.deleteWebhook(id); load(); } catch {}
+    try { await api.deleteWebhook(id); load(); } catch { /* ignore */ }
   };
 
   const toggleEvent = (event: string) => {

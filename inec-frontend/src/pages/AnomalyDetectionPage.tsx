@@ -304,7 +304,7 @@ export default function AnomalyDetectionPage() {
                       </div>
                     ))}
                   </div>
-                  {gnnScore.node_scores && Array.isArray(gnnScore.node_scores) && (
+                  {Array.isArray(gnnScore.node_scores) ? (
                     <div>
                       <h4 className="text-sm font-medium mb-2">Node Anomaly Scores</h4>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -315,8 +315,8 @@ export default function AnomalyDetectionPage() {
                         ))}
                       </div>
                     </div>
-                  )}
-                  {gnnScore.edges && Array.isArray(gnnScore.edges) && (gnnScore.edges as Array<{from: string; to: string; weight: number}>).length > 0 && (
+                  ) : null}
+                  {Array.isArray(gnnScore.edges) && (gnnScore.edges as Array<{from: string; to: string; weight: number}>).length > 0 ? (
                     <div>
                       <h4 className="text-sm font-medium mb-2">Suspicious Edges ({(gnnScore.edges as unknown[]).length})</h4>
                       <div className="space-y-1 max-h-40 overflow-y-auto">
@@ -325,7 +325,7 @@ export default function AnomalyDetectionPage() {
                         ))}
                       </div>
                     </div>
-                  )}
+                  ) : null}
                 </div>
               ) : (
                 <p className="text-sm text-zinc-400 text-center py-8">GNN data not available — model may need training first</p>
