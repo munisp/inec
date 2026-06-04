@@ -453,7 +453,7 @@ export const api = {
   revokeAllSessions: () =>
     request('/auth/sessions/revoke-all', { method: 'POST' }),
   rotateAPIKey: () =>
-    request('/auth/api-keys/rotate', { method: 'POST' }),
+    request('/auth/api-keys/rotate', { method: 'POST', body: JSON.stringify({ name: 'default-api-key' }) }),
 
   // Geofencing
   geofenceCheck: (lat: number, lng: number, puCode: string, bvasSerial?: string) =>

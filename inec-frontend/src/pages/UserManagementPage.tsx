@@ -10,11 +10,11 @@ interface Session {
   expires_at: string;
 }
 
-const ROLES = ['admin', 'officer', 'observer', 'public'];
+const ROLES = ['admin', 'presiding_officer', 'collation_officer', 'observer', 'public'];
 
 export default function UserManagementPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [promoteForm, setPromoteForm] = useState({ userId: '', role: 'officer' });
+  const [promoteForm, setPromoteForm] = useState({ userId: '', role: 'presiding_officer' });
   const [promoteMsg, setPromoteMsg] = useState('');
   const [revokeMsg, setRevokeMsg] = useState('');
 
@@ -29,7 +29,7 @@ export default function UserManagementPage() {
     try {
       await api.promoteUser(parseInt(promoteForm.userId), promoteForm.role);
       setPromoteMsg(`User ${promoteForm.userId} promoted to ${promoteForm.role}`);
-      setPromoteForm({ userId: '', role: 'officer' });
+      setPromoteForm({ userId: '', role: 'presiding_officer' });
     } catch (e: unknown) { setPromoteMsg(`Error: ${(e as Error).message}`); }
   };
 
@@ -64,7 +64,7 @@ export default function UserManagementPage() {
           <div className="space-y-3">
             <input className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white" placeholder="User ID" value={promoteForm.userId} onChange={e => setPromoteForm({ ...promoteForm, userId: e.target.value })} />
             <select className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white" value={promoteForm.role} onChange={e => setPromoteForm({ ...promoteForm, role: e.target.value })}>
-              {ROLES.map(r => <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>)}
+              {ROLES.map(r => <option key={r} value={r}>{r.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}</option>)}
             </select>
             <button onClick={handlePromote} className="w-full bg-blue-600 text-white rounded py-2 hover:bg-blue-700">Promote</button>
           </div>
