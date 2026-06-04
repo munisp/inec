@@ -19,7 +19,7 @@ interface CheckResult {
 export default function GeofencingPage() {
   const [stats, setStats] = useState<GeofenceStats | null>(null);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
-  const [form, setForm] = useState({ lat: '', lng: '', puCode: '' });
+  const [form, setForm] = useState({ lat: '', lng: '', puCode: '', bvasSerial: '' });
   const [spoofForm, setSpoofForm] = useState({ lat: '', lng: '', deviceId: '', accuracy: '' });
   const [spoofResult, setSpoofResult] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -30,7 +30,7 @@ export default function GeofencingPage() {
     if (!form.lat || !form.lng || !form.puCode) return;
     setLoading(true);
     try {
-      const res = await api.geofenceCheck(parseFloat(form.lat), parseFloat(form.lng), form.puCode) as unknown as CheckResult;
+      const res = await api.geofenceCheck(parseFloat(form.lat), parseFloat(form.lng), form.puCode, form.bvasSerial || undefined) as unknown as CheckResult;
       setCheckResult(res);
     } catch (e: unknown) { setCheckResult({ within_geofence: false, distance_m: 0, message: (e as Error).message }); }
     setLoading(false);
@@ -78,6 +78,7 @@ export default function GeofencingPage() {
             <input className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white" placeholder="Latitude (e.g. 9.0579)" value={form.lat} onChange={e => setForm({ ...form, lat: e.target.value })} />
             <input className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white" placeholder="Longitude (e.g. 7.4951)" value={form.lng} onChange={e => setForm({ ...form, lng: e.target.value })} />
             <input className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white" placeholder="Polling Unit Code" value={form.puCode} onChange={e => setForm({ ...form, puCode: e.target.value })} />
+            <input className="w-full border dark:border-gray-600 rounded px-3 py-2 dark:bg-gray-700 dark:text-white" placeholder="BVAS Serial (e.g. BVAS-001)" value={form.bvasSerial} onChange={e => setForm({ ...form, bvasSerial: e.target.value })} />
             <button onClick={handleCheck} disabled={loading} className="w-full bg-green-600 text-white rounded py-2 hover:bg-green-700 disabled:opacity-50">
               {loading ? 'Checking...' : 'Check Location'}
             </button>

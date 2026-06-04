@@ -32,23 +32,25 @@ export default function DocumentAIPage() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [statusResult, setStatusResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleAnalyze = async () => {
     if (!reportId) return;
-    setLoading(true); setResult(null);
+    setLoading(true); setResult(null); setError('');
     try {
       const res = await api.analyzeDocument(parseInt(reportId)) as unknown as AnalysisResult;
       setResult(res);
-    } catch { /* ignore */ }
+    } catch (e: unknown) { setError(`Analysis failed: ${(e as Error).message}`); }
     setLoading(false);
   };
 
   const handleCheckStatus = async () => {
     if (!reportId) return;
+    setError('');
     try {
       const res = await api.getDocumentAnalysisStatus(parseInt(reportId)) as unknown as AnalysisResult;
       setStatusResult(res);
-    } catch { /* ignore */ }
+    } catch (e: unknown) { setError(`Status check failed: ${(e as Error).message}`); }
   };
 
   return (
@@ -70,6 +72,8 @@ export default function DocumentAIPage() {
           <button onClick={handleCheckStatus} className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700">Check Status</button>
         </div>
       </div>
+
+      {error && <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded">{error}</p>}
 
       {/* Status */}
       {statusResult && !result && (

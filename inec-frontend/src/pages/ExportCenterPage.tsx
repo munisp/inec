@@ -20,6 +20,7 @@ const EXPORTS: ExportConfig[] = [
 export default function ExportCenterPage() {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, unknown>>({});
+  const [error, setError] = useState('');
   const [electionId, setElectionId] = useState('1');
   const [stateCode, setStateCode] = useState('');
   const [collationLevel, setCollationLevel] = useState('state');
@@ -37,6 +38,7 @@ export default function ExportCenterPage() {
         case 'audit': data = await api.exportAudit(auditStart || undefined, auditEnd || undefined); break;
       }
       setResults(prev => ({ ...prev, [type]: data }));
+      setError('');
 
       // Auto-download as JSON
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -46,7 +48,7 @@ export default function ExportCenterPage() {
       a.download = `inec-${type}-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch { /* ignore */ }
+    } catch (e: unknown) { setError(`Export failed: ${(e as Error).message}`); }
     setDownloading(null);
   };
 
@@ -64,6 +66,8 @@ export default function ExportCenterPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold dark:text-white">Export Center</h1>
       <p className="text-gray-500 dark:text-gray-400">Download election data in JSON format. All exports include real-time data from the database.</p>
+
+      {error && <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded">{error}</p>}
 
       {/* Global Filters */}
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow flex flex-wrap gap-4 items-end">

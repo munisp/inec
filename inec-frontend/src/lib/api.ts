@@ -456,13 +456,13 @@ export const api = {
     request('/auth/api-keys/rotate', { method: 'POST' }),
 
   // Geofencing
-  geofenceCheck: (lat: number, lng: number, puCode: string) =>
-    request('/geofence/check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, polling_unit_code: puCode }) }),
+  geofenceCheck: (lat: number, lng: number, puCode: string, bvasSerial?: string) =>
+    request('/geofence/check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, polling_unit_code: puCode, bvas_serial: bvasSerial || 'BVAS-DEFAULT' }) }),
   getGeofenceStats: (electionId: number) => request(`/geofence/stats/${electionId}`),
 
   // GPS Spoofing Detection
   gpsSpoofCheck: (lat: number, lng: number, deviceId: string, accuracy?: number) =>
-    request('/geo/spoof-check', { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng, device_id: deviceId, accuracy }) }),
+    request('/geo/spoof-check', { method: 'POST', body: JSON.stringify({ lat, lng, device_id: deviceId, accuracy }) }),
 
   // Webhooks
   getWebhooks: () => request('/api/v1/webhooks'),
@@ -483,8 +483,8 @@ export const api = {
   // Duplicate Voter Detection
   scanDuplicateVoters: (stateCode?: string, modality?: string) =>
     request('/voters/duplicates/scan', { method: 'POST', body: JSON.stringify({ state_code: stateCode, modality: modality || 'fingerprint' }) }),
-  resolveDuplicateVoter: (sourceVin: string, candidateVin: string, action: string) =>
-    request('/voters/duplicates/resolve', { method: 'POST', body: JSON.stringify({ source_vin: sourceVin, candidate_vin: candidateVin, action }) }),
+  resolveDuplicateVoter: (sourceVin: string, candidateVin: string, decision: string) =>
+    request('/voters/duplicates/resolve', { method: 'POST', body: JSON.stringify({ voter_a_vin: sourceVin, voter_b_vin: candidateVin, decision }) }),
 
   // Admin User Management
   promoteUser: (userId: number, role: string) =>

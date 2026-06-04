@@ -24,8 +24,14 @@ export default function WebhookManagementPage() {
   const [form, setForm] = useState({ url: '', events: [] as string[], secret: '' });
   const [loading, setLoading] = useState(true);
 
+  const [error, setError] = useState('');
+
   const load = useCallback(async () => {
-    try { const data = await api.getWebhooks() as unknown as Webhook[]; setWebhooks(Array.isArray(data) ? data : []); } catch { setWebhooks([]); }
+    try {
+      const data = await api.getWebhooks() as unknown as { webhooks?: Webhook[] } | Webhook[];
+      const list = Array.isArray(data) ? data : (data?.webhooks || []);
+      setWebhooks(list);
+    } catch { setWebhooks([]); }
     setLoading(false);
   }, []);
 
@@ -35,13 +41,13 @@ export default function WebhookManagementPage() {
     if (!form.url || form.events.length === 0) return;
     try {
       await api.createWebhook(form.url, form.events, form.secret || undefined);
-      setShowForm(false); setForm({ url: '', events: [], secret: '' }); load();
-    } catch { /* ignore */ }
+      setShowForm(false); setForm({ url: '', events: [], secret: '' }); setError(''); load();
+    } catch (e: unknown) { setError(`Create failed: ${(e as Error).message}`); }
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('Delete this webhook?')) return;
-    try { await api.deleteWebhook(id); load(); } catch { /* ignore */ }
+    try { await api.deleteWebhook(id); setError(''); load(); } catch (e: unknown) { setError(`Delete failed: ${(e as Error).message}`); }
   };
 
   const toggleEvent = (event: string) => {
@@ -78,6 +84,8 @@ export default function WebhookManagementPage() {
           </div>
         </div>
       )}
+
+      {error && <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 p-3 rounded">{error}</p>}
 
       {loading ? <p className="text-gray-500">Loading...</p> : webhooks.length === 0 ? (
         <div className="bg-white dark:bg-gray-800 rounded-lg p-8 text-center shadow">

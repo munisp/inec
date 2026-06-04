@@ -44,6 +44,7 @@ export default defineConfig({
       '/admin': 'http://localhost:8088',
       '/db': 'http://localhost:8088',
       '/pgpool': 'http://localhost:8088',
+      '/ems': 'http://localhost:8088',
     },
   },
 })

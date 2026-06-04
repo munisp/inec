@@ -768,14 +768,14 @@ func handleWebhookCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eventsJSON, _ := json.Marshal(req.Events)
-	id := insertReturningID(db, "INSERT INTO webhook_subscriptions (url, events, secret, active, created_at) VALUES (?,?,?,1,CURRENT_TIMESTAMP)",
+	id := insertReturningID(db, "INSERT INTO webhook_subscriptions (url, events, secret, is_active, created_at) VALUES (?,?,?,1,CURRENT_TIMESTAMP)",
 		req.URL, string(eventsJSON), req.Secret)
 
 	writeJSON(w, 201, M{"id": id, "url": req.URL, "events": req.Events, "active": true})
 }
 
 func handleWebhookList(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.QueryContext(r.Context(), "SELECT id, url, events, active, created_at FROM webhook_subscriptions ORDER BY id DESC")
+	rows, err := db.QueryContext(r.Context(), "SELECT id, url, events, is_active, created_at FROM webhook_subscriptions ORDER BY id DESC")
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
@@ -807,7 +807,7 @@ func handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
 
 // dispatchWebhook sends event notifications to all subscribed URLs.
 func dispatchWebhook(event string, payload interface{}) {
-	rows, _ := db.Query("SELECT url, secret FROM webhook_subscriptions WHERE active=1 AND events LIKE ?", "%"+event+"%")
+	rows, _ := db.Query("SELECT url, secret FROM webhook_subscriptions WHERE is_active=1 AND events LIKE ?", "%"+event+"%")
 	if rows == nil {
 		return
 	}
@@ -844,7 +844,8 @@ func initWebhookSchema() {
 		url TEXT NOT NULL,
 		events TEXT NOT NULL,
 		secret TEXT DEFAULT '',
-		active INTEGER DEFAULT 1,
+		is_active INTEGER DEFAULT 1,
+		created_by TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS gps_spoof_events (
