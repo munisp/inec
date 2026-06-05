@@ -1,15 +1,12 @@
 package main
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -349,40 +346,6 @@ func (h *HSMManager) GenerateKey(purpose string, slot int) (string, error) {
 		"key_generate", keyID, slot, 1, latency)
 	return keyID, nil
 }
-
-func (h *HSMManager) EncryptWithHSM(data []byte, slot int) ([]byte, []byte, error) {
-	h.mu.RLock()
-	key := h.slots[slot%len(h.slots)]
-	h.mu.RUnlock()
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	io.ReadFull(rand.Reader, nonce)
-	ct := gcm.Seal(nil, nonce, data, nil)
-	return ct, nonce, nil
-}
-
-func (h *HSMManager) DecryptWithHSM(ct, nonce []byte, slot int) ([]byte, error) {
-	h.mu.RLock()
-	key := h.slots[slot%len(h.slots)]
-	h.mu.RUnlock()
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	return gcm.Open(nil, nonce, ct, nil)
-}
-
 type BiometricSDKRegistry struct {
 	db        *sql.DB
 	providers map[string]*SDKProvider

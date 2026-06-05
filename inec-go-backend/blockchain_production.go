@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -386,18 +385,6 @@ func (f *HyperledgerFabricNetwork) signData(data []byte) string {
 	sig := append(r.Bytes(), s.Bytes()...)
 	return hex.EncodeToString(sig)
 }
-
-func (f *HyperledgerFabricNetwork) verifySignature(data []byte, sigHex string) bool {
-	hash := sha256.Sum256(data)
-	sigBytes, err := hex.DecodeString(sigHex)
-	if err != nil || len(sigBytes) < 64 {
-		return false
-	}
-	r := new(big.Int).SetBytes(sigBytes[:32])
-	s := new(big.Int).SetBytes(sigBytes[32:64])
-	return ecdsa.Verify(&f.ecdsaKey.PublicKey, hash[:], r, s)
-}
-
 func (f *HyperledgerFabricNetwork) GetPublicKeyPEM() string {
 	pubBytes, _ := x509.MarshalPKIXPublicKey(&f.ecdsaKey.PublicKey)
 	block := &pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}
@@ -790,17 +777,6 @@ func (m *MerkleTreeBuilder) BuildTree(leaves []string, treeType string) M {
 		"tree_type": treeType,
 	}
 }
-
-func (m *MerkleTreeBuilder) VerifyLeaf(rootHash string, leaf string, proof []string) bool {
-	h := sha256.Sum256([]byte(leaf))
-	current := hex.EncodeToString(h[:])
-	for _, p := range proof {
-		combined := sha256.Sum256([]byte(current + p))
-		current = hex.EncodeToString(combined[:])
-	}
-	return current == rootHash
-}
-
 func seedBlockchainProduction(database *sql.DB) {
 	var count int
 	database.QueryRow(`SELECT COUNT(*) FROM fabric_peers`).Scan(&count)

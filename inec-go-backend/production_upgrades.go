@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -350,30 +349,6 @@ func (h *ProductionHSM) VerifyECDSA(data []byte, sigHex string) bool {
 	s := new(big.Int).SetBytes(sigBytes[len(sigBytes)/2:])
 	return ecdsa.Verify(&h.ecdsaKey.PublicKey, hash[:], r, s)
 }
-
-func (h *ProductionHSM) DeriveKey(masterKeyID, context string, keyLen int) ([]byte, error) {
-	h.mu.RLock()
-	rawKey, cached := h.keyCache[masterKeyID]
-	h.mu.RUnlock()
-
-	if !cached {
-		var err error
-		rawKey, err = h.unwrapStoredKey(masterKeyID)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	mac := hmac.New(sha512.New, rawKey)
-	mac.Write([]byte(context))
-	derived := mac.Sum(nil)
-
-	if keyLen > len(derived) {
-		keyLen = len(derived)
-	}
-	return derived[:keyLen], nil
-}
-
 func (h *ProductionHSM) GetPublicKeyPEM() string {
 	pubBytes, _ := x509.MarshalPKIXPublicKey(&h.ecdsaKey.PublicKey)
 	block := &pem.Block{Type: "EC PUBLIC KEY", Bytes: pubBytes}
@@ -1193,36 +1168,6 @@ func (t *ProductionTBEngine) CreateTransferWithJournal(debitAcct, creditAcct str
 
 	return txID, nil
 }
-
-func (t *ProductionTBEngine) PostWithJournal(txID string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	var debitAcct, creditAcct string
-	var amount int64
-	var status string
-	err := t.db.QueryRow(`SELECT debit_account_id, credit_account_id, amount, status FROM tb_transfers WHERE id=?`, txID).Scan(&debitAcct, &creditAcct, &amount, &status)
-	if err != nil {
-		return fmt.Errorf("transfer not found: %s", txID)
-	}
-	if status != "PENDING" {
-		return fmt.Errorf("transfer not pending: %s", status)
-	}
-
-	dbExecLog("tb_post", `UPDATE tb_transfers SET status='POSTED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID)
-	dbExecLog("tb_debit_post", `UPDATE tb_accounts SET debits_pending=debits_pending-?, debits_posted=debits_posted+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, amount, amount, debitAcct)
-	dbExecLog("tb_credit_post", `UPDATE tb_accounts SET credits_pending=credits_pending-?, credits_posted=credits_posted+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, amount, amount, creditAcct)
-
-	var debitBalance, creditBalance int64
-	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, debitAcct).Scan(&debitBalance)
-	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, creditAcct).Scan(&creditBalance)
-
-	dbExecLog("tb_journal", `INSERT INTO tb_journal (transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit) VALUES (?,?,?,?,?,?,?)`,
-		txID, "POSTED", debitAcct, creditAcct, amount, debitBalance, creditBalance)
-
-	return nil
-}
-
 func (t *ProductionTBEngine) GetJournal(transferID string) ([]M, error) {
 	rows, err := t.db.Query(`SELECT transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit, idempotency_key, created_at FROM tb_journal WHERE transfer_id=? ORDER BY created_at`, transferID)
 	if err != nil {

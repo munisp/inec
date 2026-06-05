@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -98,13 +97,6 @@ var (
 		tokens map[string]time.Time
 	}{tokens: make(map[string]time.Time)}
 )
-
-func generateCSRFToken() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 func csrfMiddleware(next http.Handler) http.Handler {
 	safeMethods := map[string]bool{"GET": true, "HEAD": true, "OPTIONS": true}
 
@@ -187,13 +179,6 @@ type redisRateLimiter struct {
 	mu       sync.Mutex
 	fallback *rateLimiterStore
 }
-
-func newRedisRateLimiter() *redisRateLimiter {
-	return &redisRateLimiter{
-		fallback: newRateLimiter(),
-	}
-}
-
 func (rl *redisRateLimiter) allow(key string, limit int, window time.Duration) bool {
 	// Try Redis-based rate limiting if middleware hub has Redis
 	if mwHub != nil && mwHub.Redis != nil {

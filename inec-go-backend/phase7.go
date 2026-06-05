@@ -1916,9 +1916,3 @@ func handleSendPushNotification(w http.ResponseWriter, r *http.Request) {
 		req.Title, req.Body, string(recipientsJSON), req.Channel, req.Priority, req.ElectionID, "sent")
 	writeJSON(w, 201, M{"id": id, "recipients": len(req.Recipients), "status": "sent", "message": "Notification dispatched"})
 }
-
-// helper to safely convert string to int
-func atoiSafe(s string) int {
-	v, _ := strconv.Atoi(s)
-	return v
-}

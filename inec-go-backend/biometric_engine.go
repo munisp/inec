@@ -1258,26 +1258,6 @@ func (r *BVASDeviceRegistry) RegisterDevice(deviceID, firmware string, modalitie
 
 	return M{"device_id": deviceID, "status": "registered", "modalities": modalities, "tls": "TLS1.3"}
 }
-
-func (r *BVASDeviceRegistry) InitiateCapture(deviceID, vin, modality string) M {
-	sessionID := fmt.Sprintf("CAP-%s-%d", deviceID, time.Now().UnixNano())
-	dbExecLog("bvas_session", `INSERT INTO bvas_capture_sessions (session_id, device_id, voter_vin, modality, status) VALUES (?,?,?,?,?)`,
-		sessionID, deviceID, vin, modality, "initiated")
-	return M{"session_id": sessionID, "device_id": deviceID, "status": "initiated", "modality": modality}
-}
-
-func (r *BVASDeviceRegistry) CompleteCapture(sessionID string, quality float64, nfiq int, width, height, dpi int) M {
-	captureStart := time.Now()
-	status := "captured"
-	if quality < 0.4 {
-		status = "quality_failed"
-	}
-	processingMs := time.Since(captureStart).Milliseconds() + int64(50+int(quality*250))
-	dbExecLog("bvas_capture", `UPDATE bvas_capture_sessions SET capture_quality=?, nfiq2_score=?, image_width=?, image_height=?, image_dpi=?, status=?, processing_time_ms=? WHERE session_id=?`,
-		quality, nfiq, width, height, dpi, status, processingMs, sessionID)
-	return M{"session_id": sessionID, "status": status, "quality": quality, "nfiq2": nfiq}
-}
-
 func seedBiometricEngine(database *sql.DB) {
 	var count int
 	database.QueryRow("SELECT COUNT(*) FROM biometric_templates").Scan(&count)

@@ -373,17 +373,6 @@ type MTLSConfig struct {
 	CAFile     string `json:"ca_file"`
 	ServerName string `json:"server_name"`
 }
-
-func getMTLSConfig() *MTLSConfig {
-	return &MTLSConfig{
-		Enabled:    envBool("MTLS_ENABLED", false),
-		CertFile:   envString("MTLS_CERT_FILE", "/etc/tls/server.crt"),
-		KeyFile:    envString("MTLS_KEY_FILE", "/etc/tls/server.key"),
-		CAFile:     envString("MTLS_CA_FILE", "/etc/tls/ca.crt"),
-		ServerName: envString("MTLS_SERVER_NAME", "inec-backend.internal"),
-	}
-}
-
 func envBool(key string, fallback bool) bool {
 	v := os.Getenv(key)
 	return v == "true" || v == "1" || (v == "" && fallback)

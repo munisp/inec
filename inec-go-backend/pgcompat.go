@@ -239,24 +239,3 @@ func insertReturningID(querier dbQuerier, query string, args ...interface{}) int
 	querier.QueryRow(q, args...).Scan(&id)
 	return id
 }
-
-func sqlNow() string {
-	if usePostgres {
-		return "NOW()"
-	}
-	return "datetime('now')"
-}
-
-func sqlInterval(expr string) string {
-	if usePostgres {
-		return "NOW() - INTERVAL '" + expr + "'"
-	}
-	return "datetime('now', '-" + expr + "')"
-}
-
-func sqlEpoch(col string) string {
-	if usePostgres {
-		return "COALESCE(EXTRACT(EPOCH FROM " + col + ")::INTEGER, 0)"
-	}
-	return "COALESCE(CAST(strftime('%s', " + col + ") AS INTEGER), 0)"
-}

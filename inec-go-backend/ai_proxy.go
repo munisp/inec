@@ -39,29 +39,6 @@ func initAIProxy() {
 }
 
 var aiProxyClient = NewResilientHTTPClient("ai-proxy")
-
-func proxyToAI(w http.ResponseWriter, r *http.Request, path string) {
-	url := aiServiceURL + path
-	if r.URL.RawQuery != "" {
-		url += "?" + r.URL.RawQuery
-	}
-	req, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
-	if err != nil {
-		writeJSON(w, 200, M{"error": "AI service unavailable", "fallback": true})
-		return
-	}
-	resp, err := aiProxyClient.Do(req)
-	if err != nil {
-		writeJSON(w, 200, M{"error": "AI service unavailable", "fallback": true})
-		return
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
-}
-
 // callMLInference sends a request to the ML inference service (Python or Rust).
 // Falls back to rule-based analysis if the service is unavailable.
 func callMLInference(ctx context.Context, service, path string, payload interface{}) (M, error) {

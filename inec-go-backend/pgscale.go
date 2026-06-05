@@ -7,7 +7,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -217,19 +216,6 @@ func dbExecCtx(ctx context.Context, query string, args ...interface{}) (sql.Resu
 	}
 	return res, err
 }
-
-func dbQueryTimeout(timeoutMs int, query string, args ...interface{}) (*sql.Rows, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-	defer cancel()
-	return dbQueryCtx(ctx, query, args...)
-}
-
-func dbExecTimeout(timeoutMs int, query string, args ...interface{}) (sql.Result, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-	defer cancel()
-	return dbExecCtx(ctx, query, args...)
-}
-
 // dbExecLog executes a write query and logs errors (fire-and-forget with observability).
 // Use for non-critical writes (audit logs, metrics, caches) where failure is acceptable but should be visible.
 func dbExecLog(label string, query string, args ...interface{}) {
@@ -238,55 +224,6 @@ func dbExecLog(label string, query string, args ...interface{}) {
 		log.Error().Err(err).Str("op", label).Msg("db.Exec failed")
 	}
 }
-
-func dbCachedQuery(query string, args ...interface{}) (*sql.Rows, error) {
-	start := time.Now()
-	stmt := stmtCache.get(query)
-	if stmt != nil {
-		rows, err := stmt.Query(args...)
-		isReplica := dbReader != dbWriter
-		dbMetrics.recordRead(time.Since(start), isReplica)
-		return rows, err
-	}
-	return dbQueryCtx(context.Background(), query, args...)
-}
-
-func dbBatchInsert(table string, columns []string, rows [][]interface{}) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	start := time.Now()
-	tx, err := dbWriter.Begin()
-	if err != nil {
-		return err
-	}
-	placeholders := make([]string, len(columns))
-	for i := range columns {
-		if usePostgres {
-			placeholders[i] = fmt.Sprintf("$%d", i+1)
-		} else {
-			placeholders[i] = "?"
-		}
-	}
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		table, strings.Join(columns, ","), strings.Join(placeholders, ","))
-
-	stmt, err := tx.Prepare(query)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer stmt.Close()
-
-	for _, row := range rows {
-		if _, err := stmt.Exec(row...); err != nil {
-			log.Warn().Err(err).Msg("batch insert warning")
-		}
-	}
-	dbMetrics.recordWrite(time.Since(start))
-	return tx.Commit()
-}
-
 func handleDBMetrics(w http.ResponseWriter, r *http.Request) {
 	hasReplica := dbReader != nil && dbReader != dbWriter
 	data := M{

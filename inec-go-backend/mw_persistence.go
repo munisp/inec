@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -156,88 +155,6 @@ func initMiddlewareTables(database *sql.DB) {
 	execMulti(database, schema)
 	log.Info().Msg("Middleware persistence tables initialized")
 }
-
-// Cache operations backed by mw_cache
-func persistCacheSet(ctx context.Context, key, value string, ttlSeconds int) error {
-	var expiresAt interface{}
-	if ttlSeconds > 0 {
-		expiresAt = time.Now().Add(time.Duration(ttlSeconds) * time.Second)
-	}
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO mw_cache (key, value, ttl_seconds, expires_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, ttl_seconds=excluded.ttl_seconds, expires_at=excluded.expires_at, created_at=CURRENT_TIMESTAMP`,
-		key, value, ttlSeconds, expiresAt)
-	return err
-}
-
-func persistCacheGet(ctx context.Context, key string) (string, bool) {
-	var val string
-	err := db.QueryRowContext(ctx,
-		`SELECT value FROM mw_cache WHERE key=? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, key).Scan(&val)
-	if err != nil {
-		return "", false
-	}
-	return val, true
-}
-
-func persistCacheDel(ctx context.Context, key string) {
-	db.ExecContext(ctx, `DELETE FROM mw_cache WHERE key=?`, key)
-}
-
-// Event stream operations backed by mw_events
-func persistEventPublish(ctx context.Context, topic, key, value string, headers map[string]string) error {
-	headersJSON, _ := json.Marshal(headers)
-	var maxOffset int
-	db.QueryRowContext(ctx, `SELECT COALESCE(MAX(offset_id), 0) FROM mw_events WHERE topic=?`, topic).Scan(&maxOffset)
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO mw_events (topic, key, value, headers, offset_id) VALUES (?, ?, ?, ?, ?)`,
-		topic, key, value, string(headersJSON), maxOffset+1)
-	return err
-}
-
-func persistEventConsume(ctx context.Context, topic string, fromOffset, limit int) ([]map[string]interface{}, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT id, topic, key, value, headers, offset_id, created_at FROM mw_events
-		 WHERE topic=? AND offset_id > ? ORDER BY offset_id LIMIT ?`,
-		topic, fromOffset, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var results []map[string]interface{}
-	for rows.Next() {
-		var id, offsetID int
-		var t, k, v, h string
-		var createdAt time.Time
-		if err := rows.Scan(&id, &t, &k, &v, &h, &offsetID, &createdAt); err != nil {
-			continue
-		}
-		results = append(results, map[string]interface{}{
-			"id": id, "topic": t, "key": k, "value": v,
-			"headers": h, "offset": offsetID, "timestamp": createdAt,
-		})
-	}
-	return results, nil
-}
-
-// State store operations backed by mw_state
-func persistStateSet(ctx context.Context, store, key, value string) error {
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO mw_state (store_name, key, value) VALUES (?, ?, ?)
-		 ON CONFLICT(store_name, key) DO UPDATE SET value=excluded.value, version=version+1, updated_at=CURRENT_TIMESTAMP`,
-		store, key, value)
-	return err
-}
-
-func persistStateGet(ctx context.Context, store, key string) (string, bool) {
-	var val string
-	err := db.QueryRowContext(ctx, `SELECT value FROM mw_state WHERE store_name=? AND key=?`, store, key).Scan(&val)
-	if err != nil {
-		return "", false
-	}
-	return val, true
-}
-
 // Cleanup expired cache entries (run periodically)
 func cleanupExpiredCache() {
 	for {
