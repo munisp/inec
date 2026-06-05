@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-const API_URL = process.env.API_URL || 'http://localhost:8080';
+const API_URL = process.env.API_URL || 'http://localhost:8088';
 
 test.describe('Election Management', () => {
   let authToken: string;
@@ -15,8 +15,8 @@ test.describe('Election Management', () => {
 
   test('should list elections', async ({ page }) => {
     await page.goto('/login');
-    await page.fill('[name="username"]', 'admin');
-    await page.fill('[name="password"]', 'admin123');
+    await page.fill('#username', 'admin');
+    await page.fill('#password', 'admin123');
     await page.click('button[type="submit"]');
     await page.waitForURL(/dashboard|\/$/);
 

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-const API_URL = process.env.API_URL || 'http://localhost:8080';
+const API_URL = process.env.API_URL || 'http://localhost:8088';
 
 test.describe('Authentication Flows', () => {
   test('should show login page when unauthenticated', async ({ page }) => {
@@ -12,16 +12,16 @@ test.describe('Authentication Flows', () => {
 
   test('should login with valid credentials', async ({ page }) => {
     await page.goto('/login');
-    await page.fill('[name="username"]', 'admin');
-    await page.fill('[name="password"]', 'admin123');
+    await page.fill('#username', 'admin');
+    await page.fill('#password', 'admin123');
     await page.click('button[type="submit"]');
     await expect(page).toHaveURL(/dashboard|\/$/);
   });
 
   test('should reject invalid credentials', async ({ page }) => {
     await page.goto('/login');
-    await page.fill('[name="username"]', 'invalid');
-    await page.fill('[name="password"]', 'wrong');
+    await page.fill('#username', 'invalid');
+    await page.fill('#password', 'wrong');
     await page.click('button[type="submit"]');
     await expect(page.getByText(/invalid|unauthorized|failed/i)).toBeVisible();
   });
@@ -29,8 +29,8 @@ test.describe('Authentication Flows', () => {
   test('should redirect to login after logout', async ({ page }) => {
     // Login first
     await page.goto('/login');
-    await page.fill('[name="username"]', 'admin');
-    await page.fill('[name="password"]', 'admin123');
+    await page.fill('#username', 'admin');
+    await page.fill('#password', 'admin123');
     await page.click('button[type="submit"]');
     await page.waitForURL(/dashboard|\/$/);
 
