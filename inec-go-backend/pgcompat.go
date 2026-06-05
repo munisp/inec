@@ -56,7 +56,40 @@ type pgCompatConn struct {
 }
 
 func (c *pgCompatConn) Prepare(query string) (driver.Stmt, error) {
-	return c.inner.Prepare(convertPlaceholders(query))
+	query = convertPlaceholders(query)
+	query = convertRuntimeSQL(query)
+	return c.inner.Prepare(query)
+}
+
+func convertRuntimeSQL(query string) string {
+	if strings.Contains(query, "INSERT OR IGNORE INTO") {
+		query = strings.ReplaceAll(query, "INSERT OR IGNORE INTO", "INSERT INTO")
+		// Append ON CONFLICT DO NOTHING before any RETURNING clause or at end
+		if idx := strings.Index(strings.ToUpper(query), "RETURNING"); idx > 0 {
+			query = query[:idx] + "ON CONFLICT DO NOTHING " + query[idx:]
+		} else {
+			query += " ON CONFLICT DO NOTHING"
+		}
+	}
+	if strings.Contains(query, "INSERT OR REPLACE INTO") {
+		// PostgreSQL equivalent: use ON CONFLICT ... DO UPDATE SET
+		// For simplicity, convert to plain INSERT with ON CONFLICT DO NOTHING
+		query = strings.ReplaceAll(query, "INSERT OR REPLACE INTO", "INSERT INTO")
+		if idx := strings.Index(strings.ToUpper(query), "RETURNING"); idx > 0 {
+			query = query[:idx] + "ON CONFLICT DO NOTHING " + query[idx:]
+		} else {
+			query += " ON CONFLICT DO NOTHING"
+		}
+	}
+	if strings.Contains(query, "REPLACE INTO") && !strings.Contains(query, "INSERT OR REPLACE INTO") {
+		query = strings.ReplaceAll(query, "REPLACE INTO", "INSERT INTO")
+		query += " ON CONFLICT DO NOTHING"
+	}
+	// Convert datetime('now') → NOW()
+	query = strings.ReplaceAll(query, "datetime('now')", "NOW()")
+	query = strings.ReplaceAll(query, "AUTOINCREMENT", "")
+	query = strings.ReplaceAll(query, "INTEGER PRIMARY KEY ", "SERIAL PRIMARY KEY ")
+	return query
 }
 
 func (c *pgCompatConn) Close() error {
@@ -65,6 +98,50 @@ func (c *pgCompatConn) Close() error {
 
 func (c *pgCompatConn) Begin() (driver.Tx, error) {
 	return c.inner.Begin()
+}
+
+// Implement ExecerContext so db.Exec also goes through our SQL conversion
+func (c *pgCompatConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	query = convertPlaceholders(query)
+	query = convertRuntimeSQL(query)
+	if execer, ok := c.inner.(interface {
+		ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error)
+	}); ok {
+		return execer.ExecContext(ctx, query, args)
+	}
+	// Fallback: prepare + exec
+	stmt, err := c.inner.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	vals := make([]driver.Value, len(args))
+	for i, a := range args {
+		vals[i] = a.Value
+	}
+	return stmt.Exec(vals)
+}
+
+// Implement QueryerContext so db.Query also goes through our SQL conversion
+func (c *pgCompatConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	query = convertPlaceholders(query)
+	query = convertRuntimeSQL(query)
+	if queryer, ok := c.inner.(interface {
+		QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error)
+	}); ok {
+		return queryer.QueryContext(ctx, query, args)
+	}
+	// Fallback: prepare + query
+	stmt, err := c.inner.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+	vals := make([]driver.Value, len(args))
+	for i, a := range args {
+		vals[i] = a.Value
+	}
+	return stmt.Query(vals)
 }
 
 func openPgCompat(dsn string) *sql.DB {
@@ -95,6 +172,30 @@ func convertDDLForSQLite(schema string) string {
 	return s
 }
 
+func convertDDLForPostgres(schema string) string {
+	s := strings.ReplaceAll(schema, "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+	s = strings.ReplaceAll(s, "BLOB", "BYTEA")
+	s = strings.ReplaceAll(s, "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE")
+	s = strings.ReplaceAll(s, "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE")
+	// Convert INSERT OR IGNORE → INSERT ... ON CONFLICT DO NOTHING
+	// Find each INSERT OR IGNORE statement and append ON CONFLICT DO NOTHING before the semicolon
+	for strings.Contains(s, "INSERT OR IGNORE INTO") {
+		idx := strings.Index(s, "INSERT OR IGNORE INTO")
+		// Find the terminating semicolon for this statement
+		semiIdx := strings.Index(s[idx:], ";")
+		if semiIdx < 0 {
+			s = strings.Replace(s, "INSERT OR IGNORE INTO", "INSERT INTO", 1)
+			break
+		}
+		semiIdx += idx
+		stmt := s[idx:semiIdx]
+		stmt = strings.Replace(stmt, "INSERT OR IGNORE INTO", "INSERT INTO", 1)
+		stmt += " ON CONFLICT DO NOTHING"
+		s = s[:idx] + stmt + s[semiIdx:]
+	}
+	return s
+}
+
 func execMulti(database *sql.DB, multiSQL string) {
 	if !usePostgres {
 		multiSQL = convertDDLForSQLite(multiSQL)
@@ -103,6 +204,7 @@ func execMulti(database *sql.DB, multiSQL string) {
 		}
 		return
 	}
+	multiSQL = convertDDLForPostgres(multiSQL)
 	stmts := strings.Split(multiSQL, ";")
 	for _, s := range stmts {
 		s = strings.TrimSpace(s)

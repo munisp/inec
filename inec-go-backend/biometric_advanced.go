@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	mrand "math/rand"
 	"net/http"
 	"sort"
 	"strconv"
@@ -276,7 +275,7 @@ func initBiometricAdvanced(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_kiosk_session ON kiosk_sessions(session_id, status);
 	CREATE INDEX IF NOT EXISTS idx_multi_finger ON multi_finger_enrollments(voter_vin, finger_position);
 	`
-	database.Exec(advSchema)
+	execMulti(database, advSchema)
 
 	hsmManager = NewHSMManager(database)
 	sdkRegistry = NewBiometricSDKRegistry(database)
@@ -1355,7 +1354,7 @@ func seedBiometricAdvanced(database *sql.DB) {
 		return
 	}
 
-	rng := mrand.New(mrand.NewSource(999))
+	rng := NewSecureRng()
 
 	for i := 0; i < 8; i++ {
 		hsmManager.GenerateKey("template_encryption", i%4)

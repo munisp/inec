@@ -1,0 +1,63 @@
+{
+  "model_type": "xgboost_classifier",
+  "version": "1.0.0",
+  "trained_at": "2026-06-05T13:31:57.888143+00:00",
+  "n_samples": 50000,
+  "n_features": 17,
+  "feature_columns": [
+    "registered_voters",
+    "accredited_voters",
+    "turnout_rate",
+    "total_valid_votes",
+    "rejected_votes",
+    "party_a_votes",
+    "party_b_votes",
+    "party_a_share",
+    "party_b_share",
+    "vote_margin",
+    "benford_deviation",
+    "submission_delay_hours",
+    "regional_mean_turnout",
+    "turnout_vs_region",
+    "rejected_rate",
+    "overvoting_flag",
+    "round_number_flag"
+  ],
+  "metrics": {
+    "roc_auc": 0.9999963447769766,
+    "average_precision": 0.99992786635231,
+    "cv_roc_auc_mean": 0.9999987368421053,
+    "cv_roc_auc_std": 1.4091116236401914e-06,
+    "precision_anomaly": 0.9918864097363083,
+    "recall_anomaly": 1.0,
+    "f1_anomaly": 0.9959266802443992
+  },
+  "feature_importance": {
+    "benford_deviation": 0.2203533798456192,
+    "party_b_share": 0.17132844030857086,
+    "submission_delay_hours": 0.1232181191444397,
+    "overvoting_flag": 0.09226855635643005,
+    "rejected_rate": 0.08876533061265945,
+    "turnout_rate": 0.07801686227321625,
+    "party_a_share": 0.05964040383696556,
+    "round_number_flag": 0.05219077691435814,
+    "rejected_votes": 0.04636990651488304,
+    "vote_margin": 0.0294069591909647,
+    "turnout_vs_region": 0.024483146145939827,
+    "party_b_votes": 0.005799464415758848,
+    "party_a_votes": 0.004361950326710939,
+    "total_valid_votes": 0.0024745515547692776,
+    "accredited_voters": 0.0008749928674660623,
+    "registered_voters": 0.00025874230777844787,
+    "regional_mean_turnout": 0.00018847973842639476
+  },
+  "hyperparameters": {
+    "n_estimators": 300,
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8
+  },
+  "cpu_inference": true,
+  "inference_latency_ms": "<10ms per sample on CPU"
+}

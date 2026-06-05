@@ -31,49 +31,61 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // For API requests — try network, queue if offline
-  if (url.pathname.startsWith('/auth/') || url.pathname.startsWith('/observer/') ||
-      url.pathname.startsWith('/results/') || url.pathname.startsWith('/ingestion/')) {
+  // Only intercept navigation and static asset requests
+  // Let ALL API requests pass through to the network (Vite proxy handles them)
+  const staticExtensions = ['.js', '.css', '.png', '.jpg', '.svg', '.ico', '.woff', '.woff2', '.ttf'];
+  const isStaticAsset = staticExtensions.some(ext => url.pathname.endsWith(ext));
+  const isNavigation = request.mode === 'navigate';
+  const isHTML = request.headers.get('accept')?.includes('text/html');
 
-    if (request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH') {
-      event.respondWith(
-        fetch(request.clone()).catch(async () => {
-          // Queue the request for later sync
-          const body = await request.clone().text();
-          await queueOfflineRequest({
-            url: request.url,
-            method: request.method,
-            headers: Object.fromEntries(request.headers.entries()),
-            body,
-            timestamp: Date.now(),
-          });
-          return new Response(JSON.stringify({
-            queued: true,
-            message: 'Request queued — will sync when online',
-          }), {
-            status: 202,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        })
-      );
-      return;
-    }
+  // API requests — pass through without interception
+  if (!isStaticAsset && !isNavigation && !isHTML) {
+    return; // Don't call event.respondWith — let browser handle normally
+  }
 
-    // GET requests — network first, cache fallback
+  // For write requests to known observer endpoints — queue if offline
+  if ((url.pathname.startsWith('/observer/') || url.pathname.startsWith('/results/')) &&
+      (request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH')) {
+    event.respondWith(
+      fetch(request.clone()).catch(async () => {
+        const body = await request.clone().text();
+        await queueOfflineRequest({
+          url: request.url,
+          method: request.method,
+          headers: Object.fromEntries(request.headers.entries()),
+          body,
+          timestamp: Date.now(),
+        });
+        return new Response(JSON.stringify({
+          queued: true,
+          message: 'Request queued — will sync when online',
+        }), {
+          status: 202,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+    return;
+  }
+
+  // Static assets — cache first, network fallback
+  if (isStaticAsset) {
+    event.respondWith(
+      caches.match(request).then((cached) => cached || fetch(request))
+    );
+    return;
+  }
+
+  // Navigation — network first, cache fallback (for offline shell)
+  if (isNavigation || isHTML) {
     event.respondWith(
       fetch(request).then((response) => {
         const clone = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
         return response;
-      }).catch(() => caches.match(request))
+      }).catch(() => caches.match(request).then(cached => cached || caches.match('/')))
     );
-    return;
   }
-
-  // Static assets — cache first
-  event.respondWith(
-    caches.match(request).then((cached) => cached || fetch(request))
-  );
 });
 
 // Background Sync — replay queued requests when back online

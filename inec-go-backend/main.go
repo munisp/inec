@@ -68,12 +68,13 @@ func main() {
 	initCollationCache()
 	go trackIngestionThroughput()
 
-	// Run versioned migrations
+	// Initialize schema first (CREATE TABLE IF NOT EXISTS), then run incremental migrations
+	initDB(db)
+
 	if err := runMigrations(db); err != nil {
-		log.Warn().Err(err).Msg("Migration runner encountered issues — falling back to initDB")
+		log.Warn().Err(err).Msg("Migration runner encountered issues (non-fatal — initDB already created schema)")
 	}
 
-	initDB(db)
 	seedDatabase(db)
 	seedBVASDevices(db)
 	initEMSTables(db)

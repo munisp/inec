@@ -14,12 +14,15 @@ bin/
 node_modules/
 dist/
 
-# ML artifacts
-ml/models/
+# ML artifacts (large binary weights)
+ml/models/*.pt
+ml/models/*.pkl
+ml/models/*.onnx
 ml/data/processed/
 *.onnx
-*.pt
-*.pkl
+# Keep model metadata JSON + trained XGBoost
+!ml/models/*.json
+!ml/models/.gitkeep
 inec-go-backend/coverage.out
 inec-go-backend/inec-go-backend
 inec-go-backend/uploads/

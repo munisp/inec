@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	mrand "math/rand"
 	"net/http"
 	"os"
 	"sort"
@@ -278,7 +277,7 @@ type PADResult struct {
 	ISOCompliant  bool    `json:"iso_30107_compliant"`
 }
 
-func extractFingerprintMinutiae(inputHash string, rng *mrand.Rand) *FingerprintTemplate {
+func extractFingerprintMinutiae(inputHash string, rng *SecureRng) *FingerprintTemplate {
 	numMinutiae := 30 + rng.Intn(50)
 	minutiae := make([]FingerprintMinutiae, numMinutiae)
 	types := []string{"ridge_ending", "bifurcation", "short_ridge", "island", "spur", "crossover"}
@@ -332,12 +331,10 @@ func extractFingerprintMinutiae(inputHash string, rng *mrand.Rand) *FingerprintT
 	}
 }
 
-func generateFacialEmbedding(inputHash string, rng *mrand.Rand) *FacialEmbedding {
+func generateFacialEmbedding(inputHash string, rng *SecureRng) *FacialEmbedding {
 	dim := 128
 	vec := make([]float64, dim)
-	h := sha256.Sum256([]byte(inputHash))
-	seed := int64(h[0])<<56 | int64(h[1])<<48 | int64(h[2])<<40 | int64(h[3])<<32
-	localRng := mrand.New(mrand.NewSource(seed))
+	localRng := NewSecureRngFromSeed([]byte(inputHash))
 
 	norm := 0.0
 	for i := range vec {
@@ -368,7 +365,7 @@ func generateFacialEmbedding(inputHash string, rng *mrand.Rand) *FacialEmbedding
 	}
 }
 
-func generateIrisCode(inputHash string, rng *mrand.Rand) *IrisCode {
+func generateIrisCode(inputHash string, rng *SecureRng) *IrisCode {
 	bits := 2048
 	codeBytes := make([]byte, bits/8)
 	maskBytes := make([]byte, bits/8)
@@ -901,7 +898,7 @@ func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
 	dbExecLog("abis_enroll", `INSERT INTO abis_enrollment_pipeline (voter_vin, stage, modality, device_id) VALUES (?,?,?,?)`,
 		vin, "capture", modality, deviceID)
 
-	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	rng := NewSecureRng()
 	inputHash := fmt.Sprintf("%s-%s-%d", vin, modality, time.Now().UnixNano())
 
 	var templateBytes []byte
@@ -1017,7 +1014,7 @@ func (e *ABISEngine) estimateFRR(score float64, modality string) float64 {
 
 // performPADCheck calls the CDCN liveness model via the ML inference service.
 // Falls back to heuristic scoring if the ML service is unavailable.
-func performPADCheck(vin, modality, deviceID string, _ *mrand.Rand) *PADResult {
+func performPADCheck(vin, modality, deviceID string) *PADResult {
 	// Try calling real CDCN model via ML service
 	ctx := context.Background()
 	mlResult, err := callMLInference(ctx, "python", "/liveness/check", M{
@@ -1288,7 +1285,7 @@ func seedBiometricEngine(database *sql.DB) {
 		return
 	}
 
-	rng := mrand.New(mrand.NewSource(888))
+	rng := NewSecureRng()
 
 	_ = biometricVault
 	engine := abisEngine
@@ -1336,7 +1333,7 @@ func seedBiometricEngine(database *sql.DB) {
 		database.Exec(`INSERT INTO bvas_capture_sessions (session_id, device_id, voter_vin, modality, capture_quality, nfiq2_score, image_width, image_height, image_dpi, status, processing_time_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 			sessionID, device, vin, "fingerprint", 0.7+rng.Float64()*0.3, 1+rng.Intn(5), 300, 400, 500, "processed", 50+rng.Intn(200))
 
-		padResult := performPADCheck(vin, "fingerprint", device, rng)
+		padResult := performPADCheck(vin, "fingerprint", device)
 		database.Exec(`INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			vin, "fingerprint", device, padResult.LivenessScore, padResult.TextureScore, padResult.MotionScore, padResult.DepthScore, padResult.SpectralScore, padResult.Decision, padResult.PADLevel, padResult.AttackType, padResult.Confidence, 1)
 	}
@@ -1453,8 +1450,7 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
-	padResult := performPADCheck(req.VIN, req.Modality, req.DeviceID, rng)
+	padResult := performPADCheck(req.VIN, req.Modality, req.DeviceID)
 	dbExecLog("pad_result", `INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.VIN, req.Modality, req.DeviceID, padResult.LivenessScore, padResult.TextureScore, padResult.MotionScore, padResult.DepthScore, padResult.SpectralScore, padResult.Decision, padResult.PADLevel, padResult.AttackType, padResult.Confidence, 1)
 
@@ -1510,8 +1506,7 @@ func handlePADCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "vin and modality required")
 		return
 	}
-	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
-	result := performPADCheck(req.VIN, req.Modality, req.DeviceID, rng)
+	result := performPADCheck(req.VIN, req.Modality, req.DeviceID)
 	dbExecLog("pad_result", `INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.VIN, req.Modality, req.DeviceID, result.LivenessScore, result.TextureScore, result.MotionScore, result.DepthScore, result.SpectralScore, result.Decision, result.PADLevel, result.AttackType, result.Confidence, 1)
 	writeJSON(w, 200, result)
@@ -1529,7 +1524,11 @@ func handlePADHistory(w http.ResponseWriter, r *http.Request) {
 	q += " ORDER BY checked_at DESC LIMIT ?"
 	args = append(args, limit)
 
-	rows, _ := db.Query(q, args...)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		writeJSON(w, 200, M{"results": []M{}, "count": 0})
+		return
+	}
 	defer rows.Close()
 
 	results := []M{}
@@ -1990,7 +1989,6 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 	modResults := M{}
 	var fpScore, faceScore, irisScore float64
 
@@ -2000,7 +1998,7 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		padResult := performPADCheck(req.VIN, mod, req.DeviceID, rng)
+		padResult := performPADCheck(req.VIN, mod, req.DeviceID)
 		if padResult.Decision == "spoof" {
 			modResults[mod] = M{"pad": padResult, "match": nil, "result": "rejected_spoof"}
 			continue

@@ -183,7 +183,7 @@ func initDocumentAISchema() {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	`
-	dbExecLog("doc_ai_schema", schema)
+	execMulti(db, schema)
 }
 
 // ── Handlers ──

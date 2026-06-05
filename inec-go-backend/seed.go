@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"math/rand"
 )
 
 type stateInfo struct {
@@ -145,6 +144,7 @@ func seedDatabase(db *sql.DB) {
 		return
 	}
 
+	rand := NewSecureRng()
 	tx, _ := db.Begin()
 
 	for _, s := range nigeriaStates {

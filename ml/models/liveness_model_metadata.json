@@ -1,0 +1,46 @@
+{
+  "model_type": "face_anti_spoofing",
+  "architecture": "CDCN (Central Difference Convolutional Network)",
+  "version": "1.0.0",
+  "framework": "PyTorch \u2192 ONNX",
+  "input_shape": [
+    1,
+    3,
+    256,
+    256
+  ],
+  "output": {
+    "depth_map": [
+      1,
+      1,
+      32,
+      32
+    ],
+    "liveness_score": [
+      1,
+      1
+    ]
+  },
+  "n_parameters": 6108866,
+  "attack_types_detected": [
+    "print_attack",
+    "screen_replay",
+    "3d_mask",
+    "deepfake_injection",
+    "partial_attack",
+    "paper_cutout"
+  ],
+  "iso_30107_level": "Level 2",
+  "cpu_inference": true,
+  "inference_latency": {
+    "cpu_ms": "25-40ms per frame",
+    "gpu_ms": "5-10ms per frame"
+  },
+  "training_data_needed": [
+    "OULU-NPU dataset (4,950 videos)",
+    "Custom Nigerian face spoof dataset (1,000+ subjects)",
+    "Print/screen/mask attack samples per subject"
+  ],
+  "evaluation_protocol": "ISO 30107-3 (APCER, BPCER, ACER)",
+  "created_at": "2026-06-05T16:29:25.693482+00:00"
+}

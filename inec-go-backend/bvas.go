@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -116,7 +115,7 @@ func seedBVASDevices(database *sql.DB) {
 	}
 	puRows.Close()
 
-	rng := rand.New(rand.NewSource(42))
+	rng := NewSecureRng()
 
 	tx, _ := database.Begin()
 	for i, pu := range pus {
@@ -135,7 +134,7 @@ func seedBVASDevices(database *sql.DB) {
 	seedBVASAccreditations(database, rng)
 }
 
-func seedBVASAccreditations(database *sql.DB, rng *rand.Rand) {
+func seedBVASAccreditations(database *sql.DB, rng *SecureRng) {
 	devRows, _ := database.Query("SELECT id, polling_unit_code FROM bvas_devices WHERE status='active' AND polling_unit_code IS NOT NULL")
 	type devPU struct{ devID, puCode string }
 	var devices []devPU

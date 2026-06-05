@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -304,7 +303,7 @@ func seedPhase7Data(database *sql.DB) {
 		return
 	}
 
-	rng := rand.New(rand.NewSource(777))
+	rng := NewSecureRng()
 	tx, _ := database.Begin()
 
 	voterRows, err := database.Query("SELECT vin, biometric_hash FROM voters ORDER BY RANDOM() LIMIT 500")

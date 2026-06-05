@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	mrand "math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -177,7 +176,7 @@ func (p *PersistentTigerBeetle) ensureAccounts() {
 		{"inec-disputed", 4, 1},
 	}
 	for _, a := range accounts {
-		dbExecLog("tb_account", `INSERT INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
+		dbExecLog("tb_account", `INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
 	}
 }
 
@@ -808,7 +807,7 @@ func seedBlockchainProduction(database *sql.DB) {
 	if count > 0 {
 		return
 	}
-	rng := mrand.New(mrand.NewSource(888))
+	rng := NewSecureRng()
 
 	peers := []struct{ id, org, msp, ep, role string }{
 		{"peer0.inec.gov.ng", "INEC", "INECMSP", "grpcs://peer0.inec.gov.ng:7051", "endorser"},

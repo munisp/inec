@@ -242,7 +242,6 @@ def train_model(data_path: str | None = None, output_dir: str | None = None):
         min_child_weight=5,
         scale_pos_weight=len(y[y == 0]) / max(len(y[y == 1]), 1),  # Handle imbalance
         eval_metric="aucpr",
-        early_stopping_rounds=20,
         random_state=42,
         n_jobs=-1,
         tree_method="hist",  # CPU-optimized

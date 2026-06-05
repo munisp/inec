@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -248,7 +247,7 @@ func seedEMSData(database *sql.DB) {
 		return
 	}
 
-	rng := rand.New(rand.NewSource(99))
+	rng := NewSecureRng()
 
 	firstNames := []string{"Adebayo", "Chioma", "Musa", "Fatima", "Emeka", "Halima", "Oluwaseun", "Amina", "Chinedu", "Aisha",
 		"Tunde", "Ngozi", "Ibrahim", "Yetunde", "Obinna", "Hauwa", "Segun", "Chiamaka", "Abdullahi", "Funke",

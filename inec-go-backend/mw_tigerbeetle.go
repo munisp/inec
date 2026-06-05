@@ -3,12 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	cryptoRand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -197,7 +197,9 @@ func (t *embeddedTigerBeetle) CreateTransfer(_ context.Context, transfer TBTrans
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if transfer.ID == "" {
-		h := sha256.Sum256([]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Int63())))
+		rngBuf := make([]byte, 16)
+		cryptoRand.Read(rngBuf)
+		h := sha256.Sum256(append([]byte(fmt.Sprintf("%d-", time.Now().UnixNano())), rngBuf...))
 		transfer.ID = "TB-" + hex.EncodeToString(h[:6])
 	}
 	transfer.Status = "PENDING"

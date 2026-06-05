@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -346,10 +347,25 @@ func runMigrations(database *sql.DB) error {
 			return err
 		}
 
-		if _, err := tx.Exec(m.Up); err != nil {
-			tx.Rollback()
-			log.Error().Err(err).Int("version", m.Version).Msg("Migration failed")
-			return err
+		upSQL := m.Up
+		if usePostgres {
+			upSQL = convertDDLForPostgres(upSQL)
+		}
+		stmts := strings.Split(upSQL, ";")
+		for _, stmt := range stmts {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				trimmed := stmt
+				if len(trimmed) > 80 {
+					trimmed = trimmed[:80]
+				}
+				log.Error().Err(err).Int("version", m.Version).Str("stmt", trimmed).Msg("Migration statement failed")
+				return err
+			}
 		}
 
 		if _, err := tx.Exec("INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",

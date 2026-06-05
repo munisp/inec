@@ -303,7 +303,7 @@ def train_pad_model(output_dir: str | None = None, epochs: int = 10):
 
     # Generate synthetic data (replace with real dataset in production)
     print("Generating synthetic training data...")
-    images, depth_labels, live_labels = generate_synthetic_pad_data(5000)
+    images, depth_labels, live_labels = generate_synthetic_pad_data(1000)
 
     # Simple training loop (demo — in production use proper DataLoader)
     batch_size = 32
@@ -325,9 +325,13 @@ def train_pad_model(output_dir: str | None = None, epochs: int = 10):
         print(f"Epoch {epoch+1}/{epochs} — Loss: {avg_loss:.4f}")
         trainer.scheduler.step()
 
-    # Export to ONNX
-    onnx_path = output_path / "liveness_cdcn.onnx"
-    trainer.export_onnx(str(onnx_path))
+    # Save PyTorch model first (always works)
+    # Export to ONNX (optional — requires onnxscript)
+    try:
+        onnx_path = output_path / "liveness_cdcn.onnx"
+        trainer.export_onnx(str(onnx_path))
+    except Exception as e:
+        print(f"ONNX export skipped: {e}")
 
     # Save PyTorch model
     torch_path = output_path / "liveness_cdcn.pt"

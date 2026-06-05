@@ -1,0 +1,39 @@
+{
+  "model_type": "face_recognition",
+  "architecture": "ArcFace (ResNet-100)",
+  "version": "1.0.0",
+  "framework": "InsightFace + ONNX Runtime",
+  "embedding_dim": 512,
+  "input_size": [
+    112,
+    112
+  ],
+  "detection_model": "SCRFD-10GF",
+  "trained_on": "MS1MV3 (cleaned MS-Celeb-1M, 5.8M images, 93K identities)",
+  "cpu_inference": true,
+  "gpu_inference": true,
+  "inference_latency": {
+    "cpu_detection_ms": "30-80ms",
+    "cpu_embedding_ms": "20-50ms",
+    "cpu_total_ms": "50-130ms per face",
+    "gpu_total_ms": "10-25ms per face"
+  },
+  "accuracy": {
+    "LFW": 0.9983,
+    "CFP-FP": 0.9821,
+    "AgeDB-30": 0.9815,
+    "note": "May need fine-tuning for African face demographics"
+  },
+  "recommended_thresholds": {
+    "strict_kyc": 0.5,
+    "standard_verification": 0.4,
+    "deduplication": 0.6
+  },
+  "fine_tuning_needed": [
+    "Collect 10K+ Nigerian face images (diverse age/lighting/expression)",
+    "Use ArcFace loss with margin=0.5, scale=64",
+    "Train last 2 residual blocks only (freeze backbone)",
+    "Evaluate on held-out Nigerian test set"
+  ],
+  "created_at": "2026-06-05T13:47:45.563633+00:00"
+}
