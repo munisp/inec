@@ -126,7 +126,7 @@ type LivenessResult struct {
 
 func initDocumentAISchema() {
 	// Add kyc_status column to users if not present
-	db.Exec("ALTER TABLE users ADD COLUMN kyc_status TEXT DEFAULT 'not_started'")
+	dbExecLog("schema", "ALTER TABLE users ADD COLUMN kyc_status TEXT DEFAULT 'not_started'")
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS document_analyses (
@@ -264,9 +264,9 @@ func handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 	userIDStr, _ := claims["sub"].(string)
 	userID, _ := strconv.Atoi(userIDStr)
 
-	// Parse multipart form (max 500MB for video)
-	if err := r.ParseMultipartForm(500 << 20); err != nil {
-		writeError(w, 400, "file too large (max 500MB)")
+	// Parse multipart form (max 50MB for video)
+	if err := r.ParseMultipartForm(50 << 20); err != nil {
+		writeError(w, 400, "file too large (max 50MB)")
 		return
 	}
 

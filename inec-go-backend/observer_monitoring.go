@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 // ── Party Observer Monitoring System ──
@@ -348,7 +349,12 @@ func handleReviewObserverReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := extractPathParam(r, "id")
-	result, _ := db.Exec("UPDATE observer_reports SET status=?, review_notes=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, req.Notes, id)
+	result, err := db.Exec("UPDATE observer_reports SET status=?, review_notes=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?", req.Status, req.Notes, id)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("failed to update observer report")
+		writeError(w, 500, "failed to update report")
+		return
+	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		writeError(w, 404, "report not found")
@@ -427,7 +433,12 @@ func handleDeleteAlertRule(w http.ResponseWriter, r *http.Request) {
 	userID, _ := strconv.Atoi(userIDStr)
 	id := extractPathParam(r, "id")
 
-	result, _ := db.Exec("DELETE FROM observer_alert_rules WHERE id=? AND user_id=?", id, userID)
+	result, err := db.Exec("DELETE FROM observer_alert_rules WHERE id=? AND user_id=?", id, userID)
+	if err != nil {
+		log.Error().Err(err).Str("id", id).Msg("failed to delete alert rule")
+		writeError(w, 500, "failed to delete alert rule")
+		return
+	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		writeError(w, 404, "alert rule not found")

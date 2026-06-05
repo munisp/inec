@@ -88,7 +88,19 @@ func createAccessToken(claims map[string]interface{}) (string, error) {
 	for k, v := range claims {
 		mc[k] = v
 	}
-	mc["exp"] = time.Now().Add(24 * time.Hour).Unix()
+	mc["exp"] = time.Now().Add(1 * time.Hour).Unix()
+	mc["type"] = "access"
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, mc)
+	return token.SignedString(jwtSecret)
+}
+
+func createRefreshToken(claims map[string]interface{}) (string, error) {
+	mc := jwt.MapClaims{}
+	for k, v := range claims {
+		mc[k] = v
+	}
+	mc["exp"] = time.Now().Add(7 * 24 * time.Hour).Unix()
+	mc["type"] = "refresh"
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, mc)
 	return token.SignedString(jwtSecret)
 }

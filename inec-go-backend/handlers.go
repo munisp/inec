@@ -42,11 +42,13 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "Invalid credentials")
 		return
 	}
-	token, _ := createAccessToken(map[string]interface{}{
+	claims := map[string]interface{}{
 		"sub": fmt.Sprintf("%d", id), "username": username, "role": role, "full_name": fullName,
-	})
+	}
+	token, _ := createAccessToken(claims)
+	refresh, _ := createRefreshToken(claims)
 	writeJSON(w, 200, M{
-		"access_token": token, "token_type": "bearer",
+		"access_token": token, "refresh_token": refresh, "token_type": "bearer", "expires_in": 3600,
 		"user": M{"id": id, "username": username, "full_name": fullName, "role": role, "staff_id": nullStr(staffID), "state_code": nullStr(stateCode)},
 	})
 }
@@ -103,6 +105,35 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{
 		"access_token": token, "token_type": "bearer",
 		"user": M{"id": uid, "username": req.Username, "full_name": req.FullName, "role": req.Role, "staff_id": req.StaffID, "state_code": req.StateCode},
+	})
+}
+
+func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RefreshToken == "" {
+		writeError(w, 400, "refresh_token is required")
+		return
+	}
+	claims, err := decodeToken(req.RefreshToken)
+	if err != nil {
+		writeError(w, 401, "invalid or expired refresh token")
+		return
+	}
+	tokenType, _ := claims["type"].(string)
+	if tokenType != "refresh" {
+		writeError(w, 401, "not a refresh token")
+		return
+	}
+	// Issue new access + refresh tokens
+	baseClaims := map[string]interface{}{
+		"sub": claims["sub"], "username": claims["username"], "role": claims["role"], "full_name": claims["full_name"],
+	}
+	newAccess, _ := createAccessToken(baseClaims)
+	newRefresh, _ := createRefreshToken(baseClaims)
+	writeJSON(w, 200, M{
+		"access_token": newAccess, "refresh_token": newRefresh, "token_type": "bearer", "expires_in": 3600,
 	})
 }
 

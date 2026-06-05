@@ -253,7 +253,7 @@ func handleElectionStateHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func initElectionFSMSchema() {
-	db.Exec(`CREATE TABLE IF NOT EXISTS election_state_log (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS election_state_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		election_id INTEGER NOT NULL,
 		from_state TEXT NOT NULL,
@@ -805,10 +805,20 @@ func handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"deleted": true})
 }
 
+// webhookClient is a dedicated HTTP client for webhook delivery with a strict timeout.
+var webhookClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        50,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     30 * time.Second,
+	},
+}
+
 // dispatchWebhook sends event notifications to all subscribed URLs.
 func dispatchWebhook(event string, payload interface{}) {
-	rows, _ := db.Query("SELECT url, secret FROM webhook_subscriptions WHERE is_active=1 AND events LIKE ?", "%"+event+"%")
-	if rows == nil {
+	rows, err := db.Query("SELECT url, secret FROM webhook_subscriptions WHERE is_active=1 AND events LIKE ?", "%"+event+"%")
+	if err != nil || rows == nil {
 		return
 	}
 	defer rows.Close()
@@ -818,13 +828,22 @@ func dispatchWebhook(event string, payload interface{}) {
 		var url, secret string
 		if rows.Scan(&url, &secret) == nil {
 			go func(url, secret string) {
-				req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+				req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+				if err != nil {
+					log.Warn().Err(err).Str("url", url).Msg("webhook: failed to create request")
+					return
+				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("X-INEC-Event", event)
 				if secret != "" {
 					req.Header.Set("X-INEC-Signature", computeHMAC(body, secret))
 				}
-				http.DefaultClient.Do(req)
+				resp, err := webhookClient.Do(req)
+				if err != nil {
+					log.Warn().Err(err).Str("url", url).Str("event", event).Msg("webhook delivery failed")
+					return
+				}
+				resp.Body.Close()
 			}(url, secret)
 		}
 	}
@@ -839,7 +858,7 @@ func computeHMAC(data []byte, secret string) string {
 }
 
 func initWebhookSchema() {
-	db.Exec(`CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS webhook_subscriptions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		url TEXT NOT NULL,
 		events TEXT NOT NULL,
@@ -848,7 +867,7 @@ func initWebhookSchema() {
 		created_by TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS gps_spoof_events (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS gps_spoof_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		device_id TEXT NOT NULL,
 		lat REAL NOT NULL,
@@ -857,7 +876,7 @@ func initWebhookSchema() {
 		indicators TEXT,
 		detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS dedup_resolutions (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS dedup_resolutions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		voter_a_vin TEXT NOT NULL,
 		voter_b_vin TEXT NOT NULL,

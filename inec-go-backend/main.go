@@ -29,7 +29,31 @@ var (
 		conns map[*websocket.Conn]bool
 	}{conns: make(map[*websocket.Conn]bool)}
 	upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // same-origin (no Origin header)
+			}
+			allowed := os.Getenv("ALLOWED_ORIGINS")
+			if allowed == "" {
+				allowed = os.Getenv("CORS_ORIGINS")
+			}
+			if allowed == "*" {
+				return true // explicitly allow all (dev mode)
+			}
+			if allowed == "" {
+				// Default: allow localhost in dev, reject unknown in prod
+				return strings.HasPrefix(origin, "http://localhost") ||
+					strings.HasPrefix(origin, "https://localhost")
+			}
+			for _, a := range strings.Split(allowed, ",") {
+				if strings.TrimSpace(a) == origin {
+					return true
+				}
+			}
+			log.Warn().Str("origin", origin).Msg("WebSocket connection rejected: origin not in allow-list")
+			return false
+		},
 	}
 	rateLimiter = newRateLimiter()
 )
@@ -116,14 +140,15 @@ func main() {
 	// Health — deep checks
 	r.HandleFunc("/healthz", handleDeepHealthCheck).Methods("GET")
 	r.HandleFunc("/readiness", handleReadinessCheck).Methods("GET")
-	r.HandleFunc("/db/metrics", handleDBMetrics).Methods("GET")
-	r.HandleFunc("/db/pool", handleDBPoolStats).Methods("GET")
-	r.HandleFunc("/scale/health", handleScaleHealth).Methods("GET")
-	r.HandleFunc("/middleware/modes", handleMiddlewareModes).Methods("GET")
+	r.HandleFunc("/db/metrics", adminOnly(handleDBMetrics)).Methods("GET")
+	r.HandleFunc("/db/pool", adminOnly(handleDBPoolStats)).Methods("GET")
+	r.HandleFunc("/scale/health", readAuth(handleScaleHealth)).Methods("GET")
+	r.HandleFunc("/middleware/modes", readAuth(handleMiddlewareModes)).Methods("GET")
 
 	// Auth
 	r.HandleFunc("/auth/login", handleLogin).Methods("POST")
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
+	r.HandleFunc("/auth/refresh", handleRefreshToken).Methods("POST")
 	r.HandleFunc("/auth/me", handleMe).Methods("GET")
 	r.HandleFunc("/auth/logout", writeAuth(handleLogout)).Methods("POST")
 	r.HandleFunc("/auth/sessions", readAuth(handleListSessions)).Methods("GET")
@@ -548,19 +573,20 @@ func main() {
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")
 
-	// Middleware chain: request ID → tracing → access log → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
-	handler := requestIDMiddleware(
-		tracingMiddleware(
-			accessLogMiddleware(
-				metricsMiddleware(
-					corsProductionMiddleware(
-						jwtAuthMiddleware(
-							csrfMiddleware(
-								enhancedSecurityHeaders(
-									wafMiddleware(
-										requestSizeLimit(
-											rateLimitMiddleware(
-												gzipMiddleware(r))))))))))))
+	// Middleware chain: panic recovery → request ID → tracing → access log → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
+	handler := panicRecoveryMiddleware(
+		requestIDMiddleware(
+			tracingMiddleware(
+				accessLogMiddleware(
+					metricsMiddleware(
+						corsProductionMiddleware(
+							jwtAuthMiddleware(
+								csrfMiddleware(
+									enhancedSecurityHeaders(
+										wafMiddleware(
+											requestSizeLimit(
+												rateLimitMiddleware(
+													gzipMiddleware(r)))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -865,3 +891,20 @@ func handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 var serverStartTime = time.Now()
+
+// panicRecoveryMiddleware catches panics in any handler and returns 500 instead of crashing the server.
+func panicRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Error().
+					Interface("panic", rec).
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Msg("Recovered from panic in HTTP handler")
+				writeError(w, 500, "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}

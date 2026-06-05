@@ -60,7 +60,7 @@ export default function ObserverMonitoringPage() {
 
     es.addEventListener('connected', (e) => {
       setConnected(true);
-      console.log('SSE connected:', JSON.parse(e.data));
+      // SSE connection established
     });
 
     es.addEventListener('result_submitted', (e) => {

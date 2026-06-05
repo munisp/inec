@@ -332,7 +332,7 @@ type dbBackedTigerBeetle struct {
 func newDBBackedTigerBeetle() *dbBackedTigerBeetle {
 	tb := &dbBackedTigerBeetle{embedded: newEmbeddedTigerBeetle()}
 	// Create persistent tables
-	db.Exec(`CREATE TABLE IF NOT EXISTS tb_accounts (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS tb_accounts (
 		id TEXT PRIMARY KEY,
 		ledger INTEGER NOT NULL,
 		code INTEGER NOT NULL,
@@ -342,7 +342,7 @@ func newDBBackedTigerBeetle() *dbBackedTigerBeetle {
 		debits_pending INTEGER DEFAULT 0,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS tb_transfers (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS tb_transfers (
 		id TEXT PRIMARY KEY,
 		debit_account_id TEXT NOT NULL,
 		credit_account_id TEXT NOT NULL,

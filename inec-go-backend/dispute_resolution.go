@@ -53,7 +53,7 @@ var disputeCategories = []string{
 }
 
 func initDisputeSchema() {
-	db.Exec(`CREATE TABLE IF NOT EXISTS disputes (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS disputes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		election_id INTEGER NOT NULL,
 		polling_unit_code TEXT,
@@ -71,7 +71,7 @@ func initDisputeSchema() {
 		priority TEXT DEFAULT 'medium',
 		FOREIGN KEY (election_id) REFERENCES elections(id)
 	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS dispute_comments (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS dispute_comments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		dispute_id INTEGER NOT NULL,
 		author TEXT NOT NULL,
@@ -396,7 +396,7 @@ type PushNotification struct {
 }
 
 func initPushNotificationSchema() {
-	db.Exec(`CREATE TABLE IF NOT EXISTS push_devices (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS push_devices (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id INTEGER NOT NULL,
 		device_token TEXT NOT NULL UNIQUE,
@@ -407,7 +407,7 @@ func initPushNotificationSchema() {
 		is_active INTEGER DEFAULT 1,
 		FOREIGN KEY (user_id) REFERENCES users(id)
 	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS push_notifications (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS push_notifications (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id INTEGER,
 		device_token TEXT,

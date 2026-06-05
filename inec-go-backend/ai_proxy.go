@@ -27,7 +27,7 @@ func initAIProxy() {
 	if rustInferenceURL == "" {
 		rustInferenceURL = "http://127.0.0.1:8091"
 	}
-	db.Exec(`CREATE TABLE IF NOT EXISTS model_metrics (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS model_metrics (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		model_name TEXT NOT NULL,
 		accuracy REAL NOT NULL,
@@ -35,7 +35,7 @@ func initAIProxy() {
 		sample_count INTEGER,
 		evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_model_metrics_name ON model_metrics(model_name, evaluated_at)`)
+	dbExecLog("schema", `CREATE INDEX IF NOT EXISTS idx_model_metrics_name ON model_metrics(model_name, evaluated_at)`)
 }
 
 var aiProxyClient = NewResilientHTTPClient("ai-proxy")

@@ -85,12 +85,10 @@ CREATE INDEX IF NOT EXISTS idx_results_election ON results(election_id);
 CREATE INDEX IF NOT EXISTS idx_results_pu ON results(polling_unit_code);
 CREATE INDEX IF NOT EXISTS idx_results_status ON results(status);
 `,
-		Down: `
-DROP TABLE IF EXISTS result_party_scores;
-DROP TABLE IF EXISTS results;
-DROP TABLE IF EXISTS elections;
-DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS schema_migrations;
+		Down: `-- Down migrations for core tables are intentionally disabled in production.
+-- Dropping users, elections, results would destroy all election data.
+-- To rollback, use point-in-time recovery from database backups.
+SELECT 1;
 `,
 	},
 	{

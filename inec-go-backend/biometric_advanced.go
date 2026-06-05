@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -851,7 +852,11 @@ func (o *OfflineEnrollmentQueue) GetStats() M {
 }
 
 func (o *OfflineEnrollmentQueue) TriggerSync(deviceID string) M {
-	result, _ := db.Exec(`UPDATE offline_enrollment_queue SET sync_status='synced', synced_at=CURRENT_TIMESTAMP, sync_attempts=sync_attempts+1 WHERE device_id=? AND sync_status='pending'`, deviceID)
+	result, err := db.Exec(`UPDATE offline_enrollment_queue SET sync_status='synced', synced_at=CURRENT_TIMESTAMP, sync_attempts=sync_attempts+1 WHERE device_id=? AND sync_status='pending'`, deviceID)
+	if err != nil {
+		log.Error().Err(err).Str("device_id", deviceID).Msg("offline enrollment sync failed")
+		return M{"device_id": deviceID, "synced_count": 0, "status": "sync_error", "error": err.Error()}
+	}
 	affected, _ := result.RowsAffected()
 	return M{"device_id": deviceID, "synced_count": affected, "status": "sync_complete"}
 }

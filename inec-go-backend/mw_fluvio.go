@@ -98,7 +98,7 @@ type embeddedFluvio struct {
 
 func newEmbeddedFluvio() *embeddedFluvio {
 	// Create persistent event bus table
-	db.Exec(`CREATE TABLE IF NOT EXISTS event_bus (
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS event_bus (
 		id SERIAL PRIMARY KEY,
 		topic TEXT NOT NULL,
 		event_key TEXT,
@@ -106,8 +106,8 @@ func newEmbeddedFluvio() *embeddedFluvio {
 		offset_id INTEGER NOT NULL DEFAULT 0,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_event_bus_topic ON event_bus(topic, offset_id)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS event_bus_topics (
+	dbExecLog("schema", `CREATE INDEX IF NOT EXISTS idx_event_bus_topic ON event_bus(topic, offset_id)`)
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS event_bus_topics (
 		topic TEXT PRIMARY KEY,
 		partitions INTEGER DEFAULT 1,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

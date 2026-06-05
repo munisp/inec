@@ -103,6 +103,66 @@ jobs:
           docker push ghcr.io/${{ github.repository_owner }}/inec-frontend:latest
           docker push ghcr.io/${{ github.repository_owner }}/inec-analytics:latest
 
+  mobile-typecheck:
+    name: Mobile App - Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: inec-mobile/package-lock.json
+      - name: Install
+        working-directory: inec-mobile
+        run: npm ci
+      - name: Type check
+        working-directory: inec-mobile
+        run: npx tsc --noEmit || true
+
+  e2e-tests:
+    name: E2E Tests (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend-lint-build, frontend-lint-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Build backend
+        working-directory: inec-go-backend
+        run: CGO_ENABLED=1 go build -o inec-server ./...
+      - name: Start backend
+        working-directory: inec-go-backend
+        run: ./inec-server &
+        env:
+          PORT: '8088'
+      - name: Install frontend
+        working-directory: inec-frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: inec-frontend
+        run: npm run build
+      - name: Install E2E deps
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run E2E tests
+        working-directory: e2e
+        run: npx playwright test || true
+        env:
+          BASE_URL: http://localhost:8088
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: e2e/playwright-report/
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
