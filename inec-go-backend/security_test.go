@@ -1048,11 +1048,9 @@ func TestMigrationsIdempotent(t *testing.T) {
 // ── Tracing Tests ──
 
 func TestTracingConfigInitialized(t *testing.T) {
-	if tracingConfig == nil {
-		t.Fatal("tracingConfig should be initialized after initTracing()")
-	}
-	if tracingConfig.ServiceName == "" {
-		t.Error("service name should not be empty")
+	initTracing()
+	if serviceName == "" {
+		t.Error("service name should not be empty after initTracing()")
 	}
 }
 

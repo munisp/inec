@@ -308,10 +308,112 @@ func (w *embeddedWAF) Status() MWStatus {
 
 func (w *embeddedWAF) Close() error { return nil }
 
+// --- Real OpenAppSec HTTP client ---
+
+type openAppSecHTTPClient struct {
+	baseURL string
+	client  *ResilientHTTPClient
+}
+
+func (o *openAppSecHTTPClient) InspectRequest(ctx context.Context, req WAFRequest) (*WAFDecision, error) {
+	body, _ := json.Marshal(req)
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/api/v1/inspect", bytes.NewReader(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var decision WAFDecision
+	json.NewDecoder(resp.Body).Decode(&decision)
+	return &decision, nil
+}
+
+func (o *openAppSecHTTPClient) GetThreatLog(ctx context.Context, limit int) ([]WAFEvent, error) {
+	httpReq, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/threats?limit=%d", o.baseURL, limit), nil)
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Events []WAFEvent `json:"events"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Events, nil
+}
+
+func (o *openAppSecHTTPClient) GetStats(ctx context.Context) (*WAFStats, error) {
+	httpReq, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/v1/stats", nil)
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var stats WAFStats
+	json.NewDecoder(resp.Body).Decode(&stats)
+	return &stats, nil
+}
+
+func (o *openAppSecHTTPClient) AddIPToBlocklist(ctx context.Context, ip, reason string) error {
+	body, _ := json.Marshal(map[string]string{"ip": ip, "reason": reason})
+	httpReq, _ := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/api/v1/blocklist", bytes.NewReader(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (o *openAppSecHTTPClient) GetBlocklist(ctx context.Context) ([]BlocklistEntry, error) {
+	httpReq, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/v1/blocklist", nil)
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Entries []BlocklistEntry `json:"entries"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Entries, nil
+}
+
+func (o *openAppSecHTTPClient) Status() MWStatus {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	httpReq, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/v1/health", nil)
+	lat, err := measureLatency(func() error {
+		resp, e := o.client.Client.Do(httpReq)
+		if e != nil {
+			return e
+		}
+		resp.Body.Close()
+		return nil
+	})
+	if err != nil {
+		return MWStatus{Name: "OpenAppSec", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
+	}
+	return MWStatus{Name: "OpenAppSec", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+}
+
+func (o *openAppSecHTTPClient) Close() error { return nil }
+
 func initOpenAppSecClient() OpenAppSecClient {
 	baseURL := os.Getenv("OPENAPPSEC_URL")
 	if baseURL != "" {
-		log.Info().Str("url", baseURL).Msg("OpenAppSec: external mode configured (not yet integrated)")
+		client := &openAppSecHTTPClient{
+			baseURL: baseURL,
+			client:  NewResilientHTTPClient("openappsec"),
+		}
+		s := client.Status()
+		if s.Connected {
+			log.Info().Str("url", baseURL).Msg("OpenAppSec connected via HTTP")
+			return client
+		}
+		log.Warn().Str("url", baseURL).Msg("OpenAppSec unreachable, falling back to embedded WAF")
 	}
 	log.Info().Msg("OpenAppSec using embedded rule-based WAF")
 	return newEmbeddedWAF()

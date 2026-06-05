@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -753,16 +754,37 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
-	// Use the ABIS engine for real template-based verification when vault has data
+	// Try ML inference service first (InsightFace/ArcFace for facial, minutiae for fingerprint)
 	probeData, vaultErr := biometricVault.RetrieveTemplate(req.VIN, req.Modality)
 	var score float64
 	var result, algo string
-	if vaultErr == nil && len(probeData) > 0 {
+
+	mlCtx, mlCancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer mlCancel()
+	mlResult, mlErr := callMLInference(mlCtx, "python", "/biometric/verify", M{
+		"vin": req.VIN, "modality": req.Modality, "template": req.Template,
+	})
+	if mlErr == nil && mlResult != nil {
+		if s, ok := mlResult["score"].(float64); ok {
+			score = s
+			algo = "ml_inference"
+			if d, ok := mlResult["decision"].(string); ok {
+				result = d
+			} else if score >= 0.85 {
+				result = "match"
+			} else {
+				result = "no_match"
+			}
+		}
+	}
+
+	// Fall back to ABIS engine for real template-based verification
+	if result == "" && vaultErr == nil && len(probeData) > 0 {
 		matchResult := abisEngine.Verify(req.VIN, req.Modality, probeData)
 		score = matchResult.Score
 		result = matchResult.Decision
 		algo = matchResult.Algorithm
-	} else {
+	} else if result == "" {
 		// Deterministic hash-based comparison from stored profile hashes
 		var storedHash string
 		switch req.Modality {

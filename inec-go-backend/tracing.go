@@ -2,164 +2,183 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
-// ── Distributed Tracing (OpenTelemetry-compatible) ──
-// Provides trace context propagation and span recording without requiring
-// the full OTel SDK (which would add heavy dependencies). When OTEL_EXPORTER_ENDPOINT
-// is set, traces are exported via OTLP HTTP. Otherwise, traces are logged locally.
+// Distributed tracing middleware using W3C Trace Context (traceparent header).
+// When OTEL_EXPORTER_OTLP_ENDPOINT is set, traces are exported via OTLP/HTTP.
+// Otherwise, trace IDs are propagated through headers and logged for correlation.
 
-// Span represents a single operation within a distributed trace.
-type Span struct {
-	TraceID    string                 `json:"trace_id"`
-	SpanID     string                 `json:"span_id"`
-	ParentID   string                 `json:"parent_id,omitempty"`
-	Operation  string                 `json:"operation"`
-	Service    string                 `json:"service"`
-	StartTime  time.Time              `json:"start_time"`
-	EndTime    time.Time              `json:"end_time,omitempty"`
-	Duration   time.Duration          `json:"duration_ms,omitempty"`
-	Status     string                 `json:"status"` // ok, error
-	Attributes map[string]interface{} `json:"attributes,omitempty"`
-}
-
-// TracingConfig holds the configuration for distributed tracing.
-type TracingConfig struct {
-	Enabled        bool
-	ServiceName    string
-	ExporterURL    string
-	SampleRate     float64
-	MaxSpansPerSec int
-}
-
-var tracingConfig *TracingConfig
+var (
+	otelEndpoint string
+	otelEnabled  bool
+	serviceName  string
+)
 
 func initTracing() {
-	tracingConfig = &TracingConfig{
-		Enabled:        os.Getenv("OTEL_ENABLED") == "true" || os.Getenv("OTEL_EXPORTER_ENDPOINT") != "",
-		ServiceName:    envString("OTEL_SERVICE_NAME", "inec-backend"),
-		ExporterURL:    os.Getenv("OTEL_EXPORTER_ENDPOINT"),
-		SampleRate:     1.0, // 100% in dev, reduce in production
-		MaxSpansPerSec: 1000,
-	}
-
-	if tracingConfig.Enabled {
-		log.Info().
-			Str("service", tracingConfig.ServiceName).
-			Str("exporter", tracingConfig.ExporterURL).
-			Msg("OpenTelemetry tracing enabled")
+	otelEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	serviceName = envOrDefault("OTEL_SERVICE_NAME", "inec-backend")
+	otelEnabled = otelEndpoint != ""
+	if otelEnabled {
+		log.Info().Str("endpoint", otelEndpoint).Str("service", serviceName).Msg("OpenTelemetry tracing enabled")
 	} else {
-		log.Info().Msg("Tracing disabled (set OTEL_ENABLED=true to enable)")
+		log.Info().Msg("OpenTelemetry tracing: header propagation only (set OTEL_EXPORTER_OTLP_ENDPOINT to enable export)")
 	}
 }
 
-// tracingMiddleware injects trace context into requests and records spans.
+type traceContextKey struct{}
+
+type TraceContext struct {
+	TraceID  string
+	SpanID   string
+	ParentID string
+}
+
+func generateTraceID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func generateSpanID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// tracingMiddleware injects/propagates W3C traceparent headers and logs trace context.
 func tracingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !tracingConfig.Enabled {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Extract or generate trace context
-		traceID := r.Header.Get("X-Trace-ID")
-		if traceID == "" {
-			traceID = generateJTI() // Reuse random ID generator
-		}
-		spanID := generateJTI()[:16]
-		parentID := r.Header.Get("X-Parent-Span-ID")
-
-		// Add to request context
-		ctx := context.WithValue(r.Context(), traceIDKey, traceID)
-		ctx = context.WithValue(ctx, spanIDKey, spanID)
-
 		start := time.Now()
 
+		tc := TraceContext{SpanID: generateSpanID()}
+
+		// Parse incoming traceparent: version-traceId-parentId-flags
+		if tp := r.Header.Get("traceparent"); tp != "" {
+			parts := strings.Split(tp, "-")
+			if len(parts) >= 4 && len(parts[1]) == 32 && len(parts[2]) == 16 {
+				tc.TraceID = parts[1]
+				tc.ParentID = parts[2]
+			}
+		}
+		if tc.TraceID == "" {
+			tc.TraceID = generateTraceID()
+		}
+
+		// Set outgoing traceparent
+		traceparent := fmt.Sprintf("00-%s-%s-01", tc.TraceID, tc.SpanID)
+		w.Header().Set("traceparent", traceparent)
+
+		// Inject into context for downstream use
+		ctx := context.WithValue(r.Context(), traceContextKey{}, &tc)
+		r = r.WithContext(ctx)
+
 		// Wrap response writer to capture status code
-		rw := &statusWriter{ResponseWriter: w, status: 200}
-
-		// Propagate trace headers downstream
-		rw.Header().Set("X-Trace-ID", traceID)
-
-		next.ServeHTTP(rw, r.WithContext(ctx))
+		rw := &statusResponseWriter{ResponseWriter: w, statusCode: 200}
+		next.ServeHTTP(rw, r)
 
 		duration := time.Since(start)
 
-		// Record span
-		span := &Span{
-			TraceID:   traceID,
-			SpanID:    spanID,
-			ParentID:  parentID,
-			Operation: r.Method + " " + r.URL.Path,
-			Service:   tracingConfig.ServiceName,
-			StartTime: start,
-			EndTime:   time.Now(),
-			Duration:  duration,
-			Status:    "ok",
-			Attributes: map[string]interface{}{
-				"http.method":      r.Method,
-				"http.url":         r.URL.Path,
-				"http.status_code": rw.status,
-				"http.user_agent":  r.UserAgent(),
-				"net.peer.ip":      stripPort(r.RemoteAddr),
-			},
-		}
-		if rw.status >= 400 {
-			span.Status = "error"
-		}
+		// Structured log with trace correlation
+		log.Info().
+			Str("trace_id", tc.TraceID).
+			Str("span_id", tc.SpanID).
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Int("status", rw.statusCode).
+			Dur("duration", duration).
+			Str("remote_addr", r.RemoteAddr).
+			Msg("request")
 
-		// Export span (async)
-		go exportSpan(span)
+		// Export span to OTLP collector if enabled
+		if otelEnabled {
+			go exportSpan(tc, r.Method, r.URL.Path, rw.statusCode, duration)
+		}
 	})
 }
 
-type tracingContextKey string
-
-const (
-	traceIDKey tracingContextKey = "traceID"
-	spanIDKey  tracingContextKey = "spanID"
-)
-
-type statusWriter struct {
+type statusResponseWriter struct {
 	http.ResponseWriter
-	status int
+	statusCode int
+	written    bool
 }
 
-func (sw *statusWriter) WriteHeader(code int) {
-	sw.status = code
-	sw.ResponseWriter.WriteHeader(code)
-}
-
-func (sw *statusWriter) Flush() {
-	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+func (w *statusResponseWriter) WriteHeader(code int) {
+	if !w.written {
+		w.statusCode = code
+		w.written = true
 	}
+	w.ResponseWriter.WriteHeader(code)
 }
 
-// exportSpan sends the span to the configured exporter or logs it.
-func exportSpan(span *Span) {
-	if tracingConfig.ExporterURL != "" {
-		// In production: send to Jaeger/Tempo/etc. via OTLP HTTP
-		// For now, log structured span data
-		log.Debug().
-			Str("trace_id", span.TraceID).
-			Str("span_id", span.SpanID).
-			Str("operation", span.Operation).
-			Dur("duration", span.Duration).
-			Int("status_code", span.Attributes["http.status_code"].(int)).
-			Msg("span")
+// GetTraceContext extracts trace context from request context.
+func GetTraceContext(ctx context.Context) *TraceContext {
+	if tc, ok := ctx.Value(traceContextKey{}).(*TraceContext); ok {
+		return tc
 	}
+	return nil
 }
 
-// getTraceID retrieves the trace ID from the request context.
-func getTraceID(ctx context.Context) string {
-	if v, ok := ctx.Value(traceIDKey).(string); ok {
-		return v
+// exportSpan sends a span to the OTLP collector via HTTP/JSON.
+func exportSpan(tc TraceContext, method, path string, status int, duration time.Duration) {
+	if otelEndpoint == "" {
+		return
 	}
-	return ""
+
+	spanJSON := fmt.Sprintf(`{
+		"resourceSpans": [{
+			"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": %q}}]},
+			"scopeSpans": [{
+				"spans": [{
+					"traceId": %q,
+					"spanId": %q,
+					"parentSpanId": %q,
+					"name": "%s %s",
+					"kind": 2,
+					"startTimeUnixNano": %d,
+					"endTimeUnixNano": %d,
+					"status": {"code": %d},
+					"attributes": [
+						{"key": "http.method", "value": {"stringValue": %q}},
+						{"key": "http.url", "value": {"stringValue": %q}},
+						{"key": "http.status_code", "value": {"intValue": %d}}
+					]
+				}]
+			}]
+		}]
+	}`, serviceName, tc.TraceID, tc.SpanID, tc.ParentID,
+		method, path,
+		time.Now().Add(-duration).UnixNano(), time.Now().UnixNano(),
+		otelStatusCode(status),
+		method, path, status)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", otelEndpoint+"/v1/traces",
+		strings.NewReader(spanJSON))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
+func otelStatusCode(httpStatus int) int {
+	if httpStatus >= 400 {
+		return 2 // ERROR
+	}
+	return 1 // OK
 }

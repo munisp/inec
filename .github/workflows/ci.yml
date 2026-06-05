@@ -46,10 +46,10 @@ jobs:
         run: npm ci
       - name: Lint
         working-directory: inec-frontend
-        run: npm run lint || true
+        run: npm run lint
       - name: Type check
         working-directory: inec-frontend
-        run: npx tsc --noEmit || true
+        run: npx tsc --noEmit
       - name: Build
         working-directory: inec-frontend
         run: npm run build
@@ -118,7 +118,7 @@ jobs:
         run: npm ci
       - name: Type check
         working-directory: inec-mobile
-        run: npx tsc --noEmit || true
+        run: npx tsc --noEmit
 
   e2e-tests:
     name: E2E Tests (Playwright)
@@ -153,7 +153,7 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Run E2E tests
         working-directory: e2e
-        run: npx playwright test || true
+        run: npx playwright test
         env:
           BASE_URL: http://localhost:8088
       - name: Upload E2E report
@@ -196,3 +196,37 @@ jobs:
           DATABASE_URL: postgresql://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable
           REDIS_ADDR: localhost:6379
         run: go test -v -tags integration -run TestIntegration ./...
+
+  load-testing:
+    name: Load Testing
+    runs-on: ubuntu-latest
+    needs: [backend-lint-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Build backend
+        working-directory: inec-go-backend
+        run: CGO_ENABLED=1 go build -o inec-server ./...
+      - name: Start backend
+        working-directory: inec-go-backend
+        run: ./inec-server &
+        env:
+          PORT: '8099'
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8099/health && break || sleep 1
+          done
+      - name: Run load tests
+        run: |
+          go install github.com/rakyll/hey@latest
+          echo "=== Dashboard endpoint (read-heavy) ==="
+          hey -n 2000 -c 50 -t 10 http://localhost:8099/dashboard | tail -20
+          echo "=== Results endpoint ==="
+          hey -n 2000 -c 50 -t 10 http://localhost:8099/results | tail -20
+          echo "=== Elections list ==="
+          hey -n 1000 -c 25 -t 10 http://localhost:8099/elections | tail -20
+          echo "=== Health check ==="
+          hey -n 5000 -c 100 -t 10 http://localhost:8099/health | tail -20

@@ -309,7 +309,8 @@ const res = await fetch(\`\${BASE}/results\`, {
   headers: { "X-API-Key": API_KEY }
 });
 const data = await res.json();
-console.log(data);`}
+// Process results
+document.getElementById("output").textContent = JSON.stringify(data, null, 2);`}
                 </pre>
               </div>
               <div>

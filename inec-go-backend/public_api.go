@@ -13,6 +13,16 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// apiVersionMiddleware adds API version headers and handles deprecation warnings.
+func apiVersionMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-API-Version", "v1")
+		w.Header().Set("X-API-Deprecation", "false")
+		w.Header().Set("X-API-Supported-Versions", "v1")
+		next.ServeHTTP(w, r)
+	}
+}
+
 func initPublicAPITables(database *sql.DB) {
 	database.Exec(`CREATE TABLE IF NOT EXISTS api_keys (
 		id SERIAL PRIMARY KEY,
