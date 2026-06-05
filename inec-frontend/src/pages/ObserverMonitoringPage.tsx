@@ -58,9 +58,8 @@ export default function ObserverMonitoringPage() {
     const es = new EventSource(`${API}/observer/stream?token=${token}`);
     eventSourceRef.current = es;
 
-    es.addEventListener('connected', (e) => {
+    es.addEventListener('connected', () => {
       setConnected(true);
-      // SSE connection established
     });
 
     es.addEventListener('result_submitted', (e) => {
