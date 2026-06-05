@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { logger } from '@/lib/utils';
 import { useAuth } from '@/lib/auth';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -22,9 +21,7 @@ interface ResultItem {
   pu_name: string; ward_name: string; lga_name: string; state_name: string;
   party_scores: Array<{ party_code: string; party_name: string; color: string; votes: number }>;
 }
-
 function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
-
 export default function ResultsPage() {
   const { user } = useAuth();
   const [results, setResults] = useState<ResultItem[]>([]);
@@ -40,13 +37,10 @@ export default function ResultsPage() {
   const [submitMsg, setSubmitMsg] = useState('');
   const canUpload = user?.role === 'admin' || user?.role === 'presiding_officer';
   const canManage = user?.role === 'admin' || user?.role === 'collation_officer';
-
   useEffect(() => {
     Promise.all([api.getParties(), api.getStates()]).then(([p, s]) => { setParties(p); setStates(s); });
   }, []);
-
   useEffect(() => { loadResults(); }, [filterState, filterStatus]);
-
   async function loadResults() {
     setLoading(true);
     try {
@@ -59,9 +53,7 @@ export default function ResultsPage() {
     } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
-
   async function handleSubmit() {
-    try {
       const party_scores = Object.entries(uploadData.scores).filter(([, v]) => v).map(([code, votes]) => ({ party_code: code, votes: parseInt(votes) }));
       await api.submitResult({
         election_id: 1, polling_unit_code: uploadData.polling_unit_code,
@@ -72,17 +64,10 @@ export default function ResultsPage() {
       setShowUpload(false);
       loadResults();
     } catch (e: unknown) { setSubmitMsg(e instanceof Error ? e.message : 'Submission failed'); }
-  }
-
   async function handleAction(id: number, action: 'validate' | 'finalize' | 'dispute') {
-    try {
       if (action === 'validate') await api.validateResult(id);
       else if (action === 'finalize') await api.finalizeResult(id);
       else await api.disputeResult(id);
-      loadResults();
-    } catch (e) { logger.error(e); }
-  }
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -96,14 +81,11 @@ export default function ResultsPage() {
           </Select>
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-36"><SelectValue placeholder="All Status" /></SelectTrigger>
-            <SelectContent>
               <SelectItem value="all">All Status</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="validated">Validated</SelectItem>
               <SelectItem value="finalized">Finalized</SelectItem>
               <SelectItem value="disputed">Disputed</SelectItem>
-            </SelectContent>
-          </Select>
           <Badge variant="outline">{total} results</Badge>
         </div>
         {canUpload && (
@@ -126,13 +108,9 @@ export default function ResultsPage() {
                     <Input type="number" value={uploadData.accredited_voters}
                       onChange={e => setUploadData(p => ({ ...p, accredited_voters: e.target.value }))} />
                   </div>
-                  <div className="space-y-2">
                     <Label>Rejected Votes</Label>
                     <Input type="number" value={uploadData.rejected_votes}
                       onChange={e => setUploadData(p => ({ ...p, rejected_votes: e.target.value }))} />
-                  </div>
-                </div>
-                <div className="space-y-2">
                   <Label>Party Votes</Label>
                   {parties.map(p => (
                     <div key={p.code} className="flex items-center gap-2">
@@ -143,14 +121,12 @@ export default function ResultsPage() {
                         onChange={e => setUploadData(prev => ({ ...prev, scores: { ...prev.scores, [p.code]: e.target.value } }))} />
                     </div>
                   ))}
-                </div>
                 <Button onClick={handleSubmit} className="w-full bg-green-700 hover:bg-green-800">Submit Result</Button>
               </div>
             </DialogContent>
           </Dialog>
         )}
       </div>
-
       <Card>
         <CardContent className="overflow-x-auto p-0">
           {loading ? (
@@ -175,28 +151,20 @@ export default function ResultsPage() {
                       <p className="text-sm font-medium">{r.pu_name}</p>
                       <p className="text-xs text-zinc-400">{r.polling_unit_code}</p>
                     </TableCell>
-                    <TableCell>
                       <p className="text-sm">{r.lga_name}</p>
                       <p className="text-xs text-zinc-400">{r.state_name}</p>
-                    </TableCell>
-                    <TableCell>
                       <Badge className={`text-xs ${
                         r.status === 'finalized' ? 'bg-green-100 text-green-800' :
                         r.status === 'validated' ? 'bg-blue-100 text-blue-800' :
                         r.status === 'pending' ? 'bg-amber-100 text-amber-800' :
                         'bg-red-100 text-red-800'
                       }`}>{r.status}</Badge>
-                    </TableCell>
                     <TableCell className="text-right font-medium">{formatNumber(r.total_valid_votes)}</TableCell>
                     <TableCell className="text-right">{formatNumber(r.total_votes_cast)}</TableCell>
-                    <TableCell>
                       <div className="flex gap-1">
                         <Badge variant="outline" className="text-xs px-1">TB:{r.tigerbeetle_status}</Badge>
                         <Badge variant="outline" className="text-xs px-1">HL:{r.hyperledger_status}</Badge>
                       </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
                         <Dialog>
                           <DialogTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedResult(r)}>
@@ -227,7 +195,6 @@ export default function ResultsPage() {
                                       <span className="font-medium">{formatNumber(ps.votes)}</span>
                                     </div>
                                   ))}
-                                </div>
                               </div>
                             )}
                           </DialogContent>
@@ -240,15 +207,9 @@ export default function ResultsPage() {
                         {canManage && (r.status === 'pending' || r.status === 'validated') && (
                           <Button variant="ghost" size="icon" className="h-7 w-7 text-green-600" onClick={() => handleAction(r.id, 'finalize')}>
                             <Shield className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
                         {(user?.role === 'admin' || user?.role === 'observer') && r.status !== 'disputed' && r.status !== 'voided' && (
                           <Button variant="ghost" size="icon" className="h-7 w-7 text-red-600" onClick={() => handleAction(r.id, 'dispute')}>
                             <AlertTriangle className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -258,4 +219,3 @@ export default function ResultsPage() {
       </Card>
     </div>
   );
-}

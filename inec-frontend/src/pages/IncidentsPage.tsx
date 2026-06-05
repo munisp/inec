@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { logger } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,7 +15,6 @@ interface Incident {
   description: string; severity: string; status: string; reported_at: string;
   reporter_name: string;
 }
-
 const severityColors: Record<string, string> = {
   low: 'bg-blue-100 text-blue-800', medium: 'bg-amber-100 text-amber-800',
   high: 'bg-orange-100 text-orange-800', critical: 'bg-red-100 text-red-800',
@@ -24,32 +22,24 @@ const severityColors: Record<string, string> = {
 const statusColors: Record<string, string> = {
   reported: 'bg-amber-100 text-amber-800', investigating: 'bg-blue-100 text-blue-800',
   resolved: 'bg-green-100 text-green-800', dismissed: 'bg-zinc-100 text-zinc-600',
-};
-
 export default function IncidentsPage() {
   const [incidents, setIncidents]= useState<Incident[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ polling_unit_code: '', incident_type: 'equipment_malfunction', description: '', severity: 'medium' });
-
   useEffect(() => { loadIncidents(); }, []);
-
   async function loadIncidents() {
     setLoading(true);
     try { setIncidents(await api.getIncidents(1)); } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
-
   async function handleCreate() {
     try {
       await api.createIncident({ election_id: 1, ...form });
       setShowCreate(false);
       loadIncidents();
     } catch (e) { logger.error(e); }
-  }
-
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -66,7 +56,6 @@ export default function IncidentsPage() {
                 <Input placeholder="e.g. LA-001-W001-PU001" value={form.polling_unit_code}
                   onChange={e => setForm(p => ({ ...p, polling_unit_code: e.target.value }))} />
               </div>
-              <div className="space-y-2">
                 <Label>Incident Type</Label>
                 <Select value={form.incident_type} onValueChange={v => setForm(p => ({ ...p, incident_type: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -79,30 +68,20 @@ export default function IncidentsPage() {
                     <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
                 <Label>Severity</Label>
                 <Select value={form.severity} onValueChange={v => setForm(p => ({ ...p, severity: v }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
                     <SelectItem value="low">Low</SelectItem>
                     <SelectItem value="medium">Medium</SelectItem>
                     <SelectItem value="high">High</SelectItem>
                     <SelectItem value="critical">Critical</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
                 <Label>Description</Label>
                 <Input placeholder="Describe the incident" value={form.description}
                   onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
-              </div>
               <Button onClick={handleCreate} className="w-full bg-red-600 hover:bg-red-700">Submit Report</Button>
             </div>
           </DialogContent>
         </Dialog>
       </div>
-
       <div className="space-y-3">
         {incidents.map(inc => (
           <Card key={inc.id} className="hover:shadow-md transition-shadow">
@@ -120,20 +99,15 @@ export default function IncidentsPage() {
                       <span>Reported by: {inc.reporter_name}</span>
                       <span>{inc.reported_at}</span>
                     </div>
-                  </div>
                 </div>
                 <div className="flex gap-1.5">
                   <Badge className={severityColors[inc.severity]}>{inc.severity}</Badge>
                   <Badge className={statusColors[inc.status]}>{inc.status}</Badge>
-                </div>
-              </div>
             </CardContent>
           </Card>
         ))}
         {incidents.length === 0 && (
           <Card><CardContent className="py-12 text-center text-zinc-500">No incidents reported</CardContent></Card>
         )}
-      </div>
     </div>
   );
-}

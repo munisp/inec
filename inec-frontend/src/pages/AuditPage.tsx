@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { logger } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,14 +13,11 @@ interface AuditEntry {
   user_id: number; details: string; block_hash: string; prev_block_hash: string;
   timestamp: string; username: string; full_name: string;
 }
-
 interface VerifyData {
   result_id: number;
   audit_entries: AuditEntry[];
   chain_valid: boolean;
   dual_ledger: { tigerbeetle_status: string; hyperledger_status: string; tigerbeetle_transfer_id: string; hyperledger_tx_id: string } | null;
-}
-
 export default function AuditPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [total, setTotal] = useState(0);
@@ -29,11 +25,9 @@ export default function AuditPage() {
   const [searchId, setSearchId] = useState('');
   const [verifyData, setVerifyData] = useState<VerifyData | null>(null);
   const [stats, setStats] = useState<{ total_entries: number; action_counts: Array<{ action: string; count: number }>; latest_block_hash: string | null } | null>(null);
-
   useEffect(() => {
     loadData();
   }, []);
-
   async function loadData() {
     setLoading(true);
     try {
@@ -44,15 +38,10 @@ export default function AuditPage() {
     } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
-
   async function handleVerify() {
     if (!searchId) return;
-    try {
       const data = await api.verifyResult(parseInt(searchId));
       setVerifyData(data);
-    } catch (e) { logger.error(e); }
-  }
-
   const actionColors: Record<string, string> = {
     RESULT_SUBMITTED: 'bg-blue-100 text-blue-800',
     RESULT_VALIDATED: 'bg-amber-100 text-amber-800',
@@ -61,9 +50,7 @@ export default function AuditPage() {
     ELECTION_CREATED: 'bg-purple-100 text-purple-800',
     USER_LOGIN: 'bg-zinc-100 text-zinc-600',
   };
-
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
-
   return (
     <div className="space-y-6">
       {stats && (
@@ -84,7 +71,6 @@ export default function AuditPage() {
           ))}
         </div>
       )}
-
       <Card className="border-green-200 bg-green-50/50">
         <CardContent className="pt-4 pb-4">
           <div className="flex items-center gap-2 mb-3">
@@ -97,7 +83,6 @@ export default function AuditPage() {
             <Button onClick={handleVerify} className="bg-green-700 hover:bg-green-800 gap-1">
               <Search className="w-4 h-4" /> Verify
             </Button>
-          </div>
           {verifyData && (
             <div className="mt-4 p-4 rounded-lg bg-white border border-green-200">
               <div className="flex items-center gap-2 mb-3">
@@ -113,10 +98,8 @@ export default function AuditPage() {
                     <p className="text-zinc-500">TigerBeetle</p>
                     <p className="font-mono text-xs">{verifyData.dual_ledger.tigerbeetle_status} | {verifyData.dual_ledger.tigerbeetle_transfer_id}</p>
                   </div>
-                  <div>
                     <p className="text-zinc-500">Hyperledger</p>
                     <p className="font-mono text-xs">{verifyData.dual_ledger.hyperledger_status} | {verifyData.dual_ledger.hyperledger_tx_id?.slice(0, 20)}...</p>
-                  </div>
                 </div>
               )}
               <div className="space-y-1">
@@ -127,14 +110,11 @@ export default function AuditPage() {
                     <span className="text-zinc-400">{e.timestamp}</span>
                     <Link2 className="w-3 h-3 text-zinc-400" />
                     <span className="font-mono text-zinc-400 truncate max-w-32">{e.block_hash?.slice(0, 16)}...</span>
-                  </div>
                 ))}
-              </div>
             </div>
           )}
         </CardContent>
       </Card>
-
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -167,8 +147,5 @@ export default function AuditPage() {
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
     </div>
   );
-}
