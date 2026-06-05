@@ -36,7 +36,7 @@ func handleTemporalWorkflows(w http.ResponseWriter, r *http.Request) {
 
 func handleTemporalWorkflowStatus(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	ctx := context.Background()
+	ctx := r.Context()
 	ws, err := mwHub.Temporal.GetWorkflowStatus(ctx, id)
 	if err != nil {
 		writeError(w, 404, err.Error())
@@ -46,7 +46,7 @@ func handleTemporalWorkflowStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTBAccounts(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	accounts := []string{"inec-operational", "inec-official"}
 	result := make([]interface{}, 0)
 	for _, id := range accounts {
@@ -59,7 +59,7 @@ func handleTBAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTBTransfers(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	accountID := queryParam(r, "account_id", "inec-operational")
 	limit := queryParamInt(r, "limit", 50)
 	transfers, err := mwHub.TigerBeetle.LookupTransfers(ctx, accountID, limit)
@@ -71,7 +71,7 @@ func handleTBTransfers(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAPISIXRoutes(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	routes, err := mwHub.APISIX.GetRoutes(ctx)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -90,7 +90,7 @@ func handlePermifyCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid JSON")
 		return
 	}
-	ctx := context.Background()
+	ctx := r.Context()
 	allowed, err := mwHub.Permify.Check(ctx, check)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -107,7 +107,7 @@ func handleFluvioConsume(w http.ResponseWriter, r *http.Request) {
 	topic := mux.Vars(r)["topic"]
 	offset := int64(queryParamInt(r, "offset", 0))
 	limit := queryParamInt(r, "limit", 50)
-	ctx := context.Background()
+	ctx := r.Context()
 	records, err := mwHub.Fluvio.Consume(ctx, topic, offset, limit)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -121,7 +121,7 @@ func handleLakehouseAnalytics(w http.ResponseWriter, r *http.Request) {
 	eidStr := vars["election_id"]
 	analysisType := vars["type"]
 	eid, _ := strconv.Atoi(eidStr)
-	ctx := context.Background()
+	ctx := r.Context()
 	result, err := mwHub.Lakehouse.GetAnalytics(ctx, eid, analysisType)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -131,7 +131,7 @@ func handleLakehouseAnalytics(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLakehouseTables(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	tables, err := mwHub.Lakehouse.GetTables(ctx)
 	if err != nil {
 		writeError(w, 500, err.Error())

@@ -908,7 +908,7 @@ func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
 	switch modality {
 	case "fingerprint":
 		tmpl := extractFingerprintMinutiae(inputHash, rng)
-		templateBytes, _ = json.Marshal(tmpl)
+		templateBytes, _ = json.Marshal(tmpl) //nolint:errcheck — struct is always serializable
 		quality = float64(tmpl.NFIQ2Score) / 5.0
 		if quality < 0.4 {
 			quality = 0.4 + rng.Float64()*0.2
@@ -919,14 +919,14 @@ func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
 		stages = append(stages, M{"stage": "capture", "status": "complete", "minutiae_count": len(tmpl.Minutiae)})
 	case "facial":
 		emb := generateFacialEmbedding(inputHash, rng)
-		templateBytes, _ = json.Marshal(emb)
+		templateBytes, _ = json.Marshal(emb) //nolint:errcheck — struct is always serializable
 		quality = 0.7 + rng.Float64()*0.3
 		meta["embedding_dim"] = emb.Dimension
 		meta["iso_format"] = "ISO_19794_5"
 		stages = append(stages, M{"stage": "capture", "status": "complete", "embedding_dim": emb.Dimension})
 	case "iris":
 		code := generateIrisCode(inputHash, rng)
-		templateBytes, _ = json.Marshal(code)
+		templateBytes, _ = json.Marshal(code) //nolint:errcheck — struct is always serializable
 		quality = code.Usability
 		meta["iris_bits"] = code.Bits
 		meta["iso_format"] = "ISO_19794_6"

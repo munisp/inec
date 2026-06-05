@@ -6,7 +6,11 @@ import (
 )
 
 func querySingleRow(query string, args ...interface{}) (M, error) {
-	rows, err := dbQueryCtx(context.Background(), query, args...)
+	return querySingleRowCtx(context.Background(), query, args...)
+}
+
+func querySingleRowCtx(ctx context.Context, query string, args ...interface{}) (M, error) {
+	rows, err := dbQueryCtx(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

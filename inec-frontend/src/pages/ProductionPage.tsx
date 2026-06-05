@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { logger } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -62,7 +64,7 @@ export default function ProductionPage() {
       if (l.status === 'fulfilled') setLedger(l.value);
       if (d.status === 'fulfilled') setDbMetrics(d.value);
       if (pg.status === 'fulfilled') setPgpool(pg.value);
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
     setLoading(false);
   }
 

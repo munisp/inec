@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { logger } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -39,7 +41,7 @@ export default function AuditPage() {
       setEntries(trail.entries);
       setTotal(trail.total);
       setStats(auditStats);
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
 
@@ -48,7 +50,7 @@ export default function AuditPage() {
     try {
       const data = await api.verifyResult(parseInt(searchId));
       setVerifyData(data);
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
   }
 
   const actionColors: Record<string, string> = {

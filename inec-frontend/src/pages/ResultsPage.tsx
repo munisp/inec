@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { logger } from '@/lib/utils';
 import { useAuth } from '@/lib/auth';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -54,7 +56,7 @@ export default function ResultsPage() {
       const res = await api.getResults(1, params);
       setResults(res.results);
       setTotal(res.total);
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
 
@@ -78,7 +80,7 @@ export default function ResultsPage() {
       else if (action === 'finalize') await api.finalizeResult(id);
       else await api.disputeResult(id);
       loadResults();
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
   }
 
   return (

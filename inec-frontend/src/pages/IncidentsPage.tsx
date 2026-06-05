@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { logger } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,7 +36,7 @@ export default function IncidentsPage() {
 
   async function loadIncidents() {
     setLoading(true);
-    try { setIncidents(await api.getIncidents(1)); } catch (e) { console.error(e); }
+    try { setIncidents(await api.getIncidents(1)); } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
 
@@ -43,7 +45,7 @@ export default function IncidentsPage() {
       await api.createIncident({ election_id: 1, ...form });
       setShowCreate(false);
       loadIncidents();
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
   }
 
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;

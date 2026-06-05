@@ -169,7 +169,8 @@ func exportSpan(tc TraceContext, method, path string, status int, duration time.
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	traceClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := traceClient.Do(req)
 	if err != nil {
 		return
 	}

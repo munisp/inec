@@ -269,8 +269,8 @@ func main() {
 	// Public API v1 (API key authenticated)
 	r.HandleFunc("/api/v1/docs", apiVersionMiddleware(handlePublicAPIDocs)).Methods("GET")
 	r.HandleFunc("/api/v1/docs.json", apiVersionMiddleware(handlePublicAPIDocs)).Methods("GET")
-	r.HandleFunc("/api/v1/keys", handlePublicAPIKeys).Methods("GET", "POST")
-	r.HandleFunc("/api/v1/usage", handlePublicAPIUsage).Methods("GET")
+	r.HandleFunc("/api/v1/keys", readAuth(handlePublicAPIKeys)).Methods("GET", "POST")
+	r.HandleFunc("/api/v1/usage", readAuth(handlePublicAPIUsage)).Methods("GET")
 	r.HandleFunc("/api/v1/elections", apiKeyAuth(handlePublicAPIElections)).Methods("GET")
 	r.HandleFunc("/api/v1/results", apiKeyAuth(handlePublicAPIResults)).Methods("GET")
 	r.HandleFunc("/api/v1/results/{id:[0-9]+}", apiKeyAuth(handlePublicAPIResultDetail)).Methods("GET")
@@ -573,20 +573,21 @@ func main() {
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")
 
-	// Middleware chain: panic recovery → request ID → tracing → access log → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
+	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
 			tracingMiddleware(
 				accessLogMiddleware(
-					metricsMiddleware(
-						corsProductionMiddleware(
-							jwtAuthMiddleware(
-								csrfMiddleware(
-									enhancedSecurityHeaders(
-										wafMiddleware(
-											requestSizeLimit(
-												rateLimitMiddleware(
-													gzipMiddleware(r)))))))))))))
+					inputValidationMiddleware(
+						metricsMiddleware(
+							corsProductionMiddleware(
+								jwtAuthMiddleware(
+									csrfMiddleware(
+										enhancedSecurityHeaders(
+											wafMiddleware(
+												requestSizeLimit(
+													rateLimitMiddleware(
+														gzipMiddleware(r))))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -773,11 +774,17 @@ func gzipMiddleware(next http.Handler) http.Handler {
 }
 
 func broadcastWS(msg M) {
-	data, _ := json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Error().Err(err).Msg("broadcastWS: marshal failed")
+		return
+	}
 	wsClients.RLock()
 	defer wsClients.RUnlock()
 	for conn := range wsClients.conns {
-		_ = conn.WriteMessage(websocket.TextMessage, data)
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Debug().Err(err).Msg("broadcastWS: write failed, client will be cleaned up")
+		}
 	}
 }
 

@@ -19,10 +19,10 @@ var publicPaths = map[string]bool{
 	"/auth/login":      true,
 	"/auth/register":   true,
 	"/ws":              true,
-	"/db/metrics":      true,
-	"/db/pool":         true,
 	"/metrics":         true,
+	"/auth/refresh":    true,
 	"/observer/stream": true, // SSE uses query param auth (EventSource can't set headers)
+	"/.well-known/openid-configuration": true,
 }
 
 // publicPrefixes are path prefixes accessible without auth.

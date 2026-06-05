@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { logger } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -49,7 +51,7 @@ export default function CollationPage() {
         const res = await api.getCollation(1, level, parentCode);
         setData(res);
       } catch (e) {
-        console.error(e);
+        logger.error(e);
       } finally {
         setLoading(false);
       }

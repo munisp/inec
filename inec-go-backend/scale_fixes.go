@@ -211,7 +211,11 @@ func (h *ShardedWSHub) Unregister(conn *websocket.Conn) {
 // Broadcast sends to: (1) shard matching stateCode + (2) global subscribers.
 // At 50K connections with 37 states, each broadcast hits ~50K/37 ≈ 1,351 + globals.
 func (h *ShardedWSHub) Broadcast(msg M, stateCode string) {
-	data, _ := json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Error().Err(err).Msg("shardedWS: marshal failed")
+		return
+	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -219,13 +223,17 @@ func (h *ShardedWSHub) Broadcast(msg M, stateCode string) {
 	if stateCode != "" {
 		key := "state:" + stateCode
 		for conn := range h.shards[key] {
-			_ = conn.WriteMessage(websocket.TextMessage, data)
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				log.Debug().Err(err).Str("shard", key).Msg("shardedWS: write failed")
+			}
 		}
 	}
 
 	// Send to global (unfiltered) subscribers
 	for conn := range h.global {
-		_ = conn.WriteMessage(websocket.TextMessage, data)
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Debug().Err(err).Msg("shardedWS: global write failed")
+		}
 	}
 }
 

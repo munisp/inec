@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { logger } from '@/lib/utils';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
@@ -82,7 +83,7 @@ export default function MapPage() {
       setPus(data.polling_units);
       const withResults = data.polling_units.filter((p: PUData) => p.result_id).length;
       setPuCount({ total: data.polling_units.length, withResults });
-    } catch (e) { console.error(e); }
+    } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
 
@@ -321,7 +322,7 @@ export default function MapPage() {
     mapRef.current = map;
     return () => { try { map.remove(); } catch {} };
     } catch (err) {
-      console.error('Map init error:', err);
+      logger.error('Map init error:', err);
       setMapError('Map could not be initialized. Please ensure WebGL is enabled.');
     }
   }, [loading, states, pus, mapMode, showPUs, tileMode, getTileSource, selectedState, statusFilter, timeTs, tileVersion]);
@@ -384,7 +385,7 @@ export default function MapPage() {
 
     mapRefB.current = mapB;
     return () => { try { mapB.remove(); } catch {} };
-    } catch (err) { console.error('Compare map init error:', err); }
+    } catch (err) { logger.error('Compare map init error:', err); }
   }, [compareMode, loading, states, pus, mapMode, showPUs, tileMode, getTileSource, selectedState, statusFilter, timeTs, tileVersion]);
 
   function getStateFillExpression(mode: MapMode): maplibregl.ExpressionSpecification {
