@@ -143,15 +143,12 @@ jobs:
       - name: Install frontend
         working-directory: inec-frontend
         run: npm ci
-      - name: Build frontend
+      - name: Start frontend dev server
         working-directory: inec-frontend
-        run: npm run build
-      - name: Start frontend preview
-        working-directory: inec-frontend
-        run: npx vite preview --port 5173 &
+        run: npx vite --port 5173 &
       - name: Wait for frontend
         run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             curl -sf http://localhost:5173 > /dev/null && break || sleep 1
           done
       - name: Install E2E deps
