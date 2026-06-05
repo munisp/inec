@@ -24,11 +24,16 @@ interface CollationItem {
   hyperledger_status?: string;
   accredited_voters?: number;
 }
+
 type Level = 'state' | 'lga' | 'ward' | 'pu';
+
 const LEVEL_LABELS: Record<Level, string> = { state: 'States', lga: 'LGAs', ward: 'Wards', pu: 'Polling Units' };
 const NEXT_LEVEL: Record<Level, Level | null> = { state: 'lga', lga: 'ward', ward: 'pu', pu: null };
+
 function formatNumber(n: number | null) {
   return n != null ? new Intl.NumberFormat().format(n) : '-';
+}
+
 export default function CollationPage() {
   const [level, setLevel] = useState<Level>('state');
   const [parentCode, setParentCode] = useState<string | undefined>();
@@ -37,6 +42,7 @@ export default function CollationPage() {
   const [breadcrumbs, setBreadcrumbs] = useState<Array<{ level: Level; code?: string; name: string }>>([
     { level: 'state', name: 'National' }
   ]);
+
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -51,6 +57,7 @@ export default function CollationPage() {
     }
     load();
   }, [level, parentCode]);
+
   const drillDown = (item: CollationItem) => {
     const next = NEXT_LEVEL[level];
     if (!next) return;
@@ -58,16 +65,21 @@ export default function CollationPage() {
     setParentCode(item.code);
     setLevel(next);
   };
+
   const goBack = (index: number) => {
     const bc = breadcrumbs[index];
     const newBc = breadcrumbs.slice(0, index + 1);
     setBreadcrumbs(newBc);
     setLevel(bc.level);
     setParentCode(bc.code);
+  };
+
   const topParties = data.length > 0 && data[0].party_scores
     ? [...new Set(data.flatMap(d => d.party_scores.map(p => p.abbreviation)))].slice(0, 6)
     : [];
+
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm flex-wrap">
@@ -83,11 +95,13 @@ export default function CollationPage() {
           </div>
         ))}
       </div>
+
       {breadcrumbs.length > 1 && (
         <Button variant="ghost" size="sm" onClick={() => goBack(breadcrumbs.length - 2)} className="gap-1">
           <ArrowLeft className="w-4 h-4" /> Back
         </Button>
       )}
+
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold">
@@ -147,9 +161,12 @@ export default function CollationPage() {
                       </TableCell>
                     )}
                     {NEXT_LEVEL[level] && (
+                      <TableCell>
                         <Button variant="ghost" size="sm" onClick={() => drillDown(item)} className="gap-1 text-xs">
                           Drill down <ChevronRight className="w-3 h-3" />
                         </Button>
+                      </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
@@ -162,3 +179,4 @@ export default function CollationPage() {
       </Card>
     </div>
   );
+}
