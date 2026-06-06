@@ -27,3 +27,8 @@ inec-go-backend/coverage.out
 inec-go-backend/inec-go-backend
 inec-go-backend/uploads/
 inec-go-backend/inec-go-backend
+
+# Go binaries
+inec-go-backend/inec-backend
+inec-go-backend/server
+inec-go-backend/inec-go-backend

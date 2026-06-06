@@ -53,13 +53,7 @@ type EscalationRule struct {
 	LastFired time.Time     `json:"-"`
 }
 
-var cmdCenter = &CommandCenterState{
-	escalationRules: []EscalationRule{
-		{Name: "stalled_pu_warn", Condition: "stalled>100", Level: "WARN", Action: "notify_state_rec", Cooldown: 5 * time.Minute},
-		{Name: "stalled_pu_critical", Condition: "stalled>500", Level: "CRITICAL", Action: "pause_collation", Cooldown: 10 * time.Minute},
-		{Name: "zero_submissions", Condition: "no_submissions_30m", Level: "EMERGENCY", Action: "notify_chairman", Cooldown: 30 * time.Minute},
-	},
-}
+var cmdCenter = &CommandCenterState{}
 
 // ─── Schema Init ─────────────────────────────────────────────────────────────
 
@@ -183,7 +177,76 @@ func initPlatformEnhancements(database interface{}) {
 		('results', 'polling_unit_code', 'PUBLIC'), ('elections', 'title', 'PUBLIC'),
 		('audit_log', 'details', 'INTERNAL'), ('users', 'password_hash', 'SECRET')`)
 
+	// Persist escalation rules in DB
+	dbExecLog("enhancements", `CREATE TABLE IF NOT EXISTS escalation_rules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE, condition TEXT NOT NULL,
+		level TEXT NOT NULL, action TEXT NOT NULL,
+		cooldown_seconds INTEGER DEFAULT 300,
+		enabled INTEGER DEFAULT 1,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+	dbExecLog("seed", `INSERT OR IGNORE INTO escalation_rules (name, condition, level, action, cooldown_seconds) VALUES
+		('stalled_pu_warn', 'stalled>100', 'WARN', 'notify_state_rec', 300),
+		('stalled_pu_critical', 'stalled>500', 'CRITICAL', 'pause_collation', 600),
+		('zero_submissions', 'no_submissions_30m', 'EMERGENCY', 'notify_chairman', 1800)`)
+
+	// Persist load shedding level
+	dbExecLog("enhancements", `CREATE TABLE IF NOT EXISTS command_center_config (
+		key TEXT PRIMARY KEY, value TEXT NOT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`)
+	dbExecLog("seed", `INSERT OR IGNORE INTO command_center_config (key, value) VALUES ('load_shedding_level', '0')`)
+
+	// Load escalation rules from DB
+	loadEscalationRulesFromDB()
+	loadLoadSheddingFromDB()
+
 	log.Info().Msg("Platform enhancements initialized (25 features)")
+}
+
+func loadEscalationRulesFromDB() {
+	rows, err := db.Query(`SELECT name, condition, level, action, cooldown_seconds FROM escalation_rules WHERE enabled=1`)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to load escalation rules from DB, using defaults")
+		cmdCenter.escalationRules = []EscalationRule{
+			{Name: "stalled_pu_warn", Condition: "stalled>100", Level: "WARN", Action: "notify_state_rec", Cooldown: 5 * time.Minute},
+			{Name: "stalled_pu_critical", Condition: "stalled>500", Level: "CRITICAL", Action: "pause_collation", Cooldown: 10 * time.Minute},
+			{Name: "zero_submissions", Condition: "no_submissions_30m", Level: "EMERGENCY", Action: "notify_chairman", Cooldown: 30 * time.Minute},
+		}
+		return
+	}
+	defer rows.Close()
+	var rules []EscalationRule
+	for rows.Next() {
+		var r EscalationRule
+		var cooldownSec int
+		if err := rows.Scan(&r.Name, &r.Condition, &r.Level, &r.Action, &cooldownSec); err != nil {
+			continue
+		}
+		r.Cooldown = time.Duration(cooldownSec) * time.Second
+		rules = append(rules, r)
+	}
+	if len(rules) > 0 {
+		cmdCenter.mu.Lock()
+		cmdCenter.escalationRules = rules
+		cmdCenter.mu.Unlock()
+		log.Info().Int("count", len(rules)).Msg("Escalation rules loaded from DB")
+	} else {
+		cmdCenter.escalationRules = []EscalationRule{
+			{Name: "stalled_pu_warn", Condition: "stalled>100", Level: "WARN", Action: "notify_state_rec", Cooldown: 5 * time.Minute},
+			{Name: "stalled_pu_critical", Condition: "stalled>500", Level: "CRITICAL", Action: "pause_collation", Cooldown: 10 * time.Minute},
+			{Name: "zero_submissions", Condition: "no_submissions_30m", Level: "EMERGENCY", Action: "notify_chairman", Cooldown: 30 * time.Minute},
+		}
+	}
+}
+
+func loadLoadSheddingFromDB() {
+	row := db.QueryRow(`SELECT value FROM command_center_config WHERE key='load_shedding_level'`)
+	var val string
+	if err := row.Scan(&val); err == nil {
+		if l, err := strconv.Atoi(val); err == nil && l >= 0 && l <= 3 {
+			cmdCenter.loadShedLevel = l
+		}
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -263,6 +326,15 @@ func handleEscalationConfig(w http.ResponseWriter, r *http.Request) {
 	cmdCenter.mu.Lock()
 	cmdCenter.escalationRules = rules
 	cmdCenter.mu.Unlock()
+	// Persist to DB
+	for _, rule := range rules {
+		cooldownSec := int(rule.Cooldown.Seconds())
+		if cooldownSec == 0 {
+			cooldownSec = 300
+		}
+		dbExecCtx(r.Context(), `INSERT OR REPLACE INTO escalation_rules (name, condition, level, action, cooldown_seconds) VALUES (?,?,?,?,?)`,
+			rule.Name, rule.Condition, rule.Level, rule.Action, cooldownSec)
+	}
 	writeJSON(w, 200, M{"status": "updated", "count": len(rules)})
 }
 
@@ -283,6 +355,8 @@ func handleLoadShedding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmdCenter.loadShedLevel = body.Level
+	// Persist to DB
+	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO command_center_config (key, value, updated_at) VALUES ('load_shedding_level', ?, CURRENT_TIMESTAMP)`, strconv.Itoa(body.Level))
 	if mwHub != nil && mwHub.Kafka != nil {
 		mwHub.Kafka.Produce(r.Context(), KafkaMessage{Topic: "command-center.load-shedding", Key: "level", Value: M{"level": body.Level}, Timestamp: time.Now()})
 	}
@@ -297,6 +371,10 @@ func loadSheddingMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		prio := classifyPriority(r.URL.Path)
+		if prio == "SYSTEM" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if level >= 3 && prio != "CRITICAL" {
 			writeError(w, 503, "only result submissions accepted")
 			return
@@ -314,6 +392,9 @@ func loadSheddingMiddleware(next http.Handler) http.Handler {
 }
 
 func classifyPriority(path string) string {
+	if path == "/healthz" || path == "/readiness" || strings.HasPrefix(path, "/auth/") || path == "/load-shedding" || path == "/metrics" {
+		return "SYSTEM"
+	}
 	if strings.Contains(path, "/results/submit") || strings.Contains(path, "/ec8a/submit") || strings.Contains(path, "/ingestion/submit") {
 		return "CRITICAL"
 	}
@@ -631,29 +712,72 @@ func handleMediaWidget(w http.ResponseWriter, r *http.Request) {
 func handleExportPDFReport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	reportType := r.URL.Query().Get("type")
+	format := r.URL.Query().Get("format")
 	if reportType == "" {
 		reportType = "summary"
 	}
 	var data M
+	var title string
 	switch reportType {
 	case "summary":
+		title = "INEC Election Summary Report"
 		tr, _ := querySingleRowCtx(ctx, `SELECT COUNT(*) as c FROM results`)
 		tv, _ := querySingleRowCtx(ctx, `SELECT COALESCE(SUM(total_votes),0) as t FROM results`)
 		tp, _ := querySingleRowCtx(ctx, `SELECT COUNT(*) as c FROM polling_units`)
 		pp, _ := dbQueryCtx(ctx, `SELECT party_code, SUM(votes) as tv FROM party_scores GROUP BY party_code ORDER BY tv DESC LIMIT 10`)
-		data = M{"title": "Election Summary", "results": tr, "votes": tv, "pus": tp, "parties": scanRows(pp), "generated": time.Now().UTC()}
+		stateRows, _ := dbQueryCtx(ctx, `SELECT pu.state_code, COUNT(DISTINCT pu.code) as total_pus,
+			COUNT(DISTINCT r.polling_unit_code) as reported_pus
+			FROM polling_units pu LEFT JOIN results r ON pu.code=r.polling_unit_code
+			GROUP BY pu.state_code ORDER BY pu.state_code`)
+		data = M{"title": title, "results_count": tr, "total_votes": tv, "total_pus": tp,
+			"parties": scanRows(pp), "states": scanRows(stateRows), "generated": time.Now().UTC()}
 	case "observer":
+		title = "Observer Report (OSCE/ODIHR Format)"
 		reps, _ := dbQueryCtx(ctx, `SELECT * FROM observer_reports ORDER BY created_at DESC`)
-		data = M{"title": "Observer Report (OSCE/ODIHR Format)", "reports": scanRows(reps), "generated": time.Now().UTC()}
+		incidents, _ := dbQueryCtx(ctx, `SELECT * FROM incidents ORDER BY created_at DESC`)
+		data = M{"title": title, "reports": scanRows(reps), "incidents": scanRows(incidents), "generated": time.Now().UTC()}
 	case "gazette":
-		data = M{"title": "Official Gazette — Election Results", "certified_by": "INEC", "generated": time.Now().UTC()}
+		title = "Official Gazette — Election Results"
+		results, _ := dbQueryCtx(ctx, `SELECT r.*, pu.pu_name, pu.state_code FROM results r LEFT JOIN polling_units pu ON r.polling_unit_code=pu.code ORDER BY r.submitted_at DESC`)
+		scores, _ := dbQueryCtx(ctx, `SELECT party_code, SUM(votes) as total_votes FROM party_scores GROUP BY party_code ORDER BY total_votes DESC`)
+		data = M{"title": title, "certified_by": "INEC", "results": scanRows(results), "party_totals": scanRows(scores), "generated": time.Now().UTC()}
 	default:
-		data = M{"title": reportType + " Report", "generated": time.Now().UTC()}
+		title = reportType + " Report"
+		data = M{"title": title, "generated": time.Now().UTC()}
 	}
 	if mwHub != nil && mwHub.OpenSearch != nil {
 		mwHub.OpenSearch.Index(ctx, "reports", fmt.Sprintf("report-%d", time.Now().Unix()), data)
 	}
+	dbExecCtx(ctx, `INSERT INTO audit_log (action, entity_type, details) VALUES (?,?,?)`,
+		"export_report", "report", "type="+reportType+" format="+format)
+	if format == "html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		renderHTMLReport(w, title, data)
+		return
+	}
 	writeJSON(w, 200, data)
+}
+
+func renderHTMLReport(w http.ResponseWriter, title string, data M) {
+	fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>%s</title>
+<style>body{font-family:Arial,sans-serif;margin:40px;color:#333}
+h1{color:#006837;border-bottom:3px solid #006837;padding-bottom:10px}
+table{border-collapse:collapse;width:100%%}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+th{background:#006837;color:white}
+.footer{margin-top:40px;font-size:12px;color:#666}
+</style></head><body>`, title)
+	fmt.Fprintf(w, `<h1>%s</h1>`, title)
+	fmt.Fprintf(w, `<p>Generated: %v</p>`, data["generated"])
+	if parties, ok := data["parties"].([]M); ok && len(parties) > 0 {
+		fmt.Fprintf(w, `<h2>Party Results</h2><table><tr><th>Party</th><th>Total Votes</th></tr>`)
+		for _, p := range parties {
+			fmt.Fprintf(w, `<tr><td>%v</td><td>%v</td></tr>`, p["party_code"], p["tv"])
+		}
+		fmt.Fprintf(w, `</table>`)
+	}
+	fmt.Fprintf(w, `<div class="footer"><p>Independent National Electoral Commission (INEC) — Official Document</p>
+<p>This report was generated from the INEC election management system.</p></div></body></html>`)
 }
 
 func handleOpenAPIDocs(w http.ResponseWriter, r *http.Request) {
@@ -855,7 +979,54 @@ func handlePredictiveAnalytics(w http.ResponseWriter, r *http.Request) {
 			Parameters: M{"$1": eid, "$2": turnout, "$3": pct},
 		})
 	}
-	writeJSON(w, 200, M{"election_id": eid, "completion_pct": pct, "predicted_turnout": turnout, "total_pus": total, "reported_pus": reported, "model": "linear_velocity_v1", "confidence": 0.85})
+	// Compute confidence from data coverage
+	confidence := 0.0
+	if total > 0 {
+		confidence = float64(reported) / float64(total)
+		if confidence > 0.95 {
+			confidence = 0.95
+		}
+	}
+	// Velocity-based ETA
+	rateRow, _ := querySingleRowCtx(ctx, `SELECT MIN(submitted_at) as first, MAX(submitted_at) as last FROM results WHERE election_id=?`, eid)
+	var eta string
+	if rateRow != nil && reported > 0 {
+		firstStr := fmt.Sprint(rateRow["first"])
+		lastStr := fmt.Sprint(rateRow["last"])
+		if firstT, err1 := time.Parse(time.RFC3339, firstStr); err1 == nil {
+			if lastT, err2 := time.Parse(time.RFC3339, lastStr); err2 == nil {
+				elapsed := lastT.Sub(firstT)
+				if elapsed > 0 && reported < total {
+					remaining := total - reported
+					perUnit := elapsed / time.Duration(reported)
+					etaTime := time.Now().Add(perUnit * time.Duration(remaining))
+					eta = etaTime.Format(time.RFC3339)
+				}
+			}
+		}
+	}
+	// Per-state predictions
+	stateRows, _ := dbQueryCtx(ctx, `SELECT pu.state_code, COUNT(DISTINCT pu.code) as total,
+		COUNT(DISTINCT r.polling_unit_code) as reported
+		FROM polling_units pu
+		LEFT JOIN results r ON pu.code=r.polling_unit_code AND r.election_id=?
+		GROUP BY pu.state_code ORDER BY pu.state_code`, eid)
+	var statePredictions []M
+	for _, sr := range scanRows(stateRows) {
+		st := enhToInt(sr["total"])
+		srep := enhToInt(sr["reported"])
+		sp := 0.0
+		if st > 0 {
+			sp = float64(srep) / float64(st) * 100
+		}
+		statePredictions = append(statePredictions, M{
+			"state_code": sr["state_code"], "total_pus": st, "reported_pus": srep,
+			"completion_pct": sp,
+		})
+	}
+	writeJSON(w, 200, M{"election_id": eid, "completion_pct": pct, "predicted_turnout": turnout,
+		"total_pus": total, "reported_pus": reported, "model": "linear_velocity_v1",
+		"confidence": confidence, "eta_complete": eta, "state_predictions": statePredictions})
 }
 
 func handleElectionTemplates(w http.ResponseWriter, r *http.Request) {
@@ -1019,10 +1190,17 @@ func handleIVRVerify(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 func computeStateVelocities(ctx context.Context) []*StateVelocity {
-	rows, err := dbQueryCtx(ctx, `SELECT s.state_code, s.state_name,
-		(SELECT COUNT(*) FROM polling_units WHERE state_code=s.state_code) as total_pus,
-		(SELECT COUNT(DISTINCT r.polling_unit_code) FROM results r JOIN polling_units pu ON r.polling_unit_code=pu.pu_code WHERE pu.state_code=s.state_code) as reported_pus
-		FROM states s ORDER BY s.state_name`)
+	rows, err := dbQueryCtx(ctx, `SELECT s.code as state_code, s.name as state_name,
+		(SELECT COUNT(*) FROM polling_units pu2
+		 JOIN wards w2 ON pu2.ward_code=w2.code
+		 JOIN lgas l2 ON w2.lga_code=l2.code
+		 WHERE l2.state_code=s.code) as total_pus,
+		(SELECT COUNT(DISTINCT r.polling_unit_code) FROM results r
+		 JOIN polling_units pu ON r.polling_unit_code=pu.code
+		 JOIN wards w ON pu.ward_code=w.code
+		 JOIN lgas l ON w.lga_code=l.code
+		 WHERE l.state_code=s.code) as reported_pus
+		FROM states s ORDER BY s.name`)
 	if err != nil {
 		return nil
 	}
@@ -1144,13 +1322,17 @@ func computeResultHash(result M) string {
 }
 
 func extractUserID(r *http.Request) int {
-	if uid, ok := r.Context().Value("user_id").(int); ok {
-		return uid
+	claims, ok := getUserFromContext(r)
+	if !ok {
+		return 0
 	}
-	if uid, ok := r.Context().Value("user_id").(float64); ok {
+	if uid, ok := claims["user_id"].(float64); ok {
 		return int(uid)
 	}
-	return 0
+	if uid, ok := claims["sub"].(float64); ok {
+		return int(uid)
+	}
+	return 1 // fallback for authenticated users without explicit ID
 }
 
 func phoneMask(p string) string {
