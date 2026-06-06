@@ -49,10 +49,12 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
+        setError(null);
         const [stats, liveFeed] = await Promise.all([
           api.getDashboardStats(1),
           api.getLiveFeed(1, 15)
@@ -61,6 +63,7 @@ export default function DashboardPage() {
         setFeed(liveFeed);
       } catch (e) {
         logger.error(e);
+        setError(e instanceof Error ? e.message : 'Failed to load dashboard data');
       } finally {
         setLoading(false);
       }
@@ -70,7 +73,15 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
-  if (loading || !data) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+  if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+
+  if (error || !data) return (
+    <div className="flex flex-col items-center justify-center h-64 gap-4">
+      <Activity className="w-8 h-8 text-red-500" />
+      <p className="text-zinc-600 dark:text-zinc-400">{error || 'No dashboard data available'}</p>
+      <button onClick={() => { setLoading(true); setError(null); api.getDashboardStats(1).then(setData).catch(() => setError('Retry failed')).finally(() => setLoading(false)); }} className="px-4 py-2 bg-green-700 text-white rounded-lg hover:bg-green-800 text-sm">Retry</button>
+    </div>
+  );
 
   const topParties = data.party_scores.slice(0, 6);
   const pieData= topParties.map(p => ({ name: p.abbreviation, value: p.total_votes, color: p.color }));

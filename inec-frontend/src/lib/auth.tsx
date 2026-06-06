@@ -25,12 +25,31 @@ const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
 });
 
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    if (!payload.exp) return false;
+    return payload.exp * 1000 < Date.now();
+  } catch {
+    return true;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(() => {
     const stored = localStorage.getItem('user');
     return stored ? JSON.parse(stored) : null;
   });
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'));
+  const [token, setToken] = useState<string | null>(() => {
+    const stored = localStorage.getItem('token');
+    if (stored && isTokenExpired(stored)) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      localStorage.removeItem('inec_token');
+      return null;
+    }
+    return stored;
+  });
 
   const login = (newToken: string, newUser: User) => {
     localStorage.setItem('token', newToken);
@@ -42,12 +61,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('inec_token');
     setToken(null);
     setUser(null);
   };
 
   useEffect(() => {
     if (token && !user) {
+      logout();
+    }
+    if (token && isTokenExpired(token)) {
       logout();
     }
   }, [token, user]);

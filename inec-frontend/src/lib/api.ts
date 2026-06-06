@@ -24,6 +24,13 @@ function xhrFallback(path: string, method: string, headers: Record<string, strin
   try { return JSON.parse(xhr.responseText); } catch { return xhr.responseText; }
 }
 
+function handleAuthFailure() {
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  localStorage.removeItem('inec_token');
+  window.location.reload();
+}
+
 async function request(path: string, options: RequestInit = {}, retries = 2) {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -37,6 +44,10 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
       const res = await fetch(`${API_URL}${path}`, { ...options, headers });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
+        if (res.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {
+          handleAuthFailure();
+          throw new ApiError(401, 'Session expired');
+        }
         if (attempt < retries && res.status >= 500) {
           await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
           continue;
@@ -45,13 +56,21 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
       }
       return res.json();
     } catch (err) {
-      if (err instanceof ApiError) throw err;
+      if (err instanceof ApiError) {
+        if (err.status === 401) throw err;
+        throw err;
+      }
       // Fallback to synchronous XHR when fetch() fails (e.g. in automation environments)
       if (err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.')) {
         try {
           return xhrFallback(path, options.method || 'GET', headers, options.body as string | undefined);
         } catch (xhrErr) {
-          if (xhrErr instanceof ApiError) throw xhrErr;
+          if (xhrErr instanceof ApiError) {
+            if (xhrErr.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {
+              handleAuthFailure();
+            }
+            throw xhrErr;
+          }
           if (attempt === retries) throw xhrErr;
         }
       }
