@@ -66,6 +66,8 @@ export default defineConfig({
       '/stakeholders': 'http://localhost:8088',
       '/production': 'http://localhost:8088',
       '/ussd': 'http://localhost:8088',
+      '/kyb': 'http://localhost:8088',
+      '/security': 'http://localhost:8088',
     },
   },
 })

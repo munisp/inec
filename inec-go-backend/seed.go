@@ -303,4 +303,81 @@ func seedDatabase(db *sql.DB) {
 	tx2.Commit()
 
 	seedBVASDevices(db)
+
+	// KYC verification records
+	kycStatuses := []string{"verified", "verified", "verified", "pending_review", "rejected"}
+	for i := 1; i <= 20; i++ {
+		kycStatus := kycStatuses[rand.Intn(len(kycStatuses))]
+		idTypes := []string{"nin", "voters_card", "passport", "drivers_license"}
+		idType := idTypes[rand.Intn(len(idTypes))]
+		idHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("ID-%d", i))))[:32]
+		identityScore := 0.7 + rand.Float64()*0.3
+		faceScore := 0.75 + rand.Float64()*0.25
+		riskScore := rand.Float64() * 0.3
+		livenessPassed := 1
+		if kycStatus == "rejected" {
+			livenessPassed = 0
+			riskScore = 0.7 + rand.Float64()*0.3
+		}
+		dbExecLog("seed_kyc", `INSERT INTO kyc_verifications (user_id, status, id_type, id_number_hash, identity_match_score, document_verified, face_match_score, liveness_passed, risk_score, checks_json, flags_json, verified_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			i, kycStatus, idType, idHash, identityScore, 1, faceScore, livenessPassed, riskScore,
+			`["id_format_validation","face_match","liveness_check","document_ocr"]`, `[]`, "2027-01-15T10:00:00Z")
+	}
+
+	// KYB records for parties and observer orgs
+	kybEntities := []struct{ id int; etype, name, regNum string }{
+		{1, "political_party", "All Progressives Congress", "CAC/IT/12345"},
+		{2, "political_party", "Peoples Democratic Party", "CAC/IT/12346"},
+		{3, "political_party", "Labour Party", "CAC/IT/12347"},
+		{4, "observer_org", "YIAGA Africa", "NGO/2019/5678"},
+		{5, "observer_org", "Transition Monitoring Group", "NGO/2005/1234"},
+		{6, "media_org", "Channels Television", "NBC/TV/0045"},
+	}
+	for _, e := range kybEntities {
+		dbExecLog("seed_kyb", `INSERT INTO kyb_verifications (entity_id, entity_type, entity_name, registration_number, registration_verified, compliance_score, risk_level, status, verified_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			e.id, e.etype, e.name, e.regNum, 1, 95.0, "low", "approved", "2027-01-10T08:00:00Z", "2028-01-10T08:00:00Z")
+	}
+
+	// Voters with realistic Nigerian data  
+	voterFirstNames := []string{"Chidinma", "Abdullahi", "Folake", "Obinna", "Hauwa", "Emeka", "Zainab", "Tunde", "Amina", "Ifeanyi", "Ngozi", "Sani", "Bukola", "Chidi", "Fatima"}
+	voterLastNames := []string{"Okafor", "Mohammed", "Adeyemi", "Bello", "Nwosu", "Ibrahim", "Eze", "Yusuf", "Adeleke", "Usman", "Afolabi", "Danladi", "Bakare", "Igwe", "Hassan"}
+	genders := []string{"male", "female"}
+	for i := 0; i < 500; i++ {
+		firstName := voterFirstNames[rand.Intn(len(voterFirstNames))]
+		lastName := voterLastNames[rand.Intn(len(voterLastNames))]
+		stateIdx := rand.Intn(len(nigeriaStates))
+		state := nigeriaStates[stateIdx]
+		gender := genders[rand.Intn(2)]
+		vin := fmt.Sprintf("VIN%011d", 90000000000+int64(i))
+		dob := fmt.Sprintf("19%d-%02d-%02d", 60+rand.Intn(40), rand.Intn(12)+1, rand.Intn(28)+1)
+		bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("bio-voter-%d", i))))[:32]
+		pvcNum := fmt.Sprintf("PVC-%09d", 100000000+i)
+		nin := fmt.Sprintf("%011d", 10000000000+int64(i))
+
+		dbExecLog("seed_voter", `INSERT OR IGNORE INTO voters (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status, nin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			vin, firstName, lastName, dob, gender, state.Code,
+			fmt.Sprintf("%s-001", state.Code), fmt.Sprintf("%s-001-W001", state.Code),
+			fmt.Sprintf("%s-001-W001-PU001", state.Code), bioHash, pvcNum, 1, "active", nin)
+	}
+
+	// Liveness check records
+	for i := 1; i <= 30; i++ {
+		passed := 1
+		confidence := 0.85 + rand.Float64()*0.15
+		if rand.Intn(10) == 0 {
+			passed = 0
+			confidence = 0.1 + rand.Float64()*0.3
+		}
+		dbExecLog("seed_liveness", `INSERT INTO liveness_checks (user_id, passed, confidence, method, anti_spoofing_score, checks_json) VALUES (?,?,?,?,?,?)`,
+			rand.Intn(20)+1, passed, confidence, "passive", 0.9+rand.Float64()*0.1,
+			`[{"name":"texture_analysis","passed":true},{"name":"depth_estimation","passed":true},{"name":"blink_detection","passed":true}]`)
+	}
+
+	// KYC events
+	kycEventTypes := []string{"kyc_verification_completed", "liveness_check_completed", "kyb_verification_completed", "document_uploaded", "identity_reconfirmation"}
+	for i := 0; i < 40; i++ {
+		dbExecLog("seed_kyc_event", `INSERT INTO kyc_events (user_id, event_type, trigger_source, details) VALUES (?,?,?,?)`,
+			rand.Intn(20)+1, kycEventTypes[rand.Intn(len(kycEventTypes))], "system",
+			fmt.Sprintf(`{"status":"completed","timestamp":"%s"}`, "2027-01-15T10:00:00Z"))
+	}
 }

@@ -1117,3 +1117,193 @@ func getTestToken(t *testing.T, role string) string {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	return resp["access_token"].(string)
 }
+
+// ── KYB Verification Tests ──
+
+func TestKYBVerifyEndpoint(t *testing.T) {
+	ensureTestDB(t)
+	initKYBSchema()
+	token := getTestToken(t, "admin")
+
+	body := `{"entity_id":100,"entity_type":"political_party","entity_name":"Test Party","registration_number":"CAC/12345678","tax_id":"TIN-12345","address":"Abuja FCT","authorized_signatories":[{"name":"John Doe","role":"Chairman","nin_id":"12345678901"}]}`
+	req := httptest.NewRequest("POST", "/kyb/verify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handleKYBVerify(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("KYB verify returned %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if resp["status"] != "approved" {
+		t.Errorf("expected approved status with full compliance, got %s", resp["status"])
+	}
+	if resp["compliance_score"].(float64) < 80 {
+		t.Errorf("compliance_score %v should be >= 80 for full submission", resp["compliance_score"])
+	}
+	if resp["registration_verified"] != true {
+		t.Error("registration should be verified")
+	}
+}
+
+func TestKYBVerifyInvalidType(t *testing.T) {
+	ensureTestDB(t)
+	initKYBSchema()
+	body := `{"entity_id":1,"entity_type":"invalid_type","entity_name":"Test"}`
+	req := httptest.NewRequest("POST", "/kyb/verify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handleKYBVerify(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid entity_type, got %d", w.Code)
+	}
+}
+
+func TestKYBStatusEndpoint(t *testing.T) {
+	ensureTestDB(t)
+	initKYBSchema()
+
+	req := httptest.NewRequest("GET", "/kyb/status?entity_id=999", nil)
+	w := httptest.NewRecorder()
+	handleKYBStatus(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("KYB status returned %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "not_started" {
+		t.Errorf("expected not_started for unknown entity, got %s", resp["status"])
+	}
+}
+
+// ── KYC Event Trigger Tests ──
+
+func TestKYCEventsEndpoint(t *testing.T) {
+	ensureTestDB(t)
+	initKYBSchema()
+
+	emitKYCEvent(1, "kyc_verification_completed", "test", M{"status": "verified"})
+	emitKYCEvent(1, "liveness_check_completed", "test", M{"passed": true})
+
+	req := httptest.NewRequest("GET", "/kyc/events?user_id=1", nil)
+	w := httptest.NewRecorder()
+	handleKYCEvents(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("KYC events returned %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	count := int(resp["count"].(float64))
+	if count < 2 {
+		t.Errorf("expected at least 2 events, got %d", count)
+	}
+}
+
+func TestKYCTriggerCheckEndpoint(t *testing.T) {
+	ensureTestDB(t)
+	initKYBSchema()
+
+	req := httptest.NewRequest("GET", "/kyc/triggers?user_id=9999", nil)
+	w := httptest.NewRecorder()
+	handleKYCTriggerCheck(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("KYC trigger check returned %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["needs_reverification"] != true {
+		t.Error("user with no KYC should need reverification")
+	}
+	triggers := resp["triggers"].([]interface{})
+	found := false
+	for _, tr := range triggers {
+		trig := tr.(map[string]interface{})
+		if trig["trigger"] == "no_kyc_on_file" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected no_kyc_on_file trigger for unknown user")
+	}
+}
+
+// ── Data Security Tests ──
+
+func TestDataSecurityStatusEndpoint(t *testing.T) {
+	ensureTestDB(t)
+	initDataSecuritySchema()
+
+	req := httptest.NewRequest("GET", "/security/data-status", nil)
+	w := httptest.NewRecorder()
+	handleDataSecurityStatus(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("data security status returned %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	transit := resp["data_in_transit"].(map[string]interface{})
+	if transit["tls_enforced"] != true {
+		t.Error("TLS should be enforced")
+	}
+	if transit["hsts_enabled"] != true {
+		t.Error("HSTS should be enabled")
+	}
+
+	rest := resp["data_at_rest"].(map[string]interface{})
+	if rest["biometric_vault"] == nil {
+		t.Error("biometric vault encryption should be reported")
+	}
+	if rest["password_hashing"] != "bcrypt (cost 10)" {
+		t.Errorf("password hashing expected bcrypt, got %v", rest["password_hashing"])
+	}
+}
+
+func TestDataClassificationEndpoint(t *testing.T) {
+	ensureTestDB(t)
+	initDataSecuritySchema()
+
+	req := httptest.NewRequest("GET", "/security/data-classification", nil)
+	w := httptest.NewRecorder()
+	handleDataClassificationList(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("data classification returned %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	count := int(resp["count"].(float64))
+	if count < 10 {
+		t.Errorf("expected at least 10 classified fields, got %d", count)
+	}
+}
+
+func TestSecurityEventLogging(t *testing.T) {
+	ensureTestDB(t)
+	initDataSecuritySchema()
+
+	logSecurityEvent("login_attempt", "info", "auth", 1, "127.0.0.1", M{"success": true})
+	logSecurityEvent("brute_force_detected", "high", "rate_limiter", 0, "10.0.0.1", M{"attempts": 50})
+
+	req := httptest.NewRequest("GET", "/security/events?severity=high", nil)
+	w := httptest.NewRecorder()
+	handleSecurityEvents(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("security events returned %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	count := int(resp["count"].(float64))
+	if count < 1 {
+		t.Errorf("expected at least 1 high severity event, got %d", count)
+	}
+}

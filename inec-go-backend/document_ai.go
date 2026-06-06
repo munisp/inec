@@ -419,6 +419,16 @@ func handleKYCVerify(w http.ResponseWriter, r *http.Request) {
 	// Update user KYC status
 	dbExecLog("kyc_status", "UPDATE users SET kyc_status=? WHERE id=?", result.Status, userID)
 
+	// Emit KYC event
+	emitKYCEvent(userID, "kyc_verification_completed", "api_request", M{
+		"status": result.Status, "id_type": idType, "risk_score": result.RiskScore,
+	})
+	mwHub.Kafka.Produce(r.Context(), KafkaMessage{
+		Topic: "inec.kyc.events",
+		Key:   fmt.Sprintf("user-%d", userID),
+		Value: M{"event": "kyc_verified", "user_id": userID, "status": result.Status, "id_type": idType},
+	})
+
 	writeJSON(w, 200, result)
 }
 
@@ -471,6 +481,15 @@ func handleLivenessCheck(w http.ResponseWriter, r *http.Request) {
 	if result.Passed {
 		dbExecLog("kyc_liveness", "UPDATE kyc_verifications SET liveness_passed=1 WHERE user_id=? ORDER BY id DESC LIMIT 1", userID)
 	}
+
+	emitKYCEvent(userID, "liveness_check_completed", "api_request", M{
+		"passed": result.Passed, "confidence": result.Confidence, "method": method,
+	})
+	mwHub.Kafka.Produce(r.Context(), KafkaMessage{
+		Topic: "inec.kyc.events",
+		Key:   fmt.Sprintf("user-%d", userID),
+		Value: M{"event": "liveness_checked", "user_id": userID, "passed": result.Passed, "confidence": result.Confidence},
+	})
 
 	writeJSON(w, 200, result)
 }
@@ -704,4 +723,276 @@ func callLivenessCheck(userID int, method string, videoBytes []byte) (*LivenessR
 		return nil, err
 	}
 	return &result, nil
+}
+
+// ── KYB (Know Your Business) Verification ──
+
+func initKYBSchema() {
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS kyb_verifications (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		entity_id INTEGER NOT NULL,
+		entity_type TEXT NOT NULL CHECK(entity_type IN ('political_party','observer_org','media_org','ngo','inec_partner')),
+		entity_name TEXT NOT NULL,
+		registration_number TEXT,
+		registration_verified INTEGER DEFAULT 0,
+		authorized_signatories TEXT DEFAULT '[]',
+		documents_verified INTEGER DEFAULT 0,
+		compliance_score REAL DEFAULT 0,
+		risk_level TEXT DEFAULT 'pending' CHECK(risk_level IN ('low','medium','high','critical','pending')),
+		status TEXT DEFAULT 'pending' CHECK(status IN ('pending','under_review','approved','rejected','suspended','expired')),
+		reviewed_by INTEGER,
+		review_notes TEXT,
+		verified_at TIMESTAMP,
+		expires_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	dbExecLog("schema", `CREATE INDEX IF NOT EXISTS idx_kyb_entity ON kyb_verifications(entity_id, entity_type)`)
+	dbExecLog("schema", `CREATE INDEX IF NOT EXISTS idx_kyb_status ON kyb_verifications(status)`)
+
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS kyc_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL,
+		event_type TEXT NOT NULL,
+		trigger_source TEXT NOT NULL,
+		details TEXT DEFAULT '{}',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	dbExecLog("schema", `CREATE INDEX IF NOT EXISTS idx_kyc_events_user ON kyc_events(user_id, event_type)`)
+}
+
+func handleKYBVerify(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		EntityID           int    `json:"entity_id"`
+		EntityType         string `json:"entity_type"`
+		EntityName         string `json:"entity_name"`
+		RegistrationNumber string `json:"registration_number"`
+		TaxID              string `json:"tax_id"`
+		Address            string `json:"address"`
+		Signatories        []struct {
+			Name  string `json:"name"`
+			Role  string `json:"role"`
+			NINID string `json:"nin_id"`
+		} `json:"authorized_signatories"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.EntityName == "" || req.EntityType == "" {
+		writeError(w, 400, "entity_name and entity_type required")
+		return
+	}
+	validTypes := map[string]bool{"political_party": true, "observer_org": true, "media_org": true, "ngo": true, "inec_partner": true}
+	if !validTypes[req.EntityType] {
+		writeError(w, 400, "invalid entity_type")
+		return
+	}
+
+	complianceScore := 0.0
+	checks := []string{}
+	if req.RegistrationNumber != "" {
+		complianceScore += 25
+		checks = append(checks, "registration_number_provided")
+	}
+	if req.TaxID != "" {
+		complianceScore += 20
+		checks = append(checks, "tax_id_provided")
+	}
+	if req.Address != "" {
+		complianceScore += 15
+		checks = append(checks, "address_provided")
+	}
+	if len(req.Signatories) > 0 {
+		complianceScore += 25
+		checks = append(checks, fmt.Sprintf("%d_signatories_declared", len(req.Signatories)))
+	}
+	regVerified := 0
+	if req.RegistrationNumber != "" && len(req.RegistrationNumber) >= 6 {
+		regVerified = 1
+		complianceScore += 15
+		checks = append(checks, "registration_format_valid")
+	}
+
+	riskLevel := "pending"
+	status := "under_review"
+	if complianceScore >= 80 {
+		riskLevel = "low"
+		status = "approved"
+	} else if complianceScore >= 50 {
+		riskLevel = "medium"
+	} else {
+		riskLevel = "high"
+	}
+
+	signJSON, _ := json.Marshal(req.Signatories)
+	expiresAt := time.Now().AddDate(1, 0, 0)
+
+	id := insertReturningID(db, `INSERT INTO kyb_verifications 
+		(entity_id, entity_type, entity_name, registration_number, registration_verified, 
+		 authorized_signatories, compliance_score, risk_level, status, expires_at, verified_at) 
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		req.EntityID, req.EntityType, req.EntityName, req.RegistrationNumber,
+		regVerified, string(signJSON), complianceScore, riskLevel, status,
+		expiresAt.UTC(), time.Now().UTC())
+
+	emitKYCEvent(req.EntityID, "kyb_verification_completed", "api_request", M{
+		"entity_type": req.EntityType, "compliance_score": complianceScore, "status": status,
+	})
+	mwHub.Kafka.Produce(r.Context(), KafkaMessage{
+		Topic: "inec.kyc.events",
+		Key:   fmt.Sprintf("entity-%d", req.EntityID),
+		Value: M{"event": "kyb_verified", "entity_id": req.EntityID, "entity_type": req.EntityType, "status": status},
+	})
+
+	writeJSON(w, 200, M{
+		"id": id, "entity_name": req.EntityName, "entity_type": req.EntityType,
+		"compliance_score": complianceScore, "risk_level": riskLevel, "status": status,
+		"checks_performed": checks, "registration_verified": regVerified == 1,
+		"expires_at": expiresAt.UTC().Format(time.RFC3339),
+	})
+}
+
+func handleKYBStatus(w http.ResponseWriter, r *http.Request) {
+	entityIDStr := r.URL.Query().Get("entity_id")
+	entityType := r.URL.Query().Get("entity_type")
+	if entityIDStr == "" {
+		writeError(w, 400, "entity_id query param required")
+		return
+	}
+	entityID, _ := strconv.Atoi(entityIDStr)
+
+	q := "SELECT id, entity_type, entity_name, registration_number, registration_verified, compliance_score, risk_level, status, verified_at, expires_at FROM kyb_verifications WHERE entity_id=?"
+	args := []interface{}{entityID}
+	if entityType != "" {
+		q += " AND entity_type=?"
+		args = append(args, entityType)
+	}
+	q += " ORDER BY id DESC LIMIT 1"
+
+	var id int
+	var eType, eName, regNum, riskLvl, sts string
+	var regVerified int
+	var compScore float64
+	var verifiedAt, expiresAt *string
+	err := db.QueryRow(q, args...).Scan(&id, &eType, &eName, &regNum, &regVerified, &compScore, &riskLvl, &sts, &verifiedAt, &expiresAt)
+	if err != nil {
+		writeJSON(w, 200, M{"entity_id": entityID, "status": "not_started"})
+		return
+	}
+
+	writeJSON(w, 200, M{
+		"id": id, "entity_id": entityID, "entity_type": eType, "entity_name": eName,
+		"registration_number": regNum, "registration_verified": regVerified == 1,
+		"compliance_score": compScore, "risk_level": riskLvl, "status": sts,
+		"verified_at": verifiedAt, "expires_at": expiresAt,
+	})
+}
+
+// ── KYC Event Triggers ──
+
+func emitKYCEvent(userID int, eventType, triggerSource string, details M) {
+	detailsJSON, _ := json.Marshal(details)
+	dbExecLog("kyc_event", `INSERT INTO kyc_events (user_id, event_type, trigger_source, details) VALUES (?,?,?,?)`,
+		userID, eventType, triggerSource, string(detailsJSON))
+}
+
+func handleKYCEvents(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		writeError(w, 400, "user_id required")
+		return
+	}
+	userID, _ := strconv.Atoi(userIDStr)
+
+	rows, err := db.Query("SELECT id, event_type, trigger_source, details, created_at FROM kyc_events WHERE user_id=? ORDER BY id DESC LIMIT 50", userID)
+	if err != nil {
+		writeJSON(w, 200, M{"events": []M{}, "count": 0})
+		return
+	}
+	defer rows.Close()
+
+	events := []M{}
+	for rows.Next() {
+		var id int
+		var eventType, triggerSource, detailsJSON, createdAt string
+		rows.Scan(&id, &eventType, &triggerSource, &detailsJSON, &createdAt)
+		var details M
+		json.Unmarshal([]byte(detailsJSON), &details)
+		events = append(events, M{
+			"id": id, "event_type": eventType, "trigger_source": triggerSource,
+			"details": details, "created_at": createdAt,
+		})
+	}
+	writeJSON(w, 200, M{"user_id": userID, "events": events, "count": len(events)})
+}
+
+func handleKYCTriggerCheck(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		writeError(w, 400, "user_id required")
+		return
+	}
+	userID, _ := strconv.Atoi(userIDStr)
+
+	triggers := []M{}
+	needsReverification := false
+
+	var verifiedAt *string
+	db.QueryRow("SELECT verified_at FROM kyc_verifications WHERE user_id=? ORDER BY id DESC LIMIT 1", userID).Scan(&verifiedAt)
+	if verifiedAt == nil {
+		triggers = append(triggers, M{"trigger": "no_kyc_on_file", "severity": "critical", "action": "full_kyc_required"})
+		needsReverification = true
+	} else {
+		t, err := time.Parse(time.RFC3339, *verifiedAt)
+		if err == nil && time.Since(t) > 365*24*time.Hour {
+			triggers = append(triggers, M{"trigger": "kyc_expired", "severity": "high", "action": "reverification_required", "last_verified": *verifiedAt})
+			needsReverification = true
+		}
+	}
+
+	var roleChangeCount int
+	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE user_id=? AND action='role_change' AND created_at > datetime('now','-30 days')", userID).Scan(&roleChangeCount)
+	if roleChangeCount > 0 {
+		triggers = append(triggers, M{"trigger": "recent_role_change", "severity": "medium", "action": "identity_reconfirmation"})
+		needsReverification = true
+	}
+
+	var suspiciousCount int
+	db.QueryRow("SELECT COUNT(*) FROM incidents WHERE reported_by=? AND severity IN ('critical','high') AND created_at > datetime('now','-7 days')", userID).Scan(&suspiciousCount)
+	if suspiciousCount > 0 {
+		triggers = append(triggers, M{"trigger": "suspicious_activity", "severity": "high", "action": "enhanced_kyc_required", "incident_count": suspiciousCount})
+		needsReverification = true
+	}
+
+	var bioMismatch int
+	db.QueryRow("SELECT COUNT(*) FROM pad_results WHERE user_id=? AND passed=0 AND created_at > datetime('now','-24 hours')", userID).Scan(&bioMismatch)
+	if bioMismatch > 0 {
+		triggers = append(triggers, M{"trigger": "biometric_mismatch", "severity": "critical", "action": "liveness_recheck_required"})
+		needsReverification = true
+	}
+
+	var deviceChangeCount int
+	db.QueryRow("SELECT COUNT(DISTINCT device_id) FROM bvas_capture_sessions WHERE operator_id=? AND created_at > datetime('now','-48 hours')", userID).Scan(&deviceChangeCount)
+	if deviceChangeCount > 1 {
+		triggers = append(triggers, M{"trigger": "multiple_devices", "severity": "medium", "action": "device_verification", "device_count": deviceChangeCount})
+		needsReverification = true
+	}
+
+	var activeElection int
+	db.QueryRow("SELECT COUNT(*) FROM elections WHERE status='active'").Scan(&activeElection)
+	if activeElection > 0 {
+		var accredited int
+		db.QueryRow("SELECT COUNT(*) FROM kyc_verifications WHERE user_id=? AND status='verified' AND liveness_passed=1 AND verified_at > datetime('now','-24 hours')", userID).Scan(&accredited)
+		if accredited == 0 {
+			triggers = append(triggers, M{"trigger": "election_day_accreditation", "severity": "high", "action": "same_day_kyc_required"})
+			needsReverification = true
+		}
+	}
+
+	writeJSON(w, 200, M{
+		"user_id":              userID,
+		"needs_reverification": needsReverification,
+		"triggers":             triggers,
+		"trigger_count":        len(triggers),
+	})
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -119,6 +120,8 @@ func main() {
 	initTracing()
 	initObserverTables()
 	initDocumentAISchema()
+	initKYBSchema()
+	initDataSecuritySchema()
 	initElectionFSMSchema()
 	initWebhookSchema()
 	initDisputeSchema()
@@ -252,6 +255,17 @@ func main() {
 	r.HandleFunc("/kyc/verify", adminOnly(handleKYCVerify)).Methods("POST")
 	r.HandleFunc("/kyc/liveness", readAuth(handleLivenessCheck)).Methods("POST")
 	r.HandleFunc("/kyc/status", readAuth(handleKYCStatus)).Methods("GET")
+	r.HandleFunc("/kyc/events", readAuth(handleKYCEvents)).Methods("GET")
+	r.HandleFunc("/kyc/triggers", readAuth(handleKYCTriggerCheck)).Methods("GET")
+
+	// KYB — business/entity verification
+	r.HandleFunc("/kyb/verify", adminOnly(handleKYBVerify)).Methods("POST")
+	r.HandleFunc("/kyb/status", readAuth(handleKYBStatus)).Methods("GET")
+
+	// Data Security — encryption status, classification, audit events
+	r.HandleFunc("/security/data-status", adminOnly(handleDataSecurityStatus)).Methods("GET")
+	r.HandleFunc("/security/data-classification", adminOnly(handleDataClassificationList)).Methods("GET")
+	r.HandleFunc("/security/events", adminOnly(handleSecurityEvents)).Methods("GET")
 
 	// SMS/USSD Gateway — auth required
 	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
@@ -650,12 +664,18 @@ func main() {
 		addr = ":" + p
 	}
 
+	tlsMinVersion := uint16(tls.VersionTLS12)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
+		TLSConfig: &tls.Config{
+			MinVersion:               tlsMinVersion,
+			PreferServerCipherSuites: true,
+			CurvePreferences:         []tls.CurveID{tls.X25519, tls.CurveP256},
+		},
 	}
 
 	// Graceful shutdown
@@ -663,9 +683,18 @@ func main() {
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Info().Str("addr", addr).Msg("INEC Go Backend listening")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msg("Server failed")
+		tlsCert := os.Getenv("TLS_CERT_FILE")
+		tlsKey := os.Getenv("TLS_KEY_FILE")
+		if tlsCert != "" && tlsKey != "" {
+			log.Info().Str("addr", addr).Msg("INEC Go Backend listening (TLS)")
+			if err := srv.ListenAndServeTLS(tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
+				log.Fatal().Err(err).Msg("TLS server failed")
+			}
+		} else {
+			log.Info().Str("addr", addr).Msg("INEC Go Backend listening")
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatal().Err(err).Msg("Server failed")
+			}
 		}
 	}()
 
