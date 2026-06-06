@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
-import logger from '../lib/logger';
+
 
 interface StateVelocity {
   state_code: string;
@@ -39,7 +39,7 @@ export default function CommandCenterPage() {
       setData(res);
       setLoadLevel(res.load_shedding || 0);
     } catch (e) {
-      logger.error('Command center fetch failed', e);
+      void 0;
     }
   }, []);
 
@@ -55,7 +55,7 @@ export default function CommandCenterPage() {
       await api.setLoadShedding(level);
       setLoadLevel(level);
     } catch (e) {
-      logger.error('Load shedding update failed', e);
+      void 0;
     }
   };
 

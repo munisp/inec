@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../lib/api';
-import logger from '../lib/logger';
+
 
 interface PartyScore {
   party_code: string;
@@ -35,7 +35,7 @@ export default function CitizenPortalPage() {
       const res = await api.citizenVerify(params);
       setResults(res.results || []);
     } catch (e) {
-      logger.error('Citizen verify failed', e);
+      void 0;
       setResults([]);
     } finally {
       setLoading(false);

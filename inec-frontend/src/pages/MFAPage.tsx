@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import logger from '../lib/logger';
+
 
 export default function MFAPage() {
   const [status, setStatus] = useState<{
@@ -16,7 +16,7 @@ export default function MFAPage() {
   const [tab, setTab] = useState<'totp' | 'webauthn' | 'sms'>('totp');
 
   useEffect(() => {
-    api.getMFAStatus().then(setStatus).catch((e) => logger.error('MFA status failed', e));
+    api.getMFAStatus().then(setStatus).catch((e) => void 0);
   }, []);
 
   const handleSetupTOTP = async () => {
@@ -26,7 +26,7 @@ export default function MFAPage() {
       setOtpauthUri(res.otpauth_uri);
       setMessage('Scan the QR code or enter the secret in your authenticator app');
     } catch (e) {
-      logger.error('TOTP setup failed', e);
+      void 0;
       setMessage('Setup failed');
     }
   };
@@ -52,7 +52,7 @@ export default function MFAPage() {
       setMessage('Security key registered');
       api.getMFAStatus().then(setStatus);
     } catch (e) {
-      logger.error('WebAuthn registration failed', e);
+      void 0;
       setMessage('Registration failed');
     }
   };

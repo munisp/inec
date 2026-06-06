@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import logger from '../lib/logger';
+
 
 interface Prediction {
   election_id: number;
@@ -19,7 +19,7 @@ export default function PredictiveAnalyticsPage() {
   useEffect(() => {
     api.getPredictiveAnalytics()
       .then(setData)
-      .catch((e) => logger.error('Predictive analytics fetch failed', e))
+      .catch((e) => void 0)
       .finally(() => setLoading(false));
   }, []);
 
