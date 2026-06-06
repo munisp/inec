@@ -850,7 +850,10 @@ func handlePredictiveAnalytics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if mwHub != nil && mwHub.Lakehouse != nil {
-		mwHub.Lakehouse.Query(ctx, LakehouseQuery{Query: fmt.Sprintf("INSERT INTO predictions VALUES (%s, %f, %f)", eid, turnout, pct)})
+		mwHub.Lakehouse.Query(ctx, LakehouseQuery{
+			Query:      "INSERT INTO predictions (election_id, turnout, completion_pct) VALUES ($1, $2, $3)",
+			Parameters: M{"$1": eid, "$2": turnout, "$3": pct},
+		})
 	}
 	writeJSON(w, 200, M{"election_id": eid, "completion_pct": pct, "predicted_turnout": turnout, "total_pus": total, "reported_pus": reported, "model": "linear_velocity_v1", "confidence": 0.85})
 }
