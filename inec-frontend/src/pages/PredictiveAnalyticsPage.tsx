@@ -19,7 +19,7 @@ export default function PredictiveAnalyticsPage() {
   useEffect(() => {
     api.getPredictiveAnalytics()
       .then(setData)
-      .catch((e) => void 0)
+      .catch(() => void 0)
       .finally(() => setLoading(false));
   }, []);
 

@@ -16,7 +16,7 @@ export default function MFAPage() {
   const [tab, setTab] = useState<'totp' | 'webauthn' | 'sms'>('totp');
 
   useEffect(() => {
-    api.getMFAStatus().then(setStatus).catch((e) => void 0);
+    api.getMFAStatus().then(setStatus).catch(() => void 0);
   }, []);
 
   const handleSetupTOTP = async () => {
@@ -25,7 +25,7 @@ export default function MFAPage() {
       setTotpSecret(res.secret);
       setOtpauthUri(res.otpauth_uri);
       setMessage('Scan the QR code or enter the secret in your authenticator app');
-    } catch (e) {
+    } catch {
       void 0;
       setMessage('Setup failed');
     }
@@ -51,7 +51,7 @@ export default function MFAPage() {
       await api.registerWebAuthn(credId, pubKey, navigator.userAgent.substring(0, 40));
       setMessage('Security key registered');
       api.getMFAStatus().then(setStatus);
-    } catch (e) {
+    } catch {
       void 0;
       setMessage('Registration failed');
     }

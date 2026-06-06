@@ -38,7 +38,7 @@ export default function CommandCenterPage() {
       const res = await api.getCommandCenterLive();
       setData(res);
       setLoadLevel(res.load_shedding || 0);
-    } catch (e) {
+    } catch {
       void 0;
     }
   }, []);
@@ -54,7 +54,7 @@ export default function CommandCenterPage() {
     try {
       await api.setLoadShedding(level);
       setLoadLevel(level);
-    } catch (e) {
+    } catch {
       void 0;
     }
   };

@@ -34,7 +34,7 @@ export default function CitizenPortalPage() {
       params[searchType] = query.trim();
       const res = await api.citizenVerify(params);
       setResults(res.results || []);
-    } catch (e) {
+    } catch {
       void 0;
       setResults([]);
     } finally {
