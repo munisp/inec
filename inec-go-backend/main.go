@@ -123,6 +123,7 @@ func main() {
 	initWebhookSchema()
 	initDisputeSchema()
 	initPushNotificationSchema()
+	initPlatformEnhancements(db)
 
 	mwHub = initMiddlewareHub()
 	wsHub = newWebSocketHub()
@@ -567,13 +568,66 @@ func main() {
 	// Admin user management
 	r.HandleFunc("/admin/users/promote", adminOnly(handlePromoteUser)).Methods("POST")
 
+	// Command Center (#1) + Load Shedding (#25)
+	r.HandleFunc("/command-center/live", adminOnly(handleCommandCenterLive)).Methods("GET")
+	r.HandleFunc("/command-center/stream", handleCommandCenterSSE).Methods("GET")
+	r.HandleFunc("/command-center/alerts", readAuth(handleCommandCenterAlerts)).Methods("GET")
+	r.HandleFunc("/escalation/config", adminOnly(handleEscalationConfig)).Methods("GET", "POST")
+	r.HandleFunc("/load-shedding", adminOnly(handleLoadShedding)).Methods("GET", "POST")
+
+	// MFA (#3) — TOTP, WebAuthn, SMS OTP
+	r.HandleFunc("/auth/mfa/totp/setup", writeAuth(handleMFASetupTOTP)).Methods("POST")
+	r.HandleFunc("/auth/mfa/totp/verify", writeAuth(handleMFAVerifyTOTP)).Methods("POST")
+	r.HandleFunc("/auth/mfa/challenge", handleMFAChallenge).Methods("POST")
+	r.HandleFunc("/auth/mfa/sms/send", handleMFASendSMS).Methods("POST")
+	r.HandleFunc("/auth/mfa/status", readAuth(handleMFAStatus)).Methods("GET")
+	r.HandleFunc("/auth/mfa/webauthn/register", writeAuth(handleMFAWebAuthnRegister)).Methods("POST")
+
+	// Citizen Portal (#6) + Cryptographic Result Chain (#4)
+	r.HandleFunc("/citizen/verify", handleCitizenVerify).Methods("GET")
+	r.HandleFunc("/citizen/verify/signature", handleCitizenVerifySignature).Methods("GET")
+	r.HandleFunc("/results/sign", writeAuth(handleSignResult)).Methods("POST")
+	r.HandleFunc("/results/qr", readAuth(handleResultQRData)).Methods("GET")
+
+	// Media API (#23) + PDF Reports (#8) + OpenAPI (#11)
+	r.HandleFunc("/media/stream", handleMediaStream).Methods("GET")
+	r.HandleFunc("/media/widget", handleMediaWidget).Methods("GET")
+	r.HandleFunc("/export/report/pdf", readAuth(handleExportPDFReport)).Methods("GET")
+	r.HandleFunc("/openapi.json", handleOpenAPIDocs).Methods("GET")
+
+	// Geo-fenced Submissions (#12) + Override
+	r.HandleFunc("/geo/submission/check", writeAuth(handleGeoFencedSubmit)).Methods("POST")
+	r.HandleFunc("/geo/submission/override", adminOnly(handleGeoFenceOverride)).Methods("POST")
+
+	// Anomaly Escalation (#7) + Biometric Quality (#9)
+	r.HandleFunc("/anomaly/escalation", writeAuth(handleAnomalyEscalation)).Methods("GET", "POST")
+	r.HandleFunc("/biometric/quality-check", writeAuth(handleBiometricQualityCheck)).Methods("POST")
+
+	// Predictive Analytics (#16) + Multi-Election (#17) + Archive
+	r.HandleFunc("/predictive/analytics", readAuth(handlePredictiveAnalytics)).Methods("GET")
+	r.HandleFunc("/election/templates", readAuth(handleElectionTemplates)).Methods("GET", "POST")
+	r.HandleFunc("/election/archive", readAuth(handleElectionArchive)).Methods("GET", "POST")
+
+	// Data Sovereignty (#20) + Erasure
+	r.HandleFunc("/data/classification", adminOnly(handleDataClassification)).Methods("GET", "POST")
+	r.HandleFunc("/data/erasure", adminOnly(handleDataErasure)).Methods("POST")
+
+	// Observer Photo Verification (#18)
+	r.HandleFunc("/observer/photo-verify", writeAuth(handleObserverPhotoVerify)).Methods("POST")
+
+	// Offline Conflict Resolution (#2)
+	r.HandleFunc("/offline/conflict/resolve", writeAuth(handleOfflineConflictResolve)).Methods("POST")
+
+	// Voice IVR (#14)
+	r.HandleFunc("/ivr/verify", handleIVRVerify).Methods("POST")
+
 	// Static file serving for observer photo uploads
 	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")
 
-	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → gzip → size limit
+	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
 			tracingMiddleware(
@@ -587,7 +641,9 @@ func main() {
 											wafMiddleware(
 												requestSizeLimit(
 													rateLimitMiddleware(
-														gzipMiddleware(r))))))))))))))
+														loadSheddingMiddleware(
+															roleBasedRateLimit(
+																gzipMiddleware(r))))))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {

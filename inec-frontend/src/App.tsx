@@ -45,6 +45,10 @@ const UserManagementPage = lazy(() => import('@/pages/UserManagementPage'));
 const DuplicateDetectionPage = lazy(() => import('@/pages/DuplicateDetectionPage'));
 const DocumentAIPage = lazy(() => import('@/pages/DocumentAIPage'));
 const ExportCenterPage = lazy(() => import('@/pages/ExportCenterPage'));
+const CommandCenterPage = lazy(() => import('@/pages/CommandCenterPage'));
+const CitizenPortalPage = lazy(() => import('@/pages/CitizenPortalPage'));
+const MFAPage = lazy(() => import('@/pages/MFAPage'));
+const PredictiveAnalyticsPage = lazy(() => import('@/pages/PredictiveAnalyticsPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -104,6 +108,10 @@ function AppContent() {
     'duplicate-detection': <DuplicateDetectionPage />,
     'document-ai': <DocumentAIPage />,
     'export-center': <ExportCenterPage />,
+    'command-center': <CommandCenterPage />,
+    'citizen-portal': <CitizenPortalPage />,
+    'mfa': <MFAPage />,
+    'predictive-analytics': <PredictiveAnalyticsPage />,
   };
 
   return (

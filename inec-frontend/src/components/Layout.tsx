@@ -12,7 +12,8 @@ import {
   Menu, LogOut, ChevronRight, Landmark, MapPin, Users, Map, Layers, Fingerprint,
   Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings,
   ScanFace, Link2, GraduationCap, Users2, BarChart3, Eye, Sun, Moon, Monitor,
-  Activity, UserCheck, Crosshair, Webhook, UserCog, Copy, FileSearch, Download
+  Activity, UserCheck, Crosshair, Webhook, UserCog, Copy, FileSearch, Download,
+  Radio, KeyRound, TrendingUp, UserSearch
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -51,6 +52,10 @@ const NAV_ITEMS = [
   { label: 'Production', icon: Shield, path: 'production', section: 'Infrastructure' },
   { label: 'Webhooks', icon: Webhook, path: 'webhooks', section: 'Admin' },
   { label: 'User Mgmt', icon: UserCog, path: 'user-management', section: 'Admin' },
+  { label: 'Command Center', icon: Radio, path: 'command-center', section: 'Command' },
+  { label: 'MFA Settings', icon: KeyRound, path: 'mfa' },
+  { label: 'Citizen Portal', icon: UserSearch, path: 'citizen-portal' },
+  { label: 'Predictive Analytics', icon: TrendingUp, path: 'predictive-analytics' },
 ];
 
 interface LayoutProps {

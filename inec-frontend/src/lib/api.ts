@@ -535,4 +535,89 @@ export const api = {
 
   // OIDC
   getOIDCConfig: () => request('/.well-known/openid-configuration'),
+
+  // Command Center (#1)
+  getCommandCenterLive: () => request('/command-center/live'),
+  getCommandCenterAlerts: () => request('/command-center/alerts'),
+  getEscalationConfig: () => request('/escalation/config'),
+  updateEscalationConfig: (rules: unknown[]) =>
+    request('/escalation/config', { method: 'POST', body: JSON.stringify(rules) }),
+  getLoadShedding: () => request('/load-shedding'),
+  setLoadShedding: (level: number) =>
+    request('/load-shedding', { method: 'POST', body: JSON.stringify({ level }) }),
+
+  // MFA (#3)
+  setupTOTP: () => request('/auth/mfa/totp/setup', { method: 'POST' }),
+  verifyTOTP: (code: string) =>
+    request('/auth/mfa/totp/verify', { method: 'POST', body: JSON.stringify({ code }) }),
+  mfaChallenge: (user_id: number, code: string, method: string) =>
+    request('/auth/mfa/challenge', { method: 'POST', body: JSON.stringify({ user_id, code, method }) }),
+  sendMFASMS: (user_id: number) =>
+    request('/auth/mfa/sms/send', { method: 'POST', body: JSON.stringify({ user_id }) }),
+  getMFAStatus: () => request('/auth/mfa/status'),
+  registerWebAuthn: (credential_id: string, public_key: string, device_name: string) =>
+    request('/auth/mfa/webauthn/register', { method: 'POST', body: JSON.stringify({ credential_id, public_key, device_name }) }),
+
+  // Citizen Portal (#6)
+  citizenVerify: (params: { pu_code?: string; state?: string; lga?: string }) => {
+    const qs = new URLSearchParams(params as Record<string, string>).toString();
+    return request(`/citizen/verify?${qs}`);
+  },
+  citizenVerifySignature: (result_id: number) =>
+    request(`/citizen/verify/signature?result_id=${result_id}`),
+  signResult: (result_id: number, officer_pubkey: string) =>
+    request('/results/sign', { method: 'POST', body: JSON.stringify({ result_id, officer_pubkey }) }),
+  getResultQR: (result_id: number) => request(`/results/qr?result_id=${result_id}`),
+
+  // Media API (#23) + PDF (#8) + OpenAPI (#11)
+  getMediaWidget: (type?: string) => request(`/media/widget${type ? `?type=${type}` : ''}`),
+  exportPDFReport: (type: string, state?: string) =>
+    request(`/export/report/pdf?type=${type}${state ? `&state=${state}` : ''}`),
+  getOpenAPIDocs: () => request('/openapi.json'),
+
+  // Geo-fenced Submissions (#12)
+  geoSubmissionCheck: (data: { result_id: number; officer_lat: number; officer_lng: number; pu_code: string }) =>
+    request('/geo/submission/check', { method: 'POST', body: JSON.stringify(data) }),
+  geoSubmissionOverride: (submission_id: number, reason: string) =>
+    request('/geo/submission/override', { method: 'POST', body: JSON.stringify({ submission_id, reason }) }),
+
+  // Anomaly Escalation (#7)
+  getAnomalyEscalations: () => request('/anomaly/escalation'),
+  createAnomalyEscalation: (data: { anomaly_id: string; severity: string; state_code: string; pu_code: string }) =>
+    request('/anomaly/escalation', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Biometric Quality (#9)
+  biometricQualityCheck: (data: { capture_id: string; modality: string; blur_score: number; exposure: number; angle: number }) =>
+    request('/biometric/quality-check', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Predictive Analytics (#16)
+  getPredictiveAnalytics: (election_id?: string) =>
+    request(`/predictive/analytics${election_id ? `?election_id=${election_id}` : ''}`),
+
+  // Multi-Election (#17)
+  getElectionTemplates: () => request('/election/templates'),
+  createElectionTemplate: (data: { election_type: string; template_name: string; party_count: number }) =>
+    request('/election/templates', { method: 'POST', body: JSON.stringify(data) }),
+  getElectionArchives: () => request('/election/archive'),
+  archiveElection: (election_id: number) =>
+    request('/election/archive', { method: 'POST', body: JSON.stringify({ election_id }) }),
+
+  // Data Sovereignty (#20)
+  getDataClassifications: () => request('/data/classification'),
+  setDataClassification: (data: { table_name: string; column_name: string; classification: string }) =>
+    request('/data/classification', { method: 'POST', body: JSON.stringify(data) }),
+  requestDataErasure: (vin: string, reason: string) =>
+    request('/data/erasure', { method: 'POST', body: JSON.stringify({ vin, reason }) }),
+
+  // Observer Photo Verification (#18)
+  observerPhotoVerify: (data: { observer_id: number; pu_code: string; photo_hash: string; gps_lat: number; gps_lng: number }) =>
+    request('/observer/photo-verify', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Offline Conflict Resolution (#2)
+  resolveOfflineConflict: (data: { result_id: number; local_data: unknown; server_data: unknown; strategy: string }) =>
+    request('/offline/conflict/resolve', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Voice IVR (#14)
+  ivrVerify: (phone_number: string, pu_code: string, language?: string) =>
+    request('/ivr/verify', { method: 'POST', body: JSON.stringify({ phone_number, pu_code, language }) }),
 };
