@@ -453,7 +453,7 @@ func handleAIIntegrity(w http.ResponseWriter, r *http.Request) {
 			{"name": "Temporal Patterns", "score": math.Round(temporalScore*10) / 10, "weight": 0.2},
 		},
 		"risk_level":     riskLevel,
-		"confidence":     0.89,
+		"confidence":     math.Round((overall/100)*100) / 100,
 		"total_results":  totalResults,
 		"overvote_count": overvoteCount,
 		"method":         "real_data_analysis",

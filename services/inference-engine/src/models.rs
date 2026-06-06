@@ -1,26 +1,34 @@
 //! ML Model wrappers for ONNX Runtime inference on CPU.
 
-use anyhow::{Context, Result};
-use ndarray::Array2;
+use anyhow::Result;
+use ort::session::{Session, builder::GraphOptimizationLevel};
+use std::sync::Mutex;
 use tracing::info;
+
+fn ort_err(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("ort error: {}", e)
+}
 
 /// XGBoost anomaly detection model (ONNX format).
 pub struct AnomalyModel {
-    session: ort::Session,
+    session: Mutex<Session>,
     n_features: usize,
 }
 
 impl AnomalyModel {
     /// Load ONNX model from disk.
     pub fn load(path: &str) -> Result<Self> {
-        let session = ort::Session::builder()?
-            .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+        let session = Session::builder()
+            .map_err(ort_err)?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(ort_err)?
+            .with_intra_threads(4)
+            .map_err(ort_err)?
             .commit_from_file(path)
-            .context("Failed to load anomaly ONNX model")?;
+            .map_err(ort_err)?;
 
         info!(path, "Anomaly model loaded (ONNX)");
-        Ok(Self { session, n_features: 17 })
+        Ok(Self { session: Mutex::new(session), n_features: 17 })
     }
 
     /// Run inference on a single feature vector. Returns anomaly probability [0,1].
@@ -28,27 +36,34 @@ impl AnomalyModel {
         assert_eq!(features.len(), self.n_features, "Expected 17 features");
 
         let input: Vec<f32> = features.iter().map(|&x| x as f32).collect();
-        let array = Array2::from_shape_vec((1, self.n_features), input)
-            .expect("Feature shape mismatch");
+        let input_tensor = ort::value::Tensor::from_array(
+            ([1_usize, self.n_features], input)
+        );
+        let input_tensor = match input_tensor {
+            Ok(t) => t,
+            Err(_) => return 0.0,
+        };
 
-        let outputs = self.session
-            .run(ort::inputs![array].unwrap())
-            .unwrap_or_default();
+        let mut session = self.session.lock().unwrap();
+        let outputs = match session.run(ort::inputs!["float_input" => input_tensor]) {
+            Ok(o) => o,
+            Err(_) => return 0.0,
+        };
 
         // XGBoost ONNX outputs: [labels, probabilities]
         if outputs.len() >= 2 {
-            // probabilities shape: (1, 2) — [p_normal, p_anomaly]
-            if let Ok(probs) = outputs[1].try_extract_tensor::<f32>() {
-                let view = probs.view();
-                if view.len() >= 2 {
-                    return view[[0, 1]] as f64;
+            if let Ok((_shape, data)) = outputs[1].try_extract_tensor::<f32>() {
+                if data.len() >= 2 {
+                    return data[1] as f64; // p_anomaly
                 }
             }
         }
 
         // Fallback: return label
-        if let Ok(labels) = outputs[0].try_extract_tensor::<i64>() {
-            return labels.view()[[0]] as f64;
+        if let Ok((_shape, data)) = outputs[0].try_extract_tensor::<i64>() {
+            if !data.is_empty() {
+                return data[0] as f64;
+            }
         }
 
         0.0
@@ -56,26 +71,7 @@ impl AnomalyModel {
 
     /// Batch predict on multiple polling units.
     pub fn predict_batch(&self, batch_features: &[Vec<f64>]) -> Vec<f64> {
-        let n = batch_features.len();
-        let flat: Vec<f32> = batch_features.iter()
-            .flat_map(|f| f.iter().map(|&x| x as f32))
-            .collect();
-
-        let array = Array2::from_shape_vec((n, self.n_features), flat)
-            .expect("Batch shape mismatch");
-
-        let outputs = self.session
-            .run(ort::inputs![array].unwrap())
-            .unwrap_or_default();
-
-        if outputs.len() >= 2 {
-            if let Ok(probs) = outputs[1].try_extract_tensor::<f32>() {
-                let view = probs.view();
-                return (0..n).map(|i| view[[i, 1]] as f64).collect();
-            }
-        }
-
-        vec![0.0; n]
+        batch_features.iter().map(|f| self.predict(f)).collect()
     }
 }
 
@@ -130,7 +126,6 @@ impl FaceModel {
     }
 
     /// Batch cosine similarity: compare one query against N stored embeddings.
-    /// Uses SIMD-friendly layout for performance.
     pub fn batch_similarity(&self, query: &[f32], database: &[Vec<f32>]) -> Vec<f32> {
         database.iter()
             .map(|stored| self.cosine_similarity(query, stored))
@@ -140,52 +135,56 @@ impl FaceModel {
 
 /// CDCN Liveness/PAD model (ONNX format).
 pub struct LivenessModel {
-    session: ort::Session,
+    session: Mutex<Session>,
 }
 
 impl LivenessModel {
     pub fn load(path: &str) -> Result<Self> {
-        let session = ort::Session::builder()?
-            .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
-            .with_intra_threads(2)?
+        let session = Session::builder()
+            .map_err(ort_err)?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(ort_err)?
+            .with_intra_threads(2)
+            .map_err(ort_err)?
             .commit_from_file(path)
-            .context("Failed to load liveness ONNX model")?;
+            .map_err(ort_err)?;
 
         info!(path, "Liveness CDCN model loaded (ONNX)");
-        Ok(Self { session })
+        Ok(Self { session: Mutex::new(session) })
     }
 
     /// Run liveness check on a face crop (256x256 RGB, normalized to [0,1]).
     /// Returns (depth_map_quality, liveness_score).
     pub fn predict(&self, face_crop: &[f32]) -> (f32, f32) {
-        // Input shape: (1, 3, 256, 256) = 196608 floats
-        let expected_size = 1 * 3 * 256 * 256;
+        let expected_size = 3 * 256 * 256;
         if face_crop.len() != expected_size {
             return (0.0, 0.0);
         }
 
-        let array = ndarray::Array4::from_shape_vec(
-            (1, 3, 256, 256),
-            face_crop.to_vec(),
-        ).expect("Shape mismatch");
+        let input_tensor = match ort::value::Tensor::from_array(
+            ([1_usize, 3, 256, 256], face_crop.to_vec())
+        ) {
+            Ok(t) => t,
+            Err(_) => return (0.0, 0.0),
+        };
 
-        let outputs = self.session
-            .run(ort::inputs![array].unwrap())
-            .unwrap_or_default();
+        let mut session = self.session.lock().unwrap();
+        let outputs = match session.run(ort::inputs!["input" => input_tensor]) {
+            Ok(o) => o,
+            Err(_) => return (0.0, 0.0),
+        };
 
         // Output 0: depth_map (1, 1, 32, 32)
-        // Output 1: liveness_score (1, 1)
-        let depth_quality = if let Ok(depth) = outputs[0].try_extract_tensor::<f32>() {
-            let view = depth.view();
-            let total: f32 = view.iter().sum();
+        let depth_quality = if let Ok((_shape, data)) = outputs[0].try_extract_tensor::<f32>() {
+            let total: f32 = data.iter().sum();
             total / (32.0 * 32.0) // Average depth value as quality indicator
         } else {
             0.0
         };
 
         let liveness = if outputs.len() > 1 {
-            if let Ok(score) = outputs[1].try_extract_tensor::<f32>() {
-                score.view()[[0, 0]]
+            if let Ok((_shape, data)) = outputs[1].try_extract_tensor::<f32>() {
+                if !data.is_empty() { data[0] } else { 0.0 }
             } else {
                 0.0
             }

@@ -142,22 +142,7 @@ struct GraphQueryRequest {
     hops: Option<u32>,
 }
 
-#[derive(Serialize)]
-struct GraphQueryResponse {
-    pu_code: String,
-    neighbors: Vec<NeighborInfo>,
-    avg_neighbor_turnout: f64,
-    deviation_from_neighbors: f64,
-    flagged_neighbors: u32,
-}
-
-#[derive(Serialize)]
-struct NeighborInfo {
-    code: String,
-    turnout: f64,
-    distance_km: f64,
-    flagged: bool,
-}
+use neo4j_client::GraphQueryResponse;
 
 #[derive(Deserialize)]
 struct GpsSpoofRequest {

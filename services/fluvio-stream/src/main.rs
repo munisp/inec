@@ -1,5 +1,5 @@
 use actix_web::{web, App, HttpServer, HttpResponse, middleware};
-use fluvio::{Fluvio, FluvioConfig, TopicProducer, ConsumerConfig, Offset};
+use fluvio::{Fluvio, FluvioConfig, Offset};
 use fluvio::metadata::topic::TopicSpec;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -70,7 +70,7 @@ const ALL_TOPICS: &[&str] = &[
 // Shared application state.
 struct AppState {
     fluvio: Fluvio,
-    producers: RwLock<std::collections::HashMap<String, TopicProducer>>,
+    producers: RwLock<std::collections::HashMap<String, Arc<fluvio::TopicProducer<fluvio::spu::SpuSocketPool>>>>,
     stats: RwLock<StreamStats>,
 }
 
@@ -116,6 +116,7 @@ async fn produce_event(
         None => {
             match state.fluvio.topic_producer(topic).await {
                 Ok(p) => {
+                    let p = Arc::new(p);
                     let mut producers = state.producers.write().await;
                     producers.insert(topic.clone(), p.clone());
                     p
@@ -130,7 +131,7 @@ async fn produce_event(
         }
     };
 
-    match producer.send(key.as_bytes().to_vec(), payload.as_bytes().to_vec()).await {
+    match producer.send(fluvio::RecordKey::from(key.as_bytes().to_vec()), payload.as_bytes().to_vec()).await {
         Ok(_) => {
             let mut stats = state.stats.write().await;
             stats.total_produced += 1;
@@ -161,13 +162,7 @@ async fn consume_events(
 
     let consumer = match state
         .fluvio
-        .consumer_with_config(
-            ConsumerConfig::builder()
-                .topic(topic)
-                .offset_start(Offset::absolute(offset).unwrap_or(Offset::beginning()))
-                .build()
-                .expect("consumer config"),
-        )
+        .partition_consumer(topic, 0)
         .await
     {
         Ok(c) => c,
@@ -179,7 +174,7 @@ async fn consume_events(
     };
 
     let mut records = Vec::new();
-    use futures_lite::StreamExt;
+    use futures_util::StreamExt;
     let mut stream = consumer.stream(Offset::absolute(offset).unwrap_or(Offset::beginning())).await.unwrap();
     
     while let Some(Ok(record)) = stream.next().await {
