@@ -26,9 +26,7 @@ export default function IntegrityScorePage() {
 
   useEffect(() => {
     setLoading(true);
-    const params = new URLSearchParams({ election_id: '1' });
-    if (stateFilter) params.set('state_code', stateFilter);
-    api.get(`/ai/integrity-heatmap?${params}`)
+    api.getIntegrityHeatmap(1, stateFilter || undefined)
       .then(setData)
       .catch(() => {})
       .finally(() => setLoading(false));

@@ -27,7 +27,7 @@ export default function TVDashboardPage() {
   const [cycleIdx, setCycleIdx] = useState(0);
 
   useEffect(() => {
-    const load = () => api.get('/public/tv-dashboard?election_id=1').then(setData).catch(() => {});
+    const load = () => api.getTVDashboard(1).then(setData).catch(() => {});
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);

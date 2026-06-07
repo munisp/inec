@@ -31,7 +31,7 @@ export default function ComplianceReportPage() {
 
   useEffect(() => {
     setLoading(true);
-    api.get(`/reports/compliance?standard=${standard}&election_id=1`)
+    api.getComplianceReport(standard, 1)
       .then(setData)
       .catch(() => {})
       .finally(() => setLoading(false));
