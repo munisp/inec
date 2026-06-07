@@ -779,4 +779,23 @@ export const api = {
     if (electionId) p.set('election_id', String(electionId));
     return request(`/geo/sedona/analysis?${p}`);
   },
+  // Real-time tracking & crowd density
+  getOfficialLocations: (params?: { state_code?: string; role?: string; active_minutes?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.state_code) p.set('state_code', params.state_code);
+    if (params?.role) p.set('role', params.role);
+    if (params?.active_minutes) p.set('active_minutes', String(params.active_minutes));
+    return request(`/geo/tracking/officials?${p}`);
+  },
+  updateOfficialLocation: (data: { lat: number; lng: number; staff_id: string; role?: string; pu_code?: string; activity?: string; battery_pct?: number }) =>
+    request('/geo/tracking/update', { method: 'POST', body: JSON.stringify(data) }),
+  getCrowdDensity: (params?: { state_code?: string; recent_minutes?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.state_code) p.set('state_code', params.state_code);
+    if (params?.recent_minutes) p.set('recent_minutes', String(params.recent_minutes));
+    return request(`/geo/crowd/density?${p}`);
+  },
+  reportCrowdDensity: (data: { pu_code: string; lat: number; lng: number; head_count: number; density_level?: string; queue_length?: number; wait_time_min?: number }) =>
+    request('/geo/crowd/report', { method: 'POST', body: JSON.stringify(data) }),
+  seedTrackingData: () => request('/geo/tracking/seed', { method: 'POST' }),
 };
