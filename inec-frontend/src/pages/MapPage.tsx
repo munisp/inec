@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Radar, Building2, Users, Radio, Shield, Battery, Clock, AlertTriangle, Camera, Mic, Route, Hexagon, Cloud, Plane, Play, Pause, SkipForward } from 'lucide-react';
+import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Radar, Building2, Users, Radio, Shield, Battery, Clock, AlertTriangle, Mic, Route, Hexagon, Cloud } from 'lucide-react';
 
 interface StateData {
   code: string; name: string; geo_zone: string; capital: string;
@@ -94,8 +94,7 @@ export default function MapPage() {
   const [showTrails, setShowTrails] = useState(false);
   const [crowdAlerts, setCrowdAlerts] = useState<Array<{ id: number; pu_code: string; severity: string; message: string; created_at: string }>>([]);
   const [weatherData, setWeatherData] = useState<Array<{ name: string; lat: number; lng: number; weather: { temp_c: number; humidity: number; description: string; wind_kmh: number } }>>([]);
-  const [timeSliderValue, setTimeSliderValue] = useState(100);
-  const [isSimulating, setIsSimulating] = useState(false);
+  const [timeSliderValue] = useState(100);
   const [voiceListening, setVoiceListening] = useState(false);
   const sseRef = useRef<EventSource | null>(null);
   const geofenceMarkers = useRef<maplibregl.Marker[]>([]);
@@ -244,14 +243,6 @@ export default function MapPage() {
       if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
     };
   }, [showTracking]);
-
-  // #9 Load crowd alerts
-  async function loadCrowdAlerts() {
-    try {
-      const data = await api.getCrowdAlerts?.();
-      setCrowdAlerts(data?.alerts || []);
-    } catch {}
-  }
 
   // #15 Load weather data
   async function loadWeather() {
