@@ -286,6 +286,21 @@ func main() {
 	r.HandleFunc("/ai/proxy/anomalies", readAuth(handleAIProxy)).Methods("GET")
 	r.HandleFunc("/ai/fallback/anomalies", readAuth(handleAIFallbackAnomalies)).Methods("GET")
 
+	// Lakehouse Pipeline (Bronze→Silver→Gold)
+	r.HandleFunc("/ai/lakehouse/ingest", writeAuth(handleLakehouseIngest)).Methods("POST")
+	r.HandleFunc("/ai/lakehouse/pipeline", writeAuth(handleLakehousePipeline)).Methods("POST")
+	r.HandleFunc("/ai/lakehouse/status", readAuth(handleLakehouseStatus)).Methods("GET")
+
+	// Ray Distributed Compute
+	r.HandleFunc("/ai/ray/batch-predict", readAuth(handleRayBatchPredict)).Methods("POST")
+	r.HandleFunc("/ai/ray/train", writeAuth(handleRayTrain)).Methods("POST")
+
+	// Continuous Training Pipeline
+	r.HandleFunc("/ai/training/status", readAuth(handleTrainingStatus)).Methods("GET")
+	r.HandleFunc("/ai/training/check-drift", readAuth(handleCheckDrift)).Methods("GET")
+	r.HandleFunc("/ai/training/retrain", writeAuth(handleTriggerRetrain)).Methods("POST")
+	r.HandleFunc("/ai/registry/models", readAuth(handleModelRegistry)).Methods("GET")
+
 	// Public API v1 (API key authenticated)
 	r.HandleFunc("/api/v1/docs", apiVersionMiddleware(handlePublicAPIDocs)).Methods("GET")
 	r.HandleFunc("/api/v1/docs.json", apiVersionMiddleware(handlePublicAPIDocs)).Methods("GET")

@@ -512,6 +512,26 @@ export const api = {
   // GNN
   getGNNScore: (electionId: number) => request(`/ai/gnn/score?election_id=${electionId}`),
 
+  // Lakehouse Pipeline
+  getLakehouseStatus: () => request('/ai/lakehouse/status'),
+  triggerLakehouseIngest: (electionId: number) =>
+    request(`/ai/lakehouse/ingest?election_id=${electionId}`, { method: 'POST' }),
+  triggerLakehousePipeline: (electionId: number) =>
+    request(`/ai/lakehouse/pipeline?election_id=${electionId}`, { method: 'POST' }),
+
+  // Ray Distributed Compute
+  rayBatchPredict: (electionId: number) =>
+    request(`/ai/ray/batch-predict?election_id=${electionId}`, { method: 'POST' }),
+  rayTrain: () =>
+    request('/ai/ray/train', { method: 'POST' }),
+
+  // Continuous Training
+  getTrainingStatus: () => request('/ai/training/status'),
+  checkDrift: () => request('/ai/training/check-drift'),
+  triggerRetrain: (useRay: boolean) =>
+    request(`/ai/training/retrain?use_ray=${useRay}`, { method: 'POST' }),
+  getModelRegistry: () => request('/ai/registry/models'),
+
   // Document AI
   analyzeDocument: (reportId: number) =>
     request(`/document-ai/analyze?report_id=${reportId}`, { method: 'POST' }),

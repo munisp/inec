@@ -59,6 +59,7 @@ const NAV_ITEMS = [
   { label: 'Integrity Score', icon: Flame, path: 'integrity-score' },
   { label: 'TV Dashboard', icon: Tv, path: 'tv-dashboard' },
   { label: 'Compliance Report', icon: FileCheck, path: 'compliance-report' },
+  { label: 'ML Dashboard', icon: Brain, path: 'ml-dashboard' },
 ];
 
 interface LayoutProps {

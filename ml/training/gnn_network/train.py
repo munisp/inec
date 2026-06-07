@@ -262,16 +262,38 @@ def generate_synthetic_graph(n_nodes: int = 5000, n_neighbors: int = 5, anomaly_
     anomaly_idx = rng.choice(n_nodes, size=n_anomalies, replace=False)
     labels[anomaly_idx] = 1.0
 
-    # Modify anomalous node features (make them deviate from neighbors)
-    for idx in anomaly_idx:
-        features[idx, 2] = rng.uniform(0.9, 1.0)  # Abnormal turnout
-        features[idx, 7] = rng.uniform(0.85, 0.99)  # Dominant party
-        features[idx, 10] = rng.uniform(0.05, 0.15)  # Benford violation
+    # Modify anomalous node features with distinct fraud patterns
+    fraud_types = ["ballot_stuffing", "voter_suppression", "result_manipulation", "overvoting"]
+    for i, idx in enumerate(anomaly_idx):
+        fraud = fraud_types[i % len(fraud_types)]
+        if fraud == "ballot_stuffing":
+            features[idx, 2] = rng.uniform(0.92, 1.0)     # turnout >92%
+            features[idx, 7] = rng.uniform(0.88, 0.99)    # party_a_share dominant
+            features[idx, 10] = rng.uniform(0.06, 0.15)   # Benford violation
+            features[idx, 11] = rng.uniform(0.1, 0.8)     # submitted fast
+        elif fraud == "voter_suppression":
+            features[idx, 2] = rng.uniform(0.02, 0.12)    # turnout <12%
+            features[idx, 13] = rng.uniform(-0.5, -0.3)   # way below regional avg
+        elif fraud == "result_manipulation":
+            features[idx, 10] = rng.uniform(0.08, 0.2)    # strong Benford violation
+            features[idx, 16] = 1.0                        # round numbers
+            features[idx, 9] = rng.uniform(0.6, 0.9)      # huge margin
+        else:  # overvoting
+            features[idx, 15] = 1.0                        # overvoting flag
+            features[idx, 14] = rng.uniform(0.2, 0.4)     # high rejection
 
     x = torch.tensor(features)
     y = torch.tensor(labels).unsqueeze(1)
 
     return x, edge_index, y
+
+
+def focal_loss(pred: "torch.Tensor", target: "torch.Tensor", alpha: float = 0.75, gamma: float = 2.0) -> "torch.Tensor":
+    """Focal loss for handling class imbalance (Lin et al., 2017)."""
+    bce = F.binary_cross_entropy(pred, target, reduction="none")
+    pt = torch.where(target == 1, pred, 1 - pred)
+    at = torch.where(target == 1, alpha, 1 - alpha)
+    return (at * (1 - pt) ** gamma * bce).mean()
 
 
 def train_gnn(output_dir: str | None = None, epochs: int = 50):
@@ -283,58 +305,91 @@ def train_gnn(output_dir: str | None = None, epochs: int = 50):
     output_path = Path(output_dir) if output_dir else MODELS_DIR
     output_path.mkdir(parents=True, exist_ok=True)
 
-    print("Generating synthetic election graph (5,000 nodes)...")
-    x, edge_index, y = generate_synthetic_graph(n_nodes=5000)
+    print("Generating synthetic election graph (10,000 nodes, 8% anomaly rate)...")
+    x, edge_index, y = generate_synthetic_graph(n_nodes=10000, anomaly_rate=0.08)
 
-    print(f"Graph: {x.shape[0]} nodes, {edge_index.shape[1]} edges, {y.sum().item():.0f} anomalies")
+    # Normalize features (critical for convergence)
+    x_mean = x.mean(dim=0, keepdim=True)
+    x_std = x.std(dim=0, keepdim=True).clamp(min=1e-8)
+    x = (x - x_mean) / x_std
+
+    print(f"Graph: {x.shape[0]} nodes, {edge_index.shape[1]} edges, {y.sum().item():.0f} anomalies ({y.mean().item()*100:.1f}%)")
 
     # Initialize model
     model = ElectionGAT(in_channels=17, hidden_channels=64, heads=4)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    criterion = nn.BCELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-3, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
 
-    # Train/val split (80/20 by nodes)
-    n_train = int(x.shape[0] * 0.8)
+    # Stratified train/val split
+    pos_idx = (y.squeeze() == 1).nonzero(as_tuple=True)[0]
+    neg_idx = (y.squeeze() == 0).nonzero(as_tuple=True)[0]
+    n_train_pos = int(len(pos_idx) * 0.8)
+    n_train_neg = int(len(neg_idx) * 0.8)
+    train_idx = torch.cat([pos_idx[:n_train_pos], neg_idx[:n_train_neg]])
+    val_idx = torch.cat([pos_idx[n_train_pos:], neg_idx[n_train_neg:]])
     train_mask = torch.zeros(x.shape[0], dtype=torch.bool)
-    train_mask[:n_train] = True
-    val_mask = ~train_mask
+    val_mask = torch.zeros(x.shape[0], dtype=torch.bool)
+    train_mask[train_idx] = True
+    val_mask[val_idx] = True
 
-    # Training loop
-    best_val_loss = float("inf")
+    # Training loop with focal loss for class imbalance
+    best_val_f1 = 0.0
+    patience, patience_count = 30, 0
     for epoch in range(epochs):
         model.train()
         optimizer.zero_grad()
 
         out = model(x, edge_index)
-        loss = criterion(out[train_mask], y[train_mask])
+        loss = focal_loss(out[train_mask], y[train_mask], alpha=0.85, gamma=2.0)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        scheduler.step()
 
         # Validation
         model.eval()
         with torch.no_grad():
             val_out = model(x, edge_index)
-            val_loss = criterion(val_out[val_mask], y[val_mask]).item()
+            val_loss = focal_loss(val_out[val_mask], y[val_mask]).item()
 
-            # Accuracy
             val_preds = (val_out[val_mask] > 0.5).float()
-            val_acc = (val_preds == y[val_mask]).float().mean().item()
+            val_y = y[val_mask]
+            tp = ((val_preds == 1) & (val_y == 1)).sum().item()
+            fp = ((val_preds == 1) & (val_y == 0)).sum().item()
+            fn = ((val_preds == 0) & (val_y == 1)).sum().item()
+            prec = tp / max(tp + fp, 1)
+            rec = tp / max(tp + fn, 1)
+            f1 = 2 * prec * rec / max(prec + rec, 1e-10)
+            val_acc = (val_preds == val_y).float().mean().item()
 
         if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{epochs} — Train Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+            print(f"Epoch {epoch+1}/{epochs} — Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, P: {prec:.3f}, R: {rec:.3f}, F1: {f1:.3f}")
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), str(output_path / "gnn_election.pt"))
+        if f1 > best_val_f1:
+            best_val_f1 = f1
+            patience_count = 0
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "feature_mean": x_mean,
+                "feature_std": x_std,
+            }, str(output_path / "gnn_election.pt"))
+        else:
+            patience_count += 1
+            if patience_count >= patience and epoch > 50:
+                print(f"Early stopping at epoch {epoch+1} (no F1 improvement for {patience} epochs)")
+                break
 
-    # Export to ONNX (note: PyG models need custom export)
-    print(f"\nBest validation loss: {best_val_loss:.4f}")
+    print(f"\nBest validation F1: {best_val_f1:.4f}")
 
     # Final evaluation
-    model.load_state_dict(torch.load(str(output_path / "gnn_election.pt"), weights_only=True))
+    checkpoint = torch.load(str(output_path / "gnn_election.pt"), weights_only=True)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
     model.eval()
     with torch.no_grad():
         final_out = model(x, edge_index)
@@ -342,11 +397,13 @@ def train_gnn(output_dir: str | None = None, epochs: int = 50):
         tp = ((predictions == 1) & (y == 1)).sum().item()
         fp = ((predictions == 1) & (y == 0)).sum().item()
         fn = ((predictions == 0) & (y == 1)).sum().item()
+        tn = ((predictions == 0) & (y == 0)).sum().item()
         precision = tp / max(tp + fp, 1)
         recall = tp / max(tp + fn, 1)
         f1 = 2 * precision * recall / max(precision + recall, 1e-10)
 
     print(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+    print(f"Confusion: TP={int(tp)}, FP={int(fp)}, FN={int(fn)}, TN={int(tn)}")
 
     # Save metadata
     metadata = {

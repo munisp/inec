@@ -52,6 +52,7 @@ const PredictiveAnalyticsPage = lazy(() => import('@/pages/PredictiveAnalyticsPa
 const TVDashboardPage = lazy(() => import('@/pages/TVDashboardPage'));
 const ComplianceReportPage = lazy(() => import('@/pages/ComplianceReportPage'));
 const IntegrityScorePage = lazy(() => import('@/pages/IntegrityScorePage'));
+const MLDashboardPage = lazy(() => import('@/pages/MLDashboardPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -118,6 +119,7 @@ function AppContent() {
     'tv-dashboard': <TVDashboardPage />,
     'compliance-report': <ComplianceReportPage />,
     'integrity-score': <IntegrityScorePage />,
+    'ml-dashboard': <MLDashboardPage />,
   };
 
   return (

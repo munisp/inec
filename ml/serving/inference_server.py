@@ -109,12 +109,22 @@ class ModelRegistry:
     def pad_session(self):
         if self._pad_session is None:
             onnx_path = MODELS_DIR / "liveness_cdcn.onnx"
+            pt_path = MODELS_DIR / "liveness_cdcn.pt"
             if onnx_path.exists():
                 import onnxruntime as ort
                 self._pad_session = ort.InferenceSession(
                     str(onnx_path), providers=["CPUExecutionProvider"]
                 )
                 logger.info("pad_model_loaded", format="onnx")
+            elif pt_path.exists():
+                import torch
+                checkpoint = torch.load(str(pt_path), map_location="cpu", weights_only=False)
+                from ml.training.liveness_pad.train import CDCNModel
+                model = CDCNModel()
+                model.load_state_dict(checkpoint["model_state_dict"])
+                model.eval()
+                self._pad_session = model
+                logger.info("pad_model_loaded", format="pytorch", params=sum(p.numel() for p in model.parameters()))
             else:
                 logger.warning("pad_model_not_found")
                 self._pad_session = "unavailable"
@@ -339,25 +349,33 @@ async def check_liveness(
     checks = []
 
     if session is not None:
-        # Real ONNX inference
+        import torch
         scores = []
+        depth_map = None
         for frame in frames[::3]:  # Every 3rd frame
-            # Preprocess: resize to 256x256, normalize
             face_crop = cv2.resize(frame, (256, 256))
             face_crop = face_crop.astype(np.float32) / 255.0
             face_crop = face_crop.transpose(2, 0, 1)  # HWC → CHW
-            face_crop = np.expand_dims(face_crop, 0)  # Add batch dim
 
-            # Run ONNX inference
-            input_name = session.get_inputs()[0].name
-            outputs = session.run(None, {input_name: face_crop})
-            depth_map = outputs[0]  # (1, 1, 32, 32)
-            liveness_score = outputs[1]  # (1, 1)
-            scores.append(float(liveness_score[0][0]))
+            if hasattr(session, "get_inputs"):
+                # ONNX Runtime inference
+                inp = np.expand_dims(face_crop, 0)
+                input_name = session.get_inputs()[0].name
+                outputs = session.run(None, {input_name: inp})
+                depth_map = outputs[0]
+                liveness_score = outputs[1]
+                scores.append(float(liveness_score[0][0]))
+            else:
+                # PyTorch inference
+                inp = torch.from_numpy(face_crop).unsqueeze(0)
+                with torch.no_grad():
+                    dm, ls = session(inp)
+                depth_map = dm.numpy()
+                scores.append(float(torch.sigmoid(ls).item()))
 
-        avg_score = np.mean(scores)
-        std_score = np.std(scores)
-        depth_quality = float(np.mean(depth_map > 0.3))
+        avg_score = float(np.mean(scores))
+        std_score = float(np.std(scores))
+        depth_quality = float(np.mean(depth_map > 0.3)) if depth_map is not None else 0.5
 
         checks.append({"check": "cdcn_liveness", "score": avg_score, "passed": avg_score > 0.5})
         checks.append({"check": "temporal_consistency", "score": 1.0 - std_score, "passed": std_score < 0.15})
@@ -465,12 +483,19 @@ async def score_polling_units(data: dict):
 
         from ml.training.gnn_network.train import ElectionGAT
 
+        checkpoint = torch.load(str(model_path), weights_only=False, map_location="cpu")
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
         model = ElectionGAT(in_channels=17, hidden_channels=64, heads=4)
-        model.load_state_dict(torch.load(str(model_path), weights_only=True, map_location="cpu"))
+        model.load_state_dict(state_dict)
         model.eval()
 
-        # Parse input
+        # Parse input and normalize features
         node_features = torch.tensor(data["nodes"], dtype=torch.float32)
+        if "feature_mean" in checkpoint and "feature_std" in checkpoint:
+            mean = torch.tensor(checkpoint["feature_mean"], dtype=torch.float32)
+            std = torch.tensor(checkpoint["feature_std"], dtype=torch.float32)
+            node_features = (node_features - mean) / (std + 1e-8)
+
         edge_index = torch.tensor(data["edges"], dtype=torch.long)
 
         with torch.no_grad():
@@ -505,6 +530,200 @@ async def model_info():
         "inference_device": "CPU",
         "models_dir": str(MODELS_DIR),
     }
+
+
+# ── Anomaly Batch Inference ──
+
+class BatchAnomalyRequest(BaseModel):
+    polling_units: list[dict]
+
+
+@app.post("/anomaly/batch")
+async def batch_predict_anomaly(req: BatchAnomalyRequest):
+    """Batch anomaly scoring for multiple polling units."""
+    start = time.perf_counter()
+
+    model = registry.anomaly_model
+    scaler = registry.anomaly_scaler
+
+    results = []
+    for pu in req.polling_units:
+        reg = pu.get("registered_voters", 1000)
+        acc = pu.get("accredited_voters", 500)
+        valid = pu.get("total_valid_votes", 450)
+        rej = pu.get("rejected_votes", 50)
+        pa = pu.get("party_a_votes", 200)
+        pb = pu.get("party_b_votes", 150)
+        turnout = acc / max(reg, 1)
+
+        features = np.array([[
+            reg, acc, turnout, valid, rej, pa, pb,
+            pa / max(valid, 1), pb / max(valid, 1),
+            abs(pa - pb) / max(valid, 1),
+            pu.get("benford_deviation", 0.02),
+            pu.get("submission_delay_hours", 3.0),
+            pu.get("regional_mean_turnout", 0.55),
+            turnout - pu.get("regional_mean_turnout", 0.55),
+            rej / max(acc, 1),
+            int(valid > acc),
+            int(valid % 100 == 0 or valid % 50 == 0),
+        ]], dtype=np.float32)
+
+        features_scaled = scaler.transform(features) if scaler else features
+
+        if hasattr(model, "run"):
+            input_name = model.get_inputs()[0].name
+            result = model.run(None, {input_name: features_scaled.astype(np.float32)})
+            prob = float(result[1][0][1])
+        else:
+            prob = float(model.predict_proba(features_scaled)[0][1])
+
+        results.append({
+            "polling_unit_code": pu.get("polling_unit_code", "unknown"),
+            "anomaly_score": prob,
+            "is_anomaly": prob > 0.5,
+            "confidence": abs(prob - 0.5) * 2,
+        })
+
+    elapsed = (time.perf_counter() - start) * 1000
+    return {
+        "results": results,
+        "total_scored": len(results),
+        "anomalies_found": sum(1 for r in results if r["is_anomaly"]),
+        "model": "xgboost-v1.0.0",
+        "inference_time_ms": elapsed,
+    }
+
+
+# ── Lakehouse Integration ──
+
+@app.post("/lakehouse/ingest")
+async def lakehouse_ingest(data: dict):
+    """Ingest election results into Lakehouse Bronze layer."""
+    try:
+        from ml.pipeline.lakehouse import LakehousePipeline
+        pipeline = LakehousePipeline()
+        results = data.get("results", [])
+        run_id = pipeline.ingest_bronze_results(results, source=data.get("source", "api"))
+        pipeline.close()
+        return {"run_id": run_id, "rows_ingested": len(results)}
+    except Exception as e:
+        raise HTTPException(500, f"Lakehouse ingest failed: {e}")
+
+
+@app.post("/lakehouse/pipeline")
+async def lakehouse_full_pipeline(data: dict):
+    """Run full Bronze→Silver→Gold pipeline."""
+    try:
+        from ml.pipeline.lakehouse import LakehousePipeline
+        pipeline = LakehousePipeline()
+        report = pipeline.run_full_pipeline(data.get("results", []), source=data.get("source", "api"))
+        pipeline.close()
+        return report
+    except Exception as e:
+        raise HTTPException(500, f"Pipeline failed: {e}")
+
+
+@app.get("/lakehouse/status")
+async def lakehouse_status():
+    """Get Lakehouse pipeline status."""
+    try:
+        from ml.pipeline.lakehouse import LakehousePipeline
+        pipeline = LakehousePipeline()
+        stats = pipeline.get_tier_stats()
+        runs = pipeline.get_pipeline_status()
+        pipeline.close()
+        return {"tiers": stats, "recent_runs": runs}
+    except Exception as e:
+        return {"error": str(e), "tiers": {"bronze": 0, "silver": 0, "gold": 0}}
+
+
+# ── Continuous Training ──
+
+@app.get("/training/status")
+async def training_status():
+    """Get continuous training pipeline status."""
+    try:
+        from ml.pipeline.continuous_training import ContinuousTrainingPipeline
+        ct = ContinuousTrainingPipeline()
+        return ct.get_status()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/training/check-drift")
+async def check_drift():
+    """Check for model performance drift."""
+    try:
+        from ml.pipeline.continuous_training import ContinuousTrainingPipeline
+        ct = ContinuousTrainingPipeline()
+        return ct.should_retrain()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/training/retrain")
+async def trigger_retrain(config: dict | None = None):
+    """Trigger model retraining (manual or scheduled)."""
+    try:
+        from ml.pipeline.continuous_training import ContinuousTrainingPipeline
+        ct = ContinuousTrainingPipeline()
+        use_ray = (config or {}).get("use_ray", False)
+        return ct.retrain(use_ray=use_ray)
+    except Exception as e:
+        raise HTTPException(500, f"Retrain failed: {e}")
+
+
+# ── Ray Distributed Inference ──
+
+@app.post("/ray/batch-predict")
+async def ray_batch_predict(data: dict):
+    """Distributed batch prediction using Ray."""
+    try:
+        from ml.pipeline.ray_engine import RayEngine
+        engine = RayEngine()
+        predictions = engine.batch_predict_anomalies(
+            data.get("polling_units", []),
+            batch_size=data.get("batch_size", 1000),
+        )
+        engine.shutdown()
+        return {
+            "predictions": predictions,
+            "total": len(predictions),
+            "engine": "ray_distributed",
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Ray batch predict failed: {e}")
+
+
+@app.post("/ray/train")
+async def ray_train(config: dict | None = None):
+    """Trigger distributed training via Ray."""
+    try:
+        from ml.pipeline.ray_engine import RayEngine
+        engine = RayEngine()
+        models = (config or {}).get("models", ["anomaly", "gnn", "liveness"])
+        report = engine.train_distributed(models)
+        engine.shutdown()
+        return report
+    except Exception as e:
+        raise HTTPException(500, f"Ray training failed: {e}")
+
+
+# ── Model Registry ──
+
+@app.get("/registry/models")
+async def list_models():
+    """List all model versions in the registry."""
+    try:
+        from ml.pipeline.continuous_training import ModelRegistry
+        reg = ModelRegistry()
+        return {
+            "models": reg._registry["models"],
+            "production": reg._registry["production"],
+        }
+    except Exception as e:
+        return {"models": {}, "production": {}, "error": str(e)}
 
 
 if __name__ == "__main__":

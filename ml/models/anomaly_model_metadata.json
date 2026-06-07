@@ -1,7 +1,7 @@
 {
   "model_type": "xgboost_classifier",
   "version": "1.0.0",
-  "trained_at": "2026-06-05T13:31:57.888143+00:00",
+  "trained_at": "2026-06-07T12:28:27.396049+00:00",
   "n_samples": 50000,
   "n_features": 17,
   "feature_columns": [
