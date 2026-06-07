@@ -131,6 +131,7 @@ func main() {
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
 	seedComprehensive(db)
+	runGeoMigrations()
 	initOpenAPIRoutes()
 
 	mwHub = initMiddlewareHub()
@@ -197,6 +198,19 @@ func main() {
 	r.HandleFunc("/geo/tiles/pus/{z:[0-9]+}/{x:[0-9]+}/{y:[0-9]+}.mvt", handlePUTile).Methods("GET")
 	r.HandleFunc("/geo/reports/polling-units.csv", handleExportCSV).Methods("GET")
 	r.HandleFunc("/geo/reports/polling-units.geojson", handleExportGeoJSON).Methods("GET")
+
+	// Enhanced Geospatial (PostGIS, Landmarks, Heatmaps, Street View)
+	r.HandleFunc("/geo/nearby-pus", readAuth(handleNearbyPUs)).Methods("GET")
+	r.HandleFunc("/geo/landmarks", readAuth(handleLandmarks)).Methods("GET")
+	r.HandleFunc("/geo/landmarks", writeAuth(handleCreateLandmark)).Methods("POST")
+	r.HandleFunc("/geo/landmarks/seed", writeAuth(handleSeedLandmarks)).Methods("POST")
+	r.HandleFunc("/geo/heatmap", readAuth(handleGeoHeatmap)).Methods("GET")
+	r.HandleFunc("/geo/clusters", readAuth(handleGeoCluster)).Methods("GET")
+	r.HandleFunc("/geo/street-view", readAuth(handleStreetViewProxy)).Methods("GET")
+	r.HandleFunc("/geo/boundary", readAuth(handleGeoBoundary)).Methods("GET")
+	r.HandleFunc("/geo/live-stream", readAuth(handleGeoLiveStream)).Methods("GET")
+	r.HandleFunc("/geo/spatial-stats", readAuth(handleGeoSpatialStats)).Methods("GET")
+	r.HandleFunc("/geo/sedona/analysis", readAuth(handleSedonaAnalysis)).Methods("GET")
 
 	// Dashboard — read auth for data, write auth for metrics
 	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")

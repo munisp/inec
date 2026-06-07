@@ -726,6 +726,58 @@ async def list_models():
         return {"models": {}, "production": {}, "error": str(e)}
 
 
+# ── Geospatial Analytics (PostGIS + Apache Sedona via DuckDB Spatial) ──
+
+@app.get("/geo/analytics")
+async def geo_analytics(analysis_type: str = "full", election_id: int = 1):
+    """Run geospatial analytics (hotspots, coverage gaps, spatial autocorrelation)."""
+    try:
+        from ml.pipeline.geo_analytics import GeoAnalyticsPipeline
+        pipeline = GeoAnalyticsPipeline()
+
+        if analysis_type == "full":
+            return pipeline.run_full_analysis(election_id)
+        elif analysis_type == "hotspots":
+            return pipeline.compute_hotspots(election_id)
+        elif analysis_type == "coverage_gaps":
+            return pipeline.compute_coverage_gaps()
+        elif analysis_type == "spatial_autocorrelation":
+            return pipeline.compute_spatial_autocorrelation()
+        elif analysis_type == "geo_features":
+            return pipeline.generate_geo_features()
+        else:
+            return {"error": f"Unknown analysis type: {analysis_type}",
+                    "available": ["full", "hotspots", "coverage_gaps", "spatial_autocorrelation", "geo_features"]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/geo/sedona/status")
+async def sedona_status():
+    """Check Apache Sedona / DuckDB spatial extension status."""
+    status = {"duckdb_spatial": False, "postgis": False}
+    try:
+        import duckdb
+        conn = duckdb.connect(":memory:")
+        conn.execute("LOAD spatial;")
+        status["duckdb_spatial"] = True
+        conn.close()
+    except Exception:
+        pass
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL", "postgresql://ngapp:ngapp@localhost:5432/ngapp"))
+        cur = conn.cursor()
+        cur.execute("SELECT PostGIS_Version()")
+        version = cur.fetchone()
+        status["postgis"] = True
+        status["postgis_version"] = version[0] if version else "unknown"
+        conn.close()
+    except Exception:
+        pass
+    return status
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8090)

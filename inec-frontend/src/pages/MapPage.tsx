@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation } from 'lucide-react';
+import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Landmark, StreetView, Radar, Building2 } from 'lucide-react';
 
 interface StateData {
   code: string; name: string; geo_zone: string; capital: string;
@@ -64,6 +64,16 @@ export default function MapPage() {
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
   const [tileVersion, setTileVersion] = useState<number>(0);
   const [mapError, setMapError] = useState<string | null>(null);
+  // Enhanced geospatial state
+  const [showLandmarks, setShowLandmarks] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [heatmapMetric, setHeatmapMetric] = useState<'turnout' | 'density' | 'anomaly'>('turnout');
+  const [landmarks, setLandmarks] = useState<Array<{ id: number; name: string; category: string; latitude: number; longitude: number; icon: string; address: string }>>([]);
+  const [streetViewUrl, setStreetViewUrl] = useState<string | null>(null);
+  const [nearbyPUs, setNearbyPUs] = useState<Array<{ polling_unit_code: string; name: string; distance_m: number; latitude: number; longitude: number }>>([]);
+  const [showNearby, setShowNearby] = useState(false);
+  const [spatialStats, setSpatialStats] = useState<{ total_pus: number; avg_turnout: number; area_km2: number; pu_density_per_km2: number } | null>(null);
+  const landmarkMarkers = useRef<maplibregl.Marker[]>([]);
 
   function sendMetric(event: string, data: any) {
     try {
@@ -86,6 +96,70 @@ export default function MapPage() {
     } catch (e) { logger.error(e); }
     finally { setLoading(false); }
   }
+
+  async function loadLandmarks(stateCode?: string) {
+    try {
+      const data = await api.getLandmarks({ state_code: stateCode });
+      setLandmarks(data.landmarks || []);
+    } catch (e) { logger.error(e); }
+  }
+
+  async function loadSpatialStats(stateCode?: string) {
+    try {
+      const data = await api.getGeoSpatialStats(1, stateCode);
+      setSpatialStats(data);
+    } catch (e) { logger.error(e); }
+  }
+
+  async function findNearbyPUs(lat: number, lng: number) {
+    try {
+      const data = await api.getNearbyPUs(lat, lng, 5000, 10);
+      setNearbyPUs(data.polling_units || []);
+      setShowNearby(true);
+    } catch (e) { logger.error(e); }
+  }
+
+  async function openStreetView(lat: number, lng: number) {
+    try {
+      const data = await api.getStreetView(lat, lng);
+      if (data.street_view?.mapillary?.viewer_url) {
+        setStreetViewUrl(data.street_view.mapillary.viewer_url);
+      }
+    } catch (e) { logger.error(e); }
+  }
+
+  // Add landmark markers to map
+  useEffect(() => {
+    if (!mapRef.current || !showLandmarks) {
+      landmarkMarkers.current.forEach(m => m.remove());
+      landmarkMarkers.current = [];
+      return;
+    }
+    landmarkMarkers.current.forEach(m => m.remove());
+    landmarkMarkers.current = [];
+
+    const categoryColors: Record<string, string> = {
+      inec_office: '#059669', collation_center: '#dc2626', police_station: '#1d4ed8',
+      hospital: '#ec4899', school: '#f59e0b', transport_hub: '#6366f1',
+      government_building: '#7c3aed', church: '#0891b2', mosque: '#0891b2',
+      market: '#ea580c', bank: '#64748b', post_office: '#78716c',
+    };
+
+    landmarks.forEach(lm => {
+      const el = document.createElement('div');
+      el.className = 'landmark-marker';
+      el.style.cssText = `width:24px;height:24px;border-radius:50%;background:${categoryColors[lm.category] || '#6b7280'};border:2px solid white;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:white;box-shadow:0 2px 4px rgba(0,0,0,0.3);`;
+      el.title = `${lm.name} (${lm.category})`;
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([lm.longitude, lm.latitude])
+        .setPopup(new maplibregl.Popup({ offset: 15 }).setHTML(
+          `<div style="font-size:12px"><strong>${lm.name}</strong><br/><span style="color:#6b7280">${lm.category.replace(/_/g, ' ')}</span>${lm.address ? `<br/><span style="font-size:10px">${lm.address}</span>` : ''}</div>`
+        ))
+        .addTo(mapRef.current!);
+      landmarkMarkers.current.push(marker);
+    });
+  }, [landmarks, showLandmarks]);
 
   const getTileSource = useCallback((mode: TileMode) => {
     if (mode === 'satellite') {
@@ -875,8 +949,150 @@ export default function MapPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Enhanced Geospatial Controls */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-1.5"><Radar className="w-3.5 h-3.5" /> Geospatial Layers</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs flex items-center gap-1"><Building2 className="w-3 h-3" /> Landmarks</span>
+                <Button size="sm" variant={showLandmarks ? 'default' : 'outline'} className="h-6 text-xs px-2"
+                  onClick={() => { setShowLandmarks(!showLandmarks); if (!showLandmarks) loadLandmarks(selectedState?.code); }}>
+                  {showLandmarks ? 'Hide' : 'Show'}
+                </Button>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs flex items-center gap-1"><Flame className="w-3 h-3" /> Heatmap</span>
+                <div className="flex gap-1">
+                  <Select value={heatmapMetric} onValueChange={(v: 'turnout' | 'density' | 'anomaly') => setHeatmapMetric(v)}>
+                    <SelectTrigger className="h-6 text-xs w-20"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="turnout">Turnout</SelectItem>
+                      <SelectItem value="density">Density</SelectItem>
+                      <SelectItem value="anomaly">Anomaly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" variant={showHeatmap ? 'default' : 'outline'} className="h-6 text-xs px-2"
+                    onClick={() => setShowHeatmap(!showHeatmap)}>
+                    {showHeatmap ? 'Off' : 'On'}
+                  </Button>
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs flex items-center gap-1"><Navigation className="w-3 h-3" /> Find Nearby</span>
+                <Button size="sm" variant="outline" className="h-6 text-xs px-2"
+                  onClick={() => {
+                    if (mapRef.current) {
+                      const c = mapRef.current.getCenter();
+                      findNearbyPUs(c.lat, c.lng);
+                    }
+                  }}>
+                  Search
+                </Button>
+              </div>
+              {selectedPU && (
+                <Button size="sm" variant="outline" className="w-full h-6 text-xs"
+                  onClick={() => openStreetView(selectedPU.latitude, selectedPU.longitude)}>
+                  <Eye className="w-3 h-3 mr-1" /> Street View at {selectedPU.name.slice(0, 20)}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" className="w-full h-6 text-xs"
+                onClick={() => loadSpatialStats(selectedState?.code)}>
+                <Activity className="w-3 h-3 mr-1" /> Load Spatial Stats
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Spatial Stats Panel */}
+          {spatialStats && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Spatial Statistics</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1">
+                <div className="flex justify-between text-xs"><span>Total PUs</span><span className="font-mono">{formatNumber(spatialStats.total_pus)}</span></div>
+                <div className="flex justify-between text-xs"><span>Avg Turnout</span><span className="font-mono">{(spatialStats.avg_turnout * 100).toFixed(1)}%</span></div>
+                <div className="flex justify-between text-xs"><span>Area</span><span className="font-mono">{formatNumber(Math.round(spatialStats.area_km2))} km²</span></div>
+                <div className="flex justify-between text-xs"><span>PU Density</span><span className="font-mono">{spatialStats.pu_density_per_km2.toFixed(1)}/km²</span></div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Nearby PUs Panel */}
+          {showNearby && nearbyPUs.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm">Nearby Polling Units</CardTitle>
+                  <Button size="sm" variant="ghost" className="h-5 text-xs px-1" onClick={() => setShowNearby(false)}>×</Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {nearbyPUs.map(pu => (
+                    <div key={pu.polling_unit_code} className="flex items-center justify-between text-xs py-0.5 cursor-pointer hover:bg-zinc-50 px-1 rounded"
+                      onClick={() => {
+                        if (mapRef.current) {
+                          mapRef.current.flyTo({ center: [pu.longitude, pu.latitude], zoom: 15, duration: 800 });
+                        }
+                      }}>
+                      <span className="truncate flex-1">{pu.name}</span>
+                      <Badge variant="outline" className="text-[10px] ml-1 shrink-0">
+                        {pu.distance_m < 1000 ? `${Math.round(pu.distance_m)}m` : `${(pu.distance_m / 1000).toFixed(1)}km`}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Landmarks Legend */}
+          {showLandmarks && landmarks.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">{landmarks.length} Landmarks</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {landmarks.slice(0, 15).map(lm => (
+                    <div key={lm.id} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-zinc-50 px-1 rounded"
+                      onClick={() => {
+                        if (mapRef.current) mapRef.current.flyTo({ center: [lm.longitude, lm.latitude], zoom: 14, duration: 800 });
+                      }}>
+                      <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#059669' }} />
+                      <span className="truncate">{lm.name}</span>
+                      <Badge variant="outline" className="text-[9px] shrink-0">{lm.category.replace(/_/g, ' ')}</Badge>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
+
+      {/* Street View Panel */}
+      {streetViewUrl && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-3 border-b">
+              <h3 className="font-semibold text-sm flex items-center gap-1.5"><Eye className="w-4 h-4" /> Street View</h3>
+              <div className="flex gap-2">
+                <a href={streetViewUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                  <ExternalLink className="w-3 h-3" /> Open in Mapillary
+                </a>
+                <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => setStreetViewUrl(null)}>×</Button>
+              </div>
+            </div>
+            <div className="flex-1">
+              <iframe src={streetViewUrl} className="w-full h-full border-0 rounded-b-lg" title="Street View" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

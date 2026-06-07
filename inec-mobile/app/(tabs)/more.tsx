@@ -33,6 +33,7 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
       { id: 'docai', title: 'Document AI', subtitle: 'Analyze EC8A result sheets', icon: 'scan-outline', color: '#0891b2', bg: '#cffafe', route: '/document-ai' },
       { id: 'biometrics', title: 'Biometrics', subtitle: 'ABIS engine & fingerprint verification', icon: 'finger-print-outline', color: '#e11d48', bg: '#ffe4e6', route: '/biometrics' },
       { id: 'geofencing', title: 'Geofencing', subtitle: 'GPS verification & spoof detection', icon: 'navigate-outline', color: '#ea580c', bg: '#fff7ed', route: '/geofencing' },
+      { id: 'geomap', title: 'Geo Map', subtitle: 'PU locations, landmarks, street view', icon: 'map-outline', color: '#0284c7', bg: '#e0f2fe', route: '/geo-map' },
     ],
   },
   {

@@ -374,3 +374,35 @@ export const middlewareApi = {
   health: () => api<Record<string, unknown>>('/middleware/health'),
 };
 
+// ── Enhanced Geospatial API ──
+
+export const geoApi = {
+  nearbyPUs: (lat: number, lng: number, radius?: number) =>
+    api<{ polling_units: Array<{ polling_unit_code: string; name: string; latitude: number; longitude: number; distance_m: number; ward_name: string; lga_name: string }>; count: number }>(
+      `/geo/nearby-pus?lat=${lat}&lng=${lng}${radius ? `&radius=${radius}` : ''}`
+    ),
+  landmarks: (params?: { lat?: number; lng?: number; radius?: number; category?: string; state_code?: string }) => {
+    const p = new URLSearchParams();
+    if (params?.lat) p.set('lat', String(params.lat));
+    if (params?.lng) p.set('lng', String(params.lng));
+    if (params?.radius) p.set('radius', String(params.radius));
+    if (params?.category) p.set('category', params.category);
+    if (params?.state_code) p.set('state_code', params.state_code);
+    return api<{ landmarks: Array<{ id: number; name: string; category: string; latitude: number; longitude: number; address: string; icon: string }> }>(`/geo/landmarks?${p}`);
+  },
+  seedLandmarks: () => api<{ seeded: number }>('/geo/landmarks/seed', { method: 'POST' }),
+  heatmap: (electionId: number, metric?: string) =>
+    api<{ features: Array<{ geometry: { coordinates: number[] }; properties: { intensity: number; name: string } }> }>(
+      `/geo/heatmap?election_id=${electionId}${metric ? `&metric=${metric}` : ''}`
+    ),
+  streetView: (lat: number, lng: number) =>
+    api<{ street_view: { mapillary: { viewer_url: string }; google: { viewer_url: string } } }>(`/geo/street-view?lat=${lat}&lng=${lng}`),
+  spatialStats: (electionId?: number, stateCode?: string) => {
+    const p = new URLSearchParams({ election_id: String(electionId || 1) });
+    if (stateCode) p.set('state_code', stateCode);
+    return api<{ total_pus: number; avg_turnout: number; area_km2: number; pu_density_per_km2: number }>(`/geo/spatial-stats?${p}`);
+  },
+  boundary: (stateCode?: string) =>
+    api<{ geometry: { coordinates: number[][][] } }>(`/geo/boundary?state_code=${stateCode || ''}`),
+};
+

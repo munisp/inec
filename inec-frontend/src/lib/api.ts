@@ -730,4 +730,53 @@ export const api = {
   },
   transcribeVoice: (audioBlob: Blob) =>
     request('/voice/transcribe', { method: 'POST', body: audioBlob, headers: { 'Content-Type': 'audio/wav' } }),
+
+  // Enhanced Geospatial
+  getNearbyPUs: (lat: number, lng: number, radius?: number, limit?: number) => {
+    const p = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+    if (radius) p.set('radius', String(radius));
+    if (limit) p.set('limit', String(limit));
+    return request(`/geo/nearby-pus?${p}`);
+  },
+  getLandmarks: (params?: { lat?: number; lng?: number; radius?: number; category?: string; state_code?: string }) => {
+    const p = new URLSearchParams();
+    if (params?.lat) p.set('lat', String(params.lat));
+    if (params?.lng) p.set('lng', String(params.lng));
+    if (params?.radius) p.set('radius', String(params.radius));
+    if (params?.category) p.set('category', params.category);
+    if (params?.state_code) p.set('state_code', params.state_code);
+    return request(`/geo/landmarks?${p}`);
+  },
+  createLandmark: (data: { name: string; category: string; latitude: number; longitude: number; state_code?: string; address?: string }) =>
+    request('/geo/landmarks', { method: 'POST', body: JSON.stringify(data) }),
+  seedLandmarks: () => request('/geo/landmarks/seed', { method: 'POST' }),
+  getGeoHeatmap: (electionId: number, metric?: string) => {
+    const p = new URLSearchParams({ election_id: String(electionId) });
+    if (metric) p.set('metric', metric);
+    return request(`/geo/heatmap?${p}`);
+  },
+  getGeoClusters: (electionId: number, zoom: number, stateCode?: string) => {
+    const p = new URLSearchParams({ election_id: String(electionId), zoom: String(zoom) });
+    if (stateCode) p.set('state_code', stateCode);
+    return request(`/geo/clusters?${p}`);
+  },
+  getStreetView: (lat: number, lng: number) =>
+    request(`/geo/street-view?lat=${lat}&lng=${lng}`),
+  getGeoBoundary: (stateCode?: string, lgaCode?: string) => {
+    const p = new URLSearchParams();
+    if (stateCode) p.set('state_code', stateCode);
+    if (lgaCode) p.set('lga_code', lgaCode);
+    return request(`/geo/boundary?${p}`);
+  },
+  getGeoSpatialStats: (electionId?: number, stateCode?: string) => {
+    const p = new URLSearchParams({ election_id: String(electionId || 1) });
+    if (stateCode) p.set('state_code', stateCode);
+    return request(`/geo/spatial-stats?${p}`);
+  },
+  getSedonaAnalysis: (type?: string, electionId?: number) => {
+    const p = new URLSearchParams();
+    if (type) p.set('type', type);
+    if (electionId) p.set('election_id', String(electionId));
+    return request(`/geo/sedona/analysis?${p}`);
+  },
 };
