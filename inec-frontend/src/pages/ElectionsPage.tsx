@@ -152,9 +152,16 @@ export default function ElectionsPage() {
             <Button variant="outline" size="sm" onClick={() => openEdit(selected)}>
               <Edit2 className="w-4 h-4 mr-1" /> Edit
             </Button>
-            <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700" onClick={() => handleDelete(selected.id)}>
-              <Trash2 className="w-4 h-4 mr-1" /> Delete
-            </Button>
+            {showDelete === selected.id ? (
+              <div className="flex gap-1">
+                <Button variant="destructive" size="sm" onClick={() => handleDelete(selected.id)}>Confirm</Button>
+                <Button variant="outline" size="sm" onClick={() => setShowDelete(null)}>Cancel</Button>
+              </div>
+            ) : (
+              <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700" onClick={() => setShowDelete(selected.id)}>
+                <Trash2 className="w-4 h-4 mr-1" /> Delete
+              </Button>
+            )}
           </div>
         </div>
         <Card>
