@@ -69,6 +69,10 @@ export default defineConfig({
       '/kyb': 'http://localhost:8088',
       '/security': 'http://localhost:8088',
       '/users': 'http://localhost:8088',
+      '/presence': 'http://localhost:8088',
+      '/reports': 'http://localhost:8088',
+      '/voice': 'http://localhost:8088',
+      '/public': 'http://localhost:8088',
     },
   },
 })

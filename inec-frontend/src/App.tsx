@@ -49,6 +49,9 @@ const CommandCenterPage = lazy(() => import('@/pages/CommandCenterPage'));
 const CitizenPortalPage = lazy(() => import('@/pages/CitizenPortalPage'));
 const MFAPage = lazy(() => import('@/pages/MFAPage'));
 const PredictiveAnalyticsPage = lazy(() => import('@/pages/PredictiveAnalyticsPage'));
+const TVDashboardPage = lazy(() => import('@/pages/TVDashboardPage'));
+const ComplianceReportPage = lazy(() => import('@/pages/ComplianceReportPage'));
+const IntegrityScorePage = lazy(() => import('@/pages/IntegrityScorePage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -112,6 +115,9 @@ function AppContent() {
     'citizen-portal': <CitizenPortalPage />,
     'mfa': <MFAPage />,
     'predictive-analytics': <PredictiveAnalyticsPage />,
+    'tv-dashboard': <TVDashboardPage />,
+    'compliance-report': <ComplianceReportPage />,
+    'integrity-score': <IntegrityScorePage />,
   };
 
   return (

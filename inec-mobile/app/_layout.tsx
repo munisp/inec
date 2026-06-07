@@ -98,6 +98,9 @@ export default function RootLayout() {
         <Stack.Screen name="voter-search" options={{ title: 'Voter Search' }} />
         <Stack.Screen name="middleware" options={{ title: 'Middleware' }} />
         <Stack.Screen name="biometrics" options={{ title: 'Biometrics' }} />
+        <Stack.Screen name="integrity" options={{ title: 'Integrity Score' }} />
+        <Stack.Screen name="compliance" options={{ title: 'Compliance Report' }} />
+        <Stack.Screen name="tv-dashboard" options={{ title: 'Live Results' }} />
       </Stack>
     </View>
   );

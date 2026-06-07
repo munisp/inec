@@ -129,7 +129,9 @@ func main() {
 	initDisputeSchema()
 	initPushNotificationSchema()
 	initPlatformEnhancements(db)
+	initPlatformImprovements(db)
 	seedComprehensive(db)
+	initOpenAPIRoutes()
 
 	mwHub = initMiddlewareHub()
 	wsHub = newWebSocketHub()
@@ -649,6 +651,34 @@ func main() {
 
 	// Voice IVR (#14)
 	r.HandleFunc("/ivr/verify", handleIVRVerify).Methods("POST")
+
+	// ── Platform Improvements v2 ──
+	// OpenAPI & Swagger
+	r.HandleFunc("/api/openapi.json", handleOpenAPISpec).Methods("GET")
+	r.HandleFunc("/api/docs", handleSwaggerUI).Methods("GET")
+	// Geo-IP Fraud Detection
+	r.HandleFunc("/security/geo-ip-check", writeAuth(handleGeoIPCheck)).Methods("POST")
+	// DLP Export Controls
+	r.HandleFunc("/security/dlp-export", writeAuth(handleDLPExport)).Methods("POST")
+	// Real-Time Presence
+	r.HandleFunc("/presence/heartbeat", writeAuth(handlePresenceHeartbeat)).Methods("POST")
+	r.HandleFunc("/presence/list", readAuth(handlePresenceList)).Methods("GET")
+	// Batch Operations
+	r.HandleFunc("/admin/batch/users", adminOnly(handleBatchUserImport)).Methods("POST")
+	r.HandleFunc("/admin/batch/status", adminOnly(handleBatchStatusUpdate)).Methods("POST")
+	// AI Integrity Score
+	r.HandleFunc("/ai/integrity-score", readAuth(handleIntegrityScore)).Methods("GET")
+	r.HandleFunc("/ai/integrity-heatmap", readAuth(handleIntegrityHeatmap)).Methods("GET")
+	// Blockchain Result Certificate
+	r.HandleFunc("/public/result-certificate", handleResultCertificate).Methods("GET")
+	// Public TV Dashboard
+	r.HandleFunc("/public/tv-dashboard", handlePublicTVDashboard).Methods("GET")
+	// Compliance Reporting
+	r.HandleFunc("/reports/compliance", readAuth(handleComplianceReport)).Methods("GET")
+	// Audit Timeline
+	r.HandleFunc("/audit/timeline", readAuth(handleAuditTimeline)).Methods("GET")
+	// Voice Transcription
+	r.HandleFunc("/voice/transcribe", writeAuth(handleVoiceTranscription)).Methods("POST")
 
 	// Static file serving for observer photo uploads
 	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))

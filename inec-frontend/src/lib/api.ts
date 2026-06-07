@@ -674,4 +674,40 @@ export const api = {
   // Training Course Create
   createCourse: (data: { title: string; course_type: string; target_role?: string; duration_hours?: number; is_mandatory?: boolean }) =>
     request('/training/courses', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Platform Improvements v2
+  getOpenAPISpec: () => request('/api/openapi.json'),
+  getGeoIPCheck: (data: { gps_lat: number; gps_lng: number; device_id: string }) =>
+    request('/security/geo-ip-check', { method: 'POST', body: JSON.stringify(data) }),
+  getDLPExport: (type: string, format: string) =>
+    request(`/security/dlp-export?type=${type}&format=${format}`, { method: 'POST' }),
+  presenceHeartbeat: (page: string) =>
+    request('/presence/heartbeat', { method: 'POST', body: JSON.stringify({ page }) }),
+  getPresenceList: (page: string) => request(`/presence/list?page=${page}`),
+  batchImportUsers: (users: Array<{ username: string; email: string; role: string; state_code?: string }>) =>
+    request('/admin/batch/users', { method: 'POST', body: JSON.stringify({ users }) }),
+  batchStatusUpdate: (entity: string, ids: number[], status: string) =>
+    request('/admin/batch/status', { method: 'POST', body: JSON.stringify({ entity, ids, status }) }),
+  getIntegrityScore: (puCode: string, electionId?: number) =>
+    request(`/ai/integrity-score?pu_code=${puCode}&election_id=${electionId || 1}`),
+  getIntegrityHeatmap: (electionId?: number, stateCode?: string) => {
+    const params = new URLSearchParams({ election_id: String(electionId || 1) });
+    if (stateCode) params.set('state_code', stateCode);
+    return request(`/ai/integrity-heatmap?${params}`);
+  },
+  getResultCertificate: (puCode: string, electionId?: number) =>
+    request(`/public/result-certificate?pu_code=${puCode}&election_id=${electionId || 1}`),
+  getTVDashboard: (electionId?: number) =>
+    request(`/public/tv-dashboard?election_id=${electionId || 1}`),
+  getComplianceReport: (standard: string, electionId?: number) =>
+    request(`/reports/compliance?standard=${standard}&election_id=${electionId || 1}`),
+  getAuditTimeline: (params?: { user_id?: string; pu_code?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.user_id) p.set('user_id', params.user_id);
+    if (params?.pu_code) p.set('pu_code', params.pu_code);
+    if (params?.limit) p.set('limit', String(params.limit));
+    return request(`/audit/timeline?${p}`);
+  },
+  transcribeVoice: (audioBlob: Blob) =>
+    request('/voice/transcribe', { method: 'POST', body: audioBlob, headers: { 'Content-Type': 'audio/wav' } }),
 };

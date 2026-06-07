@@ -13,7 +13,7 @@ import {
   Brain, MessageSquare, Code2, UserPlus, GitBranch, RefreshCw, Globe, ShieldCheck, Settings,
   ScanFace, Link2, GraduationCap, Users2, BarChart3, Eye, Sun, Moon, Monitor,
   Activity, UserCheck, Crosshair, Webhook, UserCog, Copy, FileSearch, Download,
-  Radio, KeyRound, TrendingUp, UserSearch
+  Radio, KeyRound, TrendingUp, UserSearch, Tv, FileCheck, Flame
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -56,6 +56,9 @@ const NAV_ITEMS = [
   { label: 'MFA Settings', icon: KeyRound, path: 'mfa' },
   { label: 'Citizen Portal', icon: UserSearch, path: 'citizen-portal' },
   { label: 'Predictive Analytics', icon: TrendingUp, path: 'predictive-analytics' },
+  { label: 'Integrity Score', icon: Flame, path: 'integrity-score' },
+  { label: 'TV Dashboard', icon: Tv, path: 'tv-dashboard' },
+  { label: 'Compliance Report', icon: FileCheck, path: 'compliance-report' },
 ];
 
 interface LayoutProps {
