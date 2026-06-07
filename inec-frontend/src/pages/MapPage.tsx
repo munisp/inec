@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Radar, Building2 } from 'lucide-react';
+import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Radar, Building2, Users, Radio, Shield, Battery, Clock } from 'lucide-react';
 
 interface StateData {
   code: string; name: string; geo_zone: string; capital: string;
@@ -74,6 +74,17 @@ export default function MapPage() {
   const [showNearby, setShowNearby] = useState(false);
   const [spatialStats, setSpatialStats] = useState<{ total_pus: number; avg_turnout: number; area_km2: number; pu_density_per_km2: number } | null>(null);
   const landmarkMarkers = useRef<maplibregl.Marker[]>([]);
+  // Real-time tracking & crowd state
+  const [showTracking, setShowTracking] = useState(false);
+  const [officials, setOfficials] = useState<Array<{ staff_id: string; role: string; latitude: number; longitude: number; pu_code: string; activity: string; battery_pct: number; updated_at: string }>>([]);
+  const [crowdReports, setCrowdReports] = useState<Array<{ pu_code: string; latitude: number; longitude: number; head_count: number; density_level: string; queue_length: number; wait_time_min: number; pu_name: string }>>([]);
+  const [showCrowd, setShowCrowd] = useState(false);
+  const [streetViewLat, setStreetViewLat] = useState<number | null>(null);
+  const [streetViewLng, setStreetViewLng] = useState<number | null>(null);
+  const officialMarkers = useRef<maplibregl.Marker[]>([]);
+  const crowdMarkers = useRef<maplibregl.Marker[]>([]);
+  const trackingInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hasZoomedToTrack = useRef(false);
 
   function sendMetric(event: string, data: any) {
     try {
@@ -121,12 +132,189 @@ export default function MapPage() {
 
   async function openStreetView(lat: number, lng: number) {
     try {
+      setStreetViewLat(lat);
+      setStreetViewLng(lng);
       const data = await api.getStreetView(lat, lng);
       if (data.street_view?.mapillary?.viewer_url) {
         setStreetViewUrl(data.street_view.mapillary.viewer_url);
+      } else if (data.street_view?.google?.embed_url) {
+        setStreetViewUrl(data.street_view.google.embed_url);
+      } else {
+        // Fallback to Google Maps street view
+        setStreetViewUrl(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`);
       }
+    } catch (e) {
+      logger.error(e);
+      setStreetViewUrl(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`);
+    }
+  }
+
+  async function loadOfficials() {
+    try {
+      const data = await api.getOfficialLocations({ active_minutes: 60 });
+      setOfficials(data.officials || []);
     } catch (e) { logger.error(e); }
   }
+
+  async function loadCrowdDensity() {
+    try {
+      const data = await api.getCrowdDensity({ recent_minutes: 120 });
+      setCrowdReports(data.reports || []);
+    } catch (e) { logger.error(e); }
+  }
+
+  // Auto-refresh tracking data every 10 seconds
+  useEffect(() => {
+    if (showTracking) {
+      loadOfficials();
+      trackingInterval.current = setInterval(loadOfficials, 10000);
+    } else {
+      officialMarkers.current.forEach(m => m.remove());
+      officialMarkers.current = [];
+      hasZoomedToTrack.current = false;
+      // Restore maxBounds when tracking is turned off
+      if (mapRef.current) mapRef.current.setMaxBounds([[2.0, 3.5], [18.0, 14.5]]);
+    }
+    return () => { if (trackingInterval.current) clearInterval(trackingInterval.current); };
+  }, [showTracking]);
+
+  // Render official markers on map and fit bounds
+  useEffect(() => {
+    if (!mapRef.current || !showTracking) return;
+    officialMarkers.current.forEach(m => m.remove());
+    officialMarkers.current = [];
+
+    const roleColors: Record<string, string> = {
+      presiding_officer: '#dc2626', asst_presiding: '#ea580c', observer: '#2563eb',
+      security: '#16a34a', supervisor: '#7c3aed', tech_support: '#0891b2',
+      returning_officer: '#be123c', field_officer: '#6b7280',
+    };
+    const roleIcons: Record<string, string> = {
+      presiding_officer: '👨‍⚖️', asst_presiding: '📋', observer: '👁️',
+      security: '🛡️', supervisor: '⭐', tech_support: '🔧',
+      returning_officer: '🏛️', field_officer: '👤',
+    };
+
+    const bounds = new maplibregl.LngLatBounds();
+    let hasValidCoords = false;
+
+    officials.forEach(off => {
+      if (!off.latitude || !off.longitude) return;
+
+      const el = document.createElement('div');
+      const color = roleColors[off.role] || '#6b7280';
+      el.style.cssText = `width:40px;height:40px;border-radius:50%;background:${color};border:3px solid white;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 10px rgba(0,0,0,0.5);z-index:10;`;
+      el.innerHTML = roleIcons[off.role] || '👤';
+      el.title = `${off.staff_id} (${off.role}) - ${off.activity}\nBattery: ${off.battery_pct}%\nPU: ${off.pu_code}`;
+
+      // Label below marker
+      const label = document.createElement('div');
+      label.style.cssText = `position:absolute;top:42px;left:50%;transform:translateX(-50%);white-space:nowrap;background:${color};color:white;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.3);`;
+      label.textContent = off.staff_id.replace('INEC-', '');
+      el.appendChild(label);
+
+      // Pulsing ring for active officials
+      const ring = document.createElement('div');
+      ring.style.cssText = `position:absolute;inset:-6px;border-radius:50%;border:3px solid ${color};opacity:0.6;animation:pulse 2s infinite;`;
+      el.appendChild(ring);
+
+      const lngLat: [number, number] = [off.longitude, off.latitude];
+      bounds.extend(lngLat);
+      hasValidCoords = true;
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat(lngLat)
+        .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
+          <div style="font-size:12px;min-width:200px">
+            <div style="font-weight:700;margin-bottom:6px;font-size:14px;color:${color}">${off.staff_id}</div>
+            <div>Role: <b>${off.role.replace(/_/g, ' ')}</b></div>
+            <div>Activity: ${off.activity}</div>
+            <div>Battery: ${off.battery_pct}%</div>
+            <div>PU: ${off.pu_code}</div>
+            <div>Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}</div>
+            <div style="color:#888;font-size:10px;margin-top:4px">${off.updated_at}</div>
+          </div>
+        `))
+        .addTo(mapRef.current!);
+      officialMarkers.current.push(marker);
+    });
+
+    // Zoom out once to show ALL officials across Nigeria
+    if (hasValidCoords && mapRef.current && !hasZoomedToTrack.current) {
+      hasZoomedToTrack.current = true;
+      // Temporarily remove maxBounds so fitBounds isn't constrained
+      mapRef.current.setMaxBounds(null);
+      // Use asymmetric padding: more on right (sidebar overlay is 288px) and top (toolbar)
+      mapRef.current.fitBounds(bounds, {
+        padding: { top: 80, right: 380, bottom: 80, left: 60 },
+        maxZoom: 8,
+        duration: 0,
+      });
+      // Re-apply Nigeria bounds after fitting
+      setTimeout(() => {
+        if (mapRef.current) mapRef.current.setMaxBounds([[2.0, 3.5], [18.0, 14.5]]);
+      }, 100);
+    }
+  }, [officials, showTracking]);
+
+  // Render crowd density markers
+  useEffect(() => {
+    if (!mapRef.current || !showCrowd) {
+      crowdMarkers.current.forEach(m => m.remove());
+      crowdMarkers.current = [];
+      return;
+    }
+    crowdMarkers.current.forEach(m => m.remove());
+    crowdMarkers.current = [];
+
+    const densityColors: Record<string, string> = {
+      low: '#22c55e', moderate: '#eab308', high: '#f97316', overcrowded: '#dc2626',
+    };
+    const densitySizes: Record<string, number> = {
+      low: 24, moderate: 32, high: 40, overcrowded: 48,
+    };
+
+    const bounds = new maplibregl.LngLatBounds();
+    let hasValidCoords = false;
+
+    crowdReports.forEach(cr => {
+      if (!cr.latitude || !cr.longitude) return;
+      const color = densityColors[cr.density_level] || '#6b7280';
+      const size = densitySizes[cr.density_level] || 32;
+      const el = document.createElement('div');
+      el.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${color}44;border:3px solid ${color};cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:${size < 32 ? 10 : 13}px;font-weight:bold;color:${color};z-index:8;box-shadow:0 2px 8px rgba(0,0,0,0.3);`;
+      el.textContent = String(cr.head_count);
+      el.title = `${cr.pu_name || cr.pu_code}: ${cr.head_count} people (${cr.density_level})\nQueue: ${cr.queue_length} | Wait: ${cr.wait_time_min}min`;
+
+      const lngLat: [number, number] = [cr.longitude, cr.latitude];
+      bounds.extend(lngLat);
+      hasValidCoords = true;
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat(lngLat)
+        .setPopup(new maplibregl.Popup({ offset: 20 }).setHTML(`
+          <div style="font-size:12px;min-width:200px">
+            <div style="font-weight:600;margin-bottom:4px">${cr.pu_name || cr.pu_code}</div>
+            <div>Head Count: <b>${cr.head_count}</b></div>
+            <div>Density: <b style="color:${color}">${cr.density_level.toUpperCase()}</b></div>
+            <div>Queue Length: ${cr.queue_length} people</div>
+            <div>Wait Time: ${cr.wait_time_min} min</div>
+            <div>Coords: ${cr.latitude.toFixed(4)}, ${cr.longitude.toFixed(4)}</div>
+          </div>
+        `))
+        .addTo(mapRef.current!);
+      crowdMarkers.current.push(marker);
+    });
+
+    // Fit bounds to show ALL crowd reports on the map
+    if (hasValidCoords && mapRef.current) {
+      mapRef.current.setMaxBounds(null);
+      mapRef.current.fitBounds(bounds, { padding: 60, maxZoom: 12, duration: 800 });
+      setTimeout(() => {
+        if (mapRef.current) mapRef.current.setMaxBounds([[-4, -1], [20, 18]]);
+      }, 1000);
+    }
+  }, [crowdReports, showCrowd]);
 
   // Add landmark markers to map
   useEffect(() => {
@@ -212,13 +400,14 @@ export default function MapPage() {
         }],
       },
       center: selectedState ? [NIGERIA_STATE_COORDS[selectedState.code]?.lng || 8.0, NIGERIA_STATE_COORDS[selectedState.code]?.lat || 9.0] : [8.0, 9.0],
-      zoom: selectedState ? 7.5 : 5.5,
-      maxBounds: [[-2, 1], [18, 16]],
+      zoom: selectedState ? 7.5 : 6.2,
+      maxBounds: [[2.0, 3.5], [18.0, 14.5]],
     });
 
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 200 }), 'bottom-left');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
+    (window as any).__map = map;
 
     map.on('load', () => {
       const t1 = performance.now();
@@ -428,8 +617,8 @@ export default function MapPage() {
         layers: [{ id: 'base-tiles-b', type: 'raster', source: 'base-tiles-b', minzoom: 0, maxzoom: 19 }],
       },
       center: selectedState ? [NIGERIA_STATE_COORDS[selectedState.code]?.lng || 8.0, NIGERIA_STATE_COORDS[selectedState.code]?.lat || 9.0] : [8.0, 9.0],
-      zoom: selectedState ? 7.5 : 5.5,
-      maxBounds: [[-2, 1], [18, 16]],
+      zoom: selectedState ? 7.5 : 6.2,
+      maxBounds: [[2.0, 3.5], [18.0, 14.5]],
     });
 
     mapB.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -651,20 +840,20 @@ export default function MapPage() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-4 gap-4">
-        <div className="lg:col-span-3">
+      <div className="relative">
+        <div>
           <Card className="overflow-hidden">
             <CardContent className="p-0 relative">
               {mapError ? (
-                <div className="flex flex-col items-center justify-center" style={{ height: '650px' }}>
+                <div className="flex flex-col items-center justify-center" style={{ height: 'calc(100vh - 180px)', minHeight: '600px' }}>
                   <MapIcon className="w-12 h-12 text-zinc-300 mb-3" />
                   <p className="text-zinc-500 text-sm">{mapError}</p>
                   <Button variant="outline" size="sm" className="mt-3" onClick={() => { setMapError(null); }}>Retry</Button>
                 </div>
               ) : compareMode ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 relative">
-                  <div ref={mapContainer} className="w-full relative" style={{ height: '650px' }} />
-                  <div ref={mapContainerB} className="w-full" style={{ height: '650px' }} />
+                  <div ref={mapContainer} className="w-full relative" style={{ height: 'calc(100vh - 180px)', minHeight: '600px' }} />
+                  <div ref={mapContainerB} className="w-full" style={{ height: 'calc(100vh - 180px)', minHeight: '600px' }} />
                   {/* Selection overlay over primary map */}
                   <div className="absolute inset-y-0 left-0" style={{ width: '50%', pointerEvents: selecting ? 'auto' : 'none' }}
                     onMouseDown={onSelectMouseDown} onMouseMove={onSelectMouseMove} onMouseUp={onSelectMouseUp} />
@@ -679,7 +868,7 @@ export default function MapPage() {
                 </div>
               ) : (
                 <div className="relative">
-                  <div ref={mapContainer} className="w-full" style={{ height: '650px' }} />
+                  <div ref={mapContainer} className="w-full" style={{ height: 'calc(100vh - 180px)', minHeight: '600px' }} />
                   <div className="absolute inset-0" style={{ pointerEvents: selecting ? 'auto' : 'none' }}
                     onMouseDown={onSelectMouseDown} onMouseMove={onSelectMouseMove} onMouseUp={onSelectMouseUp} />
                   {selectionBox && (
@@ -704,8 +893,8 @@ export default function MapPage() {
           </Card>
         </div>
 
-        <div className="space-y-3">
-          <Card>
+        <div className="absolute top-2 right-2 z-20 w-72 space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
+          <Card className="bg-white/95 dark:bg-zinc-800/95 backdrop-blur-sm shadow-lg">
             <CardContent className="p-3">
               <p className="text-xs text-zinc-500 mb-2">Filter by status</p>
               <div className="flex flex-wrap gap-1">
@@ -992,12 +1181,37 @@ export default function MapPage() {
                   Search
                 </Button>
               </div>
-              {selectedPU && (
-                <Button size="sm" variant="outline" className="w-full h-6 text-xs"
-                  onClick={() => openStreetView(selectedPU.latitude, selectedPU.longitude)}>
-                  <Eye className="w-3 h-3 mr-1" /> Street View at {selectedPU.name.slice(0, 20)}
+              {/* Street View - always visible, shows at map center or selected PU */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs flex items-center gap-1"><Eye className="w-3 h-3" /> Street View</span>
+                <Button size="sm" variant="outline" className="h-6 text-xs px-2"
+                  onClick={() => {
+                    if (selectedPU) {
+                      openStreetView(selectedPU.latitude, selectedPU.longitude);
+                    } else if (mapRef.current) {
+                      const c = mapRef.current.getCenter();
+                      openStreetView(c.lat, c.lng);
+                    }
+                  }}>
+                  {selectedPU ? selectedPU.name.slice(0, 15) : 'Map Center'}
                 </Button>
-              )}
+              </div>
+              {/* Official Tracking */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs flex items-center gap-1"><Radio className="w-3 h-3" /> Officials</span>
+                <Button size="sm" variant={showTracking ? 'default' : 'outline'} className="h-6 text-xs px-2"
+                  onClick={() => setShowTracking(!showTracking)}>
+                  {showTracking ? `Live (${officials.length})` : 'Track'}
+                </Button>
+              </div>
+              {/* Crowd Density */}
+              <div className="flex items-center justify-between">
+                <span className="text-xs flex items-center gap-1"><Users className="w-3 h-3" /> Crowd</span>
+                <Button size="sm" variant={showCrowd ? 'default' : 'outline'} className="h-6 text-xs px-2"
+                  onClick={() => { setShowCrowd(!showCrowd); if (!showCrowd) loadCrowdDensity(); }}>
+                  {showCrowd ? `${crowdReports.length} Reports` : 'Show'}
+                </Button>
+              </div>
               <Button size="sm" variant="outline" className="w-full h-6 text-xs"
                 onClick={() => loadSpatialStats(selectedState?.code)}>
                 <Activity className="w-3 h-3 mr-1" /> Load Spatial Stats
@@ -1071,28 +1285,136 @@ export default function MapPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Officials Tracking Panel */}
+          {showTracking && officials.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-1"><Radio className="w-3.5 h-3.5 text-green-500" /> Live Officials ({officials.length})</CardTitle>
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                    <span className="text-[10px] text-green-600">LIVE</span>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                  {officials.map(off => (
+                    <div key={off.staff_id} className="flex items-center gap-2 text-xs py-1 px-1.5 rounded cursor-pointer hover:bg-zinc-50 border border-zinc-100"
+                      onClick={() => {
+                        if (mapRef.current) mapRef.current.flyTo({ center: [off.longitude, off.latitude], zoom: 16, duration: 800 });
+                      }}>
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] shrink-0"
+                        style={{ backgroundColor: off.role === 'security' ? '#16a34a' : off.role === 'observer' ? '#2563eb' : off.role === 'presiding_officer' ? '#dc2626' : '#7c3aed' }}>
+                        {off.role === 'security' ? <Shield className="w-3 h-3" /> : off.role === 'observer' ? <Eye className="w-3 h-3" /> : <Users className="w-3 h-3" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium truncate">{off.staff_id}</div>
+                        <div className="text-zinc-500 text-[10px]">{off.activity} • {off.pu_code}</div>
+                      </div>
+                      <div className="flex flex-col items-end shrink-0">
+                        <Badge variant={off.battery_pct > 50 ? 'default' : off.battery_pct > 20 ? 'secondary' : 'destructive'} className="text-[9px] h-4">
+                          <Battery className="w-2.5 h-2.5 mr-0.5" />{off.battery_pct}%
+                        </Badge>
+                        <span className="text-[9px] text-zinc-400">{off.role.replace(/_/g, ' ')}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 flex gap-1 flex-wrap">
+                  {['presiding_officer', 'observer', 'security', 'supervisor', 'tech_support'].map(role => {
+                    const count = officials.filter(o => o.role === role).length;
+                    if (!count) return null;
+                    return <Badge key={role} variant="outline" className="text-[9px]">{role.replace(/_/g, ' ')}: {count}</Badge>;
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Crowd Density Panel */}
+          {showCrowd && crowdReports.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm flex items-center gap-1"><Users className="w-3.5 h-3.5" /> Crowd Density</CardTitle>
+                  <Button size="sm" variant="ghost" className="h-5 text-xs px-1" onClick={() => setShowCrowd(false)}>×</Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {/* Summary badges */}
+                <div className="flex gap-1 flex-wrap mb-2">
+                  {(['overcrowded', 'high', 'moderate', 'low'] as const).map(level => {
+                    const count = crowdReports.filter(r => r.density_level === level).length;
+                    const colors: Record<string, string> = { overcrowded: 'bg-red-100 text-red-800', high: 'bg-orange-100 text-orange-800', moderate: 'bg-yellow-100 text-yellow-800', low: 'bg-green-100 text-green-800' };
+                    return count > 0 ? <span key={level} className={`text-[10px] px-1.5 py-0.5 rounded ${colors[level]}`}>{level}: {count}</span> : null;
+                  })}
+                </div>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {crowdReports.slice(0, 20).map((cr, i) => {
+                    const densityColor: Record<string, string> = { low: 'text-green-600', moderate: 'text-yellow-600', high: 'text-orange-600', overcrowded: 'text-red-600' };
+                    return (
+                      <div key={`${cr.pu_code}-${i}`} className="flex items-center gap-2 text-xs py-0.5 px-1 rounded cursor-pointer hover:bg-zinc-50"
+                        onClick={() => {
+                          if (mapRef.current && cr.latitude && cr.longitude) mapRef.current.flyTo({ center: [cr.longitude, cr.latitude], zoom: 15, duration: 800 });
+                        }}>
+                        <span className={`font-bold ${densityColor[cr.density_level] || ''}`}>{cr.head_count}</span>
+                        <span className="truncate flex-1">{cr.pu_name || cr.pu_code}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Badge variant="outline" className="text-[9px]"><Clock className="w-2 h-2 mr-0.5" />{cr.wait_time_min}m</Badge>
+                          <Badge variant="outline" className="text-[9px]">Q:{cr.queue_length}</Badge>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
 
-      {/* Street View Panel */}
+      {/* Street View Panel - Enhanced with Google Maps fallback */}
       {streetViewUrl && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl h-[80vh] flex flex-col">
+          <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-xl w-full max-w-5xl h-[85vh] flex flex-col">
             <div className="flex items-center justify-between p-3 border-b">
-              <h3 className="font-semibold text-sm flex items-center gap-1.5"><Eye className="w-4 h-4" /> Street View</h3>
-              <div className="flex gap-2">
+              <h3 className="font-semibold text-sm flex items-center gap-1.5">
+                <Eye className="w-4 h-4" /> Street View
+                {streetViewLat && streetViewLng && (
+                  <span className="text-zinc-400 font-normal text-xs ml-2">({streetViewLat.toFixed(4)}, {streetViewLng.toFixed(4)})</span>
+                )}
+              </h3>
+              <div className="flex gap-2 items-center">
                 <a href={streetViewUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                  <ExternalLink className="w-3 h-3" /> Open in Mapillary
+                  <ExternalLink className="w-3 h-3" /> Open External
                 </a>
-                <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => setStreetViewUrl(null)}>×</Button>
+                {streetViewLat && streetViewLng && (
+                  <a href={`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${streetViewLat},${streetViewLng}`}
+                    target="_blank" rel="noopener noreferrer" className="text-xs text-green-600 hover:underline flex items-center gap-1">
+                    <MapIcon className="w-3 h-3" /> Google Street View
+                  </a>
+                )}
+                <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => { setStreetViewUrl(null); setStreetViewLat(null); setStreetViewLng(null); }}>×</Button>
               </div>
             </div>
-            <div className="flex-1">
-              <iframe src={streetViewUrl} className="w-full h-full border-0 rounded-b-lg" title="Street View" />
+            <div className="flex-1 relative">
+              <iframe src={streetViewUrl} className="w-full h-full border-0 rounded-b-lg" title="Street View"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope" allowFullScreen />
             </div>
           </div>
         </div>
       )}
+
+      {/* CSS for pulsing animation */}
+      <style>{`
+        @keyframes pulse {
+          0% { transform: scale(1); opacity: 0.5; }
+          50% { transform: scale(1.3); opacity: 0; }
+          100% { transform: scale(1); opacity: 0; }
+        }
+      `}</style>
     </div>
   );
 }
