@@ -23,7 +23,7 @@ export const NIGERIA_STATE_COORDS: Record<string, { lat: number; lng: number }> 
   KE: { lat: 12.45, lng: 4.20 },
   KO: { lat: 7.80, lng: 6.74 },
   KW: { lat: 8.50, lng: 4.55 },
-  LA: { lat: 6.52, lng: 3.38 },
+  LA: { lat: 6.60, lng: 3.35 },
   NA: { lat: 8.54, lng: 8.52 },
   NI: { lat: 9.93, lng: 5.60 },
   OG: { lat: 7.16, lng: 3.35 },

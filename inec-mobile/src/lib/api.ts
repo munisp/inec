@@ -404,5 +404,51 @@ export const geoApi = {
   },
   boundary: (stateCode?: string) =>
     api<{ geometry: { coordinates: number[][][] } }>(`/geo/boundary?state_code=${stateCode || ''}`),
+  // Real-time tracking
+  getOfficials: (params?: { state_code?: string; role?: string; active_minutes?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.state_code) p.set('state_code', params.state_code);
+    if (params?.role) p.set('role', params.role);
+    if (params?.active_minutes) p.set('active_minutes', String(params.active_minutes));
+    return api<{ officials: Array<{ staff_id: string; role: string; latitude: number; longitude: number; pu_code: string; activity: string; battery_pct: number; updated_at: string }> }>(`/geo/tracking/officials?${p}`);
+  },
+  getCrowdDensity: (params?: { state_code?: string; recent_minutes?: number }) => {
+    const p = new URLSearchParams();
+    if (params?.state_code) p.set('state_code', params.state_code);
+    if (params?.recent_minutes) p.set('recent_minutes', String(params.recent_minutes));
+    return api<{ reports: Array<{ pu_code: string; latitude: number; longitude: number; head_count: number; density_level: string; queue_length: number; wait_time_min: number; pu_name: string }>; summary: Record<string, number> }>(`/geo/crowd/density?${p}`);
+  },
+  seedTracking: () => api<{ officials_seeded: number; crowd_reports_seeded: number }>('/geo/tracking/seed', { method: 'POST' }),
+  // Advanced Geo (#2-#30)
+  getTrackingReplay: (staffId?: string, hours?: number) => {
+    const p = new URLSearchParams();
+    if (staffId) p.set('staff_id', staffId);
+    if (hours) p.set('hours', String(hours));
+    return api<{ paths: { type: string; features: any[] } }>(`/geo/tracking/replay?${p}`);
+  },
+  getGeofenceZones: (stateCode?: string) =>
+    api<{ zones: any }>(`/geo/geofence/zones${stateCode ? `?state_code=${stateCode}` : ''}`),
+  getGeofenceViolations: () => api<{ violations: any[] }>('/geo/geofence/violations'),
+  seedGeofenceZones: () => api<{ seeded: number }>('/geo/geofence/zones/seed', { method: 'POST' }),
+  getCrowdAlerts: (severity?: string) =>
+    api<{ alerts: Array<{ id: number; pu_code: string; severity: string; message: string; created_at: string }> }>(`/geo/crowd/alerts${severity ? `?severity=${severity}` : ''}`),
+  getWeatherOverlay: (lat?: number, lng?: number) =>
+    api<{ weather: { temp_c: number; humidity: number; description: string; wind_kmh: number } }>(`/geo/weather${lat ? `?lat=${lat}&lng=${lng}` : ''}`),
+  getIncidentHotspots: (hours?: number) => {
+    const p = new URLSearchParams();
+    if (hours) p.set('hours', String(hours));
+    return api<{ incidents: any }>(`/geo/incidents/hotspots?${p}`);
+  },
+  getPredictiveCrowdFlow: () => api<{ predictions: any[] }>('/geo/crowd/predictions'),
+  getMeshNetworkStatus: () => api<{ nodes: any[]; edges: any[]; connectivity_pct: number }>('/geo/mesh/status'),
+  getH3HexGrid: (resolution?: number) => {
+    const p = new URLSearchParams();
+    if (resolution) p.set('resolution', String(resolution));
+    return api<{ type: string; features: any[] }>(`/geo/h3/grid?${p}`);
+  },
+  getRouteOptimize: (originLat: number, originLng: number, destLat: number, destLng: number) =>
+    api<{ distance_km: number; duration_min: number; geometry: any }>('/geo/route', { method: 'POST', body: JSON.stringify({ origin_lat: originLat, origin_lng: originLng, dest_lat: destLat, dest_lng: destLng }) }),
+  getNearestOfficial: (lat: number, lng: number) =>
+    api<{ officials: any[] }>(`/geo/nearest-official?lat=${lat}&lng=${lng}`),
 };
 

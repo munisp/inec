@@ -1,67 +1,64 @@
-import { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, Linking, Dimensions, RefreshControl, Platform } from 'react-native';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, Linking, Dimensions, RefreshControl, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
+import MapView, { Marker, Circle, Polyline, Callout, PROVIDER_DEFAULT } from 'react-native-maps';
 import { geoApi } from '../src/lib/api';
 
 interface Landmark {
-  id: number;
-  name: string;
-  category: string;
-  latitude: number;
-  longitude: number;
-  address: string;
-  icon: string;
+  id: number; name: string; category: string; latitude: number; longitude: number; address: string; icon: string;
 }
-
 interface NearbyPU {
-  polling_unit_code: string;
-  name: string;
-  latitude: number;
-  longitude: number;
-  distance_m: number;
-  ward_name: string;
-  lga_name: string;
+  polling_unit_code: string; name: string; latitude: number; longitude: number; distance_m: number; ward_name: string; lga_name: string;
+}
+interface Official {
+  staff_id: string; role: string; latitude: number; longitude: number; pu_code: string; activity: string; battery_pct: number; updated_at: string;
+}
+interface CrowdReport {
+  pu_code: string; latitude: number; longitude: number; head_count: number; density_level: string; queue_length: number; wait_time_min: number; pu_name: string;
+}
+interface GeofenceZone {
+  pu_code: string; center_lat: number; center_lng: number; radius_m: number;
+}
+interface CrowdAlert {
+  id: number; pu_code: string; severity: string; message: string; created_at: string;
 }
 
-type Tab = 'nearby' | 'landmarks' | 'stats' | 'street_view';
-
-const CATEGORY_ICONS: Record<string, string> = {
-  inec_office: 'business',
-  collation_center: 'flag',
-  police_station: 'shield-checkmark',
-  hospital: 'medkit',
-  school: 'school',
-  transport_hub: 'airplane',
-  government_building: 'business',
-  church: 'home',
-  mosque: 'home',
-  market: 'cart',
-  bank: 'cash',
-  post_office: 'mail',
-};
+type LayerKey = 'pus' | 'landmarks' | 'officials' | 'crowd' | 'geofences' | 'incidents' | 'weather';
 
 const CATEGORY_COLORS: Record<string, string> = {
-  inec_office: '#059669',
-  collation_center: '#dc2626',
-  police_station: '#1d4ed8',
-  hospital: '#ec4899',
-  school: '#f59e0b',
-  transport_hub: '#6366f1',
-  government_building: '#7c3aed',
+  inec_office: '#059669', collation_center: '#dc2626', police_station: '#1d4ed8',
+  hospital: '#ec4899', school: '#f59e0b', transport_hub: '#6366f1', government_building: '#7c3aed',
+};
+const DENSITY_COLORS: Record<string, string> = {
+  overcrowded: '#dc2626', high: '#f97316', moderate: '#eab308', low: '#22c55e',
+};
+const ROLE_COLORS: Record<string, string> = {
+  presiding_officer: '#dc2626', assistant_presiding: '#f97316', poll_clerk: '#3b82f6',
+  security: '#059669', supervisor: '#7c3aed', inec_official: '#059669',
 };
 
+const NIGERIA_CENTER = { latitude: 9.0820, longitude: 7.4951, latitudeDelta: 12, longitudeDelta: 12 };
+
 export default function GeoMapScreen() {
-  const [tab, setTab] = useState<Tab>('nearby');
+  const mapRef = useRef<MapView>(null);
   const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [nearbyPUs, setNearbyPUs] = useState<NearbyPU[]>([]);
   const [landmarks, setLandmarks] = useState<Landmark[]>([]);
+  const [officials, setOfficials] = useState<Official[]>([]);
+  const [crowdReports, setCrowdReports] = useState<CrowdReport[]>([]);
+  const [geofenceZones, setGeofenceZones] = useState<GeofenceZone[]>([]);
+  const [crowdAlerts, setCrowdAlerts] = useState<CrowdAlert[]>([]);
   const [spatialStats, setSpatialStats] = useState<{ total_pus: number; avg_turnout: number; area_km2: number; pu_density_per_km2: number } | null>(null);
-  const [searchRadius, setSearchRadius] = useState('5000');
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [weatherInfo, setWeatherInfo] = useState<{ temp_c: number; humidity: number; description: string; wind_kmh: number } | null>(null);
+  const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
+    pus: true, landmarks: false, officials: false, crowd: false, geofences: false, incidents: false, weather: false,
+  });
+  const [showPanel, setShowPanel] = useState(true);
+  const [selectedMarker, setSelectedMarker] = useState<string | null>(null);
+  const trackingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -71,328 +68,386 @@ export default function GeoMapScreen() {
         setLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
       }
     })();
-    loadStats();
+    loadInitialData();
   }, []);
 
+  // SSE-like polling for tracking (every 10s when enabled)
   useEffect(() => {
-    if (location && tab === 'nearby') findNearby();
-    if (location && tab === 'landmarks') loadLandmarks();
-  }, [location, tab]);
+    if (layers.officials) {
+      loadOfficials();
+      trackingTimer.current = setInterval(loadOfficials, 10000);
+    } else {
+      if (trackingTimer.current) clearInterval(trackingTimer.current);
+    }
+    return () => { if (trackingTimer.current) clearInterval(trackingTimer.current); };
+  }, [layers.officials]);
+
+  const loadInitialData = async () => {
+    setLoading(true);
+    try {
+      const [statsData] = await Promise.all([
+        geoApi.spatialStats(1).catch(() => null),
+      ]);
+      if (statsData) setSpatialStats(statsData);
+    } catch {}
+    setLoading(false);
+  };
 
   const findNearby = async () => {
     if (!location) return;
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const data = await geoApi.nearbyPUs(location.lat, location.lng, Number(searchRadius));
+      const data = await geoApi.nearbyPUs(location.lat, location.lng, 10000);
       setNearbyPUs(data.polling_units || []);
-    } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Failed to find nearby PUs');
-    }
+      if (data.polling_units?.length > 0) {
+        const first = data.polling_units[0];
+        mapRef.current?.animateToRegion({ latitude: first.latitude, longitude: first.longitude, latitudeDelta: 0.05, longitudeDelta: 0.05 }, 1000);
+      }
+    } catch { Alert.alert('Error', 'Failed to load nearby PUs'); }
     setLoading(false);
   };
 
   const loadLandmarks = async () => {
-    setLoading(true);
     try {
-      const params: { lat?: number; lng?: number; radius?: number; category?: string } = {};
-      if (location) { params.lat = location.lat; params.lng = location.lng; params.radius = 50000; }
-      if (selectedCategory) params.category = selectedCategory;
-      const data = await geoApi.landmarks(params);
+      const data = await geoApi.landmarks({});
       setLandmarks(data.landmarks || []);
-    } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Failed');
-    }
-    setLoading(false);
-  };
-
-  const loadStats = async () => {
-    try {
-      const data = await geoApi.spatialStats(1);
-      setSpatialStats(data);
     } catch {}
   };
 
-  const openStreetView = async (lat: number, lng: number) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  const loadOfficials = async () => {
     try {
-      const data = await geoApi.streetView(lat, lng);
-      const url = data.street_view?.mapillary?.viewer_url || data.street_view?.google?.viewer_url;
-      if (url) {
-        await Linking.openURL(url);
-      } else {
-        Alert.alert('Info', 'No street view available for this location');
-      }
-    } catch {
-      // Fallback to Google Maps
-      const url = `https://www.google.com/maps/@${lat},${lng},3a,75y,0h,90t/data=!3m4!1e1!3m2!1s!2e0`;
-      await Linking.openURL(url);
+      const data = await geoApi.getOfficials({ active_minutes: 60 });
+      setOfficials(data.officials || []);
+    } catch {}
+  };
+
+  const loadCrowdDensity = async () => {
+    try {
+      const data = await geoApi.getCrowdDensity({ recent_minutes: 120 });
+      setCrowdReports(data.reports || []);
+    } catch {}
+  };
+
+  const loadGeofences = async () => {
+    try {
+      await geoApi.seedGeofenceZones().catch(() => {});
+      const data = await geoApi.getGeofenceZones();
+      const zones = data?.zones?.features || data?.zones || [];
+      const parsed: GeofenceZone[] = zones.map((z: any) => ({
+        pu_code: z.properties?.pu_code || z.pu_code || '',
+        center_lat: z.properties?.center_lat || z.center_lat,
+        center_lng: z.properties?.center_lng || z.center_lng,
+        radius_m: z.properties?.radius_m || z.radius_m || 500,
+      })).filter((z: GeofenceZone) => z.center_lat && z.center_lng);
+      setGeofenceZones(parsed);
+    } catch {}
+  };
+
+  const loadCrowdAlerts = async () => {
+    try {
+      const data = await geoApi.getCrowdAlerts();
+      setCrowdAlerts(data.alerts || []);
+    } catch {}
+  };
+
+  const loadWeather = async () => {
+    const lat = location?.lat || 9.0820;
+    const lng = location?.lng || 7.4951;
+    try {
+      const data = await geoApi.getWeatherOverlay(lat, lng);
+      if (data?.weather) setWeatherInfo(data.weather);
+    } catch {}
+  };
+
+  const toggleLayer = (key: LayerKey) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const newVal = !layers[key];
+    setLayers(prev => ({ ...prev, [key]: newVal }));
+    if (newVal) {
+      if (key === 'pus') findNearby();
+      if (key === 'landmarks') loadLandmarks();
+      if (key === 'officials') loadOfficials();
+      if (key === 'crowd') loadCrowdDensity();
+      if (key === 'geofences') loadGeofences();
+      if (key === 'incidents') loadCrowdAlerts();
+      if (key === 'weather') loadWeather();
     }
   };
 
-  const openInMaps = (lat: number, lng: number, name: string) => {
-    const url = Platform.OS === 'ios'
-      ? `maps://app?daddr=${lat},${lng}&q=${encodeURIComponent(name)}`
-      : `geo:${lat},${lng}?q=${lat},${lng}(${encodeURIComponent(name)})`;
-    Linking.openURL(url);
+  const openDirections = (lat: number, lng: number) => {
+    const url = Platform.select({
+      ios: `maps:0,0?daddr=${lat},${lng}`,
+      android: `geo:0,0?q=${lat},${lng}`,
+      default: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`,
+    });
+    if (url) Linking.openURL(url);
   };
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    if (tab === 'nearby') await findNearby();
-    else if (tab === 'landmarks') await loadLandmarks();
-    else await loadStats();
-    setRefreshing(false);
-  }, [tab, location, searchRadius, selectedCategory]);
-
-  const formatDistance = (m: number) => m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(1)}km`;
-
-  const tabs: { key: Tab; label: string; icon: string }[] = [
-    { key: 'nearby', label: 'Nearby PUs', icon: 'location' },
-    { key: 'landmarks', label: 'Landmarks', icon: 'business' },
-    { key: 'stats', label: 'Stats', icon: 'analytics' },
-    { key: 'street_view', label: 'Street View', icon: 'eye' },
-  ];
+  const openStreetView = (lat: number, lng: number) => {
+    Linking.openURL(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`);
+  };
 
   return (
-    <ScrollView style={s.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-      <Text style={s.title}>Geospatial Map</Text>
-      <Text style={s.subtitle}>
-        {location ? `${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}` : 'Acquiring location...'}
-      </Text>
-
-      {/* Tabs */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabBar}>
-        {tabs.map(t => (
-          <TouchableOpacity key={t.key} style={[s.tab, tab === t.key && s.tabActive]}
-            onPress={() => { setTab(t.key); Haptics.selectionAsync(); }}>
-            <Ionicons name={t.icon as keyof typeof Ionicons.glyphMap} size={14} color={tab === t.key ? '#fff' : '#666'} />
-            <Text style={[s.tabText, tab === t.key && s.tabTextActive]}>{t.label}</Text>
-          </TouchableOpacity>
+    <View style={styles.container}>
+      {/* Map */}
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        provider={PROVIDER_DEFAULT}
+        initialRegion={NIGERIA_CENTER}
+        showsUserLocation
+        showsMyLocationButton
+        showsCompass
+        showsScale
+        mapType="standard"
+      >
+        {/* Nearby PU markers */}
+        {layers.pus && nearbyPUs.map(pu => (
+          <Marker
+            key={pu.polling_unit_code}
+            coordinate={{ latitude: pu.latitude, longitude: pu.longitude }}
+            pinColor="#16a34a"
+            title={pu.name}
+            description={`${pu.ward_name}, ${pu.lga_name} • ${(pu.distance_m / 1000).toFixed(1)}km`}
+          />
         ))}
-      </ScrollView>
 
-      {/* Summary Stats Cards */}
+        {/* Landmark markers */}
+        {layers.landmarks && landmarks.map(lm => (
+          <Marker
+            key={`lm-${lm.id}`}
+            coordinate={{ latitude: lm.latitude, longitude: lm.longitude }}
+            pinColor={CATEGORY_COLORS[lm.category] || '#6b7280'}
+            title={lm.name}
+            description={`${lm.category.replace(/_/g, ' ')} • ${lm.address}`}
+          />
+        ))}
+
+        {/* Official tracking markers */}
+        {layers.officials && officials.map(off => (
+          <Marker
+            key={`off-${off.staff_id}`}
+            coordinate={{ latitude: off.latitude, longitude: off.longitude }}
+            pinColor={ROLE_COLORS[off.role] || '#3b82f6'}
+            title={`${off.role.replace(/_/g, ' ')} — ${off.staff_id.slice(0, 8)}`}
+            description={`${off.activity} • Battery: ${off.battery_pct}% • PU: ${off.pu_code}`}
+          >
+            <Callout>
+              <View style={{ padding: 4, maxWidth: 200 }}>
+                <Text style={{ fontWeight: 'bold', fontSize: 12 }}>{off.role.replace(/_/g, ' ')}</Text>
+                <Text style={{ fontSize: 11 }}>Activity: {off.activity}</Text>
+                <Text style={{ fontSize: 11 }}>Battery: {off.battery_pct}%</Text>
+                <Text style={{ fontSize: 11 }}>PU: {off.pu_code}</Text>
+              </View>
+            </Callout>
+          </Marker>
+        ))}
+
+        {/* Crowd density markers */}
+        {layers.crowd && crowdReports.map((cr, i) => (
+          <Marker
+            key={`cr-${cr.pu_code}-${i}`}
+            coordinate={{ latitude: cr.latitude, longitude: cr.longitude }}
+            pinColor={DENSITY_COLORS[cr.density_level] || '#6b7280'}
+            title={cr.pu_name || cr.pu_code}
+            description={`${cr.head_count} people • ${cr.density_level} • Wait: ${cr.wait_time_min}min`}
+          />
+        ))}
+
+        {/* Geofence circles */}
+        {layers.geofences && geofenceZones.map((gz, i) => (
+          <Circle
+            key={`gf-${gz.pu_code}-${i}`}
+            center={{ latitude: gz.center_lat, longitude: gz.center_lng }}
+            radius={gz.radius_m}
+            strokeColor="rgba(59, 130, 246, 0.6)"
+            fillColor="rgba(59, 130, 246, 0.1)"
+            strokeWidth={2}
+          />
+        ))}
+      </MapView>
+
+      {/* Floating layer panel toggle */}
+      <TouchableOpacity style={styles.panelToggle} onPress={() => setShowPanel(!showPanel)}>
+        <Ionicons name={showPanel ? 'chevron-down' : 'layers'} size={20} color="#fff" />
+      </TouchableOpacity>
+
+      {/* Weather badge */}
+      {layers.weather && weatherInfo && (
+        <View style={styles.weatherBadge}>
+          <Text style={styles.weatherText}>{weatherInfo.temp_c}°C {weatherInfo.description}</Text>
+          <Text style={styles.weatherSubtext}>💧 {weatherInfo.humidity}% 💨 {weatherInfo.wind_kmh}km/h</Text>
+        </View>
+      )}
+
+      {/* Crowd alerts banner */}
+      {layers.incidents && crowdAlerts.length > 0 && (
+        <View style={styles.alertBanner}>
+          <Ionicons name="warning" size={14} color="#f59e0b" />
+          <Text style={styles.alertText} numberOfLines={1}>
+            {crowdAlerts[0].severity.toUpperCase()}: {crowdAlerts[0].message || crowdAlerts[0].pu_code}
+          </Text>
+        </View>
+      )}
+
+      {/* Stats bar */}
       {spatialStats && (
-        <View style={s.statsRow}>
-          <View style={s.statCard}>
-            <Text style={s.statValue}>{spatialStats.total_pus?.toLocaleString() || 0}</Text>
-            <Text style={s.statLabel}>Total PUs</Text>
-          </View>
-          <View style={s.statCard}>
-            <Text style={s.statValue}>{((spatialStats.avg_turnout || 0) * 100).toFixed(1)}%</Text>
-            <Text style={s.statLabel}>Avg Turnout</Text>
-          </View>
-          <View style={s.statCard}>
-            <Text style={s.statValue}>{Math.round(spatialStats.area_km2 || 0).toLocaleString()}</Text>
-            <Text style={s.statLabel}>Area km²</Text>
-          </View>
-          <View style={s.statCard}>
-            <Text style={s.statValue}>{(spatialStats.pu_density_per_km2 || 0).toFixed(1)}</Text>
-            <Text style={s.statLabel}>PU/km²</Text>
-          </View>
+        <View style={styles.statsBar}>
+          <Text style={styles.statItem}>{spatialStats.total_pus.toLocaleString()} PUs</Text>
+          <Text style={styles.statItem}>{(spatialStats.area_km2 || 0).toLocaleString()} km²</Text>
+          <Text style={styles.statItem}>Turnout: {((spatialStats.avg_turnout || 0) * 100).toFixed(0)}%</Text>
         </View>
       )}
 
-      {/* Tab Content */}
-      {tab === 'nearby' && (
-        <View style={s.section}>
-          <View style={s.searchRow}>
-            <TextInput style={s.input} value={searchRadius} onChangeText={setSearchRadius}
-              placeholder="Radius (m)" keyboardType="numeric" />
-            <TouchableOpacity style={s.searchBtn} onPress={findNearby}>
-              <Ionicons name="search" size={16} color="#fff" />
-              <Text style={s.searchBtnText}>Search</Text>
-            </TouchableOpacity>
-          </View>
-
-          {loading && <Text style={s.loadingText}>Searching...</Text>}
-
-          {nearbyPUs.map(pu => (
-            <View key={pu.polling_unit_code} style={s.card}>
-              <View style={s.cardHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.cardTitle}>{pu.name}</Text>
-                  <Text style={s.cardSub}>{pu.ward_name} · {pu.lga_name}</Text>
-                </View>
-                <View style={s.badge}>
-                  <Text style={s.badgeText}>{formatDistance(pu.distance_m)}</Text>
-                </View>
-              </View>
-              <View style={s.cardActions}>
-                <TouchableOpacity style={s.actionBtn} onPress={() => openInMaps(pu.latitude, pu.longitude, pu.name)}>
-                  <Ionicons name="navigate" size={14} color="#2563eb" />
-                  <Text style={s.actionText}>Directions</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.actionBtn} onPress={() => openStreetView(pu.latitude, pu.longitude)}>
-                  <Ionicons name="eye" size={14} color="#059669" />
-                  <Text style={[s.actionText, { color: '#059669' }]}>Street View</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ))}
-          {!loading && nearbyPUs.length === 0 && <Text style={s.emptyText}>No polling units found nearby</Text>}
+      {/* Loading indicator */}
+      {loading && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="small" color="#16a34a" />
         </View>
       )}
 
-      {tab === 'landmarks' && (
-        <View style={s.section}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
-            <TouchableOpacity style={[s.filterChip, !selectedCategory && s.filterActive]}
-              onPress={() => { setSelectedCategory(''); loadLandmarks(); }}>
-              <Text style={[s.filterText, !selectedCategory && s.filterTextActive]}>All</Text>
-            </TouchableOpacity>
-            {['inec_office', 'collation_center', 'police_station', 'hospital', 'school', 'government_building'].map(cat => (
-              <TouchableOpacity key={cat} style={[s.filterChip, selectedCategory === cat && s.filterActive]}
-                onPress={() => { setSelectedCategory(cat); }}>
-                <Text style={[s.filterText, selectedCategory === cat && s.filterTextActive]}>
-                  {cat.replace(/_/g, ' ')}
-                </Text>
+      {/* Layer control panel */}
+      {showPanel && (
+        <View style={styles.layerPanel}>
+          <Text style={styles.panelTitle}>Map Layers</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.layerChips}>
+            {([
+              { key: 'pus' as LayerKey, label: 'Polling Units', icon: 'location' as const },
+              { key: 'landmarks' as LayerKey, label: 'Landmarks', icon: 'business' as const },
+              { key: 'officials' as LayerKey, label: 'Officials', icon: 'radio' as const },
+              { key: 'crowd' as LayerKey, label: 'Crowd', icon: 'people' as const },
+              { key: 'geofences' as LayerKey, label: 'Geofences', icon: 'shield-checkmark' as const },
+              { key: 'incidents' as LayerKey, label: 'Alerts', icon: 'warning' as const },
+              { key: 'weather' as LayerKey, label: 'Weather', icon: 'cloud' as const },
+            ]).map(({ key, label, icon }) => (
+              <TouchableOpacity
+                key={key}
+                style={[styles.chip, layers[key] && styles.chipActive]}
+                onPress={() => toggleLayer(key)}
+              >
+                <Ionicons name={icon} size={14} color={layers[key] ? '#fff' : '#374151'} />
+                <Text style={[styles.chipText, layers[key] && styles.chipTextActive]}>{label}</Text>
+                {key === 'officials' && layers[key] && officials.length > 0 && (
+                  <View style={styles.chipBadge}><Text style={styles.chipBadgeText}>{officials.length}</Text></View>
+                )}
               </TouchableOpacity>
             ))}
           </ScrollView>
 
-          {loading && <Text style={s.loadingText}>Loading landmarks...</Text>}
-
-          {landmarks.map(lm => (
-            <View key={lm.id} style={s.card}>
-              <View style={s.cardHeader}>
-                <View style={[s.iconCircle, { backgroundColor: CATEGORY_COLORS[lm.category] || '#6b7280' }]}>
-                  <Ionicons name={(CATEGORY_ICONS[lm.category] || 'location') as keyof typeof Ionicons.glyphMap} size={14} color="#fff" />
-                </View>
-                <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={s.cardTitle}>{lm.name}</Text>
-                  <Text style={s.cardSub}>{lm.category.replace(/_/g, ' ')}</Text>
-                  {lm.address ? <Text style={s.cardAddress}>{lm.address}</Text> : null}
-                </View>
-              </View>
-              <View style={s.cardActions}>
-                <TouchableOpacity style={s.actionBtn} onPress={() => openInMaps(lm.latitude, lm.longitude, lm.name)}>
-                  <Ionicons name="navigate" size={14} color="#2563eb" />
-                  <Text style={s.actionText}>Directions</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.actionBtn} onPress={() => openStreetView(lm.latitude, lm.longitude)}>
-                  <Ionicons name="eye" size={14} color="#059669" />
-                  <Text style={[s.actionText, { color: '#059669' }]}>Street View</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ))}
-          {!loading && landmarks.length === 0 && <Text style={s.emptyText}>No landmarks found</Text>}
-        </View>
-      )}
-
-      {tab === 'stats' && (
-        <View style={s.section}>
-          <View style={s.card}>
-            <Text style={s.sectionTitle}>Spatial Coverage</Text>
-            {spatialStats ? (
-              <>
-                <View style={s.statRow}><Text style={s.statRowLabel}>Total Polling Units</Text><Text style={s.statRowValue}>{spatialStats.total_pus.toLocaleString()}</Text></View>
-                <View style={s.statRow}><Text style={s.statRowLabel}>Average Turnout</Text><Text style={s.statRowValue}>{(spatialStats.avg_turnout * 100).toFixed(1)}%</Text></View>
-                <View style={s.statRow}><Text style={s.statRowLabel}>Coverage Area</Text><Text style={s.statRowValue}>{Math.round(spatialStats.area_km2).toLocaleString()} km²</Text></View>
-                <View style={s.statRow}><Text style={s.statRowLabel}>PU Density</Text><Text style={s.statRowValue}>{spatialStats.pu_density_per_km2.toFixed(2)} per km²</Text></View>
-              </>
-            ) : (
-              <Text style={s.loadingText}>Loading spatial stats...</Text>
-            )}
-          </View>
-
-          <View style={s.card}>
-            <Text style={s.sectionTitle}>PostGIS Integration</Text>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Spatial Indexing</Text><Text style={[s.statRowValue, { color: '#059669' }]}>GIST Enabled</Text></View>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Coordinate System</Text><Text style={s.statRowValue}>SRID 4326 (WGS84)</Text></View>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Proximity Search</Text><Text style={s.statRowValue}>ST_DWithin</Text></View>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Boundary Analysis</Text><Text style={s.statRowValue}>Convex Hull</Text></View>
-          </View>
-
-          <View style={s.card}>
-            <Text style={s.sectionTitle}>Apache Sedona Analytics</Text>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Hotspot Detection</Text><Text style={s.statRowValue}>Grid-based Clustering</Text></View>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Coverage Gap</Text><Text style={s.statRowValue}>Density Analysis</Text></View>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Autocorrelation</Text><Text style={s.statRowValue}>Moran's I</Text></View>
-            <View style={s.statRow}><Text style={s.statRowLabel}>Lakehouse Layer</Text><Text style={s.statRowValue}>Gold Tier Parquet</Text></View>
-          </View>
-        </View>
-      )}
-
-      {tab === 'street_view' && (
-        <View style={s.section}>
-          <View style={s.card}>
-            <Text style={s.sectionTitle}>Street View</Text>
-            <Text style={s.cardSub}>Select a polling unit or landmark to view street-level imagery via Mapillary (open-source) or Google Maps.</Text>
-
+          {/* Quick actions */}
+          <View style={styles.quickActions}>
+            <TouchableOpacity style={styles.actionBtn} onPress={findNearby}>
+              <Ionicons name="navigate" size={16} color="#16a34a" />
+              <Text style={styles.actionText}>Find Nearby</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.actionBtn} onPress={() => {
+              if (location) openStreetView(location.lat, location.lng);
+              else if (mapRef.current) {
+                // Use Nigeria center as fallback
+                openStreetView(9.0820, 7.4951);
+              }
+            }}>
+              <Ionicons name="eye" size={16} color="#3b82f6" />
+              <Text style={styles.actionText}>Street View</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.actionBtn} onPress={() => {
+              mapRef.current?.animateToRegion(NIGERIA_CENTER, 1000);
+            }}>
+              <Ionicons name="globe" size={16} color="#7c3aed" />
+              <Text style={styles.actionText}>Nigeria</Text>
+            </TouchableOpacity>
             {location && (
-              <TouchableOpacity style={s.svBtn}
-                onPress={() => openStreetView(location.lat, location.lng)}>
-                <Ionicons name="eye" size={20} color="#fff" />
-                <Text style={s.svBtnText}>View Current Location</Text>
+              <TouchableOpacity style={styles.actionBtn} onPress={() => openDirections(location.lat, location.lng)}>
+                <Ionicons name="navigate-circle" size={16} color="#f59e0b" />
+                <Text style={styles.actionText}>Directions</Text>
               </TouchableOpacity>
             )}
-
-            <Text style={[s.sectionTitle, { marginTop: 16 }]}>Quick Access</Text>
-            {[
-              { name: 'INEC National HQ, Abuja', lat: 9.0579, lng: 7.4951 },
-              { name: 'National Assembly, Abuja', lat: 9.0642, lng: 7.5063 },
-              { name: 'Tafawa Balewa Square, Lagos', lat: 6.4328, lng: 3.4218 },
-            ].map(loc => (
-              <TouchableOpacity key={loc.name} style={s.svItem}
-                onPress={() => openStreetView(loc.lat, loc.lng)}>
-                <Ionicons name="location" size={16} color="#2563eb" />
-                <Text style={s.svItemText}>{loc.name}</Text>
-                <Ionicons name="open-outline" size={14} color="#9ca3af" />
-              </TouchableOpacity>
-            ))}
           </View>
+
+          {/* Nearby PU list */}
+          {layers.pus && nearbyPUs.length > 0 && (
+            <View style={styles.listSection}>
+              <Text style={styles.listTitle}>Nearby Polling Units ({nearbyPUs.length})</Text>
+              <ScrollView style={{ maxHeight: 120 }}>
+                {nearbyPUs.slice(0, 5).map(pu => (
+                  <TouchableOpacity key={pu.polling_unit_code} style={styles.listItem}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      mapRef.current?.animateToRegion({ latitude: pu.latitude, longitude: pu.longitude, latitudeDelta: 0.01, longitudeDelta: 0.01 }, 500);
+                    }}>
+                    <Ionicons name="location" size={14} color="#16a34a" />
+                    <View style={{ flex: 1, marginLeft: 6 }}>
+                      <Text style={styles.listItemTitle} numberOfLines={1}>{pu.name}</Text>
+                      <Text style={styles.listItemSub}>{pu.ward_name} • {(pu.distance_m / 1000).toFixed(1)}km</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => openDirections(pu.latitude, pu.longitude)}>
+                      <Ionicons name="navigate" size={16} color="#3b82f6" />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
         </View>
       )}
-
-      <View style={{ height: 40 }} />
-    </ScrollView>
+    </View>
   );
 }
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5', padding: 16 },
-  title: { fontSize: 20, fontWeight: '700', color: '#111' },
-  subtitle: { fontSize: 12, color: '#666', marginBottom: 12 },
-  tabBar: { marginBottom: 12 },
-  tab: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, backgroundColor: '#e5e7eb', marginRight: 8 },
-  tabActive: { backgroundColor: '#1d4ed8' },
-  tabText: { fontSize: 12, color: '#666' },
-  tabTextActive: { color: '#fff', fontWeight: '600' },
-  statsRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
-  statCard: { flex: 1, backgroundColor: '#fff', borderRadius: 8, padding: 8, alignItems: 'center' },
-  statValue: { fontSize: 14, fontWeight: '700', color: '#111' },
-  statLabel: { fontSize: 9, color: '#666', marginTop: 2 },
-  section: {},
-  sectionTitle: { fontSize: 14, fontWeight: '600', color: '#111', marginBottom: 8 },
-  searchRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
-  input: { flex: 1, backgroundColor: '#fff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 14, borderWidth: 1, borderColor: '#e5e7eb' },
-  searchBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1d4ed8', borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8 },
-  searchBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  card: { backgroundColor: '#fff', borderRadius: 10, padding: 12, marginBottom: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
-  cardHeader: { flexDirection: 'row', alignItems: 'center' },
-  cardTitle: { fontSize: 13, fontWeight: '600', color: '#111' },
-  cardSub: { fontSize: 11, color: '#666', marginTop: 2 },
-  cardAddress: { fontSize: 10, color: '#9ca3af', marginTop: 1 },
-  cardActions: { flexDirection: 'row', gap: 12, marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#f3f4f6' },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  actionText: { fontSize: 12, color: '#2563eb', fontWeight: '500' },
-  badge: { backgroundColor: '#eff6ff', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 2 },
-  badgeText: { fontSize: 11, color: '#1d4ed8', fontWeight: '600' },
-  iconCircle: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  filterChip: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 16, backgroundColor: '#e5e7eb', marginRight: 6 },
-  filterActive: { backgroundColor: '#1d4ed8' },
-  filterText: { fontSize: 11, color: '#374151', textTransform: 'capitalize' },
-  filterTextActive: { color: '#fff' },
-  loadingText: { textAlign: 'center', color: '#9ca3af', fontSize: 13, paddingVertical: 20 },
-  emptyText: { textAlign: 'center', color: '#9ca3af', fontSize: 13, paddingVertical: 40 },
-  statRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
-  statRowLabel: { fontSize: 12, color: '#666' },
-  statRowValue: { fontSize: 12, fontWeight: '600', color: '#111' },
-  svBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#059669', borderRadius: 8, paddingVertical: 12, marginTop: 12 },
-  svBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  svItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
-  svItemText: { flex: 1, fontSize: 13, color: '#374151' },
+const { width: W, height: H } = Dimensions.get('window');
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  map: { flex: 1 },
+  panelToggle: {
+    position: 'absolute', top: 50, right: 12, width: 40, height: 40, borderRadius: 20,
+    backgroundColor: '#16a34a', justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
+  },
+  weatherBadge: {
+    position: 'absolute', top: 50, left: 12, backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: 8, padding: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 2, elevation: 3,
+  },
+  weatherText: { fontSize: 13, fontWeight: '600', color: '#1f2937' },
+  weatherSubtext: { fontSize: 11, color: '#6b7280' },
+  alertBanner: {
+    position: 'absolute', top: 100, left: 12, right: 12, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(254, 243, 199, 0.95)', borderRadius: 8, padding: 8,
+    borderWidth: 1, borderColor: '#fbbf24',
+  },
+  alertText: { fontSize: 12, color: '#92400e', flex: 1 },
+  statsBar: {
+    position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-around',
+    backgroundColor: 'rgba(0,0,0,0.75)', paddingVertical: 6, paddingHorizontal: 12,
+  },
+  statItem: { fontSize: 11, color: '#fff', fontWeight: '500' },
+  loadingOverlay: {
+    position: 'absolute', top: 50, alignSelf: 'center', backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 20, padding: 8,
+  },
+  layerPanel: {
+    position: 'absolute', bottom: 30, left: 8, right: 8, backgroundColor: 'rgba(255,255,255,0.97)',
+    borderRadius: 12, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 8,
+    maxHeight: H * 0.45,
+  },
+  panelTitle: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 8 },
+  layerChips: { flexDirection: 'row', gap: 6, paddingBottom: 8 },
+  chip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 16, backgroundColor: '#f3f4f6', borderWidth: 1, borderColor: '#e5e7eb',
+  },
+  chipActive: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
+  chipText: { fontSize: 12, color: '#374151' },
+  chipTextActive: { color: '#fff' },
+  chipBadge: { backgroundColor: '#fff', borderRadius: 8, paddingHorizontal: 4, marginLeft: 2 },
+  chipBadgeText: { fontSize: 10, fontWeight: '700', color: '#16a34a' },
+  quickActions: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#f9fafb', borderWidth: 1, borderColor: '#e5e7eb' },
+  actionText: { fontSize: 11, color: '#374151' },
+  listSection: { marginTop: 4 },
+  listTitle: { fontSize: 12, fontWeight: '600', color: '#374151', marginBottom: 4 },
+  listItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#e5e7eb' },
+  listItemTitle: { fontSize: 12, fontWeight: '500', color: '#111827' },
+  listItemSub: { fontSize: 10, color: '#6b7280' },
 });

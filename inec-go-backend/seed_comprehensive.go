@@ -198,7 +198,7 @@ func seedComprehensive(db *sql.DB) {
 	// Schema: device_id, lat, lng, confidence, indicators, detected_at
 	for i := 0; i < 5; i++ {
 		dbExecLog("seed_gps_spoof", `INSERT INTO gps_spoof_events (device_id, lat, lng, confidence, indicators) VALUES (?,?,?,?,?)`,
-			fmt.Sprintf("BVAS-LA-%03d", rand.Intn(50)), 6.4+rand.Float64()*0.2, 3.3+rand.Float64()*0.2,
+			fmt.Sprintf("BVAS-LA-%03d", rand.Intn(50)), 6.55+rand.Float64()*0.1, 3.30+rand.Float64()*0.1,
 			0.7+rand.Float64()*0.3, `["mock_location_enabled","accuracy_anomaly"]`)
 	}
 

@@ -798,4 +798,55 @@ export const api = {
   reportCrowdDensity: (data: { pu_code: string; lat: number; lng: number; head_count: number; density_level?: string; queue_length?: number; wait_time_min?: number }) =>
     request('/geo/crowd/report', { method: 'POST', body: JSON.stringify(data) }),
   seedTrackingData: () => request('/geo/tracking/seed', { method: 'POST' }),
+  // Advanced Geo (#2-#30)
+  getTrackingReplay: (staffId?: string, hours?: number) => {
+    const p = new URLSearchParams();
+    if (staffId) p.set('staff_id', staffId);
+    if (hours) p.set('hours', String(hours));
+    return request(`/geo/tracking/replay?${p}`);
+  },
+  getGeofenceZones: (stateCode?: string) =>
+    request(`/geo/geofence/zones${stateCode ? `?state_code=${stateCode}` : ''}`),
+  getGeofenceViolations: () => request('/geo/geofence/violations'),
+  seedGeofenceZones: () => request('/geo/geofence/zones/seed', { method: 'POST' }),
+  getSpatialClusters: (electionId?: number, epsKm?: number) => {
+    const p = new URLSearchParams({ election_id: String(electionId || 1) });
+    if (epsKm) p.set('eps_km', String(epsKm));
+    return request(`/geo/spatial/clusters?${p}`);
+  },
+  getVoronoiDiagram: (stateCode?: string) =>
+    request(`/geo/spatial/voronoi${stateCode ? `?state_code=${stateCode}` : ''}`),
+  getCrowdAlerts: (severity?: string) =>
+    request(`/geo/crowd/alerts${severity ? `?severity=${severity}` : ''}`),
+  acknowledgeCrowdAlert: (alertId: number, userId: string) =>
+    request('/geo/crowd/alerts/ack', { method: 'POST', body: JSON.stringify({ alert_id: alertId, user_id: userId }) }),
+  getRouteOptimize: (originLat: number, originLng: number, destLat: number, destLng: number, profile?: string) =>
+    request('/geo/route', { method: 'POST', body: JSON.stringify({ origin_lat: originLat, origin_lng: originLng, dest_lat: destLat, dest_lng: destLng, profile: profile || 'driving' }) }),
+  getNearestOfficial: (lat: number, lng: number, role?: string) =>
+    request(`/geo/nearest-official?lat=${lat}&lng=${lng}${role ? `&role=${role}` : ''}`),
+  getWeatherOverlay: (lat?: number, lng?: number) =>
+    request(`/geo/weather${lat ? `?lat=${lat}&lng=${lng}` : ''}`),
+  uploadPUPhoto: (formData: FormData) =>
+    request('/geo/photos/upload', { method: 'POST', body: formData, headers: {} }),
+  getPUPhotos: (puCode?: string) =>
+    request(`/geo/photos${puCode ? `?pu_code=${puCode}` : ''}`),
+  getIncidentHotspots: (hours?: number, severity?: string) => {
+    const p = new URLSearchParams();
+    if (hours) p.set('hours', String(hours));
+    if (severity) p.set('severity', severity);
+    return request(`/geo/incidents/hotspots?${p}`);
+  },
+  getPredictiveCrowdFlow: () => request('/geo/crowd/predictions'),
+  getDronePositions: () => request('/geo/drones'),
+  getSimulation: (scenario?: string) =>
+    request(`/geo/simulation${scenario ? `?scenario=${scenario}` : ''}`),
+  getGeofenceAttestation: (data: { staff_id: string; pu_code: string; lat: number; lng: number }) =>
+    request('/geo/geofence/attest', { method: 'POST', body: JSON.stringify(data) }),
+  getMeshNetworkStatus: () => request('/geo/mesh/status'),
+  getH3HexGrid: (resolution?: number, electionId?: number) => {
+    const p = new URLSearchParams();
+    if (resolution) p.set('resolution', String(resolution));
+    if (electionId) p.set('election_id', String(electionId));
+    return request(`/geo/h3/grid?${p}`);
+  },
 };

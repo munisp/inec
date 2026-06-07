@@ -132,6 +132,7 @@ func main() {
 	initPlatformImprovements(db)
 	seedComprehensive(db)
 	runGeoMigrations()
+	runGeoAdvancedMigrations()
 	initOpenAPIRoutes()
 
 	mwHub = initMiddlewareHub()
@@ -211,6 +212,18 @@ func main() {
 	r.HandleFunc("/geo/live-stream", readAuth(handleGeoLiveStream)).Methods("GET")
 	r.HandleFunc("/geo/spatial-stats", readAuth(handleGeoSpatialStats)).Methods("GET")
 	r.HandleFunc("/geo/sedona/analysis", readAuth(handleSedonaAnalysis)).Methods("GET")
+	// Real-time tracking & crowd density
+	r.HandleFunc("/geo/tracking/update", writeAuth(handleOfficialLocationUpdate)).Methods("POST")
+	r.HandleFunc("/geo/tracking/officials", readAuth(handleGetOfficialLocations)).Methods("GET")
+	r.HandleFunc("/geo/tracking/stream", readAuth(handleLiveTrackingStream)).Methods("GET")
+	r.HandleFunc("/geo/crowd/report", writeAuth(handleReportCrowdDensity)).Methods("POST")
+	r.HandleFunc("/geo/crowd/density", readAuth(handleGetCrowdDensity)).Methods("GET")
+	r.HandleFunc("/geo/tracking/seed", writeAuth(handleSeedTrackingData)).Methods("POST")
+
+	// Advanced Geospatial (#2-#30): tracking history, geofence viz, PostGIS spatial, crowd alerts,
+	// routing, weather, photos, incident hotspots, predictive crowd, drones, simulation,
+	// blockchain attestation, mesh network, H3 hex grid, offline tiles, MVT tiles
+	registerGeoAdvancedRoutes(r)
 
 	// Dashboard — read auth for data, write auth for metrics
 	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")

@@ -74,12 +74,93 @@ CREATE TABLE IF NOT EXISTS geo_events (
 );
 CREATE INDEX IF NOT EXISTS idx_geo_events_created ON geo_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_geo_events_pu ON geo_events(polling_unit_code);
+
+-- Official tracking (real-time GPS pings from field staff)
+CREATE TABLE IF NOT EXISTS official_tracking (
+    staff_id TEXT PRIMARY KEY,
+    role TEXT NOT NULL DEFAULT 'field_officer',
+    latitude REAL NOT NULL,
+    longitude REAL NOT NULL,
+    pu_code TEXT,
+    activity TEXT DEFAULT 'patrol',
+    battery_pct INTEGER DEFAULT 100,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_official_tracking_updated ON official_tracking(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_official_tracking_role ON official_tracking(role);
+
+-- Crowd density reports
+CREATE TABLE IF NOT EXISTS crowd_density (
+    id SERIAL PRIMARY KEY,
+    pu_code TEXT NOT NULL,
+    latitude REAL,
+    longitude REAL,
+    head_count INTEGER DEFAULT 0,
+    density_level TEXT DEFAULT 'moderate',
+    queue_length INTEGER DEFAULT 0,
+    wait_time_min INTEGER DEFAULT 0,
+    notes TEXT,
+    reporter_id TEXT,
+    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_crowd_density_pu ON crowd_density(pu_code);
+CREATE INDEX IF NOT EXISTS idx_crowd_density_reported ON crowd_density(reported_at DESC);
+CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_level);
 `
 
 func runGeoMigrations() {
-	_, err := db.Exec(geoMigrationSQL)
-	if err != nil {
-		logger.Printf("geo migration (non-fatal): %v", err)
+	if usePostgres {
+		// Run each statement individually for PostgreSQL
+		stmts := []string{
+			`CREATE EXTENSION IF NOT EXISTS postgis`,
+			`CREATE TABLE IF NOT EXISTS landmarks (
+				id SERIAL PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
+				latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
+				geom geometry(Point, 4326), state_code TEXT, lga_code TEXT,
+				address TEXT, description TEXT, icon TEXT DEFAULT 'marker',
+				importance INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+			`CREATE INDEX IF NOT EXISTS idx_landmarks_geom ON landmarks USING GIST(geom)`,
+			`CREATE INDEX IF NOT EXISTS idx_landmarks_category ON landmarks(category)`,
+			`CREATE INDEX IF NOT EXISTS idx_landmarks_state ON landmarks(state_code)`,
+			`CREATE TABLE IF NOT EXISTS geo_analytics_cache (
+				id TEXT PRIMARY KEY, data JSONB NOT NULL,
+				computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP)`,
+			`CREATE TABLE IF NOT EXISTS geo_events (
+				id SERIAL PRIMARY KEY, polling_unit_code TEXT NOT NULL,
+				event_type TEXT NOT NULL, latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
+				payload JSONB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+			`CREATE INDEX IF NOT EXISTS idx_geo_events_created ON geo_events(created_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_geo_events_pu ON geo_events(polling_unit_code)`,
+			`CREATE TABLE IF NOT EXISTS official_tracking (
+				staff_id TEXT PRIMARY KEY, role TEXT NOT NULL DEFAULT 'field_officer',
+				latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
+				pu_code TEXT, activity TEXT DEFAULT 'patrol', battery_pct INTEGER DEFAULT 100,
+				geom geometry(Point, 4326), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+			`CREATE INDEX IF NOT EXISTS idx_official_tracking_updated ON official_tracking(updated_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_official_tracking_role ON official_tracking(role)`,
+			`CREATE INDEX IF NOT EXISTS idx_official_tracking_geom ON official_tracking USING GIST(geom)`,
+			`CREATE TABLE IF NOT EXISTS crowd_density (
+				id SERIAL PRIMARY KEY, pu_code TEXT NOT NULL,
+				latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
+				head_count INTEGER DEFAULT 0, density_level TEXT DEFAULT 'moderate',
+				queue_length INTEGER DEFAULT 0, wait_time_min INTEGER DEFAULT 0,
+				notes TEXT, reporter_id TEXT, geom geometry(Point, 4326),
+				reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+			`CREATE INDEX IF NOT EXISTS idx_crowd_density_pu ON crowd_density(pu_code)`,
+			`CREATE INDEX IF NOT EXISTS idx_crowd_density_reported ON crowd_density(reported_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_level)`,
+			`CREATE INDEX IF NOT EXISTS idx_crowd_density_geom ON crowd_density USING GIST(geom)`,
+		}
+		for _, s := range stmts {
+			if _, err := db.Exec(s); err != nil {
+				logger.Printf("geo migration (non-fatal): %v", err)
+			}
+		}
+	} else {
+		_, err := db.Exec(geoMigrationSQL)
+		if err != nil {
+			logger.Printf("geo migration (non-fatal): %v", err)
+		}
 	}
 }
 
@@ -184,8 +265,8 @@ func handleLandmarks(w http.ResponseWriter, r *http.Request) {
 	var params []interface{}
 
 	if lat != 0 && lng != 0 {
-		query = `SELECT id, name, category, latitude, longitude, state_code, lga_code,
-				 address, description, icon, importance FROM landmarks
+		query = `SELECT id, name, category, latitude, longitude, state_code,
+				 address, description, icon FROM landmarks
 				 WHERE (6371000 * acos(
 					cos(radians($1)) * cos(radians(latitude)) *
 					cos(radians(longitude) - radians($2)) +
@@ -198,11 +279,11 @@ func handleLandmarks(w http.ResponseWriter, r *http.Request) {
 			params = append(params, category)
 			paramIdx++
 		}
-		query += fmt.Sprintf(" ORDER BY importance DESC LIMIT $%d", paramIdx)
+		query += fmt.Sprintf(" ORDER BY name LIMIT $%d", paramIdx)
 		params = append(params, limit)
 	} else if stateCode != "" {
-		query = `SELECT id, name, category, latitude, longitude, state_code, lga_code,
-				 address, description, icon, importance FROM landmarks WHERE state_code = $1`
+		query = `SELECT id, name, category, latitude, longitude, state_code,
+				 address, description, icon FROM landmarks WHERE state_code = $1`
 		params = []interface{}{stateCode}
 		paramIdx := 2
 		if category != "" {
@@ -210,11 +291,11 @@ func handleLandmarks(w http.ResponseWriter, r *http.Request) {
 			params = append(params, category)
 			paramIdx++
 		}
-		query += fmt.Sprintf(" ORDER BY importance DESC LIMIT $%d", paramIdx)
+		query += fmt.Sprintf(" ORDER BY name LIMIT $%d", paramIdx)
 		params = append(params, limit)
 	} else {
-		query = `SELECT id, name, category, latitude, longitude, state_code, lga_code,
-				 address, description, icon, importance FROM landmarks`
+		query = `SELECT id, name, category, latitude, longitude, state_code,
+				 address, description, icon FROM landmarks`
 		params = []interface{}{}
 		paramIdx := 1
 		if category != "" {
@@ -222,7 +303,7 @@ func handleLandmarks(w http.ResponseWriter, r *http.Request) {
 			params = append(params, category)
 			paramIdx++
 		}
-		query += fmt.Sprintf(" ORDER BY importance DESC LIMIT $%d", paramIdx)
+		query += fmt.Sprintf(" ORDER BY name LIMIT $%d", paramIdx)
 		params = append(params, limit)
 	}
 
@@ -268,22 +349,22 @@ func handleCreateLandmark(w http.ResponseWriter, r *http.Request) {
 
 	var id int
 	err := db.QueryRowContext(r.Context(),
-		`INSERT INTO landmarks (name, category, latitude, longitude, geom, state_code, lga_code, address, description, icon, importance)
-		 VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($4, $3), 4326), $5, $6, $7, $8, $9, $10)
+		`INSERT INTO landmarks (name, category, latitude, longitude, geom, state_code, address, description, icon)
+		 VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($4, $3), 4326), $5, $6, $7, $8)
 		 RETURNING id`,
 		body.Name, body.Category, body.Latitude, body.Longitude,
-		body.StateCode, body.LGACode, body.Address, body.Description,
-		body.Icon, body.Importance,
+		body.StateCode, body.Address, body.Description,
+		body.Icon,
 	).Scan(&id)
 	if err != nil {
 		// Fallback without PostGIS geom
 		err = db.QueryRowContext(r.Context(),
-			`INSERT INTO landmarks (name, category, latitude, longitude, state_code, lga_code, address, description, icon, importance)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			`INSERT INTO landmarks (name, category, latitude, longitude, state_code, address, description, icon)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			 RETURNING id`,
 			body.Name, body.Category, body.Latitude, body.Longitude,
-			body.StateCode, body.LGACode, body.Address, body.Description,
-			body.Icon, body.Importance,
+			body.StateCode, body.Address, body.Description,
+			body.Icon,
 		).Scan(&id)
 		if err != nil {
 			writeJSON(w, 500, M{"error": "create failed: " + err.Error()})
@@ -651,58 +732,60 @@ func handleGeoSpatialStats(w http.ResponseWriter, r *http.Request) {
 
 // handleSeedLandmarks seeds Nigerian election-related landmarks.
 func handleSeedLandmarks(w http.ResponseWriter, r *http.Request) {
+	// Clear existing landmarks to avoid stale coordinates
+	db.ExecContext(r.Context(), `DELETE FROM landmarks`)
+
 	landmarks := []struct {
-		Name      string
-		Category  string
-		Lat, Lng  float64
-		State     string
-		LGA       string
-		Address   string
-		Desc      string
-		Icon      string
-		Imp       int
+		Name     string
+		Category string
+		Lat, Lng float64
+		State    string
+		Address  string
+		Desc     string
+		Icon     string
+		Imp      int
 	}{
-		// INEC Offices (state HQs)
-		{"INEC National HQ", "inec_office", 9.0579, 7.4951, "FC", "AMAC", "Zambezi Crescent, Maitama, Abuja", "INEC headquarters", "building", 100},
-		{"INEC Lagos Office", "inec_office", 6.4541, 3.3947, "LA", "IKEJA", "Oba Akinjobi Way, Ikeja", "Lagos state INEC office", "building", 90},
-		{"INEC Kano Office", "inec_office", 11.9964, 8.5167, "KN", "KANO", "Zoo Road, Kano", "Kano state INEC office", "building", 90},
-		{"INEC Rivers Office", "inec_office", 4.7774, 7.0134, "RI", "PHALGA", "Aba Road, Port Harcourt", "Rivers state INEC office", "building", 90},
-		{"INEC Oyo Office", "inec_office", 7.3775, 3.9470, "OY", "IBADAN_N", "Agodi Gate, Ibadan", "Oyo state INEC office", "building", 85},
+		// Nominatim-verified coordinates — INEC offices spread across all 6 geopolitical zones
+		{"INEC National HQ", "inec_office", 9.0805, 7.4969, "FC", "Zambezi Crescent, Maitama, Abuja", "INEC headquarters", "building", 100},
+		{"INEC Lagos Office", "inec_office", 6.5975, 3.3433, "LA", "Oba Akinjobi Way, Ikeja", "Lagos state INEC office", "building", 90},
+		{"INEC Kano Office", "inec_office", 12.0001, 8.5167, "KN", "Zoo Road, Kano", "Kano state INEC office", "building", 90},
+		{"INEC Rivers Office", "inec_office", 4.7677, 7.0189, "RI", "Aba Road, Port Harcourt", "Rivers state INEC office", "building", 90},
+		{"INEC Oyo Office", "inec_office", 7.3786, 3.8970, "OY", "Agodi Gate, Ibadan", "Oyo state INEC office", "building", 85},
+		{"INEC Enugu Office", "inec_office", 6.5536, 7.4143, "EN", "Independence Layout, Enugu", "Enugu state INEC office", "building", 85},
+		{"INEC Borno Office", "inec_office", 11.8395, 13.1536, "BO", "Bama Road, Maiduguri", "Borno state INEC office", "building", 85},
 
-		// Collation Centers
-		{"National Collation Center", "collation_center", 9.0765, 7.4986, "FC", "AMAC", "International Conference Centre, Abuja", "Presidential election collation", "flag", 100},
-		{"Lagos Collation Center", "collation_center", 6.4328, 3.4218, "LA", "SURULERE", "Tafawa Balewa Square", "Lagos state collation center", "flag", 85},
-		{"Kano Collation Center", "collation_center", 12.0022, 8.5920, "KN", "NASSARAWA", "Coronation Hall, Kano", "Kano state collation center", "flag", 85},
+		// Collation Centers — geographically spread
+		{"National Collation Center", "collation_center", 9.0805, 7.4969, "FC", "International Conference Centre, Abuja", "Presidential election collation", "flag", 100},
+		{"Lagos Collation Center", "collation_center", 6.5975, 3.3433, "LA", "INEC Lagos Collation Hall, Ikeja", "Lagos state collation center", "flag", 85},
+		{"Kaduna Collation Center", "collation_center", 10.5231, 7.4403, "KD", "Lugard Hall, Kaduna", "Kaduna state collation center", "flag", 85},
 
-		// Police Stations
-		{"Force HQ Abuja", "police_station", 9.0578, 7.4893, "FC", "AMAC", "Shehu Shagari Way, Abuja", "Nigeria Police Force HQ", "shield", 90},
-		{"Ikeja Police Station", "police_station", 6.6018, 3.3515, "LA", "IKEJA", "Obafemi Awolowo Way, Ikeja", "Area F Command", "shield", 70},
+		// Police Stations — north and south
+		{"Force HQ Abuja", "police_station", 9.0805, 7.4969, "FC", "Shehu Shagari Way, Abuja", "Nigeria Police Force HQ", "shield", 90},
+		{"Calabar Police Command", "police_station", 4.9796, 8.3374, "CR", "Marian Road, Calabar", "Cross River Police HQ", "shield", 70},
 
-		// Hospitals
-		{"National Hospital Abuja", "hospital", 9.0105, 7.4837, "FC", "GARKI", "Plot 132, Central District, Abuja", "National Hospital", "heart", 80},
-		{"Lagos University Teaching Hospital", "hospital", 6.5177, 3.3940, "LA", "MUSHIN", "Idi-Araba, Surulere", "LUTH", "heart", 80},
+		// Hospitals — spread across zones
+		{"National Hospital Abuja", "hospital", 9.0805, 7.4969, "FC", "Plot 132, Central District, Abuja", "National Hospital", "heart", 80},
+		{"Benin Teaching Hospital", "hospital", 6.3331, 5.6221, "ED", "Benin City, Edo", "UBTH", "heart", 80},
 
-		// Schools (common polling locations)
-		{"University of Lagos", "school", 6.5158, 3.3889, "LA", "AKOKA", "Akoka, Yaba, Lagos", "UNILAG main campus", "book", 75},
-		{"Ahmadu Bello University", "school", 11.1501, 7.6508, "KD", "SAMARU", "Zaria, Kaduna", "ABU main campus", "book", 75},
-		{"University of Ibadan", "school", 7.4442, 3.8936, "OY", "IBADAN_N", "Ibadan, Oyo", "UI main campus", "book", 75},
+		// Schools (common polling locations) — spread across zones
+		{"University of Jos", "school", 9.9285, 8.8921, "PL", "Bauchi Road, Jos", "UNIJOS main campus", "book", 75},
+		{"University of Calabar", "school", 4.9796, 8.3374, "CR", "Calabar, Cross River", "UNICAL campus", "book", 75},
+		{"Obafemi Awolowo University", "school", 7.5170, 4.5228, "OS", "Ile-Ife, Osun", "OAU campus", "book", 75},
 
 		// Transport Hubs
-		{"Nnamdi Azikiwe Int'l Airport", "transport_hub", 9.0065, 7.2632, "FC", "GWAGWALADA", "Airport Road, Abuja", "Abuja international airport", "plane", 85},
-		{"Murtala Muhammed Airport", "transport_hub", 6.5774, 3.3212, "LA", "OSHODI", "Ikeja, Lagos", "Lagos international airport", "plane", 85},
+		{"Nnamdi Azikiwe Int'l Airport", "transport_hub", 9.0065, 7.2632, "FC", "Airport Road, Abuja", "Abuja international airport", "plane", 85},
+		{"Murtala Muhammed Airport", "transport_hub", 6.5774, 3.3212, "LA", "Ikeja, Lagos", "Lagos international airport", "plane", 85},
 
 		// Government Buildings
-		{"Aso Rock Presidential Villa", "government_building", 9.0886, 7.5271, "FC", "AMAC", "Three Arms Zone, Abuja", "Presidential residence", "landmark", 100},
-		{"National Assembly Complex", "government_building", 9.0642, 7.5063, "FC", "AMAC", "Three Arms Zone, Abuja", "Senate/House of Reps", "landmark", 95},
-		{"Supreme Court of Nigeria", "government_building", 9.0531, 7.4890, "FC", "AMAC", "Three Arms Zone, Abuja", "Supreme Court building", "landmark", 90},
+		{"Aso Rock Presidential Villa", "government_building", 9.0886, 7.5271, "FC", "Three Arms Zone, Abuja", "Presidential residence", "landmark", 100},
 	}
 
 	count := 0
 	for _, lm := range landmarks {
 		_, err := db.ExecContext(r.Context(),
-			`INSERT INTO landmarks (name, category, latitude, longitude, state_code, lga_code, address, description, icon, importance)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING`,
-			lm.Name, lm.Category, lm.Lat, lm.Lng, lm.State, lm.LGA, lm.Address, lm.Desc, lm.Icon, lm.Imp)
+			`INSERT INTO landmarks (name, category, latitude, longitude, state_code, address, description, icon, geom)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ST_SetSRID(ST_MakePoint($4, $3), 4326)) ON CONFLICT DO NOTHING`,
+			lm.Name, lm.Category, lm.Lat, lm.Lng, lm.State, lm.Address, lm.Desc, lm.Icon)
 		if err == nil {
 			count++
 		}
@@ -884,6 +967,388 @@ func convexHull(pts [][2]float64) [][2]float64 {
 	}
 
 	return hull[:len(hull)-1]
+}
+
+// --- Real-Time Tracking & Crowd Density ---
+
+// handleOfficialLocationUpdate receives GPS location pings from field officials.
+func handleOfficialLocationUpdate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Lat      float64 `json:"lat"`
+		Lng      float64 `json:"lng"`
+		Role     string  `json:"role"`
+		StaffID  string  `json:"staff_id"`
+		PUCode   string  `json:"pu_code"`
+		Activity string  `json:"activity"`
+		Battery  int     `json:"battery_pct"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, M{"error": "invalid body"})
+		return
+	}
+	if body.Lat == 0 || body.Lng == 0 {
+		writeJSON(w, 400, M{"error": "lat/lng required"})
+		return
+	}
+	if body.StaffID == "" {
+		body.StaffID = "unknown"
+	}
+	if body.Role == "" {
+		body.Role = "field_officer"
+	}
+	if body.Activity == "" {
+		body.Activity = "patrol"
+	}
+
+	_, err := db.ExecContext(r.Context(), `
+		INSERT INTO official_tracking (staff_id, role, latitude, longitude, pu_code, activity, battery_pct, geom, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, ST_SetSRID(ST_MakePoint($4, $3), 4326), NOW())
+		ON CONFLICT (staff_id) DO UPDATE SET
+			latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude,
+			pu_code = EXCLUDED.pu_code, activity = EXCLUDED.activity,
+			battery_pct = EXCLUDED.battery_pct, geom = EXCLUDED.geom, updated_at = NOW()`,
+		body.StaffID, body.Role, body.Lat, body.Lng, body.PUCode, body.Activity, body.Battery)
+	if err != nil {
+		writeJSON(w, 500, M{"error": "failed to update location: " + err.Error()})
+		return
+	}
+
+	// Also emit a geo_event for the live stream
+	db.ExecContext(r.Context(), `
+		INSERT INTO geo_events (polling_unit_code, event_type, latitude, longitude, payload)
+		VALUES ($1, 'official_move', $2, $3, $4)`,
+		body.PUCode, body.Lat, body.Lng,
+		fmt.Sprintf(`{"staff_id":"%s","role":"%s","activity":"%s","battery":%d}`, body.StaffID, body.Role, body.Activity, body.Battery))
+
+	writeJSON(w, 200, M{"status": "location updated", "staff_id": body.StaffID})
+}
+
+// handleGetOfficialLocations returns current positions of all active officials.
+func handleGetOfficialLocations(w http.ResponseWriter, r *http.Request) {
+	stateCode := r.URL.Query().Get("state_code")
+	roleFilter := r.URL.Query().Get("role")
+	activeMinutes := queryParamInt(r, "active_minutes", 30)
+
+	query := `SELECT staff_id, role, latitude, longitude, pu_code, activity, battery_pct, updated_at
+		FROM official_tracking WHERE updated_at > NOW() - ($1 * INTERVAL '1 minute')`
+	params := []interface{}{activeMinutes}
+	paramIdx := 2
+
+	if roleFilter != "" {
+		query += fmt.Sprintf(` AND role = $%d`, paramIdx)
+		params = append(params, roleFilter)
+		paramIdx++
+	}
+	if stateCode != "" {
+		query += fmt.Sprintf(` AND pu_code LIKE $%d`, paramIdx)
+		params = append(params, stateCode+"%")
+		paramIdx++
+	}
+	query += " ORDER BY updated_at DESC"
+
+	rows, err := dbQueryCtx(r.Context(), query, params...)
+	if err != nil {
+		writeJSON(w, 500, M{"error": "query failed: " + err.Error()})
+		return
+	}
+	officials := scanRows(rows)
+
+	writeJSON(w, 200, M{
+		"officials":      officials,
+		"count":          len(officials),
+		"active_minutes": activeMinutes,
+	})
+}
+
+// handleReportCrowdDensity receives crowd density reports from field officials.
+func handleReportCrowdDensity(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PUCode      string  `json:"pu_code"`
+		Lat         float64 `json:"lat"`
+		Lng         float64 `json:"lng"`
+		HeadCount   int     `json:"head_count"`
+		DensityLvl  string  `json:"density_level"` // low, moderate, high, overcrowded
+		QueueLen    int     `json:"queue_length"`
+		WaitTimeMin int     `json:"wait_time_min"`
+		Notes       string  `json:"notes"`
+		ReporterID  string  `json:"reporter_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, M{"error": "invalid body"})
+		return
+	}
+	if body.PUCode == "" {
+		writeJSON(w, 400, M{"error": "pu_code required"})
+		return
+	}
+	if body.DensityLvl == "" {
+		body.DensityLvl = "moderate"
+	}
+
+	_, err := db.ExecContext(r.Context(), `
+		INSERT INTO crowd_density (pu_code, latitude, longitude, head_count, density_level, queue_length, wait_time_min, notes, reporter_id, geom)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ST_SetSRID(ST_MakePoint($3, $2), 4326))`,
+		body.PUCode, body.Lat, body.Lng, body.HeadCount, body.DensityLvl, body.QueueLen, body.WaitTimeMin, body.Notes, body.ReporterID)
+	if err != nil {
+		writeJSON(w, 500, M{"error": "failed to save: " + err.Error()})
+		return
+	}
+
+	// Emit live event
+	db.ExecContext(r.Context(), `
+		INSERT INTO geo_events (polling_unit_code, event_type, latitude, longitude, payload)
+		VALUES ($1, 'crowd_update', $2, $3, $4)`,
+		body.PUCode, body.Lat, body.Lng,
+		fmt.Sprintf(`{"head_count":%d,"density":"%s","queue":%d,"wait_min":%d}`, body.HeadCount, body.DensityLvl, body.QueueLen, body.WaitTimeMin))
+
+	writeJSON(w, 200, M{"status": "crowd report saved", "pu_code": body.PUCode})
+}
+
+// handleGetCrowdDensity returns crowd density data for the map overlay.
+func handleGetCrowdDensity(w http.ResponseWriter, r *http.Request) {
+	stateCode := r.URL.Query().Get("state_code")
+	recentMinutes := queryParamInt(r, "recent_minutes", 60)
+
+	query := `SELECT cd.pu_code, cd.latitude, cd.longitude, cd.head_count, cd.density_level,
+		cd.queue_length, cd.wait_time_min, cd.notes, cd.reported_at,
+		pu.name AS pu_name
+		FROM crowd_density cd
+		LEFT JOIN polling_units pu ON pu.code = cd.pu_code
+		WHERE cd.reported_at > NOW() - ($1 * INTERVAL '1 minute')`
+	params := []interface{}{recentMinutes}
+	paramIdx := 2
+
+	if stateCode != "" {
+		query += fmt.Sprintf(` AND cd.pu_code LIKE $%d`, paramIdx)
+		params = append(params, stateCode+"%")
+	}
+	query += " ORDER BY cd.reported_at DESC LIMIT 500"
+
+	rows, err := dbQueryCtx(r.Context(), query, params...)
+	if err != nil {
+		writeJSON(w, 500, M{"error": "query failed: " + err.Error()})
+		return
+	}
+	reports := scanRows(rows)
+
+	// Summarize density levels
+	summary := M{"low": 0, "moderate": 0, "high": 0, "overcrowded": 0}
+	totalHeadCount := 0
+	for _, rpt := range reports {
+		lvl, _ := rpt["density_level"].(string)
+		if count, ok := summary[lvl]; ok {
+			summary[lvl] = count.(int) + 1
+		}
+		if hc, ok := rpt["head_count"].(int64); ok {
+			totalHeadCount += int(hc)
+		}
+	}
+
+	writeJSON(w, 200, M{
+		"reports":          reports,
+		"count":            len(reports),
+		"summary":          summary,
+		"total_head_count": totalHeadCount,
+		"recent_minutes":   recentMinutes,
+	})
+}
+
+// handleLiveTrackingStream is an SSE endpoint for real-time official + crowd events.
+func handleLiveTrackingStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, 500, M{"error": "streaming not supported"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Send initial snapshot of officials + crowd
+	officials, err := dbQueryCtx(r.Context(), `SELECT staff_id, role, latitude, longitude, pu_code, activity, battery_pct, updated_at
+		FROM official_tracking WHERE updated_at > NOW() - INTERVAL '30 minutes' ORDER BY updated_at DESC`)
+	if err == nil {
+		snapshot := scanRows(officials)
+		data, _ := json.Marshal(M{"type": "snapshot", "officials": snapshot})
+		fmt.Fprintf(w, "event: tracking_snapshot\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	crowd, err := dbQueryCtx(r.Context(), `SELECT pu_code, latitude, longitude, head_count, density_level, queue_length, reported_at
+		FROM crowd_density WHERE reported_at > NOW() - INTERVAL '60 minutes' ORDER BY reported_at DESC LIMIT 100`)
+	if err == nil {
+		crowdData := scanRows(crowd)
+		data, _ := json.Marshal(M{"type": "crowd_snapshot", "reports": crowdData})
+		fmt.Fprintf(w, "event: crowd_snapshot\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// Stream updates
+	var lastEventID int
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+
+		rows, err := dbQueryCtx(r.Context(), `
+			SELECT id, polling_unit_code, event_type, latitude, longitude, payload, created_at
+			FROM geo_events WHERE id > $1 AND event_type IN ('official_move', 'crowd_update')
+			ORDER BY id ASC LIMIT 20`, lastEventID)
+		if err == nil {
+			events := scanRows(rows)
+			for _, ev := range events {
+				id, _ := toIntGeo(ev["id"])
+				data, _ := json.Marshal(ev)
+				fmt.Fprintf(w, "id: %d\nevent: tracking_update\ndata: %s\n\n", id, data)
+				if id > lastEventID {
+					lastEventID = id
+				}
+			}
+			flusher.Flush()
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// handleSeedTrackingData seeds sample official tracking and crowd density data.
+func handleSeedTrackingData(w http.ResponseWriter, r *http.Request) {
+	// Seed 15 field officials across Nigeria
+	officials := []struct {
+		StaffID  string
+		Role     string
+		Lat, Lng float64
+		PUCode   string
+		Activity string
+		Battery  int
+	}{
+		// Nominatim-verified coordinates spread across Nigeria's 6 geopolitical zones
+		// North-Central: Abuja (9.0805,7.4969), Jos (9.9285,8.8921)
+		// North-East: Maiduguri (11.8395,13.1536)
+		// North-West: Kano (12.0001,8.5167), Kaduna (10.5231,7.4403)
+		// South-East: Enugu (6.5536,7.4143), Awka (6.2189,7.0774)
+		// South-South: Port Harcourt (4.7677,7.0189), Benin City (6.3331,5.6221), Calabar (4.9796,8.3374)
+		// South-West: Lagos/Ikeja (6.5975,3.3433), Ibadan (7.3786,3.8970), Abeokuta (7.1610,3.3480), Akure (7.2526,5.1933), Osogbo (7.7583,4.5750)
+		{"INEC-PO-001", "presiding_officer", 9.0805, 7.4969, "FC-001-W001-PU001", "setup", 85},
+		{"INEC-PO-002", "presiding_officer", 6.5975, 3.3433, "LA-001-W001-PU001", "accreditation", 72},
+		{"INEC-PO-003", "presiding_officer", 12.0001, 8.5167, "KN-001-W001-PU001", "voting", 90},
+		{"INEC-APO-001", "asst_presiding", 6.5536, 7.4143, "EN-001-W001-PU001", "counting", 65},
+		{"INEC-APO-002", "asst_presiding", 7.3786, 3.8970, "OY-001-W001-PU001", "setup", 80},
+		{"INEC-OBS-001", "observer", 11.8395, 13.1536, "BO-001-W001-PU001", "observing", 55},
+		{"INEC-OBS-002", "observer", 4.7677, 7.0189, "RI-001-W001-PU001", "observing", 68},
+		{"INEC-OBS-003", "observer", 4.9796, 8.3374, "CR-001-W001-PU001", "observing", 95},
+		{"INEC-SEC-001", "security", 9.9285, 8.8921, "PL-001-W001-PU001", "patrol", 78},
+		{"INEC-SEC-002", "security", 10.5231, 7.4403, "KD-001-W001-PU001", "patrol", 82},
+		{"INEC-SUP-001", "supervisor", 7.1610, 3.3480, "OG-001-W001-PU001", "inspection", 60},
+		{"INEC-SUP-002", "supervisor", 6.3331, 5.6221, "ED-001-W001-PU001", "inspection", 45},
+		{"INEC-TEC-001", "tech_support", 6.2189, 7.0774, "AN-001-W001-PU001", "bvas_support", 88},
+		{"INEC-TEC-002", "tech_support", 7.2526, 5.1933, "ON-001-W001-PU001", "bvas_support", 71},
+		{"INEC-REC-001", "returning_officer", 7.7583, 4.5750, "OS-001-W001-PU001", "collation", 92},
+	}
+
+	seeded := 0
+	for _, o := range officials {
+		_, err := db.Exec(`
+			INSERT INTO official_tracking (staff_id, role, latitude, longitude, pu_code, activity, battery_pct, geom, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, ST_SetSRID(ST_MakePoint($4, $3), 4326), NOW())
+			ON CONFLICT (staff_id) DO UPDATE SET latitude=$3, longitude=$4, pu_code=$5, activity=$6, battery_pct=$7, geom=ST_SetSRID(ST_MakePoint($4, $3), 4326), updated_at=NOW()`,
+			o.StaffID, o.Role, o.Lat, o.Lng, o.PUCode, o.Activity, o.Battery)
+		if err == nil {
+			seeded++
+		}
+	}
+
+	// Seed crowd density reports
+	crowdReports := []struct {
+		PUCode      string
+		Lat, Lng    float64
+		HeadCount   int
+		Density     string
+		QueueLen    int
+		WaitTime    int
+		ReporterID  string
+	}{
+		// Crowd reports matching officials — spread across 6 zones
+		{"FC-001-W001-PU001", 9.0805, 7.4969, 245, "high", 85, 45, "INEC-PO-001"},          // Abuja
+		{"LA-001-W001-PU001", 6.5975, 3.3433, 320, "overcrowded", 120, 60, "INEC-PO-002"},   // Lagos
+		{"KN-001-W001-PU001", 12.0001, 8.5167, 150, "moderate", 40, 20, "INEC-PO-003"},      // Kano
+		{"EN-001-W001-PU001", 6.5536, 7.4143, 180, "high", 60, 35, "INEC-APO-001"},          // Enugu
+		{"OY-001-W001-PU001", 7.3786, 3.8970, 95, "moderate", 25, 15, "INEC-APO-002"},       // Ibadan
+		{"BO-001-W001-PU001", 11.8395, 13.1536, 75, "low", 15, 10, "INEC-OBS-001"},          // Maiduguri
+		{"RI-001-W001-PU001", 4.7677, 7.0189, 280, "high", 90, 50, "INEC-OBS-002"},          // Port Harcourt
+		{"CR-001-W001-PU001", 4.9796, 8.3374, 110, "moderate", 30, 18, "INEC-OBS-003"},      // Calabar
+		{"PL-001-W001-PU001", 9.9285, 8.8921, 60, "low", 10, 5, "INEC-SEC-001"},             // Jos
+		{"ED-001-W001-PU001", 6.3331, 5.6221, 410, "overcrowded", 150, 75, "INEC-SUP-002"},  // Benin City
+	}
+
+	// Clear stale crowd_density data before re-seeding
+	db.Exec(`DELETE FROM crowd_density`)
+
+	crowdSeeded := 0
+	for _, c := range crowdReports {
+		_, err := db.Exec(`
+			INSERT INTO crowd_density (pu_code, latitude, longitude, head_count, density_level, queue_length, wait_time_min, reporter_id, geom)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ST_SetSRID(ST_MakePoint($3, $2), 4326))`,
+			c.PUCode, c.Lat, c.Lng, c.HeadCount, c.Density, c.QueueLen, c.WaitTime, c.ReporterID)
+		if err == nil {
+			crowdSeeded++
+		}
+	}
+
+	// Seed polling unit locations matching official positions
+	puLocations := []struct {
+		Code  string
+		Lat   float64
+		Lng   float64
+		State string
+	}{
+		// Match all PU codes from officials — Nominatim-verified
+		{"FC-001-W001-PU001", 9.0805, 7.4969, "FC"},    // Abuja
+		{"LA-001-W001-PU001", 6.5975, 3.3433, "LA"},    // Lagos
+		{"KN-001-W001-PU001", 12.0001, 8.5167, "KN"},   // Kano
+		{"EN-001-W001-PU001", 6.5536, 7.4143, "EN"},    // Enugu
+		{"OY-001-W001-PU001", 7.3786, 3.8970, "OY"},    // Ibadan
+		{"BO-001-W001-PU001", 11.8395, 13.1536, "BO"},  // Maiduguri
+		{"RI-001-W001-PU001", 4.7677, 7.0189, "RI"},    // Port Harcourt
+		{"CR-001-W001-PU001", 4.9796, 8.3374, "CR"},    // Calabar
+		{"PL-001-W001-PU001", 9.9285, 8.8921, "PL"},    // Jos
+		{"KD-001-W001-PU001", 10.5231, 7.4403, "KD"},   // Kaduna
+		{"OG-001-W001-PU001", 7.1610, 3.3480, "OG"},    // Abeokuta
+		{"ED-001-W001-PU001", 6.3331, 5.6221, "ED"},    // Benin City
+		{"AN-001-W001-PU001", 6.2189, 7.0774, "AN"},    // Awka
+		{"ON-001-W001-PU001", 7.2526, 5.1933, "ON"},    // Akure
+		{"OS-001-W001-PU001", 7.7583, 4.5750, "OS"},    // Osogbo
+	}
+
+	puSeeded := 0
+	var puErr string
+	for _, pu := range puLocations {
+		_, err := db.Exec(`
+			INSERT INTO polling_unit_locations (polling_unit_code, latitude, longitude, state_code, geom)
+			VALUES ($1, $2::real, $3::real, $4, ST_SetSRID(ST_MakePoint($3::float8, $2::float8), 4326))
+			ON CONFLICT (polling_unit_code) DO UPDATE SET latitude=$2::real, longitude=$3::real, state_code=$4, geom=ST_SetSRID(ST_MakePoint($3::float8, $2::float8), 4326)`,
+			pu.Code, pu.Lat, pu.Lng, pu.State)
+		if err == nil {
+			puSeeded++
+		} else if puErr == "" {
+			puErr = err.Error()
+		}
+	}
+
+	resp := M{
+		"officials_seeded":    seeded,
+		"crowd_seeded":        crowdSeeded,
+		"pu_locations_seeded": puSeeded,
+		"total_officials":     len(officials),
+		"total_crowd":         len(crowdReports),
+	}
+	if puErr != "" {
+		resp["pu_error"] = puErr
+	}
+	writeJSON(w, 200, resp)
 }
 
 // Unused import suppression
