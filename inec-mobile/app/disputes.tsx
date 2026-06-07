@@ -30,6 +30,8 @@ export default function DisputesScreen() {
   const [formCategory, setFormCategory] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formPuCode, setFormPuCode] = useState('');
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
 
   const loadData = useCallback(async () => {
     try {
@@ -75,6 +77,26 @@ export default function DisputesScreen() {
     setFiling(false);
   };
 
+  const resolveDispute = async (id: number) => {
+    const resolution = 'Resolved by field officer review';
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await disputeApi.updateStatus(id, 'resolved', resolution);
+      await loadData();
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Failed to resolve');
+    }
+  };
+
+  const filtered = disputes.filter(d => {
+    if (filterStatus !== 'all' && d.status !== filterStatus) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return d.category?.toLowerCase().includes(q) || d.description?.toLowerCase().includes(q) || d.polling_unit_code?.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
   if (loading) return <View style={styles.container}><CardSkeleton /><CardSkeleton /></View>;
 
   return (
@@ -102,10 +124,23 @@ export default function DisputesScreen() {
           </ScrollView>
         )}
 
-        {disputes.length === 0 ? (
-          <EmptyState icon="shield-outline" title="No Disputes" description="No election disputes have been filed yet" />
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={18} color="#94a3b8" />
+          <TextInput style={styles.searchInput} placeholder="Search disputes..." value={search} onChangeText={setSearch} />
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ paddingHorizontal: 16, marginBottom: 12 }}>
+          {['all', 'filed', 'under_review', 'escalated', 'resolved', 'dismissed'].map(s => (
+            <TouchableOpacity key={s} style={[styles.chipBtn, filterStatus === s && styles.chipBtnActive]} onPress={() => setFilterStatus(s)}>
+              <Text style={[styles.chipText, filterStatus === s && styles.chipTextActive]}>{s === 'all' ? 'All' : s.replace(/_/g, ' ')}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        {filtered.length === 0 ? (
+          <EmptyState icon="shield-outline" title="No Disputes" description="No disputes match your filters" />
         ) : (
-          disputes.map((d) => {
+          filtered.map((d) => {
             const cfg = STATUS_CONFIG[d.status] || STATUS_CONFIG.filed;
             return (
               <TouchableOpacity key={d.id} style={styles.disputeCard} activeOpacity={0.7}>
@@ -132,6 +167,14 @@ export default function DisputesScreen() {
                     <Text style={styles.metaText}>{new Date(d.filed_at).toLocaleDateString()}</Text>
                   </View>
                 </View>
+                {d.status !== 'resolved' && d.status !== 'dismissed' && (
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity style={styles.resolveBtn} onPress={() => resolveDispute(d.id)}>
+                      <Ionicons name="checkmark-circle" size={14} color="#166534" />
+                      <Text style={styles.resolveBtnText}>Resolve</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </TouchableOpacity>
             );
           })
@@ -231,4 +274,13 @@ const styles = StyleSheet.create({
   categoryChipTextActive: { color: '#166534' },
   submitButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#166534', paddingVertical: 14, borderRadius: 14, marginTop: 24, marginBottom: 40 },
   submitButtonText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  searchBox: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 10, padding: 10, backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0', gap: 8 },
+  searchInput: { flex: 1, fontSize: 14 },
+  chipBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#f1f5f9', marginRight: 8 },
+  chipBtnActive: { backgroundColor: '#166534' },
+  chipText: { fontSize: 12, fontWeight: '600', color: '#64748b', textTransform: 'capitalize' },
+  chipTextActive: { color: '#fff' },
+  actionRow: { flexDirection: 'row', gap: 8, marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
+  resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: '#dcfce7' },
+  resolveBtnText: { fontSize: 12, fontWeight: '600', color: '#166534' },
 });

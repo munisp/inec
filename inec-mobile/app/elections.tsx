@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Platform,
+  RefreshControl, Platform, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -21,6 +21,8 @@ export default function ElectionsScreen() {
   const [elections, setElections] = useState<Election[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
 
   const loadElections = useCallback(async () => {
     try {
@@ -52,10 +54,37 @@ export default function ElectionsScreen() {
         <Text style={styles.headerTitle}>{elections.length} Elections</Text>
       </View>
 
-      {elections.length === 0 ? (
-        <EmptyState icon="podium-outline" title="No Elections" description="No elections are currently available" />
+      <View style={styles.searchBox}>
+        <Ionicons name="search" size={18} color="#94a3b8" />
+        <TextInput style={styles.searchInput} placeholder="Search elections..." value={search} onChangeText={setSearch} />
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ paddingHorizontal: 16, marginBottom: 12 }}>
+        {['all', 'active', 'upcoming', 'completed', 'cancelled'].map(s => (
+          <TouchableOpacity key={s} style={[styles.filterChip, filterStatus === s && styles.filterChipActive]} onPress={() => setFilterStatus(s)}>
+            <Text style={[styles.filterChipText, filterStatus === s && styles.filterChipTextActive]}>{s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {elections.filter(e => {
+        if (filterStatus !== 'all' && e.status !== filterStatus) return false;
+        if (search) {
+          const q = search.toLowerCase();
+          return e.name?.toLowerCase().includes(q) || e.type?.toLowerCase().includes(q);
+        }
+        return true;
+      }).length === 0 ? (
+        <EmptyState icon="podium-outline" title="No Elections" description="No elections match your search" />
       ) : (
-        elections.map((e) => {
+        elections.filter(e => {
+          if (filterStatus !== 'all' && e.status !== filterStatus) return false;
+          if (search) {
+            const q = search.toLowerCase();
+            return e.name?.toLowerCase().includes(q) || e.type?.toLowerCase().includes(q);
+          }
+          return true;
+        }).map((e) => {
           const progress = e.total_polling_units > 0 ? (e.results_submitted / e.total_polling_units) * 100 : 0;
           const cfg = STATUS_COLORS[e.status] || STATUS_COLORS.upcoming;
           return (
@@ -148,4 +177,10 @@ const styles = StyleSheet.create({
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10, borderTopWidth: 1, borderTopColor: '#f3f4f6' },
   dateRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   dateText: { fontSize: 12, color: '#9ca3af' },
+  searchBox: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 10, padding: 10, backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#e2e8f0', gap: 8 },
+  searchInput: { flex: 1, fontSize: 14 },
+  filterChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#f1f5f9', marginRight: 8 },
+  filterChipActive: { backgroundColor: '#166534' },
+  filterChipText: { fontSize: 12, fontWeight: '600', color: '#64748b' },
+  filterChipTextActive: { color: '#fff' },
 });

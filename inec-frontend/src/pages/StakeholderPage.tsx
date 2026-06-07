@@ -5,7 +5,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Users, AlertTriangle, FileWarning, Bell, QrCode, Shield, CheckCircle, Send } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Users, AlertTriangle, FileWarning, Bell, QrCode, Shield, CheckCircle, Send, Search, Plus } from 'lucide-react';
 
 export default function StakeholderPage() {
   const [stats, setStats] = useState<any>(null);
@@ -14,6 +16,11 @@ export default function StakeholderPage() {
   const [grievances, setGrievances] = useState<any>(null);
   const [notifications, setNotifications] = useState<any>(null);
   const [tab, setTab] = useState('overview');
+  const [search, setSearch] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [createForm, setCreateForm] = useState({ org_name: '', type: 'political_party', contact_person: '', email: '', phone: '', state_code: '' });
+  const [showGrievanceForm, setShowGrievanceForm] = useState(false);
+  const [grievanceForm, setGrievanceForm] = useState({ category: 'process', description: '' });
 
   useEffect(() => {
     api.getStakeholderStats().then(setStats).catch(() => {});
@@ -31,6 +38,27 @@ export default function StakeholderPage() {
     if (!resolution) return;
     await api.resolveGrievance(id, resolution);
     api.getGrievances().then(setGrievances);
+  };
+
+  const handleCreateStakeholder = async () => {
+    if (!createForm.org_name) return;
+    try {
+      await api.createStakeholder(createForm);
+      setShowCreate(false);
+      setCreateForm({ org_name: '', type: 'political_party', contact_person: '', email: '', phone: '', state_code: '' });
+      api.getStakeholders().then(setStakeholders);
+      api.getStakeholderStats().then(setStats);
+    } catch { void 0; }
+  };
+
+  const handleCreateGrievance = async () => {
+    if (!grievanceForm.description) return;
+    try {
+      await api.createGrievance(grievanceForm);
+      setShowGrievanceForm(false);
+      setGrievanceForm({ category: 'process', description: '' });
+      api.getGrievances().then(setGrievances);
+    } catch { void 0; }
   };
 
   const handleSendNotification = async () => {
@@ -53,9 +81,43 @@ export default function StakeholderPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold">Stakeholder Engagement</h2>
-        <p className="text-zinc-500 text-sm">Unified dashboard for parties, observers, media, and agents</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Stakeholder Engagement</h2>
+          <p className="text-zinc-500 text-sm">Unified dashboard for parties, observers, media, and agents</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <Input placeholder="Search stakeholders..." value={search} onChange={e => setSearch(e.target.value)} className="pl-8 w-52" />
+          </div>
+          <Dialog open={showCreate} onOpenChange={setShowCreate}>
+            <DialogTrigger asChild>
+              <Button className="bg-green-700 hover:bg-green-800 gap-1"><Plus className="w-4 h-4" /> Register</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Register Stakeholder</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <Input placeholder="Organization Name" value={createForm.org_name} onChange={e => setCreateForm({ ...createForm, org_name: e.target.value })} />
+                <Select value={createForm.type} onValueChange={v => setCreateForm({ ...createForm, type: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="political_party">Political Party</SelectItem>
+                    <SelectItem value="observer_org">Observer Organization</SelectItem>
+                    <SelectItem value="media">Media</SelectItem>
+                    <SelectItem value="civil_society">Civil Society</SelectItem>
+                    <SelectItem value="international">International Observer</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input placeholder="Contact Person" value={createForm.contact_person} onChange={e => setCreateForm({ ...createForm, contact_person: e.target.value })} />
+                <Input placeholder="Email" value={createForm.email} onChange={e => setCreateForm({ ...createForm, email: e.target.value })} />
+                <Input placeholder="Phone" value={createForm.phone} onChange={e => setCreateForm({ ...createForm, phone: e.target.value })} />
+                <Input placeholder="State Code (e.g. LA)" value={createForm.state_code} onChange={e => setCreateForm({ ...createForm, state_code: e.target.value })} />
+                <Button onClick={handleCreateStakeholder} className="w-full bg-green-700 hover:bg-green-800">Register</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       {stats && (
@@ -114,7 +176,11 @@ export default function StakeholderPage() {
                     <th className="pb-2 pr-4">Name</th><th className="pb-2 pr-4">Organization</th><th className="pb-2 pr-4">Type</th><th className="pb-2 pr-4">Credential</th><th className="pb-2">Status</th>
                   </tr></thead>
                   <tbody>
-                    {stakeholders?.stakeholders?.map((s: any) => (
+                    {stakeholders?.stakeholders?.filter((s: any) => {
+                      if (!search) return true;
+                      const q = search.toLowerCase();
+                      return s.name?.toLowerCase().includes(q) || s.organization?.toLowerCase().includes(q) || s.type?.toLowerCase().includes(q);
+                    }).map((s: any) => (
                       <tr key={s.id} className="border-b border-zinc-100">
                         <td className="py-2 pr-4 font-medium">{s.name}</td>
                         <td className="py-2 pr-4 text-xs">{s.organization}</td>
@@ -163,8 +229,36 @@ export default function StakeholderPage() {
         </TabsContent>
 
         <TabsContent value="grievances">
+          <Card className="mb-4">
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold">Grievance Redressal Tracker</h4>
+                <Dialog open={showGrievanceForm} onOpenChange={setShowGrievanceForm}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" className="gap-1"><Plus className="w-3.5 h-3.5" /> File Grievance</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader><DialogTitle>File Grievance</DialogTitle></DialogHeader>
+                    <div className="space-y-3">
+                      <Select value={grievanceForm.category} onValueChange={v => setGrievanceForm({ ...grievanceForm, category: v })}>
+                        <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="process">Process</SelectItem>
+                          <SelectItem value="access">Access</SelectItem>
+                          <SelectItem value="intimidation">Intimidation</SelectItem>
+                          <SelectItem value="results">Results</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input placeholder="Describe the grievance..." value={grievanceForm.description} onChange={e => setGrievanceForm({ ...grievanceForm, description: e.target.value })} />
+                      <Button onClick={handleCreateGrievance} className="w-full">Submit</Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardContent>
+          </Card>
           <Card>
-            <CardHeader><CardTitle className="text-sm">Grievance Redressal Tracker</CardTitle></CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

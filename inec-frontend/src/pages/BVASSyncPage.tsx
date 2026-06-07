@@ -3,12 +3,14 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { RefreshCw, Wifi, WifiOff, Battery, Activity, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { RefreshCw, Wifi, WifiOff, Battery, Activity, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
 
 export default function BVASSyncPage() {
   const [stats, setStats] = useState<any>(null);
   const [queue, setQueue] = useState<any[]>([]);
   const [tab, setTab] = useState<'overview'|'queue'|'heartbeats'>('overview');
+  const [search, setSearch] = useState('');
 
   useEffect(() => { loadData(); }, []);
 
@@ -112,7 +114,15 @@ export default function BVASSyncPage() {
 
       {tab === 'queue' && (
         <Card>
-          <CardHeader><CardTitle className="text-sm">Sync Queue ({queue.length} items)</CardTitle></CardHeader>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">Sync Queue ({queue.filter((item: any) => !search || item.device_id?.toLowerCase().includes(search.toLowerCase()) || item.sync_type?.toLowerCase().includes(search.toLowerCase()) || item.status?.toLowerCase().includes(search.toLowerCase())).length} of {queue.length} items)</CardTitle>
+              <div className="relative w-48">
+                <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+                <Input placeholder="Search queue..." value={search} onChange={e => setSearch(e.target.value)} className="pl-8 h-8 text-xs" />
+              </div>
+            </div>
+          </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -121,7 +131,7 @@ export default function BVASSyncPage() {
                   <th className="pb-2 pr-4">Priority</th><th className="pb-2 pr-4">Status</th><th className="pb-2 pr-4">Created</th><th className="pb-2">Actions</th>
                 </tr></thead>
                 <tbody>
-                  {queue.map((item: any) => (
+                  {queue.filter((item: any) => !search || item.device_id?.toLowerCase().includes(search.toLowerCase()) || item.sync_type?.toLowerCase().includes(search.toLowerCase()) || item.status?.toLowerCase().includes(search.toLowerCase())).map((item: any) => (
                     <tr key={item.id} className="border-b border-zinc-50 hover:bg-zinc-50">
                       <td className="py-2 pr-4 font-mono text-xs">#{item.id}</td>
                       <td className="py-2 pr-4 font-mono text-xs">{item.device_id}</td>

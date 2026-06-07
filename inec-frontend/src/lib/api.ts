@@ -639,4 +639,39 @@ export const api = {
   // Voice IVR (#14)
   ivrVerify: (phone_number: string, pu_code: string, language?: string) =>
     request('/ivr/verify', { method: 'POST', body: JSON.stringify({ phone_number, pu_code, language }) }),
+
+  // User Management CRUD
+  getUsers: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+    return request(`/users${qs}`);
+  },
+  getUser: (id: number) => request(`/users/${id}`),
+  createUser: (data: { username: string; full_name: string; password: string; role: string; staff_id?: string; state_code?: string }) =>
+    request('/users', { method: 'POST', body: JSON.stringify(data) }),
+  updateUser: (id: number, data: { full_name?: string; role?: string; staff_id?: string; state_code?: string }) =>
+    request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteUser: (id: number) => request(`/users/${id}`, { method: 'DELETE' }),
+
+  // Election Delete
+  deleteElection: (id: number) => request(`/elections/${id}`, { method: 'DELETE' }),
+
+  // Incident Update
+  updateIncident: (id: number, status: string) =>
+    request(`/incidents/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+
+  // Stakeholder Create
+  createStakeholder: (data: { org_name: string; type: string; contact_person?: string; email?: string; phone?: string; state_code?: string }) =>
+    request('/stakeholders', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Grievance Create
+  createGrievance: (data: { category: string; description: string; election_id?: number; polling_unit_code?: string }) =>
+    request('/stakeholders/grievances', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Webhook Update
+  updateWebhook: (id: number, data: { url?: string; events?: string[]; active?: boolean }) =>
+    request(`/api/v1/webhooks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  // Training Course Create
+  createCourse: (data: { title: string; course_type: string; target_role?: string; duration_hours?: number; is_mandatory?: boolean }) =>
+    request('/training/courses', { method: 'POST', body: JSON.stringify(data) }),
 };

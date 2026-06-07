@@ -4,7 +4,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { MapPin, Activity } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { MapPin, Activity, Search } from 'lucide-react';
 
 interface State { code: string; name: string; }
 interface LGA { code: string; name: string; }
@@ -20,6 +21,7 @@ export default function PollingUnitsPage() {
   const [selectedState, setSelectedState] = useState('');
   const [selectedLga, setSelectedLga] = useState('');
   const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
 
   useEffect(() => { api.getStates().then(setStates); }, []);
   useEffect(() => {
@@ -53,7 +55,17 @@ export default function PollingUnitsPage() {
             </SelectContent>
           </Select>
         )}
-        {pus.length > 0 && <Badge variant="outline">{pus.length} polling units</Badge>}
+        {pus.length > 0 && (
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <Input placeholder="Search PU name/code..." value={search} onChange={e => setSearch(e.target.value)} className="pl-8 w-52" />
+          </div>
+        )}
+        {pus.length > 0 && <Badge variant="outline">{pus.filter(pu => {
+          if (!search) return true;
+          const q = search.toLowerCase();
+          return pu.name?.toLowerCase().includes(q) || pu.code?.toLowerCase().includes(q) || pu.ward_name?.toLowerCase().includes(q);
+        }).length} of {pus.length} polling units</Badge>}
       </div>
 
       {!selectedState && (
@@ -83,7 +95,11 @@ export default function PollingUnitsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {pus.map(pu => (
+                {pus.filter(pu => {
+                  if (!search) return true;
+                  const q = search.toLowerCase();
+                  return pu.name?.toLowerCase().includes(q) || pu.code?.toLowerCase().includes(q) || pu.ward_name?.toLowerCase().includes(q);
+                }).map(pu => (
                   <TableRow key={pu.code}>
                     <TableCell className="font-mono text-xs">{pu.code}</TableCell>
                     <TableCell className="font-medium">{pu.name}</TableCell>

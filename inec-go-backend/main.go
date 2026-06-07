@@ -356,6 +356,7 @@ func main() {
 	r.HandleFunc("/api/v1/webhooks", adminOnly(handleWebhookCreate)).Methods("POST")
 	r.HandleFunc("/api/v1/webhooks", readAuth(handleWebhookList)).Methods("GET")
 	r.HandleFunc("/api/v1/webhooks/{id}", adminOnly(handleWebhookDelete)).Methods("DELETE")
+	r.HandleFunc("/api/v1/webhooks/{id}", adminOnly(handleUpdateWebhook)).Methods("PATCH")
 
 	// Export endpoints (CSV/JSON)
 	r.HandleFunc("/export/results", readAuth(handleExportResults)).Methods("GET")
@@ -475,12 +476,15 @@ func main() {
 	r.HandleFunc("/training/enrollments/{id:[0-9]+}/complete", writeAuth(handleCompleteTraining)).Methods("POST")
 	r.HandleFunc("/training/certificates", readAuth(handleTrainingCertificates)).Methods("GET")
 	r.HandleFunc("/training/vr-scenarios", readAuth(handleVRScenarios)).Methods("GET")
+	r.HandleFunc("/training/courses", adminOnly(handleCreateCourse)).Methods("POST")
 
 	// Phase 7 - Stakeholder Engagement — auth required
 	r.HandleFunc("/stakeholders/stats", readAuth(handleStakeholderStats)).Methods("GET")
 	r.HandleFunc("/stakeholders", readAuth(handleListStakeholders)).Methods("GET")
+	r.HandleFunc("/stakeholders", adminOnly(handleCreateStakeholder)).Methods("POST")
 	r.HandleFunc("/stakeholders/incidents", readAuth(handleStakeholderIncidents)).Methods("GET")
 	r.HandleFunc("/stakeholders/grievances", readAuth(handleListGrievances)).Methods("GET")
+	r.HandleFunc("/stakeholders/grievances", writeAuth(handleCreateGrievance)).Methods("POST")
 	r.HandleFunc("/stakeholders/grievances/{id:[0-9]+}", adminOnly(handleResolveGrievance)).Methods("PATCH")
 	r.HandleFunc("/stakeholders/notifications", readAuth(handlePushNotifications)).Methods("GET")
 	r.HandleFunc("/stakeholders/notifications", adminOnly(handleSendNotification)).Methods("POST")
@@ -581,6 +585,14 @@ func main() {
 
 	// Admin user management
 	r.HandleFunc("/admin/users/promote", adminOnly(handlePromoteUser)).Methods("POST")
+	r.HandleFunc("/users", adminOnly(handleListUsers)).Methods("GET")
+	r.HandleFunc("/users/{id:[0-9]+}", adminOnly(handleGetUser)).Methods("GET")
+	r.HandleFunc("/users", adminOnly(handleCreateUser)).Methods("POST")
+	r.HandleFunc("/users/{id:[0-9]+}", adminOnly(handleUpdateUser)).Methods("PATCH")
+	r.HandleFunc("/users/{id:[0-9]+}", adminOnly(handleDeleteUser)).Methods("DELETE")
+
+	// Election delete
+	r.HandleFunc("/elections/{id:[0-9]+}", adminOnly(handleDeleteElection)).Methods("DELETE")
 
 	// Command Center (#1) + Load Shedding (#25)
 	r.HandleFunc("/command-center/live", adminOnly(handleCommandCenterLive)).Methods("GET")

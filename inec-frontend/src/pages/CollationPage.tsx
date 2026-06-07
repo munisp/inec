@@ -5,7 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ChevronRight, ArrowLeft, Activity } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { ChevronRight, ArrowLeft, Activity, Search } from 'lucide-react';
 
 interface CollationItem {
   code: string;
@@ -39,6 +40,7 @@ export default function CollationPage() {
   const [parentCode, setParentCode] = useState<string | undefined>();
   const [data, setData] = useState<CollationItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const [breadcrumbs, setBreadcrumbs] = useState<Array<{ level: Level; code?: string; name: string }>>([
     { level: 'state', name: 'National' }
   ]);
@@ -102,11 +104,16 @@ export default function CollationPage() {
         </Button>
       )}
 
+      <div className="relative max-w-xs">
+        <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+        <Input placeholder={`Search ${LEVEL_LABELS[level].toLowerCase()}...`} value={search} onChange={e => setSearch(e.target.value)} className="pl-8" />
+      </div>
+
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold">
             {LEVEL_LABELS[level]} Level Collation
-            <Badge variant="outline" className="ml-2">{data.length} {LEVEL_LABELS[level].toLowerCase()}</Badge>
+            <Badge variant="outline" className="ml-2">{data.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.code.toLowerCase().includes(search.toLowerCase())).length} of {data.length} {LEVEL_LABELS[level].toLowerCase()}</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -127,7 +134,7 @@ export default function CollationPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.map((item) => {
+              {data.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.code.toLowerCase().includes(search.toLowerCase())).map((item) => {
                 const partyMap: Record<string, number> = {};
                 item.party_scores?.forEach(p => { partyMap[p.abbreviation] = p.total_votes; });
                 return (

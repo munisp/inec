@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Landmark, Calendar, Users, Activity, Plus, ArrowLeft, BarChart3, Edit2 } from 'lucide-react';
+import { Landmark, Calendar, Users, Activity, Plus, ArrowLeft, BarChart3, Edit2, Trash2, Search } from 'lucide-react';
 
 interface Election {
   id: number; title: string; election_type: string; election_date: string;
@@ -37,6 +37,8 @@ export default function ElectionsPage() {
   const [filterStatus, setFilterStatus] = useState('');
   const [form, setForm] = useState({ title: '', description: '', election_type: 'presidential', election_date: '', status: 'upcoming' });
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState('');
+  const [showDelete, setShowDelete] = useState<number | null>(null);
 
   const loadElections = () => {
     setLoading(true);
@@ -77,6 +79,21 @@ export default function ElectionsPage() {
     } catch { /* handled by api */ }
     setSaving(false);
   };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await api.deleteElection(id);
+      setShowDelete(null);
+      if (view === 'detail') setView('list');
+      loadElections();
+    } catch { /* handled by api */ }
+  };
+
+  const filteredElections = elections.filter(e => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return e.title.toLowerCase().includes(s) || e.description?.toLowerCase().includes(s) || e.election_type?.toLowerCase().includes(s);
+  });
 
   if (view === 'create' || view === 'edit') {
     return (
@@ -131,9 +148,14 @@ export default function ElectionsPage() {
           <Button variant="ghost" size="sm" onClick={() => setView('list')}>
             <ArrowLeft className="w-4 h-4 mr-1" /> Back
           </Button>
-          <Button variant="outline" size="sm" onClick={() => openEdit(selected)}>
-            <Edit2 className="w-4 h-4 mr-1" /> Edit
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => openEdit(selected)}>
+              <Edit2 className="w-4 h-4 mr-1" /> Edit
+            </Button>
+            <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700" onClick={() => handleDelete(selected.id)}>
+              <Trash2 className="w-4 h-4 mr-1" /> Delete
+            </Button>
+          </div>
         </div>
         <Card>
           <CardContent className="pt-6">
@@ -203,8 +225,12 @@ export default function ElectionsPage() {
   // List view
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <Input placeholder="Search elections..." value={search} onChange={e => setSearch(e.target.value)} className="pl-8 w-48" />
+          </div>
           <select className="border rounded px-2 py-1 text-sm" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
             <option value="">All Status</option>
             <option value="upcoming">Upcoming</option>
@@ -223,7 +249,7 @@ export default function ElectionsPage() {
 
       {!loading && (
         <div className="grid gap-4">
-          {elections.map(e => (
+          {filteredElections.map(e => (
             <Card key={e.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => openDetail(e)}>
               <CardContent className="pt-4 pb-4">
                 <div className="flex items-start justify-between">
@@ -246,7 +272,7 @@ export default function ElectionsPage() {
               </CardContent>
             </Card>
           ))}
-          {elections.length === 0 && (
+          {filteredElections.length === 0 && (
             <Card><CardContent className="py-12 text-center text-zinc-500">No elections found</CardContent></Card>
           )}
         </div>

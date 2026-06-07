@@ -68,6 +68,7 @@ export default defineConfig({
       '/ussd': 'http://localhost:8088',
       '/kyb': 'http://localhost:8088',
       '/security': 'http://localhost:8088',
+      '/users': 'http://localhost:8088',
     },
   },
 })

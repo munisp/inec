@@ -4,7 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { GraduationCap, Award, Headset, BookOpen, Users, TrendingUp, UserPlus } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { GraduationCap, Award, Headset, BookOpen, Users, TrendingUp, UserPlus, Search, Plus } from 'lucide-react';
 
 export default function TrainingPage() {
   const [stats, setStats] = useState<any>(null);
@@ -13,6 +16,9 @@ export default function TrainingPage() {
   const [scenarios, setScenarios] = useState<any>(null);
   const [enrollments, setEnrollments] = useState<any>(null);
   const [tab, setTab] = useState('courses');
+  const [search, setSearch] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [courseForm, setCourseForm] = useState({ title: '', course_type: 'interactive', target_role: 'presiding_officer', duration_hours: 4, is_mandatory: false });
 
   useEffect(() => {
     api.getTrainingStats().then(setStats).catch(() => {});
@@ -23,6 +29,17 @@ export default function TrainingPage() {
   }, []);
 
   const [enrolling, setEnrolling] = useState<number | null>(null);
+
+  const handleCreateCourse = async () => {
+    if (!courseForm.title) return;
+    try {
+      await api.createCourse(courseForm);
+      setShowCreate(false);
+      setCourseForm({ title: '', course_type: 'interactive', target_role: 'presiding_officer', duration_hours: 4, is_mandatory: false });
+      api.getTrainingCourses().then(setCourses);
+      api.getTrainingStats().then(setStats);
+    } catch { void 0; }
+  };
 
   const handleEnroll = async (courseId: number) => {
     setEnrolling(courseId);
@@ -44,9 +61,53 @@ export default function TrainingPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold">Training & Capacity Building</h2>
-        <p className="text-zinc-500 text-sm">VR simulations, gamified learning, and blockchain-verified credentials</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Training & Capacity Building</h2>
+          <p className="text-zinc-500 text-sm">VR simulations, gamified learning, and blockchain-verified credentials</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <Input placeholder="Search courses..." value={search} onChange={e => setSearch(e.target.value)} className="pl-8 w-48" />
+          </div>
+          <Dialog open={showCreate} onOpenChange={setShowCreate}>
+            <DialogTrigger asChild>
+              <Button className="bg-green-700 hover:bg-green-800 gap-1"><Plus className="w-4 h-4" /> New Course</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Create Training Course</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <Input placeholder="Course Title" value={courseForm.title} onChange={e => setCourseForm({ ...courseForm, title: e.target.value })} />
+                <Select value={courseForm.course_type} onValueChange={v => setCourseForm({ ...courseForm, course_type: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="interactive">Interactive</SelectItem>
+                    <SelectItem value="video">Video</SelectItem>
+                    <SelectItem value="vr_simulation">VR Simulation</SelectItem>
+                    <SelectItem value="gamified">Gamified</SelectItem>
+                    <SelectItem value="assessment">Assessment</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={courseForm.target_role} onValueChange={v => setCourseForm({ ...courseForm, target_role: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="presiding_officer">Presiding Officer</SelectItem>
+                    <SelectItem value="collation_officer">Collation Officer</SelectItem>
+                    <SelectItem value="observer">Observer</SelectItem>
+                    <SelectItem value="all">All Roles</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input type="number" placeholder="Duration (hours)" value={courseForm.duration_hours} onChange={e => setCourseForm({ ...courseForm, duration_hours: parseInt(e.target.value) || 0 })} />
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={courseForm.is_mandatory} onChange={e => setCourseForm({ ...courseForm, is_mandatory: e.target.checked })} />
+                  Mandatory course
+                </label>
+                <Button onClick={handleCreateCourse} className="w-full bg-green-700 hover:bg-green-800">Create Course</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       {stats && (
@@ -82,7 +143,11 @@ export default function TrainingPage() {
 
         <TabsContent value="courses">
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {courses?.courses?.map((c: any) => (
+            {courses?.courses?.filter((c: any) => {
+              if (!search) return true;
+              const q = search.toLowerCase();
+              return c.title?.toLowerCase().includes(q) || c.course_type?.toLowerCase().includes(q) || c.target_role?.toLowerCase().includes(q);
+            }).map((c: any) => (
               <Card key={c.id} className="relative">
                 {c.is_mandatory && <Badge className="absolute top-2 right-2 bg-red-500 text-xs">Mandatory</Badge>}
                 <CardContent className="pt-4">

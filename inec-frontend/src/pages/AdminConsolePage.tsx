@@ -3,7 +3,8 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Settings, Users, Package, ChevronRight, Clock, CheckCircle2, Truck, BarChart3, Shield } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Settings, Users, Package, ChevronRight, Clock, CheckCircle2, Truck, BarChart3, Shield, Search } from 'lucide-react';
 
 const LIFECYCLE_PHASES = ['created','configured','staff_deployed','materials_deployed','monitoring','voting_open','voting_closed','collation','declaration','certified','archived'];
 
@@ -14,6 +15,7 @@ export default function AdminConsolePage() {
   const [materials, setMaterials] = useState<any[]>([]);
   const [materialStats, setMaterialStats] = useState<any>(null);
   const [tab, setTab] = useState<'dashboard'|'lifecycle'|'staff'|'materials'>('dashboard');
+  const [search, setSearch] = useState('');
 
   useEffect(() => { loadAll(); }, []);
 
@@ -167,7 +169,15 @@ export default function AdminConsolePage() {
 
       {tab === 'staff' && (
         <Card>
-          <CardHeader><CardTitle className="text-sm">Staff Assignments ({staff.length})</CardTitle></CardHeader>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">Staff Assignments ({staff.filter((s: any) => !search || s.full_name?.toLowerCase().includes(search.toLowerCase()) || s.role?.toLowerCase().includes(search.toLowerCase()) || s.area_code?.toLowerCase().includes(search.toLowerCase())).length} of {staff.length})</CardTitle>
+              <div className="relative w-48">
+                <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" />
+                <Input placeholder="Search staff..." value={search} onChange={e => setSearch(e.target.value)} className="pl-8 h-8 text-xs" />
+              </div>
+            </div>
+          </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -176,7 +186,7 @@ export default function AdminConsolePage() {
                   <th className="pb-2 pr-4">Area Code</th><th className="pb-2">Status</th>
                 </tr></thead>
                 <tbody>
-                  {staff.map((s: any) => (
+                  {staff.filter((s: any) => !search || s.full_name?.toLowerCase().includes(search.toLowerCase()) || s.role?.toLowerCase().includes(search.toLowerCase()) || s.area_code?.toLowerCase().includes(search.toLowerCase())).map((s: any) => (
                     <tr key={s.id} className="border-b border-zinc-50 hover:bg-zinc-50">
                       <td className="py-2 pr-4 font-medium">{s.full_name}</td>
                       <td className="py-2 pr-4 capitalize">{s.role?.replace(/_/g, ' ')}</td>
