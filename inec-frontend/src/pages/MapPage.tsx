@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Landmark, StreetView, Radar, Building2 } from 'lucide-react';
+import { Activity, MapPin, Layers, Eye, ArrowLeft, Satellite, Map as MapIcon, Search, ExternalLink, Navigation, Flame, Radar, Building2 } from 'lucide-react';
 
 interface StateData {
   code: string; name: string; geo_zone: string; capital: string;
