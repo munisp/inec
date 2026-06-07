@@ -57,16 +57,33 @@ export default function GeofencingPage() {
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: 'Total Checks', value: stats.total_checks },
-            { label: 'Within Fence', value: stats.within_fence },
-            { label: 'Outside Fence', value: stats.outside_fence },
-            { label: 'Violation Rate', value: `${((stats.violation_rate || 0) * 100).toFixed(1)}%` },
+            { label: 'Total Checks', value: stats.total_checks, color: 'blue' },
+            { label: 'Within Fence', value: stats.within_fence, color: 'green' },
+            { label: 'Outside Fence', value: stats.outside_fence, color: 'red' },
+            { label: 'Violation Rate', value: `${((stats.violation_rate || 0) * 100).toFixed(1)}%`, color: stats.violation_rate > 0.1 ? 'red' : 'green' },
           ].map(s => (
             <div key={s.label} className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow">
               <p className="text-sm text-gray-500 dark:text-gray-400">{s.label}</p>
-              <p className="text-2xl font-bold dark:text-white">{s.value}</p>
+              <p className={`text-2xl font-bold ${s.color === 'red' ? 'text-red-600' : s.color === 'green' ? 'text-green-600' : 'dark:text-white'}`}>{s.value}</p>
             </div>
           ))}
+        </div>
+      )}
+      {/* Compliance Progress Bar */}
+      {stats && stats.total_checks > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow">
+          <div className="flex justify-between text-sm mb-2">
+            <span className="text-gray-600 dark:text-gray-400">Geofence Compliance</span>
+            <span className="font-semibold dark:text-white">{((1 - (stats.violation_rate || 0)) * 100).toFixed(1)}%</span>
+          </div>
+          <div className="w-full h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div className={`h-full rounded-full transition-all ${(stats.violation_rate || 0) > 0.1 ? 'bg-red-500' : 'bg-green-500'}`}
+              style={{ width: `${((1 - (stats.violation_rate || 0)) * 100)}%` }} />
+          </div>
+          <div className="flex justify-between text-xs text-gray-400 mt-1">
+            <span>{stats.within_fence} compliant</span>
+            <span>{stats.outside_fence} violations</span>
+          </div>
         </div>
       )}
 

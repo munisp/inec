@@ -107,7 +107,9 @@ func main() {
 	initPhase7Tables(db)
 	seedPhase7Data(db)
 	initBiometricEngine(db)
+	seedBiometricEngine(db)
 	initBiometricAdvanced(db)
+	seedBiometricAdvanced(db)
 	initAIProxy()
 	initBlockchainProduction(db)
 	initProductionUpgrades(db)
@@ -127,6 +129,7 @@ func main() {
 	initDisputeSchema()
 	initPushNotificationSchema()
 	initPlatformEnhancements(db)
+	seedComprehensive(db)
 
 	mwHub = initMiddlewareHub()
 	wsHub = newWebSocketHub()

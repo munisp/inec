@@ -79,6 +79,9 @@ export default function IncidentsScreen() {
     return true;
   });
 
+  const sevDist = incidents.reduce((a, i) => { a[i.severity] = (a[i.severity] || 0) + 1; return a; }, {} as Record<string, number>);
+  const statDist = incidents.reduce((a, i) => { a[i.status] = (a[i.status] || 0) + 1; return a; }, {} as Record<string, number>);
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 100 : 80 }}>
       <View style={styles.header}>
@@ -88,6 +91,22 @@ export default function IncidentsScreen() {
           <Ionicons name={showForm ? 'close' : 'add'} size={20} color="#fff" />
         </TouchableOpacity>
       </View>
+
+      {/* Summary Stats */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ paddingHorizontal: 16, marginBottom: 12 }}>
+        {[
+          { label: 'Total', value: incidents.length, bg: '#f1f5f9', color: '#334155' },
+          { label: 'Critical', value: sevDist.critical || 0, bg: '#fef2f2', color: '#dc2626' },
+          { label: 'High', value: sevDist.high || 0, bg: '#fff7ed', color: '#ea580c' },
+          { label: 'Open', value: (statDist.reported || 0) + (statDist.investigating || 0), bg: '#fffbeb', color: '#d97706' },
+          { label: 'Resolved', value: statDist.resolved || 0, bg: '#f0fdf4', color: '#16a34a' },
+        ].map(s => (
+          <View key={s.label} style={{ backgroundColor: s.bg, borderRadius: 10, padding: 12, marginRight: 8, minWidth: 72, alignItems: 'center' }}>
+            <Text style={{ fontSize: 20, fontWeight: '700', color: s.color }}>{s.value}</Text>
+            <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{s.label}</Text>
+          </View>
+        ))}
+      </ScrollView>
 
       <View style={styles.searchBox}>
         <Ionicons name="search" size={18} color="#94a3b8" />

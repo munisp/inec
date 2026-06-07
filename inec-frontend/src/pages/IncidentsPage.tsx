@@ -71,10 +71,23 @@ export default function IncidentsPage() {
     return true;
   });
 
+  const severityDist = incidents.reduce((acc, inc) => { acc[inc.severity] = (acc[inc.severity] || 0) + 1; return acc; }, {} as Record<string, number>);
+  const statusDist = incidents.reduce((acc, inc) => { acc[inc.status] = (acc[inc.status] || 0) + 1; return acc; }, {} as Record<string, number>);
+
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
 
   return (
     <div className="space-y-4">
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        <Card><CardContent className="p-3"><p className="text-xs text-zinc-500">Total</p><p className="text-2xl font-bold">{incidents.length}</p></CardContent></Card>
+        <Card className="border-red-200"><CardContent className="p-3"><p className="text-xs text-red-600">Critical</p><p className="text-2xl font-bold text-red-700">{severityDist.critical || 0}</p></CardContent></Card>
+        <Card className="border-orange-200"><CardContent className="p-3"><p className="text-xs text-orange-600">High</p><p className="text-2xl font-bold text-orange-700">{severityDist.high || 0}</p></CardContent></Card>
+        <Card className="border-amber-200"><CardContent className="p-3"><p className="text-xs text-amber-600">Open</p><p className="text-2xl font-bold text-amber-700">{(statusDist.reported || 0) + (statusDist.investigating || 0)}</p></CardContent></Card>
+        <Card className="border-green-200"><CardContent className="p-3"><p className="text-xs text-green-600">Resolved</p><p className="text-2xl font-bold text-green-700">{statusDist.resolved || 0}</p></CardContent></Card>
+        <Card><CardContent className="p-3"><p className="text-xs text-zinc-500">Resolution Rate</p><p className="text-2xl font-bold">{incidents.length ? ((statusDist.resolved || 0) / incidents.length * 100).toFixed(0) : 0}%</p></CardContent></Card>
+      </div>
+
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="relative">
