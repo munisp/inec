@@ -322,7 +322,7 @@ func handleDLPExport(w http.ResponseWriter, r *http.Request) {
 		"exported_at": time.Now().Format(time.RFC3339),
 		"ip_address":  extractClientIP(r),
 		"export_id":   fmt.Sprintf("EXP-%d", time.Now().UnixNano()),
-		"watermark":   fmt.Sprintf("INEC-CONFIDENTIAL-%s-%d", userID, time.Now().Unix()),
+		"watermark":   fmt.Sprintf("INEC-CONFIDENTIAL-%d-%d", userID, time.Now().Unix()),
 	}
 
 	writeJSON(w, 200, M{
