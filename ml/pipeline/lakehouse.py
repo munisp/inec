@@ -106,7 +106,7 @@ class LakehousePipeline:
         # Register in DuckDB
         self.conn.execute(f"""
             CREATE OR REPLACE TABLE bronze_results AS
-            SELECT * FROM read_parquet('{self.bronze_dir}/*.parquet')
+            SELECT * FROM read_parquet('{self.bronze_dir}/*.parquet', union_by_name=True)
         """)
 
         self._catalog_entry(run_id, "bronze", "bronze_results", str(file_path), len(df))
@@ -152,18 +152,31 @@ class LakehousePipeline:
 
             bronze_count = self.conn.execute("SELECT COUNT(*) FROM bronze_results").fetchone()[0]
 
-            # Deduplicate + compute features
-            self.conn.execute("""
-                CREATE OR REPLACE TABLE silver_results AS
-                WITH deduped AS (
-                    SELECT DISTINCT ON (polling_unit_code, party_code, election_id)
-                        *
+            # Check if party_code column exists (row-per-party vs row-per-PU format)
+            cols = [row[0] for row in self.conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='bronze_results'"
+            ).fetchall()]
+            has_party_code = "party_code" in cols
+
+            if has_party_code:
+                dedup_sql = """
+                    SELECT DISTINCT ON (polling_unit_code, party_code, election_id) *
                     FROM bronze_results
                     ORDER BY polling_unit_code, party_code, election_id, _ingested_at DESC
-                )
+                """
+            else:
+                dedup_sql = """
+                    SELECT DISTINCT ON (polling_unit_code, election_id) *
+                    FROM bronze_results
+                    ORDER BY polling_unit_code, election_id, _ingested_at DESC
+                """
+
+            # Deduplicate + compute features
+            self.conn.execute(f"""
+                CREATE OR REPLACE TABLE silver_results AS
+                WITH deduped AS ({dedup_sql})
                 SELECT
                     *,
-                    -- Computed features
                     CASE WHEN registered_voters > 0
                          THEN CAST(accredited_voters AS DOUBLE) / registered_voters
                          ELSE 0 END AS turnout_rate,
@@ -214,13 +227,22 @@ class LakehousePipeline:
 
             silver_count = self.conn.execute("SELECT COUNT(*) FROM silver_results").fetchone()[0]
 
+            # Check available columns
+            silver_cols = [row[0] for row in self.conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='silver_results'"
+            ).fetchall()]
+            has_votes = "votes" in silver_cols
+            has_party_code = "party_code" in silver_cols
+
+            votes_col = "votes" if has_votes else "total_valid_votes"
+
             # State-level aggregations
-            self.conn.execute("""
+            self.conn.execute(f"""
                 CREATE OR REPLACE TABLE gold_state_summary AS
                 SELECT
                     state_code,
                     COUNT(DISTINCT polling_unit_code) AS total_pus,
-                    SUM(votes) AS total_votes,
+                    SUM({votes_col}) AS total_votes,
                     AVG(turnout_rate) AS avg_turnout,
                     STDDEV(turnout_rate) AS turnout_stddev,
                     SUM(overvoting_flag) AS overvoting_count,
@@ -232,38 +254,53 @@ class LakehousePipeline:
             """)
 
             # ML feature matrix (per polling unit)
-            self.conn.execute("""
-                CREATE OR REPLACE TABLE gold_ml_features AS
-                SELECT
-                    polling_unit_code,
-                    election_id,
-                    MAX(registered_voters) AS registered_voters,
-                    MAX(accredited_voters) AS accredited_voters,
-                    MAX(turnout_rate) AS turnout_rate,
-                    SUM(votes) AS total_valid_votes,
-                    MAX(rejected_votes) AS rejected_votes,
-                    MAX(CASE WHEN party_code = 'APC' THEN votes ELSE 0 END) AS party_a_votes,
-                    MAX(CASE WHEN party_code = 'PDP' THEN votes ELSE 0 END) AS party_b_votes,
-                    MAX(overvoting_flag) AS overvoting_flag,
-                    MAX(round_number_flag) AS round_number_flag,
-                    MAX(rejection_rate) AS rejection_rate,
-                    state_code,
-                    lga_code,
-                    CURRENT_TIMESTAMP AS _computed_at
-                FROM silver_results
-                GROUP BY polling_unit_code, election_id, state_code, lga_code
+            if has_party_code:
+                ml_sql = f"""
+                    SELECT
+                        polling_unit_code, election_id,
+                        MAX(registered_voters) AS registered_voters,
+                        MAX(accredited_voters) AS accredited_voters,
+                        MAX(turnout_rate) AS turnout_rate,
+                        SUM({votes_col}) AS total_valid_votes,
+                        MAX(rejected_votes) AS rejected_votes,
+                        MAX(CASE WHEN party_code = 'APC' THEN {votes_col} ELSE 0 END) AS party_a_votes,
+                        MAX(CASE WHEN party_code = 'PDP' THEN {votes_col} ELSE 0 END) AS party_b_votes,
+                        MAX(overvoting_flag) AS overvoting_flag,
+                        MAX(round_number_flag) AS round_number_flag,
+                        MAX(rejection_rate) AS rejection_rate,
+                        state_code, lga_code,
+                        CURRENT_TIMESTAMP AS _computed_at
+                    FROM silver_results
+                    GROUP BY polling_unit_code, election_id, state_code, lga_code
+                """
+            else:
+                ml_sql = """
+                    SELECT
+                        polling_unit_code, election_id,
+                        registered_voters, accredited_voters,
+                        turnout_rate, total_valid_votes, rejected_votes,
+                        0 AS party_a_votes, 0 AS party_b_votes,
+                        overvoting_flag, round_number_flag,
+                        rejection_rate,
+                        state_code, lga_code,
+                        CURRENT_TIMESTAMP AS _computed_at
+                    FROM silver_results
+                """
+
+            self.conn.execute(f"""
+                CREATE OR REPLACE TABLE gold_ml_features AS {ml_sql}
             """)
 
             # Anomaly scores (using SQL-based Benford analysis)
-            self.conn.execute("""
+            self.conn.execute(f"""
                 CREATE OR REPLACE TABLE gold_benford_analysis AS
                 WITH first_digits AS (
                     SELECT
                         state_code,
-                        CAST(SUBSTRING(CAST(votes AS VARCHAR), 1, 1) AS INTEGER) AS first_digit,
+                        CAST(SUBSTRING(CAST({votes_col} AS VARCHAR), 1, 1) AS INTEGER) AS first_digit,
                         COUNT(*) AS cnt
                     FROM silver_results
-                    WHERE votes > 0
+                    WHERE {votes_col} > 0
                     GROUP BY state_code, first_digit
                 ),
                 state_totals AS (

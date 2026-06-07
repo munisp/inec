@@ -651,7 +651,7 @@ async def training_status():
         return {"error": str(e)}
 
 
-@app.post("/training/check-drift")
+@app.get("/training/check-drift")
 async def check_drift():
     """Check for model performance drift."""
     try:
