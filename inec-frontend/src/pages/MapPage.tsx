@@ -527,11 +527,11 @@ export default function MapPage() {
 
   // #30 H3 hex grid rendering (as GeoJSON source+layer on the map)
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapRef.current.isStyleLoaded()) return;
     const map = mapRef.current;
-    if (map.getLayer('h3-fill')) map.removeLayer('h3-fill');
-    if (map.getLayer('h3-line')) map.removeLayer('h3-line');
-    if (map.getSource('h3-grid')) map.removeSource('h3-grid');
+    try { if (map.getLayer('h3-fill')) map.removeLayer('h3-fill'); } catch {}
+    try { if (map.getLayer('h3-line')) map.removeLayer('h3-line'); } catch {}
+    try { if (map.getSource('h3-grid')) map.removeSource('h3-grid'); } catch {}
     if (!showH3Grid) return;
     api.getH3HexGrid(5, 1).then((data: any) => {
       if (!data?.features) return;
@@ -551,11 +551,11 @@ export default function MapPage() {
 
   // #26 Mesh network visualization (as GeoJSON lines between connected officials)
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapRef.current.isStyleLoaded()) return;
     const map = mapRef.current;
-    if (map.getLayer('mesh-lines')) map.removeLayer('mesh-lines');
-    if (map.getLayer('mesh-nodes')) map.removeLayer('mesh-nodes');
-    if (map.getSource('mesh-data')) map.removeSource('mesh-data');
+    try { if (map.getLayer('mesh-lines')) map.removeLayer('mesh-lines'); } catch {}
+    try { if (map.getLayer('mesh-nodes')) map.removeLayer('mesh-nodes'); } catch {}
+    try { if (map.getSource('mesh-data')) map.removeSource('mesh-data'); } catch {}
     meshLayerAdded.current = false;
     if (!showMesh) return;
     api.getMeshNetworkStatus().then((data: any) => {
@@ -571,10 +571,10 @@ export default function MapPage() {
 
   // #13 Movement trails (tracking history as polylines)
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapRef.current.isStyleLoaded()) return;
     const map = mapRef.current;
-    if (map.getLayer('trails-line')) map.removeLayer('trails-line');
-    if (map.getSource('trails-data')) map.removeSource('trails-data');
+    try { if (map.getLayer('trails-line')) map.removeLayer('trails-line'); } catch {}
+    try { if (map.getSource('trails-data')) map.removeSource('trails-data'); } catch {}
     if (!showTrails || !showTracking) return;
     api.getTrackingReplay(undefined, 24).then((data: any) => {
       if (!data?.paths?.features) return;
@@ -593,10 +593,10 @@ export default function MapPage() {
 
   // #8 WebGL heatmap layer (uses MapLibre native heatmap)
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapRef.current.isStyleLoaded()) return;
     const map = mapRef.current;
-    if (map.getLayer('webgl-heatmap')) map.removeLayer('webgl-heatmap');
-    if (map.getSource('heatmap-points')) map.removeSource('heatmap-points');
+    try { if (map.getLayer('webgl-heatmap')) map.removeLayer('webgl-heatmap'); } catch {}
+    try { if (map.getSource('heatmap-points')) map.removeSource('heatmap-points'); } catch {}
     if (!showHeatmap || pus.length === 0) return;
     const geojson = {
       type: 'FeatureCollection' as const,
@@ -637,10 +637,10 @@ export default function MapPage() {
 
   // #14 3D building extrusion
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapRef.current.isStyleLoaded()) return;
     const map = mapRef.current;
     const layerId = '3d-buildings';
-    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    try { if (map.getLayer(layerId)) map.removeLayer(layerId); } catch {}
     // Only add at zoom > 13 — check current zoom
     const zoom = map.getZoom();
     if (zoom < 13) return;
