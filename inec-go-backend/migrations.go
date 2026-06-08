@@ -311,6 +311,18 @@ DROP INDEX IF EXISTS idx_ingestion_status;
 DROP INDEX IF EXISTS idx_ingestion_idem;
 `,
 	},
+	{
+		Version:     8,
+		Description: "Performance indexes for geospatial and monitoring tables (tables created by domain init funcs)",
+		Up: `
+CREATE INDEX IF NOT EXISTS idx_crowd_alerts_severity ON crowd_alerts(severity);
+CREATE INDEX IF NOT EXISTS idx_crowd_alerts_created ON crowd_alerts(created_at DESC);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_crowd_alerts_created;
+DROP INDEX IF EXISTS idx_crowd_alerts_severity;
+`,
+	},
 }
 
 // runMigrations executes all pending migrations in order.
