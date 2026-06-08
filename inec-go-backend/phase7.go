@@ -810,6 +810,17 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 		latency = 1
 	}
 
+	// Fix #8: Store incoming probe template encrypted via vault if no template exists yet
+	if biometricVault != nil && vaultErr != nil && req.Template != "" {
+		go func() {
+			templateBytes := []byte(req.Template)
+			biometricVault.StoreTemplate(req.VIN, req.Modality, templateBytes, 0.8, M{
+				"device_id": req.DeviceID,
+				"source":    "verification_probe",
+			})
+		}()
+	}
+
 	dbExecLog("biometric_verificati", `INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms) VALUES (?,?,?,?,?,?)`,
 		req.VIN, req.DeviceID, req.Modality, score, result, latency)
 	dbExecLog("biometric_profiles", `UPDATE biometric_profiles SET last_verified_at=CURRENT_TIMESTAMP, match_count=match_count+1 WHERE voter_vin=?`, req.VIN)

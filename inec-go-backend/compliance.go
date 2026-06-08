@@ -211,8 +211,38 @@ func handleWithdrawConsent(w http.ResponseWriter, r *http.Request) {
 
 // --- Data Subject Rights ---
 
+// verifyDataSubjectIdentity ensures the requester is authenticated and is either
+// the data subject themselves (matching NIN) or an admin/dpo performing the request.
+func verifyDataSubjectIdentity(r *http.Request, nin string) error {
+	claims := r.Context().Value("user")
+	if claims == nil {
+		return fmt.Errorf("authentication required for data subject requests")
+	}
+	userClaims, ok := claims.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid authentication context")
+	}
+	role, _ := userClaims["role"].(string)
+	// Admin and DPO can access any subject's data
+	if role == "admin" || role == "dpo" || role == "data_protection_officer" {
+		return nil
+	}
+	// Regular users can only access their own data — match NIN from their profile
+	userSub, _ := userClaims["sub"].(string)
+	var userNIN string
+	db.QueryRow("SELECT nin FROM voters WHERE user_id=$1", userSub).Scan(&userNIN)
+	if userNIN != "" && userNIN == nin {
+		return nil
+	}
+	return fmt.Errorf("identity verification failed: you can only access your own data subject records")
+}
+
 func handleDataSubjectAccess(w http.ResponseWriter, r *http.Request) {
 	nin := mux.Vars(r)["nin"]
+	if err := verifyDataSubjectIdentity(r, nin); err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
 
 	requestID := fmt.Sprintf("dsr-%d", time.Now().UnixNano())
 	db.ExecContext(r.Context(),
@@ -257,6 +287,10 @@ func handleDataSubjectAccess(w http.ResponseWriter, r *http.Request) {
 
 func handleDataSubjectRectification(w http.ResponseWriter, r *http.Request) {
 	nin := mux.Vars(r)["nin"]
+	if err := verifyDataSubjectIdentity(r, nin); err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
 	var req struct {
 		Field    string `json:"field"`
 		NewValue string `json:"new_value"`
@@ -281,6 +315,10 @@ func handleDataSubjectRectification(w http.ResponseWriter, r *http.Request) {
 
 func handleDataSubjectErasure(w http.ResponseWriter, r *http.Request) {
 	nin := mux.Vars(r)["nin"]
+	if err := verifyDataSubjectIdentity(r, nin); err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
 	requestID := fmt.Sprintf("dsr-%d", time.Now().UnixNano())
 	db.ExecContext(r.Context(),
 		`INSERT INTO data_subject_requests (request_id, subject_id, request_type, status, notes)
@@ -296,6 +334,10 @@ func handleDataSubjectErasure(w http.ResponseWriter, r *http.Request) {
 
 func handleDataSubjectPortability(w http.ResponseWriter, r *http.Request) {
 	nin := mux.Vars(r)["nin"]
+	if err := verifyDataSubjectIdentity(r, nin); err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
 	requestID := fmt.Sprintf("dsr-%d", time.Now().UnixNano())
 
 	export := map[string]interface{}{
@@ -326,6 +368,10 @@ func handleDataSubjectPortability(w http.ResponseWriter, r *http.Request) {
 
 func handleDataSubjectRestriction(w http.ResponseWriter, r *http.Request) {
 	nin := mux.Vars(r)["nin"]
+	if err := verifyDataSubjectIdentity(r, nin); err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
 	requestID := fmt.Sprintf("dsr-%d", time.Now().UnixNano())
 	db.ExecContext(r.Context(),
 		`INSERT INTO data_subject_requests (request_id, subject_id, request_type, status)
@@ -339,6 +385,10 @@ func handleDataSubjectRestriction(w http.ResponseWriter, r *http.Request) {
 
 func handleDataSubjectObjection(w http.ResponseWriter, r *http.Request) {
 	nin := mux.Vars(r)["nin"]
+	if err := verifyDataSubjectIdentity(r, nin); err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
 	var req struct {
 		ProcessingActivity string `json:"processing_activity"`
 		Reason             string `json:"reason"`

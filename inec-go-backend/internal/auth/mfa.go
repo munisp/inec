@@ -251,6 +251,12 @@ func (m *MFAService) GetStatus(ctx context.Context, userID int) (map[string]inte
 	return status, nil
 }
 
+// VerifyTOTPCode validates a TOTP code directly against a known secret.
+// Used during login when the secret is already retrieved from the DB.
+func (m *MFAService) VerifyTOTPCode(secret, code string) bool {
+	return m.validateCode(secret, code, time.Now())
+}
+
 // validateCode checks a TOTP code against the secret with ±1 window.
 func (m *MFAService) validateCode(secret, code string, t time.Time) bool {
 	counter := uint64(t.Unix()) / uint64(m.period)

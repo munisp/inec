@@ -198,6 +198,7 @@ func initDB(db *sql.DB) {
 	execMulti(db, schema)
 	initBVASTables(db)
 	initIngestionTables(db)
+	recoverPendingJobs()
 	initSMSUSSDTables(db)
 	initPublicAPITables(db)
 }

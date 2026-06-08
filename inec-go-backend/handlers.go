@@ -22,10 +22,19 @@ import (
 
 // ── Auth ──
 
+// verifyTOTPCode validates a TOTP code against the stored secret for a user.
+func verifyTOTPCode(secret, code string) bool {
+	if mfaService == nil {
+		return false
+	}
+	return mfaService.VerifyTOTPCode(secret, code)
+}
+
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TOTPCode string `json:"totp_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid request")
@@ -43,6 +52,31 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "Invalid credentials")
 		return
 	}
+
+	// Check if user has MFA enabled — require TOTP code if so
+	var mfaEnabled bool
+	dbQueryRowCtx(r.Context(), "SELECT EXISTS(SELECT 1 FROM mfa_totp WHERE user_id=? AND is_active=1)", id).Scan(&mfaEnabled)
+	if mfaEnabled {
+		if req.TOTPCode == "" {
+			writeJSON(w, 200, M{
+				"mfa_required": true,
+				"mfa_type":     "totp",
+				"message":      "MFA verification required. Re-submit with totp_code field.",
+				"user_id":      id,
+			})
+			return
+		}
+		var secret string
+		if err := dbQueryRowCtx(r.Context(), "SELECT secret FROM mfa_totp WHERE user_id=? AND is_active=1", id).Scan(&secret); err != nil {
+			writeError(w, 500, "MFA configuration error")
+			return
+		}
+		if !verifyTOTPCode(secret, req.TOTPCode) {
+			writeError(w, 401, "Invalid TOTP code")
+			return
+		}
+	}
+
 	claims := map[string]interface{}{
 		"sub": fmt.Sprintf("%d", id), "username": username, "role": role, "full_name": fullName,
 	}
@@ -356,8 +390,10 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 			PartyCode string `json:"party_code"`
 			Votes     int    `json:"votes"`
 		} `json:"party_scores"`
-		AccreditedVoters int `json:"accredited_voters"`
-		RejectedVotes    int `json:"rejected_votes"`
+		AccreditedVoters int      `json:"accredited_voters"`
+		RejectedVotes    int      `json:"rejected_votes"`
+		DeviceLat        *float64 `json:"device_lat"`
+		DeviceLng        *float64 `json:"device_lng"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON body")
@@ -366,6 +402,15 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	if req.ElectionID == 0 || req.PollingUnitCode == "" || len(req.PartyScores) == 0 {
 		writeError(w, 400, "election_id, polling_unit_code, and party_scores are required")
 		return
+	}
+
+	// Geofence validation — if device location provided, enforce proximity to polling unit
+	if req.DeviceLat != nil && req.DeviceLng != nil {
+		geoResult, err := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
+		if err == nil && geoResult != nil && !geoResult.WithinGeofence {
+			writeError(w, 403, fmt.Sprintf("Geofence violation: device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
+			return
+		}
 	}
 
 	var eExists int
@@ -386,16 +431,26 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	totalValid := 0
-	for _, ps := range req.PartyScores {
+	partyEntries := make([]PartyVoteEntry, len(req.PartyScores))
+	for i, ps := range req.PartyScores {
 		totalValid += ps.Votes
+		partyEntries[i] = PartyVoteEntry{PartyCode: ps.PartyCode, Votes: ps.Votes}
 	}
 	totalCast := totalValid + req.RejectedVotes
-	if totalCast > req.AccreditedVoters {
-		writeError(w, 400, "Total votes cast exceeds accredited voters")
-		return
+
+	// Full EC8A validation — enforces all 7 INEC business rules
+	ec8aForm := &FormEC8A{
+		ElectionID:       req.ElectionID,
+		PollingUnitCode:  req.PollingUnitCode,
+		RegisteredVoters: regVoters,
+		AccreditedVoters: req.AccreditedVoters,
+		TotalVotesPolled: totalCast,
+		RejectedBallots:  req.RejectedVotes,
+		TotalValidVotes:  totalValid,
+		PartyResults:     partyEntries,
 	}
-	if req.AccreditedVoters > regVoters {
-		writeError(w, 400, "Accredited voters exceeds registered voters")
+	if violations := ValidateEC8A(ec8aForm); len(violations) > 0 {
+		writeError(w, 400, fmt.Sprintf("EC8A validation failed: %s", strings.Join(violations, "; ")))
 		return
 	}
 
@@ -496,15 +551,6 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := mux.Vars(r)["id"]
-	var status, puCode string
-	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
-		writeError(w, 404, "Result not found")
-		return
-	}
-	if !canTransition(status, "validated") {
-		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'validated'; allowed transitions: %v", status, validTransitions[status]))
-		return
-	}
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
 	userRole, _ := user["role"].(string)
@@ -513,7 +559,25 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbExecCtx(r.Context(), "UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+	// Fix #7: Use transaction with SELECT FOR UPDATE to prevent concurrent transitions
+	tx, txErr := db.BeginTx(r.Context(), nil)
+	if txErr != nil {
+		writeError(w, 500, "database transaction error")
+		return
+	}
+	var status, puCode string
+	if err := tx.QueryRow(convertPlaceholders("SELECT status, polling_unit_code FROM results WHERE id=? FOR UPDATE"), id).Scan(&status, &puCode); err != nil {
+		tx.Rollback()
+		writeError(w, 404, "Result not found")
+		return
+	}
+	if !canTransition(status, "validated") {
+		tx.Rollback()
+		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'validated'; allowed transitions: %v", status, validTransitions[status]))
+		return
+	}
+	tx.Exec(convertPlaceholders("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?"), id)
+	tx.Commit()
 	logAudit("RESULT_VALIDATED", "result", id, uid, map[string]interface{}{"phase": "Edge Validation", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
 
