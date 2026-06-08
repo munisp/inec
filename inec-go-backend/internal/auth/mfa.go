@@ -298,7 +298,7 @@ func (m *MFAService) generateBackupCodes(ctx context.Context, userID int) ([]str
 
 	codes := make([]string, 10)
 	for i := 0; i < 10; i++ {
-		b := make([]byte, 5)
+		b := make([]byte, 8)
 		if _, err := rand.Read(b); err != nil {
 			return nil, err
 		}

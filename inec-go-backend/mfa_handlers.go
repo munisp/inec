@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -13,7 +14,7 @@ var mfaService *auth.MFAService
 
 func initMFA() {
 	mfaService = auth.NewMFAService(db, "INEC Platform")
-	if err := mfaService.InitTables(nil); err != nil {
+	if err := mfaService.InitTables(context.Background()); err != nil {
 		log.Error().Err(err).Msg("Failed to create MFA tables")
 	}
 	log.Info().Msg("MFA service initialized (TOTP + WebAuthn + backup codes)")
