@@ -20,6 +20,9 @@ func TestMain(m *testing.M) {
 	// Set up PostgreSQL test database
 	testDSN := os.Getenv("TEST_DATABASE_URL")
 	if testDSN == "" {
+		testDSN = os.Getenv("DATABASE_URL")
+	}
+	if testDSN == "" {
 		testDSN = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
 	}
 	testDB := openDatabase(testDSN)

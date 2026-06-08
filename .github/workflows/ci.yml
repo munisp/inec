@@ -207,10 +207,10 @@ jobs:
     needs: [backend-lint-build]
     services:
       postgres:
-        image: postgres:16
+        image: postgis/postgis:16-3.4
         env:
           POSTGRES_USER: ngapp
-          POSTGRES_PASSWORD: ngapp123
+          POSTGRES_PASSWORD: ngapp
           POSTGRES_DB: ngapp
         ports:
           - 5432:5432
@@ -231,7 +231,7 @@ jobs:
       - name: Run integration tests
         working-directory: inec-go-backend
         env:
-          DATABASE_URL: postgresql://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable
+          DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
           REDIS_ADDR: localhost:6379
         run: go test -v -tags integration -run TestIntegration ./...
 
