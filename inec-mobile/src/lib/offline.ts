@@ -35,6 +35,34 @@ export async function getDb(): Promise<SQLite.SQLiteDatabase> {
         data TEXT,
         cached_at TEXT DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS cached_polling_units (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pu_code TEXT UNIQUE NOT NULL,
+        name TEXT,
+        state TEXT,
+        lga TEXT,
+        ward TEXT,
+        latitude REAL,
+        longitude REAL,
+        data TEXT,
+        cached_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS pending_biometric_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voter_id TEXT NOT NULL,
+        device_serial TEXT,
+        verification_type TEXT DEFAULT 'fingerprint',
+        result TEXT DEFAULT 'pending',
+        latitude REAL,
+        longitude REAL,
+        created_at TEXT DEFAULT (datetime('now')),
+        synced INTEGER DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS cached_election_data (
+        key TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        cached_at TEXT DEFAULT (datetime('now'))
+      );
     `);
   }
   return db;
@@ -164,4 +192,78 @@ export async function syncPendingData(): Promise<{ reports: number; checkins: nu
   }
 
   return { reports: reportsSynced, checkins: checkinsSynced };
+}
+
+// Cache polling unit data for offline use
+export async function cachePollingUnits(units: Array<{
+  pu_code: string; name: string; state: string; lga: string; ward: string;
+  latitude: number; longitude: number;
+}>): Promise<number> {
+  const database = await getDb();
+  let cached = 0;
+  for (const pu of units) {
+    await database.runAsync(
+      `INSERT OR REPLACE INTO cached_polling_units (pu_code, name, state, lga, ward, latitude, longitude, data, cached_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [pu.pu_code, pu.name, pu.state, pu.lga, pu.ward, pu.latitude, pu.longitude, JSON.stringify(pu)]
+    );
+    cached++;
+  }
+  return cached;
+}
+
+export async function getCachedPollingUnits(state?: string): Promise<Array<{
+  pu_code: string; name: string; state: string; lga: string; ward: string;
+  latitude: number; longitude: number;
+}>> {
+  const database = await getDb();
+  const query = state
+    ? 'SELECT data FROM cached_polling_units WHERE state = ? ORDER BY pu_code'
+    : 'SELECT data FROM cached_polling_units ORDER BY pu_code';
+  const rows = await database.getAllAsync<{ data: string }>(query, state ? [state] : []);
+  return rows.map(r => JSON.parse(r.data));
+}
+
+// Cache election data (results, parties, etc.)
+export async function cacheElectionData(key: string, data: unknown): Promise<void> {
+  const database = await getDb();
+  await database.runAsync(
+    `INSERT OR REPLACE INTO cached_election_data (key, data, cached_at) VALUES (?, ?, datetime('now'))`,
+    [key, JSON.stringify(data)]
+  );
+}
+
+export async function getCachedElectionData<T = unknown>(key: string): Promise<T | null> {
+  const database = await getDb();
+  const row = await database.getFirstAsync<{ data: string }>('SELECT data FROM cached_election_data WHERE key = ?', [key]);
+  return row ? JSON.parse(row.data) as T : null;
+}
+
+// Queue biometric verification for offline sync
+export async function queueBiometricVerification(verification: {
+  voter_id: string; device_serial: string; verification_type: string;
+  latitude: number; longitude: number;
+}): Promise<number> {
+  const database = await getDb();
+  const result = await database.runAsync(
+    `INSERT INTO pending_biometric_verifications (voter_id, device_serial, verification_type, latitude, longitude)
+     VALUES (?, ?, ?, ?, ?)`,
+    [verification.voter_id, verification.device_serial, verification.verification_type, verification.latitude, verification.longitude]
+  );
+  return result.lastInsertRowId;
+}
+
+export async function getPendingBiometricCount(): Promise<number> {
+  const database = await getDb();
+  const row = await database.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM pending_biometric_verifications WHERE synced = 0');
+  return row?.count ?? 0;
+}
+
+// Get total offline queue size across all tables
+export async function getTotalPendingCount(): Promise<{ reports: number; checkins: number; biometrics: number; total: number }> {
+  const database = await getDb();
+  const reports = (await database.getFirstAsync<{ c: number }>('SELECT COUNT(*) as c FROM pending_reports WHERE synced = 0'))?.c ?? 0;
+  const checkins = (await database.getFirstAsync<{ c: number }>('SELECT COUNT(*) as c FROM pending_checkins WHERE synced = 0'))?.c ?? 0;
+  const biometrics = (await database.getFirstAsync<{ c: number }>('SELECT COUNT(*) as c FROM pending_biometric_verifications WHERE synced = 0'))?.c ?? 0;
+  return { reports, checkins, biometrics, total: reports + checkins + biometrics };
 }

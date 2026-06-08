@@ -1,5 +1,5 @@
 // INEC Platform — Service Worker for Offline Support
-const CACHE_VERSION = 'inec-v1';
+const CACHE_VERSION = 'inec-v2';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const API_CACHE = `${CACHE_VERSION}-api`;
 const OFFLINE_QUEUE_KEY = 'inec-offline-queue';
@@ -9,6 +9,13 @@ const PRECACHE_URLS = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/offline.html',
+];
+
+// Critical API paths to cache aggressively for election day
+const CRITICAL_API_PATHS = [
+  '/elections', '/collation', '/results', '/geo/', '/dashboard',
+  '/healthz', '/readiness', '/polling-units', '/bvas',
 ];
 
 // Install: precache static assets
@@ -68,9 +75,12 @@ self.addEventListener('fetch', (event) => {
   }
 
   // API requests: network-first, cache fallback
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/healthz') ||
-      url.pathname.startsWith('/results') || url.pathname.startsWith('/elections') ||
-      url.pathname.startsWith('/collation') || url.pathname.startsWith('/geo/')) {
+  const isApiPath = CRITICAL_API_PATHS.some(p => url.pathname.startsWith(p)) ||
+    url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/me') ||
+    url.pathname.startsWith('/observer/') || url.pathname.startsWith('/biometric/') ||
+    url.pathname.startsWith('/command-center/') || url.pathname.startsWith('/anomaly/') ||
+    url.pathname.startsWith('/blockchain/') || url.pathname.startsWith('/admin/');
+  if (isApiPath) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
@@ -80,7 +90,11 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(event.request))
+        .catch(() => caches.match(event.request).then(cached =>
+          cached || new Response(JSON.stringify({ offline: true, cached_at: null }), {
+            status: 503, headers: { 'Content-Type': 'application/json' }
+          })
+        ))
     );
     return;
   }
@@ -107,6 +121,24 @@ self.addEventListener('sync', (event) => {
   }
 });
 
+// Periodic sync: keep critical election data fresh
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'inec-data-refresh') {
+    event.waitUntil(refreshCriticalData());
+  }
+});
+
+async function refreshCriticalData() {
+  const cache = await caches.open(API_CACHE);
+  const criticalEndpoints = ['/elections', '/healthz', '/dashboard/stats?election_id=1'];
+  for (const endpoint of criticalEndpoints) {
+    try {
+      const resp = await fetch(endpoint, { credentials: 'include' });
+      if (resp.ok) await cache.put(new Request(endpoint), resp);
+    } catch { /* offline */ }
+  }
+}
+
 async function replayQueue() {
   const db = await openOfflineDB();
   const tx = db.transaction('queue', 'readonly');
@@ -118,6 +150,7 @@ async function replayQueue() {
         method: item.method,
         headers: item.headers,
         body: item.body,
+        credentials: 'include',
       });
       if (response.ok) {
         const delTx = db.transaction('queue', 'readwrite');
@@ -149,4 +182,33 @@ self.addEventListener('message', (event) => {
   if (event.data === 'skipWaiting') {
     self.skipWaiting();
   }
+  if (event.data === 'getQueueCount') {
+    openOfflineDB().then(db => {
+      const tx = db.transaction('queue', 'readonly');
+      const req = tx.objectStore('queue').count();
+      req.onsuccess = () => {
+        event.source.postMessage({ type: 'queueCount', count: req.result });
+      };
+    });
+  }
+});
+
+// Push notification support for election alerts
+self.addEventListener('push', (event) => {
+  const data = event.data ? event.data.json() : { title: 'INEC Alert', body: 'New election update' };
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'INEC Alert', {
+      body: data.body || 'New update available',
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+      tag: data.tag || 'inec-alert',
+      data: { url: data.url || '/' },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(clients.openWindow(url));
 });
