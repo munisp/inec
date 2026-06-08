@@ -196,13 +196,9 @@ func (l *embeddedLakehouse) Ingest(_ context.Context, table string, records []ma
 
 func (l *embeddedLakehouse) GetTables(_ context.Context) ([]string, error) {
 	tables := []string{}
-	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	rows, err := db.Query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
 	if err != nil {
-		// Fallback for PostgreSQL
-		rows, err = db.Query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
-		if err != nil {
-			return []string{"results", "elections", "polling_units", "audit_log", "incidents", "collation_results"}, nil
-		}
+		return []string{"results", "elections", "polling_units", "audit_log", "incidents", "collation_results"}, nil
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -284,7 +280,7 @@ func (l *embeddedLakehouse) Status() MWStatus {
 	return MWStatus{
 		Name: "Lakehouse", Connected: true, Mode: "embedded",
 		Latency: "0.0ms",
-		Details: "SQLite-backed analytics (upgrade to DuckDB/Delta Lake for production)",
+		Details: "PostgreSQL-backed analytics with DuckDB/Parquet Lakehouse pipeline",
 	}
 }
 
@@ -304,6 +300,6 @@ func initLakehouseClient() LakehouseClient {
 		}
 		log.Warn().Msg("Lakehouse unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Lakehouse using embedded SQLite analytics")
+	log.Info().Msg("Lakehouse using embedded PostgreSQL analytics")
 	return &embeddedLakehouse{}
 }

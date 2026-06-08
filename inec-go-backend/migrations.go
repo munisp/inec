@@ -345,10 +345,7 @@ func runMigrations(database *sql.DB) error {
 			return err
 		}
 
-		upSQL := m.Up
-		if usePostgres {
-			upSQL = convertDDLForPostgres(upSQL)
-		}
+		upSQL := convertDDLForPostgres(m.Up)
 		stmts := strings.Split(upSQL, ";")
 		for _, stmt := range stmts {
 			stmt = strings.TrimSpace(stmt)

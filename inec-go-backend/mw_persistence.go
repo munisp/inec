@@ -8,7 +8,7 @@ import (
 )
 
 // initMiddlewareTables creates persistence tables for middleware state.
-// Uses SERIAL PRIMARY KEY (PostgreSQL syntax) — convertDDLForSQLite handles the SQLite conversion.
+// Uses SERIAL PRIMARY KEY (PostgreSQL syntax).
 func initMiddlewareTables(database *sql.DB) {
 	schema := `
 	CREATE TABLE IF NOT EXISTS mw_cache (

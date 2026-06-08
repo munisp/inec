@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -406,7 +407,8 @@ func TestVoterRegistrationEndpoint(t *testing.T) {
 	token, _ := createAccessToken(map[string]interface{}{
 		"sub": "1", "username": "admin", "role": "admin", "full_name": "Admin",
 	})
-	body := fmt.Sprintf(`{"first_name":"Amina","last_name":"Ibrahim","date_of_birth":"1990-05-15","gender":"F","state_code":"%s","lga_code":"%s","ward_code":"%s","polling_unit_code":"%s","biometric_data":"test-fingerprint-voter-reg"}`, stCode, lgCode, wCode, puCode)
+	uniqueBio := fmt.Sprintf("test-fingerprint-voter-reg-%d", time.Now().UnixNano())
+	body := fmt.Sprintf(`{"first_name":"Amina","last_name":"Ibrahim","date_of_birth":"1990-05-15","gender":"F","state_code":"%s","lga_code":"%s","ward_code":"%s","polling_unit_code":"%s","biometric_data":"%s"}`, stCode, lgCode, wCode, puCode, uniqueBio)
 	req := httptest.NewRequest("POST", "/ems/voters", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)

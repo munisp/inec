@@ -17,8 +17,12 @@ import (
 func TestMain(m *testing.M) {
 	initValidator()
 	initMetrics()
-	// Set up an in-memory SQLite database for tests
-	testDB := openDatabase("file::memory:?cache=shared")
+	// Set up PostgreSQL test database
+	testDSN := os.Getenv("TEST_DATABASE_URL")
+	if testDSN == "" {
+		testDSN = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
+	}
+	testDB := openDatabase(testDSN)
 	db = testDB
 	initScaledDB(db)
 	initPgpool()
@@ -1167,7 +1171,7 @@ func TestKYBStatusEndpoint(t *testing.T) {
 	ensureTestDB(t)
 	initKYBSchema()
 
-	req := httptest.NewRequest("GET", "/kyb/status?entity_id=999", nil)
+	req := httptest.NewRequest("GET", fmt.Sprintf("/kyb/status?entity_id=%d", time.Now().UnixNano()), nil)
 	w := httptest.NewRecorder()
 	handleKYBStatus(w, req)
 

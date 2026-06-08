@@ -208,7 +208,7 @@ func rotateAPIKey(oldKeyHash string, ownerID int, name string) (string, error) {
 	// Deactivate old key
 	if oldKeyHash != "" {
 		_, err = tx.Exec(convertPlaceholders(
-			"UPDATE api_key_metadata SET is_active = 0 WHERE key_hash = ?"), oldKeyHash)
+			"UPDATE api_key_metadata SET is_active = false WHERE key_hash = ?"), oldKeyHash)
 		if err != nil {
 			tx.Rollback()
 			return "", err

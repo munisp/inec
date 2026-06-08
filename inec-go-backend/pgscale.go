@@ -150,15 +150,13 @@ func initScaledDB(primary *sql.DB) {
 
 	// Pool tuning is handled by initPgBouncerAwarePooling() for production.
 	// Defaults here are safe fallback for dev/test.
-	if usePostgres {
-		primary.SetMaxOpenConns(envInt("DB_MAX_OPEN_CONNS", 50))
-		primary.SetMaxIdleConns(envInt("DB_MAX_IDLE_CONNS", 25))
-		primary.SetConnMaxLifetime(5 * time.Minute)
-		primary.SetConnMaxIdleTime(30 * time.Second)
-	}
+	primary.SetMaxOpenConns(envInt("DB_MAX_OPEN_CONNS", 50))
+	primary.SetMaxIdleConns(envInt("DB_MAX_IDLE_CONNS", 25))
+	primary.SetConnMaxLifetime(5 * time.Minute)
+	primary.SetConnMaxIdleTime(30 * time.Second)
 
 	replicaDSN := os.Getenv("DATABASE_REPLICA_URL")
-	if replicaDSN != "" && usePostgres {
+	if replicaDSN != "" {
 		replica := openPgCompat(replicaDSN)
 		replica.SetMaxOpenConns(envInt("DB_REPLICA_MAX_OPEN_CONNS", 100))
 		replica.SetMaxIdleConns(envInt("DB_REPLICA_MAX_IDLE_CONNS", 50))
@@ -227,7 +225,7 @@ func dbExecLog(label string, query string, args ...interface{}) {
 func handleDBMetrics(w http.ResponseWriter, r *http.Request) {
 	hasReplica := dbReader != nil && dbReader != dbWriter
 	data := M{
-		"engine":                  map[bool]string{true: "postgresql", false: "sqlite"}[usePostgres],
+		"engine":                  "postgresql",
 		"read_write_split":        hasReplica,
 		"stmt_cache_size":         stmtCache.size(),
 		"slow_query_threshold_ms": slowQueryThresholdMs,

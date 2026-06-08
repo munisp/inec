@@ -172,7 +172,7 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 	status := queryParam(r, "status", "")
 	priority := queryParam(r, "priority", "")
 
-	query := "SELECT id, election_id, COALESCE(polling_unit_code,''), filed_by, COALESCE(party,''), category, description, COALESCE(evidence,'[]'), status, COALESCE(assigned_to,''), COALESCE(resolution,''), COALESCE(resolved_by,''), filed_at, COALESCE(resolved_at,''), priority FROM disputes WHERE 1=1"
+	query := "SELECT id, election_id, COALESCE(polling_unit_code,''), filed_by, COALESCE(party,''), category, description, COALESCE(evidence,'[]'), status, COALESCE(assigned_to,''), COALESCE(resolution,''), COALESCE(resolved_by,''), filed_at, COALESCE(resolved_at,filed_at), priority FROM disputes WHERE 1=1"
 	args := []interface{}{}
 
 	if electionID > 0 {

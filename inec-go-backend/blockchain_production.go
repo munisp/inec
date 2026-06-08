@@ -1228,8 +1228,8 @@ func handleBlockchainProductionStats(w http.ResponseWriter, r *http.Request) {
 		"merkle_trees":     merkleCount,
 		"production_grade": true,
 		"components": M{
-			"hyperledger_fabric": "persistent (SQLite-backed Fabric simulation with ECDSA signatures, endorsement, ordering)",
-			"tigerbeetle_ledger": "persistent (SQLite WAL, ACID double-entry accounting)",
+			"hyperledger_fabric": "persistent (PostgreSQL-backed Fabric simulation with ECDSA signatures, endorsement, ordering)",
+			"tigerbeetle_ledger": "persistent (PostgreSQL WAL, ACID double-entry accounting)",
 			"ipfs_content_store": "persistent (content-addressed SHA256, CIDv1-compatible)",
 			"smart_contracts":    "executable (chaincode with real validation logic)",
 			"merkle_trees":       "real (SHA256 binary Merkle tree construction and verification)",

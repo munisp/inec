@@ -445,7 +445,7 @@ func handlePgpoolMetricsEndpoint(w http.ResponseWriter, r *http.Request) {
 
 func handlePgpoolReplicationStatus(w http.ResponseWriter, r *http.Request) {
 	if !usePostgres || dbWriter == nil {
-		writeJSON(w, 200, M{"status": "not_configured", "engine": "sqlite"})
+		writeJSON(w, 200, M{"status": "not_configured", "engine": "postgresql"})
 		return
 	}
 
@@ -577,7 +577,7 @@ func handlePgpoolDashboard(w http.ResponseWriter, r *http.Request) {
 		"summary": M{
 			"status":             map[bool]string{true: "healthy", false: "degraded"}[pgpoolMetrics.PgpoolHealthy],
 			"topology":           "1 Primary + 1 Replica + Pgpool-II",
-			"engine":             map[bool]string{true: "postgresql", false: "sqlite"}[usePostgres],
+			"engine":             "postgresql",
 			"pgpool_enabled":     pgpoolEnabled,
 			"uptime_check_count": atomic.LoadInt64(&pgpoolMetrics.HealthCheckCount),
 		},

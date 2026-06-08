@@ -1121,7 +1121,7 @@ func (f *ProductionFabricEngine) GetStats() M {
 		"endorsement_policy": "AND('INECMSP.peer','ObserverMSP.peer')",
 		"peers":              f.peers,
 		"signing":            "ECDSA P-256",
-		"state_db":           "persistent (PostgreSQL/SQLite)",
+		"state_db":           "persistent (PostgreSQL)",
 		"production":         true,
 	}
 }

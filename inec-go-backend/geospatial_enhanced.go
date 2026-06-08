@@ -109,9 +109,8 @@ CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_leve
 `
 
 func runGeoMigrations() {
-	if usePostgres {
-		// Run each statement individually for PostgreSQL
-		stmts := []string{
+	// Run each statement individually for PostgreSQL
+	stmts := []string{
 			`CREATE EXTENSION IF NOT EXISTS postgis`,
 			`CREATE TABLE IF NOT EXISTS landmarks (
 				id SERIAL PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
@@ -150,15 +149,9 @@ func runGeoMigrations() {
 			`CREATE INDEX IF NOT EXISTS idx_crowd_density_reported ON crowd_density(reported_at DESC)`,
 			`CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_level)`,
 			`CREATE INDEX IF NOT EXISTS idx_crowd_density_geom ON crowd_density USING GIST(geom)`,
-		}
-		for _, s := range stmts {
-			if _, err := db.Exec(s); err != nil {
-				logger.Printf("geo migration (non-fatal): %v", err)
-			}
-		}
-	} else {
-		_, err := db.Exec(geoMigrationSQL)
-		if err != nil {
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
 			logger.Printf("geo migration (non-fatal): %v", err)
 		}
 	}

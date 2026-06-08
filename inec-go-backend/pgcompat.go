@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/lib/pq"
-	_ "modernc.org/sqlite"
 )
 
 var usePostgres bool
@@ -149,27 +148,9 @@ func openPgCompat(dsn string) *sql.DB {
 }
 
 func openDatabase(dsn string) *sql.DB {
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		usePostgres = true
-		log.Info().Msg("Using PostgreSQL database")
-		return openPgCompat(dsn)
-	}
-	usePostgres = false
-	log.Info().Msg("Using SQLite database (fallback)")
-	d, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		log.Fatal().Err(err).Msg("SQLite connection failed")
-	}
-	d.Exec("PRAGMA journal_mode=WAL")
-	d.Exec("PRAGMA foreign_keys=ON")
-	d.Exec("PRAGMA busy_timeout=5000")
-	return d
-}
-
-func convertDDLForSQLite(schema string) string {
-	s := strings.ReplaceAll(schema, "SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
-	s = strings.ReplaceAll(s, "BYTEA", "BLOB")
-	return s
+	usePostgres = true
+	log.Info().Msg("Using PostgreSQL database")
+	return openPgCompat(dsn)
 }
 
 func convertDDLForPostgres(schema string) string {
@@ -197,13 +178,6 @@ func convertDDLForPostgres(schema string) string {
 }
 
 func execMulti(database *sql.DB, multiSQL string) {
-	if !usePostgres {
-		multiSQL = convertDDLForSQLite(multiSQL)
-		if _, err := database.Exec(multiSQL); err != nil {
-			log.Warn().Err(err).Msg("execMulti(sqlite) warning")
-		}
-		return
-	}
 	multiSQL = convertDDLForPostgres(multiSQL)
 	stmts := strings.Split(multiSQL, ";")
 	for _, s := range stmts {
@@ -223,14 +197,6 @@ type dbQuerier interface {
 }
 
 func insertReturningID(querier dbQuerier, query string, args ...interface{}) int64 {
-	if !usePostgres {
-		res, err := querier.Exec(query, args...)
-		if err != nil {
-			return 0
-		}
-		id, _ := res.LastInsertId()
-		return id
-	}
 	q := strings.TrimRight(query, " \t\n;")
 	if !strings.Contains(strings.ToUpper(q), "RETURNING") {
 		q += " RETURNING id"

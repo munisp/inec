@@ -20,7 +20,6 @@ import (
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/rs/zerolog/log"
-	_ "modernc.org/sqlite"
 )
 
 var (
@@ -69,11 +68,7 @@ func main() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dbPath := os.Getenv("DB_PATH")
-		if dbPath == "" {
-			dbPath = "file:inec.db?_journal_mode=WAL&_foreign_keys=ON&cache=shared&_busy_timeout=5000"
-		}
-		dsn = dbPath
+		dsn = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
 	}
 
 	db = openDatabase(dsn)

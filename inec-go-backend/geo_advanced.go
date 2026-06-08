@@ -122,9 +122,6 @@ CREATE INDEX IF NOT EXISTS idx_incident_loc_geom ON incident_locations USING GIS
 `
 
 func runGeoAdvancedMigrations() {
-	if !usePostgres {
-		return
-	}
 	stmts := strings.Split(geoAdvancedMigrationSQL, ";")
 	for _, s := range stmts {
 		s = strings.TrimSpace(s)

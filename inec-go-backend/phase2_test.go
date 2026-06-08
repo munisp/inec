@@ -35,45 +35,43 @@ func TestFSMInvalidTransitionReturnsError(t *testing.T) {
 		t.Skip("database not initialized")
 	}
 	// Create a test election in 'draft' state
-	res, err := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Test FSM Election','presidential','2026-12-01','draft')")
-	if err != nil {
-		t.Fatalf("failed to create test election: %v", err)
+	elID := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status) VALUES ($1,$2,$3,$4)", "Test FSM Election", "presidential", "2026-12-01", "draft")
+	if elID == 0 {
+		t.Fatal("failed to create test election")
 	}
-	elID, _ := res.LastInsertId()
 
 	// Try invalid transition: draft → voting (not allowed)
-	err = TransitionElection(context.Background(), int(elID), "open_voting", "test_admin")
+	err := TransitionElection(context.Background(), int(elID), "open_voting", "test_admin")
 	if err == nil {
 		t.Error("expected error for invalid transition draft→voting, got nil")
 	}
 
 	// Clean up
-	db.Exec("DELETE FROM elections WHERE id=?", elID)
+	db.Exec("DELETE FROM elections WHERE id=$1", elID)
 }
 
 func TestFSMCancelFromDraft(t *testing.T) {
 	if db == nil {
 		t.Skip("database not initialized")
 	}
-	res, err := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Test Cancel','gubernatorial','2026-12-01','draft')")
-	if err != nil {
-		t.Fatalf("failed to create test election: %v", err)
+	elID := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status) VALUES ($1,$2,$3,$4)", "Test Cancel", "gubernatorial", "2026-12-01", "draft")
+	if elID == 0 {
+		t.Fatal("failed to create test election")
 	}
-	elID, _ := res.LastInsertId()
 
-	err = TransitionElection(context.Background(), int(elID), "cancel", "test_admin")
+	err := TransitionElection(context.Background(), int(elID), "cancel", "test_admin")
 	if err != nil {
 		t.Errorf("expected cancel from draft to succeed, got: %v", err)
 	}
 
 	var status string
-	db.QueryRow("SELECT status FROM elections WHERE id=?", elID).Scan(&status)
+	db.QueryRow("SELECT status FROM elections WHERE id=$1", elID).Scan(&status)
 	if status != "cancelled" {
 		t.Errorf("expected status 'cancelled', got '%s'", status)
 	}
 
-	db.Exec("DELETE FROM elections WHERE id=?", elID)
-	db.Exec("DELETE FROM election_state_log WHERE election_id=?", elID)
+	db.Exec("DELETE FROM elections WHERE id=$1", elID)
+	db.Exec("DELETE FROM election_state_log WHERE election_id=$1", elID)
 }
 
 func TestFSMScheduleGuardRejectsEarlyDate(t *testing.T) {
@@ -82,26 +80,24 @@ func TestFSMScheduleGuardRejectsEarlyDate(t *testing.T) {
 	}
 	// Create election with tomorrow's date (< 7 days)
 	tomorrow := time.Now().Add(24 * time.Hour).Format("2006-01-02")
-	res, err := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Test Schedule','presidential',?,'draft')", tomorrow)
-	if err != nil {
-		t.Fatalf("failed to create test election: %v", err)
+	elID := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status) VALUES ($1,$2,$3,$4)", "Test Schedule", "presidential", tomorrow, "draft")
+	if elID == 0 {
+		t.Fatal("failed to create test election")
 	}
-	elID, _ := res.LastInsertId()
 
-	err = TransitionElection(context.Background(), int(elID), "schedule", "test_admin")
+	err := TransitionElection(context.Background(), int(elID), "schedule", "test_admin")
 	if err == nil {
 		t.Error("expected guard to reject scheduling < 7 days in advance")
 	}
 
-	db.Exec("DELETE FROM elections WHERE id=?", elID)
+	db.Exec("DELETE FROM elections WHERE id=$1", elID)
 }
 
 func TestFSMDiagramEndpoint(t *testing.T) {
 	if db == nil {
 		t.Skip("database not initialized")
 	}
-	res, _ := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Test Diagram','presidential','2026-12-01','draft')")
-	elID, _ := res.LastInsertId()
+	elID := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status) VALUES ($1,$2,$3,$4)", "Test Diagram", "presidential", "2026-12-01", "draft")
 
 	r := mux.NewRouter()
 	r.HandleFunc("/ems/elections/{id}/fsm/diagram", handleElectionFSMDiagram).Methods("GET")
@@ -124,15 +120,14 @@ func TestFSMDiagramEndpoint(t *testing.T) {
 		t.Errorf("expected at least 8 transitions in diagram")
 	}
 
-	db.Exec("DELETE FROM elections WHERE id=?", elID)
+	db.Exec("DELETE FROM elections WHERE id=$1", elID)
 }
 
 func TestFSMTransitionEndpoint(t *testing.T) {
 	if db == nil {
 		t.Skip("database not initialized")
 	}
-	res, _ := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Test Transition','presidential','2026-12-01','draft')")
-	elID, _ := res.LastInsertId()
+	elID := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status) VALUES ($1,$2,$3,$4)", "Test Transition", "presidential", "2026-12-01", "draft")
 
 	r := mux.NewRouter()
 	r.HandleFunc("/ems/elections/{id}/fsm/transition", handleElectionFSMTransition).Methods("POST")
@@ -152,8 +147,8 @@ func TestFSMTransitionEndpoint(t *testing.T) {
 		t.Errorf("expected 200 for cancel transition, got %d: %s", w.Code, w.Body.String())
 	}
 
-	db.Exec("DELETE FROM elections WHERE id=?", elID)
-	db.Exec("DELETE FROM election_state_log WHERE election_id=?", elID)
+	db.Exec("DELETE FROM elections WHERE id=$1", elID)
+	db.Exec("DELETE FROM election_state_log WHERE election_id=$1", elID)
 }
 
 func TestFSMRejectsNonAdmin(t *testing.T) {
@@ -756,9 +751,8 @@ func TestFileDisputeEndpoint(t *testing.T) {
 	}
 
 	// Create election for dispute
-	res, _ := db.Exec("INSERT INTO elections (title, election_type, election_date, status) VALUES ('Dispute Test','presidential','2026-12-01','active')")
-	elID, _ := res.LastInsertId()
-	defer db.Exec("DELETE FROM elections WHERE id=?", elID)
+	elID := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status) VALUES ($1,$2,$3,$4)", "Dispute Test", "presidential", "2026-12-01", "active")
+	defer db.Exec("DELETE FROM elections WHERE id=$1", elID)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/disputes", handleFileDispute).Methods("POST")
@@ -860,12 +854,11 @@ func TestDisputeResolveWorkflow(t *testing.T) {
 	}
 
 	// Insert a dispute directly
-	res, err := db.Exec("INSERT INTO disputes (election_id, filed_by, category, description) VALUES (1, 'observer1', 'overvoting', 'Test dispute')")
-	if err != nil {
-		t.Fatalf("failed to insert dispute: %v", err)
+	disputeID := insertReturningID(db, "INSERT INTO disputes (election_id, filed_by, category, description) VALUES ($1,$2,$3,$4)", 1, "observer1", "overvoting", "Test dispute")
+	if disputeID == 0 {
+		t.Fatal("failed to insert dispute")
 	}
-	disputeID, _ := res.LastInsertId()
-	defer db.Exec("DELETE FROM disputes WHERE id=?", disputeID)
+	defer db.Exec("DELETE FROM disputes WHERE id=$1", disputeID)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/disputes/{id}/resolve", handleResolveDispute).Methods("POST")

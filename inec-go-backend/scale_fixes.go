@@ -299,7 +299,7 @@ func initPgBouncerAwarePooling(primary *sql.DB) {
 		strings.Contains(dsn, "pgbouncer") ||
 		strings.Contains(dsn, ":6432")
 
-	if isPgBouncer && usePostgres {
+	if isPgBouncer {
 		// PgBouncer transaction mode: keep app-level pool smaller
 		// PgBouncer handles the real connection multiplexing
 		maxOpen := envInt("DB_MAX_OPEN_CONNS", 10)
@@ -312,7 +312,7 @@ func initPgBouncerAwarePooling(primary *sql.DB) {
 			Int("max_open", maxOpen).
 			Int("max_idle", maxIdle).
 			Msg("PgBouncer-aware pooling: reduced app-level pool (PgBouncer manages multiplexing)")
-	} else if usePostgres {
+	} else {
 		// Direct PostgreSQL: use larger app-level pool
 		maxOpen := envInt("DB_MAX_OPEN_CONNS", 50)
 		maxIdle := envInt("DB_MAX_IDLE_CONNS", 25)
@@ -373,31 +373,20 @@ func batchInsertPartyScores(tx dbQuerier, resultID int64, partyScores []struct {
 		return nil
 	}
 
-	if usePostgres {
-		// PostgreSQL: single multi-value INSERT
-		valueStrings := make([]string, 0, len(partyScores))
-		valueArgs := make([]interface{}, 0, len(partyScores)*3)
-		for i, ps := range partyScores {
-			base := i * 3
-			valueStrings = append(valueStrings, fmt.Sprintf("($%d, $%d, $%d)", base+1, base+2, base+3))
-			valueArgs = append(valueArgs, resultID, ps.PartyCode, ps.Votes)
-		}
-		query := fmt.Sprintf(
-			"INSERT INTO result_party_scores (result_id, party_code, votes) VALUES %s",
-			strings.Join(valueStrings, ", "),
-		)
-		_, err := tx.Exec(query, valueArgs...)
-		return err
+	// PostgreSQL: single multi-value INSERT
+	valueStrings := make([]string, 0, len(partyScores))
+	valueArgs := make([]interface{}, 0, len(partyScores)*3)
+	for i, ps := range partyScores {
+		base := i * 3
+		valueStrings = append(valueStrings, fmt.Sprintf("($%d, $%d, $%d)", base+1, base+2, base+3))
+		valueArgs = append(valueArgs, resultID, ps.PartyCode, ps.Votes)
 	}
-
-	// SQLite: prepared statement batch (no multi-value INSERT support)
-	for _, ps := range partyScores {
-		if _, err := tx.Exec("INSERT INTO result_party_scores (result_id, party_code, votes) VALUES (?,?,?)",
-			resultID, ps.PartyCode, ps.Votes); err != nil {
-			return err
-		}
-	}
-	return nil
+	query := fmt.Sprintf(
+		"INSERT INTO result_party_scores (result_id, party_code, votes) VALUES %s",
+		strings.Join(valueStrings, ", "),
+	)
+	_, err := tx.Exec(query, valueArgs...)
+	return err
 }
 
 // ── MEDIUM #8: Middleware Connectivity Detection ──
@@ -539,7 +528,7 @@ func cleanupLocalRateLimiter() {
 func handleScaleHealth(w http.ResponseWriter, r *http.Request) {
 	result := M{
 		"database": M{
-			"engine":            map[bool]string{true: "postgresql", false: "sqlite"}[usePostgres],
+			"engine":            "postgresql",
 			"read_write_split":  dbReader != dbWriter,
 			"writer_pool":       dbWriter.Stats(),
 			"pgbouncer_enabled": strings.Contains(os.Getenv("DATABASE_URL"), "pgbouncer") || os.Getenv("PGBOUNCER_ENABLED") == "true",
