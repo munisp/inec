@@ -10,6 +10,20 @@ jobs:
   backend-lint-build:
     name: Go Backend - Lint & Build
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: ngapp
+          POSTGRES_PASSWORD: ngapp
+          POSTGRES_DB: ngapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,6 +38,8 @@ jobs:
         run: CGO_ENABLED=1 go build -o inec-server ./...
       - name: Test
         working-directory: inec-go-backend
+        env:
+          DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
         run: go test -v -race -coverprofile=coverage.out ./...
       - name: Upload coverage
         uses: actions/upload-artifact@v4
@@ -124,6 +140,20 @@ jobs:
     name: E2E Tests (Playwright)
     runs-on: ubuntu-latest
     needs: [backend-lint-build, frontend-lint-build]
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: ngapp
+          POSTGRES_PASSWORD: ngapp
+          POSTGRES_DB: ngapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -140,6 +170,7 @@ jobs:
         run: ./inec-server &
         env:
           PORT: '8088'
+          DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
       - name: Install frontend
         working-directory: inec-frontend
         run: npm ci
@@ -208,6 +239,20 @@ jobs:
     name: Load Testing
     runs-on: ubuntu-latest
     needs: [backend-lint-build]
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: ngapp
+          POSTGRES_PASSWORD: ngapp
+          POSTGRES_DB: ngapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -221,6 +266,7 @@ jobs:
         run: ./inec-server &
         env:
           PORT: '8099'
+          DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
       - name: Wait for server
         run: |
           for i in $(seq 1 30); do
