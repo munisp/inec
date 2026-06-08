@@ -293,9 +293,18 @@ CREATE TABLE IF NOT EXISTS polling_unit_locations (
     longitude real NOT NULL,
     geofence_radius_m integer DEFAULT 500,
     state_code text,
-    lga_code text,
-    geom public.geometry(Point,4326)
+    lga_code text
 );
+
+-- Add geometry column safely (table may already exist without it)
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='polling_unit_locations' AND column_name='geom'
+    ) THEN
+        ALTER TABLE polling_unit_locations ADD COLUMN geom public.geometry(Point,4326);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_pu_locations_geom ON polling_unit_locations USING gist (geom);
 
