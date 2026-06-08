@@ -156,7 +156,7 @@ export default function MFAPage() {
           challenge: Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0)),
           rp: { name: options.rp_name, id: options.rp_id || window.location.hostname },
           user: {
-            id: Uint8Array.from(options.user_id || '1', c => c.charCodeAt(0)),
+            id: new TextEncoder().encode(String(options.user_id || '1')),
             name: options.user_name || 'user',
             displayName: options.user_display_name || 'User',
           },
