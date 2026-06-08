@@ -65,7 +65,7 @@ export default function MapPage() {
   const [tileVersion, setTileVersion] = useState<number>(0);
   const [mapError, setMapError] = useState<string | null>(null);
   // Enhanced geospatial state
-  const [showLandmarks, setShowLandmarks] = useState(false);
+  const [showLandmarks, setShowLandmarks] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [heatmapMetric, setHeatmapMetric] = useState<'turnout' | 'density' | 'anomaly'>('turnout');
   const [landmarks, setLandmarks] = useState<Array<{ id: number; name: string; category: string; latitude: number; longitude: number; icon: string; address: string }>>([]);
@@ -75,10 +75,10 @@ export default function MapPage() {
   const [spatialStats, setSpatialStats] = useState<{ total_pus: number; avg_turnout: number; area_km2: number; pu_density_per_km2: number } | null>(null);
   const landmarkMarkers = useRef<maplibregl.Marker[]>([]);
   // Real-time tracking & crowd state
-  const [showTracking, setShowTracking] = useState(false);
+  const [showTracking, setShowTracking] = useState(true);
   const [officials, setOfficials] = useState<Array<{ staff_id: string; role: string; latitude: number; longitude: number; pu_code: string; activity: string; battery_pct: number; updated_at: string }>>([]);
   const [crowdReports, setCrowdReports] = useState<Array<{ pu_code: string; latitude: number; longitude: number; head_count: number; density_level: string; queue_length: number; wait_time_min: number; pu_name: string }>>([]);
-  const [showCrowd, setShowCrowd] = useState(false);
+  const [showCrowd, setShowCrowd] = useState(true);
   const [streetViewLat, setStreetViewLat] = useState<number | null>(null);
   const [streetViewLng, setStreetViewLng] = useState<number | null>(null);
   const officialMarkers = useRef<maplibregl.Marker[]>([]);
@@ -86,8 +86,8 @@ export default function MapPage() {
   const trackingInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasZoomedToTrack = useRef(false);
   // Advanced geo state (#2-#30)
-  const [showGeofences, setShowGeofences] = useState(false);
-  const [showIncidents, setShowIncidents] = useState(false);
+  const [showGeofences, setShowGeofences] = useState(true);
+  const [showIncidents, setShowIncidents] = useState(true);
   const [showWeather, setShowWeather] = useState(false);
   const [showH3Grid, setShowH3Grid] = useState(false);
   const [showMesh, setShowMesh] = useState(false);
@@ -243,6 +243,15 @@ export default function MapPage() {
       if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
     };
   }, [showTracking]);
+
+  // Auto-load landmarks & crowd on mount (layers default to ON)
+  useEffect(() => {
+    if (showLandmarks) loadLandmarks(selectedState?.code);
+  }, [showLandmarks]);
+
+  useEffect(() => {
+    if (showCrowd) loadCrowdDensity();
+  }, [showCrowd]);
 
   // #15 Load weather data
   async function loadWeather() {

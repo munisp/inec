@@ -371,5 +371,83 @@ func seedComprehensive(db *sql.DB) {
 			a.level, a.stateCode, a.msg, a.action, 0)
 	}
 
+	// ── Geo: Landmarks (MapPage) ──
+	var lmCount int
+	db.QueryRow("SELECT COUNT(*) FROM landmarks").Scan(&lmCount)
+	if lmCount == 0 {
+		type lm struct{ name, cat string; lat, lng float64; state, addr, desc, icon string }
+		geoLandmarks := []lm{
+			{"INEC National HQ", "inec_office", 9.0805, 7.4969, "FC", "Zambezi Crescent, Maitama, Abuja", "INEC headquarters", "building"},
+			{"INEC Lagos Office", "inec_office", 6.5975, 3.3433, "LA", "Oba Akinjobi Way, Ikeja", "Lagos state INEC office", "building"},
+			{"INEC Kano Office", "inec_office", 12.0001, 8.5167, "KN", "Zoo Road, Kano", "Kano state INEC office", "building"},
+			{"INEC Rivers Office", "inec_office", 4.7677, 7.0189, "RI", "Aba Road, Port Harcourt", "Rivers state INEC office", "building"},
+			{"INEC Oyo Office", "inec_office", 7.3786, 3.8970, "OY", "Agodi Gate, Ibadan", "Oyo state INEC office", "building"},
+			{"INEC Enugu Office", "inec_office", 6.5536, 7.4143, "EN", "Independence Layout, Enugu", "Enugu state INEC office", "building"},
+			{"INEC Borno Office", "inec_office", 11.8395, 13.1536, "BO", "Bama Road, Maiduguri", "Borno state INEC office", "building"},
+			{"National Collation Center", "collation_center", 9.0805, 7.4969, "FC", "ICC, Abuja", "Presidential election collation", "flag"},
+			{"Lagos Collation Center", "collation_center", 6.5975, 3.3433, "LA", "INEC Lagos Hall, Ikeja", "Lagos collation", "flag"},
+			{"Kaduna Collation Center", "collation_center", 10.5231, 7.4403, "KD", "Lugard Hall, Kaduna", "Kaduna collation", "flag"},
+			{"Force HQ Abuja", "police_station", 9.0579, 7.4951, "FC", "Shehu Shagari Way, Abuja", "Police Force HQ", "shield"},
+			{"Calabar Police Command", "police_station", 4.9796, 8.3374, "CR", "Marian Road, Calabar", "Cross River Police", "shield"},
+			{"National Hospital Abuja", "hospital", 9.0400, 7.4900, "FC", "Central District, Abuja", "National Hospital", "heart"},
+			{"Benin Teaching Hospital", "hospital", 6.3331, 5.6221, "ED", "Benin City, Edo", "UBTH", "heart"},
+			{"University of Jos", "school", 9.9285, 8.8921, "PL", "Bauchi Road, Jos", "UNIJOS", "book"},
+			{"Obafemi Awolowo University", "school", 7.5170, 4.5228, "OS", "Ile-Ife, Osun", "OAU", "book"},
+			{"Nnamdi Azikiwe Airport", "transport_hub", 9.0065, 7.2632, "FC", "Airport Road, Abuja", "Abuja airport", "plane"},
+			{"Murtala Muhammed Airport", "transport_hub", 6.5774, 3.3212, "LA", "Ikeja, Lagos", "Lagos airport", "plane"},
+			{"Aso Rock Villa", "government_building", 9.0886, 7.5271, "FC", "Three Arms Zone, Abuja", "Presidential residence", "landmark"},
+			{"University of Calabar", "school", 4.9796, 8.3374, "CR", "Calabar", "UNICAL", "book"},
+		}
+		for _, l := range geoLandmarks {
+			dbExecLog("seed_landmark",
+				`INSERT INTO landmarks (name, category, latitude, longitude, state_code, address, description, icon) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+				l.name, l.cat, l.lat, l.lng, l.state, l.addr, l.desc, l.icon)
+		}
+	}
+
+	// ── Geo: Official tracking (MapPage — refresh timestamps) ──
+	dbExecLog("seed_tracking_refresh", `UPDATE official_tracking SET updated_at = NOW() WHERE updated_at < NOW() - INTERVAL '30 minutes'`)
+
+	// ── Geo: Crowd density (MapPage) ──
+	var cdCount int
+	db.QueryRow("SELECT COUNT(*) FROM crowd_density WHERE reported_at > NOW() - INTERVAL '2 hours'").Scan(&cdCount)
+	if cdCount == 0 {
+		type cd struct{ pu string; head int; density string; queue, wait int; lat, lng float64 }
+		crowds := []cd{
+			{"FC-001-W001-PU001", 245, "high", 85, 35, 9.0579, 7.4951},
+			{"FC-001-W001-PU002", 380, "overcrowded", 150, 60, 9.0765, 7.4986},
+			{"LA-001-W001-PU001", 310, "overcrowded", 120, 45, 6.6018, 3.3515},
+			{"KN-001-W001-PU001", 290, "high", 100, 40, 12.0022, 8.5920},
+			{"OY-001-W001-PU001", 210, "high", 70, 30, 7.3908, 3.8963},
+			{"RV-001-W001-PU001", 150, "moderate", 45, 18, 4.7740, 7.0134},
+			{"AN-001-W001-PU001", 340, "overcrowded", 130, 55, 6.2100, 6.9600},
+			{"EN-001-W001-PU001", 260, "high", 90, 38, 6.4500, 7.5100},
+		}
+		for _, c := range crowds {
+			dbExecLog("seed_crowd",
+				`INSERT INTO crowd_density (pu_code, head_count, density_level, queue_length, wait_time_min, latitude, longitude, reported_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT DO NOTHING`,
+				c.pu, c.head, c.density, c.queue, c.wait, c.lat, c.lng)
+		}
+	}
+
+	// ── Geo: Crowd alerts (MapPage) ──
+	var caCount int
+	db.QueryRow("SELECT COUNT(*) FROM crowd_alerts WHERE created_at > NOW() - INTERVAL '24 hours'").Scan(&caCount)
+	if caCount == 0 {
+		type ca struct{ pu, sev, atype, msg string }
+		alerts := []ca{
+			{"FC-001-W001-PU002", "critical", "overcrowding", "Overcrowding at Eagle Square PU — 380 voters"},
+			{"LA-001-W001-PU001", "critical", "overcrowding", "Severe overcrowding at Sabo-Yaba PU — 310 voters"},
+			{"AN-001-W001-PU001", "critical", "overcrowding", "Anambra PU overcrowded — 340 voters"},
+			{"KN-001-W001-PU001", "warning", "high_density", "High density at Kano PU — 290 voters"},
+			{"EN-001-W001-PU001", "warning", "high_density", "Enugu PU approaching capacity — 260 voters"},
+		}
+		for _, a := range alerts {
+			dbExecLog("seed_alert",
+				`INSERT INTO crowd_alerts (pu_code, severity, alert_type, message, acknowledged, created_at) VALUES ($1,$2,$3,$4,false,NOW()) ON CONFLICT DO NOTHING`,
+				a.pu, a.sev, a.atype, a.msg)
+		}
+	}
+
 	log.Info().Msg("Comprehensive seed complete — all page data populated")
 }
