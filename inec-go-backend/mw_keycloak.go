@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -291,6 +292,10 @@ func initKeycloakClient() KeycloakClient {
 		}
 		log.Warn().Str("url", kcURL).Msg("Keycloak unreachable, falling back to local JWT")
 	}
-	log.Info().Msg("Keycloak using embedded local JWT validation")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Keycloak is REQUIRED in production/staging. Set KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET")
+	}
+	log.Warn().Msg("Keycloak using embedded local JWT validation (DEV ONLY — not for production)")
 	return &embeddedKeycloak{}
 }

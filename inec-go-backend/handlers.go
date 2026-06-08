@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,32 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token, _ := createAccessToken(claims)
 	refresh, _ := createRefreshToken(claims)
+
+	// Set httpOnly cookies for XSS-resistant auth
+	secure := os.Getenv("APP_ENV") == "production" || os.Getenv("APP_ENV") == "staging"
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteStrictMode
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "inec_token",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: sameSite,
+		MaxAge:   3600,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "inec_refresh",
+		Value:    refresh,
+		Path:     "/auth/refresh",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: sameSite,
+		MaxAge:   7 * 24 * 3600,
+	})
+
 	writeJSON(w, 200, M{
 		"access_token": token, "refresh_token": refresh, "token_type": "bearer", "expires_in": 3600,
 		"user": M{"id": id, "username": username, "full_name": fullName, "role": role, "staff_id": nullStr(staffID), "state_code": nullStr(stateCode)},
@@ -166,6 +193,11 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	dbExecLog("active_sessions", convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
 
 	auditWrite("user_logout", "user", userIDStr, r, nil)
+
+	// Clear httpOnly auth cookies
+	http.SetCookie(w, &http.Cookie{Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: "inec_refresh", Value: "", Path: "/auth/refresh", MaxAge: -1, HttpOnly: true})
+
 	writeJSON(w, 200, M{"message": "logged out successfully"})
 }
 

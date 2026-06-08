@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -537,8 +538,22 @@ type BiometricVault struct {
 }
 
 func NewBiometricVault(database *sql.DB) *BiometricVault {
-	mk := sha256.Sum256([]byte("INEC-BIOMETRIC-VAULT-MASTER-KEY-2027"))
-	return &BiometricVault{db: database, masterKey: mk[:]}
+	keyHex := os.Getenv("BIOMETRIC_VAULT_MASTER_KEY")
+	if keyHex == "" {
+		env := os.Getenv("APP_ENV")
+		if env == "production" || env == "staging" {
+			log.Fatal().Msg("BIOMETRIC_VAULT_MASTER_KEY must be set in production/staging (64-char hex string from HSM/KMS)")
+		}
+		// Dev-only: deterministic key for local development
+		log.Warn().Msg("BIOMETRIC_VAULT_MASTER_KEY not set — using dev-only key (NOT FOR PRODUCTION)")
+		mk := sha256.Sum256([]byte("DEV-ONLY-BIOMETRIC-KEY-NOT-FOR-PRODUCTION"))
+		return &BiometricVault{db: database, masterKey: mk[:]}
+	}
+	mk, err := hex.DecodeString(keyHex)
+	if err != nil || len(mk) != 32 {
+		log.Fatal().Msg("BIOMETRIC_VAULT_MASTER_KEY must be a 64-character hex string (256-bit key)")
+	}
+	return &BiometricVault{db: database, masterKey: mk}
 }
 
 func (v *BiometricVault) GenerateKey(purpose string) (string, error) {

@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type TBTransfer struct {
@@ -436,6 +438,9 @@ func initTigerBeetleClient() TigerBeetleClient {
 		}
 		log.Warn().Msg("TigerBeetle unreachable, falling back to DB-backed mode")
 	}
-	// Use DB-backed persistent ledger instead of volatile in-memory
+	env := os.Getenv("APP_ENV")
+	if env == "production" {
+		log.Warn().Msg("TigerBeetle unavailable in production — using DB-backed persistent ledger (reduced throughput)")
+	}
 	return newDBBackedTigerBeetle()
 }

@@ -68,6 +68,10 @@ func main() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
+		env := os.Getenv("APP_ENV")
+		if env == "production" || env == "staging" {
+			log.Fatal().Msg("DATABASE_URL must be set in production/staging with sslmode=require or sslmode=verify-full")
+		}
 		dsn = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
 	}
 
@@ -584,6 +588,7 @@ func main() {
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
 	r.HandleFunc("/middleware/health", handleMiddlewareHealth).Methods("GET")
+	r.HandleFunc("/admin/data-retention", readAuth(handleDataRetentionStatus)).Methods("GET")
 	r.HandleFunc("/middleware/kafka/topics", readAuth(handleKafkaTopics)).Methods("GET")
 	r.HandleFunc("/middleware/temporal/workflows", readAuth(handleTemporalWorkflows)).Methods("GET")
 	r.HandleFunc("/middleware/temporal/workflows/{id}", readAuth(handleTemporalWorkflowStatus)).Methods("GET")
@@ -887,22 +892,32 @@ func requestSizeLimit(next http.Handler) http.Handler {
 }
 
 func rateLimitMiddleware(next http.Handler) http.Handler {
-	limits := []struct {
+	type rateRule struct {
 		prefix string
 		limit  int
-	}{
-		{"/auth/login", 5},
-		{"/auth/register", 3},
-		{"/geo/tiles", 60},
-		{"/dashboard/metrics", 10},
-		{"/results", 20},
-		{"/geo/reports", 5},
+		window time.Duration
+	}
+	limits := []rateRule{
+		// Auth endpoints: aggressive limits (brute-force protection)
+		{"/auth/login", 5, time.Minute},           // 5 login attempts per minute per IP
+		{"/auth/register", 3, time.Minute},         // 3 registrations per minute per IP
+		{"/auth/refresh", 10, time.Minute},         // 10 token refreshes per minute
+		{"/auth/forgot-password", 2, time.Minute},  // 2 password reset requests per minute
+		{"/sms/send-otp", 2, time.Minute},          // 2 OTP sends per minute
+		{"/sms/verify-otp", 5, time.Minute},        // 5 OTP verifications per minute
+		// Data endpoints
+		{"/geo/tiles", 120, time.Minute},
+		{"/dashboard/metrics", 30, time.Minute},
+		{"/results", 60, time.Minute},
+		{"/geo/reports", 10, time.Minute},
+		{"/export/", 2, time.Minute},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := stripPort(r.RemoteAddr)
 		for _, l := range limits {
 			if strings.HasPrefix(r.URL.Path, l.prefix) {
-				if !rateLimiter.allow(ip+":"+l.prefix, l.limit, time.Second) {
+				if !rateLimiter.allow(ip+":"+l.prefix, l.limit, l.window) {
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", int(l.window.Seconds())))
 					writeError(w, 429, "rate_limited")
 					return
 				}
@@ -1052,19 +1067,5 @@ func handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 
 var serverStartTime = time.Now()
 
-// panicRecoveryMiddleware catches panics in any handler and returns 500 instead of crashing the server.
-func panicRecoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Error().
-					Interface("panic", rec).
-					Str("method", r.Method).
-					Str("path", r.URL.Path).
-					Msg("Recovered from panic in HTTP handler")
-				writeError(w, 500, "internal server error")
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
+
+

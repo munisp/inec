@@ -51,13 +51,17 @@ func jwtAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Check Authorization header first, then fall back to httpOnly cookie
 		auth := r.Header.Get("Authorization")
-		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		var tokenStr string
+		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		} else if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+			tokenStr = cookie.Value
+		} else {
 			writeJSON(w, 401, M{"error": "authentication required"})
 			return
 		}
-
-		tokenStr := strings.TrimPrefix(auth, "Bearer ")
 		claims, err := decodeToken(tokenStr)
 		if err != nil {
 			writeJSON(w, 401, M{"error": "invalid or expired token"})

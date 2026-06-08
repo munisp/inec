@@ -36,22 +36,25 @@ function isTokenExpired(token: string): boolean {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  // User info is NOT sensitive — safe in localStorage for display
   const [user, setUser] = useState<User | null>(() => {
     const stored = localStorage.getItem('user');
     return stored ? JSON.parse(stored) : null;
   });
+  // Token is stored in httpOnly cookie by server; we keep a copy for display/API-header use
+  // but the cookie is the authoritative source for auth
   const [token, setToken] = useState<string | null>(() => {
     const stored = localStorage.getItem('token');
     if (stored && isTokenExpired(stored)) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      localStorage.removeItem('inec_token');
       return null;
     }
     return stored;
   });
 
   const login = (newToken: string, newUser: User) => {
+    // Token also set as httpOnly cookie by server; localStorage copy for API headers
     localStorage.setItem('token', newToken);
     localStorage.setItem('user', JSON.stringify(newUser));
     setToken(newToken);
@@ -61,7 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    localStorage.removeItem('inec_token');
+    // Clear httpOnly cookie via server call
+    fetch('/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     setToken(null);
     setUser(null);
   };

@@ -1,10 +1,19 @@
 package main
 
-import "database/sql"
+import (
+	"database/sql"
+	"os"
+
+	"github.com/rs/zerolog/log"
+)
 
 func initDB(db *sql.DB) {
-	// PostgreSQL handles this natively
-	// PostgreSQL handles this natively
+	env := os.Getenv("APP_ENV")
+	if env == "production" {
+		log.Info().Msg("Production mode: schema managed by migrations only (skipping initDB auto-create)")
+		validateSchemaExists(db)
+		return
+	}
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
@@ -191,4 +200,18 @@ func initDB(db *sql.DB) {
 	initIngestionTables(db)
 	initSMSUSSDTables(db)
 	initPublicAPITables(db)
+}
+
+// validateSchemaExists checks that core tables exist in production mode.
+// In production, schema must be created by running migrations before starting the server.
+func validateSchemaExists(database *sql.DB) {
+	coreTables := []string{"users", "elections", "results", "parties", "polling_units", "schema_migrations"}
+	for _, table := range coreTables {
+		var exists bool
+		err := database.QueryRow("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)", table).Scan(&exists)
+		if err != nil || !exists {
+			log.Fatal().Str("table", table).Msg("Required table missing in production. Run migrations first: ./inec-server --migrate")
+		}
+	}
+	log.Info().Int("core_tables_verified", len(coreTables)).Msg("Production schema validation passed")
 }

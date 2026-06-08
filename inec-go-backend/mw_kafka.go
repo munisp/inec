@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -222,6 +223,10 @@ func initKafkaClient() KafkaClient {
 		log.Warn().Str("brokers", brokersStr).Msg("Kafka unreachable, falling back to embedded")
 		client.Close()
 	}
-	log.Info().Msg("Kafka using embedded in-memory event bus")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Kafka is REQUIRED in production/staging for durable event streaming. Set KAFKA_BROKERS")
+	}
+	log.Warn().Msg("Kafka using embedded in-memory event bus (DEV ONLY)")
 	return newEmbeddedKafka()
 }

@@ -7,12 +7,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
+
+// panicRecoveryMiddleware catches panics in handlers and returns 500 instead of crashing the server.
+func panicRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				stack := string(debug.Stack())
+				log.Error().
+					Interface("panic", rec).
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Str("stack", stack).
+					Msg("Handler panic recovered")
+				panicCounter.WithLabelValues(r.URL.Path).Inc()
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
 
 // ── Role-Based Access Guard ──
 
