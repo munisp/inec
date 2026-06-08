@@ -165,7 +165,7 @@ func auditWrite(action, entityType, entityID string, r *http.Request, details ma
 			fmt.Sscanf(sub, "%d", &userID)
 		}
 	}
-	logAudit(action, entityType, entityID, userID, details)
+	logAuditCtx(r.Context(), action, entityType, entityID, userID, details)
 }
 
 // ── Input Validation Helpers ──

@@ -58,7 +58,7 @@ export default function DisputeResolutionPage() {
   const [formDescription, setFormDescription] = useState('');
   const [submitLoading, setSubmitLoading] = useState(false);
 
-  const token = localStorage.getItem('token') || '';
+
 
   const fetchDisputes = useCallback(async () => {
     try {
@@ -69,7 +69,7 @@ export default function DisputeResolutionPage() {
       if (filterPriority) params.set('priority', filterPriority);
 
       const res = await fetch(`${API_BASE}/disputes?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       });
       if (!res.ok) throw new Error(`Failed to fetch disputes: ${res.status}`);
       const data = await res.json();
@@ -79,12 +79,12 @@ export default function DisputeResolutionPage() {
     } finally {
       setLoading(false);
     }
-  }, [filterStatus, filterPriority, token]);
+  }, [filterStatus, filterPriority]);
 
   const fetchStats = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/disputes/stats`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();
@@ -93,7 +93,7 @@ export default function DisputeResolutionPage() {
     } catch {
       // Stats are non-critical
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     fetchDisputes();
@@ -106,8 +106,8 @@ export default function DisputeResolutionPage() {
     try {
       const res = await fetch(`${API_BASE}/disputes`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -143,8 +143,8 @@ export default function DisputeResolutionPage() {
     try {
       const res = await fetch(`${API_BASE}/disputes/${disputeId}/resolve`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ action, resolution }),

@@ -7,13 +7,12 @@ export class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
-  return localStorage.getItem('token') || localStorage.getItem('inec_token');
-}
+// Token is in httpOnly cookie — no localStorage access needed for auth
 
 function xhrFallback(path: string, method: string, headers: Record<string, string>, body?: string): unknown {
   const xhr = new XMLHttpRequest();
   xhr.open(method, `${API_URL}${path}`, false);
+  xhr.withCredentials = true;
   Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
   xhr.send(body || null);
   if (xhr.status === 0) throw new Error('XHR failed: network error');
@@ -25,23 +24,19 @@ function xhrFallback(path: string, method: string, headers: Record<string, strin
 }
 
 function handleAuthFailure() {
-  localStorage.removeItem('token');
   localStorage.removeItem('user');
-  localStorage.removeItem('inec_token');
   window.location.reload();
 }
 
 async function request(path: string, options: RequestInit = {}, retries = 2) {
-  const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+      const res = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         if (res.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {

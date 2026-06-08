@@ -50,12 +50,10 @@ export default function ObserverMonitoringPage() {
   const [stats, setStats] = useState<Record<string, number>>({});
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const token = localStorage.getItem('token') || '';
-
   // SSE Connection for live updates
   useEffect(() => {
     if (tab !== 'live') return;
-    const es = new EventSource(`${API}/observer/stream?token=${token}`);
+    const es = new EventSource(`${API}/observer/stream`, { withCredentials: true });
     eventSourceRef.current = es;
 
     es.addEventListener('connected', () => {
@@ -80,37 +78,37 @@ export default function ObserverMonitoringPage() {
     es.onerror = () => setConnected(false);
 
     return () => { es.close(); setConnected(false); };
-  }, [tab, token]);
+  }, [tab]);
 
   // Fetch observer stats
   useEffect(() => {
-    fetch(`${API}/observer/stats`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${API}/observer/stats`, { credentials: 'include' })
       .then(r => r.json()).then(setStats).catch(e => console.error('observer stats:', e));
-  }, [token]);
+  }, []);
 
   // Fetch reports
   useEffect(() => {
     if (tab === 'reports') {
-      fetch(`${API}/observer/reports`, { headers: { Authorization: `Bearer ${token}` } })
+      fetch(`${API}/observer/reports`, { credentials: 'include' })
         .then(r => r.json()).then(d => setReports(Array.isArray(d) ? d : [])).catch(e => console.error('observer reports:', e));
     }
-  }, [tab, token]);
+  }, [tab]);
 
   // Fetch alert rules
   useEffect(() => {
     if (tab === 'alerts') {
-      fetch(`${API}/observer/alerts`, { headers: { Authorization: `Bearer ${token}` } })
+      fetch(`${API}/observer/alerts`, { credentials: 'include' })
         .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert rules:', e));
     }
-  }, [tab, token]);
+  }, [tab]);
 
   // Fetch party dashboard
   useEffect(() => {
     if (tab === 'party') {
-      fetch(`${API}/observer/party-dashboard?party=${selectedParty}`, { headers: { Authorization: `Bearer ${token}` } })
+      fetch(`${API}/observer/party-dashboard?party=${selectedParty}`, { credentials: 'include' })
         .then(r => r.json()).then(setPartyData).catch(e => console.error('party data:', e));
     }
-  }, [tab, selectedParty, token]);
+  }, [tab, selectedParty]);
 
   return (
     <div className="space-y-4">
@@ -150,9 +148,9 @@ export default function ObserverMonitoringPage() {
 
       {/* Tab Content */}
       {tab === 'live' && <LiveFeedTab events={events} connected={connected} />}
-      {tab === 'reports' && <ReportsTab reports={reports} token={token} />}
-      {tab === 'alerts' && <AlertsTab rules={alertRules} token={token} onRefresh={() => {
-        fetch(`${API}/observer/alerts`, { headers: { Authorization: `Bearer ${token}` } })
+      {tab === 'reports' && <ReportsTab reports={reports} />}
+      {tab === 'alerts' && <AlertsTab rules={alertRules} onRefresh={() => {
+        fetch(`${API}/observer/alerts`, { credentials: 'include' })
           .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert refresh:', e));
       }} />}
       {tab === 'party' && <PartyTab data={partyData} party={selectedParty} onPartyChange={setSelectedParty} />}
@@ -205,7 +203,7 @@ function LiveFeedTab({ events, connected }: { events: ResultEvent[]; connected: 
   );
 }
 
-function ReportsTab({ reports, token }: { reports: ObserverReport[]; token: string }) {
+function ReportsTab({ reports }: { reports: ObserverReport[] }) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -217,7 +215,7 @@ function ReportsTab({ reports, token }: { reports: ObserverReport[]; token: stri
     try {
       await fetch(`${API}/observer/reports`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
         body: formData,
       });
       form.reset();
@@ -275,14 +273,15 @@ function ReportsTab({ reports, token }: { reports: ObserverReport[]; token: stri
   );
 }
 
-function AlertsTab({ rules, token, onRefresh }: { rules: AlertRule[]; token: string; onRefresh: () => void }) {
+function AlertsTab({ rules, onRefresh }: { rules: AlertRule[]; onRefresh: () => void }) {
   const handleCreate = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget;
     const data = Object.fromEntries(new FormData(form));
     await fetch(`${API}/observer/alerts`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     form.reset();
@@ -292,7 +291,7 @@ function AlertsTab({ rules, token, onRefresh }: { rules: AlertRule[]; token: str
   const handleDelete = async (id: number) => {
     await fetch(`${API}/observer/alerts/${id}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
     });
     onRefresh();
   };

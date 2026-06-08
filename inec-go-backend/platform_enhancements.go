@@ -680,7 +680,10 @@ func handleMediaStream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if origin := r.Header.Get("Origin"); origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
 	ctx := r.Context()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -705,7 +708,10 @@ func handleMediaWidget(w http.ResponseWriter, r *http.Request) {
 	snap := buildMediaSnapshot(r.Context())
 	snap["widget_type"] = r.URL.Query().Get("type")
 	snap["branding"] = M{"name": "INEC Nigeria", "footer": "Official Results"}
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if origin := r.Header.Get("Origin"); origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
 	writeJSON(w, 200, snap)
 }
 

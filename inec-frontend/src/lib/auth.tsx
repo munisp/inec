@@ -25,59 +25,47 @@ const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
 });
 
-function isTokenExpired(token: string): boolean {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    if (!payload.exp) return false;
-    return payload.exp * 1000 < Date.now();
-  } catch {
-    return true;
-  }
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   // User info is NOT sensitive — safe in localStorage for display
   const [user, setUser] = useState<User | null>(() => {
     const stored = localStorage.getItem('user');
     return stored ? JSON.parse(stored) : null;
   });
-  // Token is stored in httpOnly cookie by server; we keep a copy for display/API-header use
-  // but the cookie is the authoritative source for auth
+  // Token is stored in httpOnly cookie by server — NOT in localStorage (XSS prevention).
+  // We keep a non-null sentinel in React state to track auth status; actual auth is via cookie.
   const [token, setToken] = useState<string | null>(() => {
-    const stored = localStorage.getItem('token');
-    if (stored && isTokenExpired(stored)) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      return null;
-    }
-    return stored;
+    return localStorage.getItem('user') ? 'httponly-cookie' : null;
   });
 
-  const login = (newToken: string, newUser: User) => {
-    // Token also set as httpOnly cookie by server; localStorage copy for API headers
-    localStorage.setItem('token', newToken);
+  const login = (_newToken: string, newUser: User) => {
+    // Token is in httpOnly cookie set by server — do NOT store in localStorage
     localStorage.setItem('user', JSON.stringify(newUser));
-    setToken(newToken);
+    setToken('httponly-cookie');
     setUser(newUser);
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
     localStorage.removeItem('user');
     // Clear httpOnly cookie via server call
-    fetch('/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    const apiUrl = import.meta.env.VITE_API_URL ?? '';
+    fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
     setToken(null);
     setUser(null);
   };
 
+  // Verify session is still valid on mount by checking httpOnly cookie via /auth/me
   useEffect(() => {
     if (token && !user) {
       logout();
+      return;
     }
-    if (token && isTokenExpired(token)) {
-      logout();
+    if (user) {
+      const apiUrl = import.meta.env.VITE_API_URL ?? '';
+      fetch(`${apiUrl}/auth/me`, { credentials: 'include' })
+        .then(res => { if (!res.ok) logout(); })
+        .catch(() => { /* network error — keep session, will retry on next request */ });
     }
-  }, [token, user]);
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <AuthContext.Provider value={{ user, token, login, logout, isAuthenticated: !!token }}>

@@ -44,7 +44,38 @@ export const options = {
       duration: '10m',
       exec: 'trackingUpdate',
     },
-    // Scenario 4: Health checks (monitoring systems)
+    // Scenario 4: Biometric verification (BVAS devices checking in)
+    biometric_verification: {
+      executor: 'ramping-vus',
+      startVUs: 10,
+      stages: [
+        { duration: '2m', target: 100 },
+        { duration: '5m', target: 200 },
+        { duration: '2m', target: 50 },
+        { duration: '1m', target: 0 },
+      ],
+      exec: 'biometricVerify',
+    },
+    // Scenario 5: Geospatial queries (map views, nearby PUs, landmarks)
+    geospatial_queries: {
+      executor: 'constant-vus',
+      vus: 30,
+      duration: '10m',
+      exec: 'geospatialQuery',
+    },
+    // Scenario 6: Dashboard + live feed (citizens + media watching results)
+    dashboard_viewers: {
+      executor: 'ramping-vus',
+      startVUs: 20,
+      stages: [
+        { duration: '1m', target: 100 },
+        { duration: '5m', target: 300 },
+        { duration: '3m', target: 200 },
+        { duration: '1m', target: 0 },
+      ],
+      exec: 'dashboardView',
+    },
+    // Scenario 7: Health checks (monitoring systems)
     health_monitoring: {
       executor: 'constant-arrival-rate',
       rate: 10,
@@ -58,6 +89,10 @@ export const options = {
     http_req_duration: ['p(95)<500', 'p(99)<2000'],
     errors: ['rate<0.01'],
     http_req_failed: ['rate<0.01'],
+    'http_req_duration{name:GET /healthz}': ['p(99)<100'],
+    'http_req_duration{name:POST /results}': ['p(95)<1000'],
+    'http_req_duration{name:GET /collation/national}': ['p(95)<800'],
+    'http_req_duration{name:GET /dashboard/stats}': ['p(95)<500'],
   },
 };
 
@@ -191,6 +226,104 @@ export function healthCheck() {
   });
 
   sleep(0.5);
+}
+
+export function biometricVerify(data) {
+  const token = data.token;
+  const vin = `VIN${String(Math.floor(Math.random() * 93000000)).padStart(11, '0')}`;
+
+  group('biometric_verification', () => {
+    const payload = JSON.stringify({
+      voter_vin: vin,
+      modality: ['fingerprint', 'facial', 'iris'][Math.floor(Math.random() * 3)],
+      device_id: `BVAS-${String(Math.floor(Math.random() * 500000)).padStart(6, '0')}`,
+      quality_score: Math.random() * 0.3 + 0.7,
+    });
+
+    const res = http.post(`${BASE_URL}/biometric/verify`, payload, {
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      tags: { name: 'POST /biometric/verify' },
+    });
+    responseTime.add(res.timings.duration);
+    biometricVerifications.add(1);
+    check(res, {
+      'biometric verify 200/404': (r) => [200, 404].includes(r.status),
+      'biometric < 2s': (r) => r.timings.duration < 2000,
+    });
+  });
+
+  sleep(Math.random() * 3 + 1);
+}
+
+export function geospatialQuery(data) {
+  const token = data.token;
+  const lat = 6.0 + Math.random() * 7;
+  const lng = 3.0 + Math.random() * 12;
+  const headers = { 'Authorization': `Bearer ${token}` };
+
+  group('geospatial', () => {
+    // Nearby PUs
+    const nearby = http.get(`${BASE_URL}/geo/nearby-pus?lat=${lat}&lng=${lng}&radius_km=10`, {
+      headers, tags: { name: 'GET /geo/nearby-pus' },
+    });
+    responseTime.add(nearby.timings.duration);
+    check(nearby, { 'nearby PUs 200': (r) => r.status === 200 });
+
+    // Landmarks
+    const lm = http.get(`${BASE_URL}/geo/landmarks`, {
+      headers, tags: { name: 'GET /geo/landmarks' },
+    });
+    check(lm, { 'landmarks 200': (r) => r.status === 200 });
+
+    // Spatial stats
+    const stats = http.get(`${BASE_URL}/geo/spatial-stats`, {
+      headers, tags: { name: 'GET /geo/spatial-stats' },
+    });
+    check(stats, { 'spatial stats 200': (r) => r.status === 200 });
+
+    // Heatmap
+    const hm = http.get(`${BASE_URL}/geo/heatmap?metric=turnout`, {
+      headers, tags: { name: 'GET /geo/heatmap' },
+    });
+    check(hm, { 'heatmap 200': (r) => r.status === 200 });
+  });
+
+  sleep(Math.random() * 4 + 2);
+}
+
+export function dashboardView(data) {
+  const token = data.token;
+  const headers = { 'Authorization': `Bearer ${token}` };
+
+  group('dashboard', () => {
+    // Dashboard stats
+    const stats = http.get(`${BASE_URL}/dashboard/stats?election_id=1`, {
+      headers, tags: { name: 'GET /dashboard/stats' },
+    });
+    responseTime.add(stats.timings.duration);
+    check(stats, { 'dashboard stats 200': (r) => r.status === 200 });
+
+    // Live feed
+    const feed = http.get(`${BASE_URL}/dashboard/live-feed?election_id=1&limit=20`, {
+      headers, tags: { name: 'GET /dashboard/live-feed' },
+    });
+    check(feed, { 'live feed 200': (r) => r.status === 200 });
+
+    // Collation at national level
+    const coll = http.get(`${BASE_URL}/dashboard/collation?election_id=1&level=national`, {
+      headers, tags: { name: 'GET /dashboard/collation' },
+    });
+    check(coll, { 'collation 200': (r) => r.status === 200 });
+
+    // State drill-down
+    const state = STATES[Math.floor(Math.random() * STATES.length)];
+    const stateColl = http.get(`${BASE_URL}/dashboard/collation?election_id=1&level=state&parent_code=${state}`, {
+      headers, tags: { name: 'GET /dashboard/collation/state' },
+    });
+    check(stateColl, { 'state collation 200': (r) => r.status === 200 });
+  });
+
+  sleep(Math.random() * 5 + 3);
 }
 
 export function handleSummary(data) {

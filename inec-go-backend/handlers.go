@@ -325,8 +325,12 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 // ── Results ──
 
 func logAudit(action, entityType, entityID string, userID int, details map[string]interface{}) {
+	logAuditCtx(context.Background(), action, entityType, entityID, userID, details)
+}
+
+func logAuditCtx(ctx context.Context, action, entityType, entityID string, userID int, details map[string]interface{}) {
 	var prevHash sql.NullString
-	dbQueryRowCtx(context.Background(), "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
+	dbQueryRowCtx(ctx, "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
 	prev := strings.Repeat("0", 64)
 	if prevHash.Valid {
 		prev = prevHash.String
@@ -335,7 +339,7 @@ func logAudit(action, entityType, entityID string, userID int, details map[strin
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
 	detailsJSON, _ := json.Marshal(details)
-	dbExecCtx(context.Background(), "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
+	dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
 		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev)
 }
 

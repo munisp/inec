@@ -37,7 +37,7 @@ export default function KYCVerificationPage() {
   const [step, setStep] = useState<'status' | 'upload' | 'liveness' | 'result'>('status');
 
   useEffect(() => {
-    fetch(`${API}/status?user_id=1`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    fetch(`${API}/status?user_id=1`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d && d.status !== 'not_started') setKycStatus(d); })
       .catch(e => console.error('kyc status:', e))
@@ -55,7 +55,7 @@ export default function KYCVerificationPage() {
     try {
       const res = await fetch(`${API}/verify`, {
         method: 'POST', body: form,
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();
@@ -74,7 +74,7 @@ export default function KYCVerificationPage() {
     try {
       const res = await fetch(`${API}/liveness`, {
         method: 'POST', body: form,
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();

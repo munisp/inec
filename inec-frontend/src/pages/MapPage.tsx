@@ -186,8 +186,7 @@ export default function MapPage() {
       // Open SSE stream for real-time updates
       try {
         const base = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
-        const token = localStorage.getItem('token') || '';
-        const es = new EventSource(`${base}/geo/tracking/stream?token=${token}`);
+        const es = new EventSource(`${base}/geo/tracking/stream`, { withCredentials: true });
         sseRef.current = es;
         es.addEventListener('tracking_snapshot', (e) => {
           try {
