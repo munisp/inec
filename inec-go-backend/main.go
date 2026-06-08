@@ -129,6 +129,7 @@ func main() {
 	initPushNotificationSchema()
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
+	initComplianceTables()
 	seedComprehensive(db)
 	seedAllTables(db)
 	runGeoMigrations()
@@ -230,6 +231,7 @@ func main() {
 	// routing, weather, photos, incident hotspots, predictive crowd, drones, simulation,
 	// blockchain attestation, mesh network, H3 hex grid, offline tiles, MVT tiles
 	registerGeoAdvancedRoutes(r)
+	registerComplianceRoutes(r)
 
 	// Dashboard — read auth for data, write auth for metrics
 	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")

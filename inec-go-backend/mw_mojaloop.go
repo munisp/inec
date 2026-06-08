@@ -452,7 +452,11 @@ func initMojaloopClient() MojaloopClient {
 		}
 		log.Warn().Err(err).Msg("Mojaloop: external connection failed, using embedded")
 	}
-	log.Info().Msg("Mojaloop using embedded DB-backed implementation")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Mojaloop is REQUIRED in production/staging for financial settlement. Set MOJALOOP_URL")
+	}
+	log.Warn().Msg("Mojaloop using embedded DB-backed implementation (DEV ONLY)")
 	return &embeddedMojaloop{}
 }
 

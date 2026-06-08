@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type LakehouseQuery struct {
@@ -300,6 +302,10 @@ func initLakehouseClient() LakehouseClient {
 		}
 		log.Warn().Msg("Lakehouse unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Lakehouse using embedded PostgreSQL analytics")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Lakehouse is REQUIRED in production/staging for analytics. Set LAKEHOUSE_URL")
+	}
+	log.Warn().Msg("Lakehouse using embedded PostgreSQL analytics (DEV ONLY)")
 	return &embeddedLakehouse{}
 }

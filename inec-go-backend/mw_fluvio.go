@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type FluvioRecord struct {
@@ -194,6 +196,10 @@ func initFluvioClient() FluvioClient {
 		}
 		log.Warn().Msg("Fluvio unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Fluvio using embedded in-memory streaming")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Fluvio is REQUIRED in production/staging for real-time streaming. Set FLUVIO_URL")
+	}
+	log.Warn().Msg("Fluvio using embedded in-memory streaming (DEV ONLY)")
 	return newEmbeddedFluvio()
 }

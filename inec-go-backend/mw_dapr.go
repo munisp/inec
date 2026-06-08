@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type DaprClient interface {
@@ -207,6 +209,10 @@ func initDaprClient() DaprClient {
 		}
 		log.Warn().Msg("Dapr sidecar unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Dapr using embedded local state/pubsub")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Dapr sidecar is REQUIRED in production/staging for service mesh. Set DAPR_HTTP_PORT")
+	}
+	log.Warn().Msg("Dapr using embedded local state/pubsub (DEV ONLY)")
 	return newEmbeddedDapr()
 }

@@ -52,7 +52,7 @@ export default function ObserverMonitoringScreen() {
   useEffect(() => { load(); }, [load]);
 
   // Auto-refresh every 30s
-  const intervalRef = useRef<NodeJS.Timeout>();
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     intervalRef.current = setInterval(load, 30000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };

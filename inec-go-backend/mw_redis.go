@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -242,6 +243,10 @@ func initRedisClient() RedisClient {
 		log.Warn().Str("addr", redisAddr).Msg("Redis unreachable, falling back to embedded")
 		client.Close()
 	}
-	log.Info().Msg("Redis using embedded in-memory store")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Redis is REQUIRED in production/staging for session store and caching. Set REDIS_ADDR or REDIS_URL")
+	}
+	log.Warn().Msg("Redis using embedded in-memory store (DEV ONLY)")
 	return newEmbeddedRedis()
 }

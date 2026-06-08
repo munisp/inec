@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -198,6 +199,10 @@ func initPermifyClient() PermifyClient {
 		}
 		log.Warn().Str("url", permifyURL).Msg("Permify unreachable, falling back to local RBAC")
 	}
-	log.Info().Msg("Permify using embedded local RBAC")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Permify is REQUIRED in production/staging for relationship-based access control. Set PERMIFY_URL")
+	}
+	log.Warn().Msg("Permify using embedded local RBAC (DEV ONLY)")
 	return &embeddedPermify{}
 }

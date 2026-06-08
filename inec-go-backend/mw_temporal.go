@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type WorkflowInput struct {
@@ -239,6 +241,10 @@ func initTemporalClient() TemporalClient {
 		}
 		log.Warn().Msg("Temporal unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Temporal using embedded local workflow engine")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Temporal is REQUIRED in production/staging for durable workflow orchestration. Set TEMPORAL_URL")
+	}
+	log.Warn().Msg("Temporal using embedded local workflow engine (DEV ONLY)")
 	return newEmbeddedTemporal()
 }

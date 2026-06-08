@@ -415,7 +415,11 @@ func initOpenAppSecClient() OpenAppSecClient {
 		}
 		log.Warn().Str("url", baseURL).Msg("OpenAppSec unreachable, falling back to embedded WAF")
 	}
-	log.Info().Msg("OpenAppSec using embedded rule-based WAF")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("OpenAppSec WAF is REQUIRED in production/staging. Set OPENAPPSEC_URL")
+	}
+	log.Warn().Msg("OpenAppSec using embedded rule-based WAF (DEV ONLY)")
 	return newEmbeddedWAF()
 }
 

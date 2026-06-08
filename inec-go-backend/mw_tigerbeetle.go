@@ -439,8 +439,9 @@ func initTigerBeetleClient() TigerBeetleClient {
 		log.Warn().Msg("TigerBeetle unreachable, falling back to DB-backed mode")
 	}
 	env := os.Getenv("APP_ENV")
-	if env == "production" {
-		log.Warn().Msg("TigerBeetle unavailable in production — using DB-backed persistent ledger (reduced throughput)")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("TigerBeetle is REQUIRED in production/staging for double-entry ledger integrity. Set TIGERBEETLE_URL")
 	}
+	log.Warn().Msg("TigerBeetle using DB-backed persistent ledger (DEV ONLY — reduced throughput)")
 	return newDBBackedTigerBeetle()
 }
