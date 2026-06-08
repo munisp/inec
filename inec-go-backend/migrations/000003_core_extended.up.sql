@@ -1,3 +1,6 @@
+-- Ensure PostGIS is available before using geometry types
+CREATE EXTENSION IF NOT EXISTS postgis;
+
 -- Core extended tables: voters, audit, collation, validation
 
 CREATE TABLE IF NOT EXISTS voters (
