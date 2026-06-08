@@ -141,6 +141,9 @@ func main() {
 	initDistributedRateLimiter()
 	detectMiddlewareModes()
 
+	// Initialize service-oriented architecture layer (circuit breakers, event bus, tracing)
+	initArchitecture()
+
 	// Seed search indices after hub is ready
 	go seedSearchIndices(db)
 	// Start background cache cleanup
@@ -151,6 +154,9 @@ func main() {
 	// Health — deep checks
 	r.HandleFunc("/healthz", handleDeepHealthCheck).Methods("GET")
 	r.HandleFunc("/readiness", handleReadinessCheck).Methods("GET")
+	// Architecture health — circuit breakers, event bus, service registry
+	r.HandleFunc("/architecture/health", adminOnly(handleArchitectureHealth)).Methods("GET")
+	r.HandleFunc("/architecture/circuit-breakers", adminOnly(handleCircuitBreakers)).Methods("GET")
 	r.HandleFunc("/db/metrics", adminOnly(handleDBMetrics)).Methods("GET")
 	r.HandleFunc("/db/pool", adminOnly(handleDBPoolStats)).Methods("GET")
 	r.HandleFunc("/scale/health", readAuth(handleScaleHealth)).Methods("GET")
@@ -732,20 +738,21 @@ func main() {
 	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
-			tracingMiddleware(
-				accessLogMiddleware(
-					inputValidationMiddleware(
-						metricsMiddleware(
-							corsProductionMiddleware(
-								jwtAuthMiddleware(
-									csrfMiddleware(
-										enhancedSecurityHeaders(
-											wafMiddleware(
-												requestSizeLimit(
-													rateLimitMiddleware(
-														loadSheddingMiddleware(
-															roleBasedRateLimit(
-																gzipMiddleware(r))))))))))))))))
+			otelTracingMiddleware(
+				tracingMiddleware(
+					accessLogMiddleware(
+						inputValidationMiddleware(
+							metricsMiddleware(
+								corsProductionMiddleware(
+									jwtAuthMiddleware(
+										csrfMiddleware(
+											enhancedSecurityHeaders(
+												wafMiddleware(
+													requestSizeLimit(
+														rateLimitMiddleware(
+															loadSheddingMiddleware(
+																roleBasedRateLimit(
+																	gzipMiddleware(r)))))))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -795,6 +802,11 @@ func main() {
 	// Close middleware connections
 	if mwHub != nil {
 		mwHub.Shutdown()
+	}
+
+	// Shutdown architecture layer (event bus, tracing exporters)
+	if serviceRegistry != nil {
+		serviceRegistry.Shutdown()
 	}
 
 	if err := srv.Shutdown(ctx); err != nil {
@@ -913,7 +925,7 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		{"/export/", 2, time.Minute},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := stripPort(r.RemoteAddr)
+		ip := getClientIP(r) // X-Forwarded-For aware — works behind load balancers
 		for _, l := range limits {
 			if strings.HasPrefix(r.URL.Path, l.prefix) {
 				if !rateLimiter.allow(ip+":"+l.prefix, l.limit, l.window) {
