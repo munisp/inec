@@ -130,6 +130,7 @@ func main() {
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
 	initComplianceTables()
+	initMFA()
 	seedComprehensive(db)
 	seedAllTables(db)
 	runGeoMigrations()
@@ -657,13 +658,21 @@ func main() {
 	r.HandleFunc("/escalation/config", adminOnly(handleEscalationConfig)).Methods("GET", "POST")
 	r.HandleFunc("/load-shedding", adminOnly(handleLoadShedding)).Methods("GET", "POST")
 
-	// MFA (#3) — TOTP, WebAuthn, SMS OTP
+	// MFA (#3) — TOTP, WebAuthn, SMS OTP, Backup Codes
 	r.HandleFunc("/auth/mfa/totp/setup", writeAuth(handleMFASetupTOTP)).Methods("POST")
 	r.HandleFunc("/auth/mfa/totp/verify", writeAuth(handleMFAVerifyTOTP)).Methods("POST")
 	r.HandleFunc("/auth/mfa/challenge", handleMFAChallenge).Methods("POST")
 	r.HandleFunc("/auth/mfa/sms/send", handleMFASendSMS).Methods("POST")
 	r.HandleFunc("/auth/mfa/status", readAuth(handleMFAStatus)).Methods("GET")
 	r.HandleFunc("/auth/mfa/webauthn/register", writeAuth(handleMFAWebAuthnRegister)).Methods("POST")
+	// Enhanced MFA (RFC 6238 TOTP + WebAuthn FIDO2 + backup codes)
+	r.HandleFunc("/auth/mfa/setup", writeAuth(handleMFASetup)).Methods("POST")
+	r.HandleFunc("/auth/mfa/verify-setup", writeAuth(handleMFAVerifySetup)).Methods("POST")
+	r.HandleFunc("/auth/mfa/disable", writeAuth(handleMFADisable)).Methods("POST")
+	r.HandleFunc("/auth/mfa/webauthn/begin", writeAuth(handleMFAWebAuthnBegin)).Methods("POST")
+	r.HandleFunc("/auth/mfa/webauthn/complete", writeAuth(handleMFAWebAuthnComplete)).Methods("POST")
+	r.HandleFunc("/auth/mfa/webauthn/list", readAuth(handleMFAWebAuthnList)).Methods("GET")
+	r.HandleFunc("/auth/mfa/backup-codes", writeAuth(handleMFABackupCodes)).Methods("POST")
 
 	// Citizen Portal (#6) + Cryptographic Result Chain (#4)
 	r.HandleFunc("/citizen/verify", handleCitizenVerify).Methods("GET")
