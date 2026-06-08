@@ -88,6 +88,9 @@ func convertRuntimeSQL(query string) string {
 	query = strings.ReplaceAll(query, "datetime('now')", "NOW()")
 	query = strings.ReplaceAll(query, "AUTOINCREMENT", "")
 	query = strings.ReplaceAll(query, "INTEGER PRIMARY KEY ", "SERIAL PRIMARY KEY ")
+	query = strings.ReplaceAll(query, "BOOLEAN DEFAULT 1", "BOOLEAN DEFAULT TRUE")
+	query = strings.ReplaceAll(query, "BOOLEAN DEFAULT 0", "BOOLEAN DEFAULT FALSE")
+	query = strings.ReplaceAll(query, "BLOB", "BYTEA")
 	return query
 }
 
