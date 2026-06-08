@@ -131,6 +131,7 @@ func main() {
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
 	seedComprehensive(db)
+	seedAllTables(db)
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
 	initOpenAPIRoutes()

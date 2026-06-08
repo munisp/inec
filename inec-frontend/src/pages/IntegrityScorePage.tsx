@@ -28,7 +28,7 @@ export default function IntegrityScorePage() {
     setLoading(true);
     api.getIntegrityHeatmap(1, stateFilter || undefined)
       .then(setData)
-      .catch(() => {})
+      .catch(e => console.error('integrity heatmap:', e))
       .finally(() => setLoading(false));
   }, [stateFilter]);
 

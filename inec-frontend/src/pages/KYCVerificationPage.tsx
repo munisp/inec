@@ -40,7 +40,7 @@ export default function KYCVerificationPage() {
     fetch(`${API}/status?user_id=1`, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d && d.status !== 'not_started') setKycStatus(d); })
-      .catch(() => {})
+      .catch(e => console.error('kyc status:', e))
       .finally(() => setLoading(false));
   }, []);
 

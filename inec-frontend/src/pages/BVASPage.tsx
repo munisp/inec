@@ -301,7 +301,7 @@ function DevicesTab() {
   useEffect(() => {
     api.getBVASDevices({ election_id: '1', limit: '50' })
       .then(d => setDevices(Array.isArray(d) ? d : []))
-      .catch(() => {})
+      .catch(e => console.error('bvas devices:', e))
       .finally(() => setLoading(false));
   }, []);
 

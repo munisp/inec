@@ -231,7 +231,7 @@ func classifyAnomaly(rec struct {
 		return "overvoting"
 	}
 	turnout := float64(rec.accred) / float64(max(rec.registered, 1))
-	if turnout > 0.95 {
+	if turnout > platformCfg.AnomalyTurnoutCeiling {
 		return "turnout_spike"
 	}
 	if turnout < 0.15 {
@@ -255,13 +255,13 @@ func ruleBasedAnomalyScore(rec struct {
 
 	// Overvoting: votes exceed accredited
 	if rec.valid > rec.accred {
-		score = 0.95
+		score = platformCfg.AnomalyHighScore
 		anomType = "overvoting"
 		return anomType, score
 	}
 
 	// Extreme turnout (>95% or <10%)
-	if turnout > 0.95 {
+	if turnout > platformCfg.AnomalyTurnoutCeiling {
 		score = math.Max(score, 0.7+turnout*0.2)
 		anomType = "turnout_spike"
 	} else if turnout < 0.1 && rec.registered > 200 {
@@ -593,7 +593,7 @@ func handleAIFallbackAnomalies(w http.ResponseWriter, r *http.Request) {
 		// Overvoting
 		if d.registered > 0 && d.votes > d.registered {
 			anomType = "overvoting"
-			score = 0.95
+			score = platformCfg.AnomalyHighScore
 		}
 
 		// Z-score outlier (>2 standard deviations from mean)

@@ -85,14 +85,14 @@ export default function ObserverMonitoringPage() {
   // Fetch observer stats
   useEffect(() => {
     fetch(`${API}/observer/stats`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json()).then(setStats).catch(() => {});
+      .then(r => r.json()).then(setStats).catch(e => console.error('observer stats:', e));
   }, [token]);
 
   // Fetch reports
   useEffect(() => {
     if (tab === 'reports') {
       fetch(`${API}/observer/reports`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.json()).then(d => setReports(Array.isArray(d) ? d : [])).catch(() => {});
+        .then(r => r.json()).then(d => setReports(Array.isArray(d) ? d : [])).catch(e => console.error('observer reports:', e));
     }
   }, [tab, token]);
 
@@ -100,7 +100,7 @@ export default function ObserverMonitoringPage() {
   useEffect(() => {
     if (tab === 'alerts') {
       fetch(`${API}/observer/alerts`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(() => {});
+        .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert rules:', e));
     }
   }, [tab, token]);
 
@@ -108,7 +108,7 @@ export default function ObserverMonitoringPage() {
   useEffect(() => {
     if (tab === 'party') {
       fetch(`${API}/observer/party-dashboard?party=${selectedParty}`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.json()).then(setPartyData).catch(() => {});
+        .then(r => r.json()).then(setPartyData).catch(e => console.error('party data:', e));
     }
   }, [tab, selectedParty, token]);
 
@@ -153,7 +153,7 @@ export default function ObserverMonitoringPage() {
       {tab === 'reports' && <ReportsTab reports={reports} token={token} />}
       {tab === 'alerts' && <AlertsTab rules={alertRules} token={token} onRefresh={() => {
         fetch(`${API}/observer/alerts`, { headers: { Authorization: `Bearer ${token}` } })
-          .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(() => {});
+          .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert refresh:', e));
       }} />}
       {tab === 'party' && <PartyTab data={partyData} party={selectedParty} onPartyChange={setSelectedParty} />}
     </div>

@@ -23,11 +23,11 @@ export default function StakeholderPage() {
   const [grievanceForm, setGrievanceForm] = useState({ category: 'process', description: '' });
 
   useEffect(() => {
-    api.getStakeholderStats().then(setStats).catch(() => {});
-    api.getStakeholders().then(setStakeholders).catch(() => {});
-    api.getStakeholderIncidents().then(setIncidents).catch(() => {});
-    api.getGrievances().then(setGrievances).catch(() => {});
-    api.getPushNotifications().then(setNotifications).catch(() => {});
+    api.getStakeholderStats().then(setStats).catch(e => console.error('stakeholder stats:', e));
+    api.getStakeholders().then(setStakeholders).catch(e => console.error('stakeholders:', e));
+    api.getStakeholderIncidents().then(setIncidents).catch(e => console.error('incidents:', e));
+    api.getGrievances().then(setGrievances).catch(e => console.error('grievances:', e));
+    api.getPushNotifications().then(setNotifications).catch(e => console.error('notifications:', e));
   }, []);
 
   const [notifForm, setNotifForm] = useState({ title: '', body: '' });

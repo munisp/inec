@@ -1188,7 +1188,7 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 								}
 							}
 							if faceScore == 0 {
-								faceScore = fpScore * 0.85
+								faceScore = fpScore * platformCfg.FaceWeightFactor
 							}
 						} else if m == "iris" {
 							if len(crossResults) > 0 {
@@ -1197,7 +1197,7 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 								}
 							}
 							if irisScore == 0 {
-								irisScore = fpScore * 0.80
+								irisScore = fpScore * platformCfg.IrisWeightFactor
 							}
 						}
 					}
@@ -1205,7 +1205,7 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 				}
 
 				decision := "needs_review"
-				if fusedScore >= 0.95 {
+				if fusedScore >= platformCfg.HighConfidenceThreshold {
 					decision = "duplicate"
 				} else if fusedScore < threshold {
 					decision = "not_duplicate"
@@ -1318,7 +1318,7 @@ func seedBiometricEngine(database *sql.DB) {
 			vin, "fingerprint", device, padResult.LivenessScore, padResult.TextureScore, padResult.MotionScore, padResult.DepthScore, padResult.SpectralScore, padResult.Decision, padResult.PADLevel, padResult.AttackType, padResult.Confidence, 1)
 	}
 
-	deduplicationMgr.StartJob("full_scan", "fingerprint,facial", 0.85)
+	deduplicationMgr.StartJob("full_scan", "fingerprint,facial", platformCfg.BiometricMatchThreshold)
 
 	database.Exec(`INSERT INTO biometric_vault_audit (operation, key_id, actor, success, error_detail) VALUES (?,?,?,?,?)`,
 		"system_seed", "SYSTEM", "seed_process", 1, "seeded "+strconv.Itoa(len(vins))+" biometric profiles")
@@ -1567,7 +1567,7 @@ func handleDedupStart(w http.ResponseWriter, r *http.Request) {
 		req.Modalities = "fingerprint"
 	}
 	if req.Threshold == 0 {
-		req.Threshold = 0.85
+		req.Threshold = platformCfg.BiometricMatchThreshold
 	}
 	result := deduplicationMgr.StartJob(req.Type, req.Modalities, req.Threshold)
 	writeJSON(w, 200, result)

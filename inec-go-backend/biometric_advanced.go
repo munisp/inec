@@ -1174,7 +1174,7 @@ func (m *MultiInstanceEnrollment) EnrollFingers(vin string, fingers []string, pr
 		"right_thumb": 2, "right_index": 1, "right_middle": 2, "right_ring": 3, "right_little": 3,
 		"left_thumb": 2, "left_index": 1, "left_middle": 2, "left_ring": 3, "left_little": 3,
 	}
-	qualityByNFIQ := map[int]float64{1: 0.95, 2: 0.85, 3: 0.72, 4: 0.55, 5: 0.35}
+	qualityByNFIQ := map[int]float64{1: platformCfg.NFIQ1Quality, 2: platformCfg.NFIQ2Quality, 3: platformCfg.NFIQ3Quality, 4: platformCfg.NFIQ4Quality, 5: platformCfg.NFIQ5Quality}
 
 	for _, f := range fingers {
 		idx := positions[f]
@@ -1641,7 +1641,7 @@ func handleDistributedDedup(w http.ResponseWriter, r *http.Request) {
 		req.Workers = 4
 	}
 	if req.Threshold == 0 {
-		req.Threshold = 0.85
+		req.Threshold = platformCfg.BiometricMatchThreshold
 	}
 	writeJSON(w, 200, distributedDedupMgr.StartDistributed(req.Modality, req.Workers, req.Threshold))
 }

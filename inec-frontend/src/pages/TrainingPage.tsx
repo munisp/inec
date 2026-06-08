@@ -21,11 +21,11 @@ export default function TrainingPage() {
   const [courseForm, setCourseForm] = useState({ title: '', course_type: 'interactive', target_role: 'presiding_officer', duration_hours: 4, is_mandatory: false });
 
   useEffect(() => {
-    api.getTrainingStats().then(setStats).catch(() => {});
-    api.getTrainingCourses().then(setCourses).catch(() => {});
-    api.getTrainingCertificates().then(setCerts).catch(() => {});
-    api.getVRScenarios().then(setScenarios).catch(() => {});
-    api.getTrainingEnrollments().then(setEnrollments).catch(() => {});
+    api.getTrainingStats().then(setStats).catch(e => console.error('training stats:', e));
+    api.getTrainingCourses().then(setCourses).catch(e => console.error('courses:', e));
+    api.getTrainingCertificates().then(setCerts).catch(e => console.error('certificates:', e));
+    api.getVRScenarios().then(setScenarios).catch(e => console.error('vr scenarios:', e));
+    api.getTrainingEnrollments().then(setEnrollments).catch(e => console.error('enrollments:', e));
   }, []);
 
   const [enrolling, setEnrolling] = useState<number | null>(null);

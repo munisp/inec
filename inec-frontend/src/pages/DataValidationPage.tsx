@@ -21,7 +21,7 @@ export default function DataValidationPage() {
         api.getEMSValidationHistory(),
       ]);
       setStats(s); setRules(r || []); setHistory(h || []);
-    } catch {}
+    } catch (e) { console.error('data validation load:', e); }
   };
 
   const severityColor = (s: string) => {

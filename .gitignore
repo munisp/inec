@@ -1,18 +1,31 @@
+# Databases
 *.db
 *.db-shm
 *.db-wal
-inec-go-backend/inec-go-backend
-inec-go-backend/inec-server
-inec-backend/inec-go-backend
-inec-frontend/.vite/
 test.db*
 app.db*
+
+# Go binaries
+inec-go-backend/inec-go-backend
+inec-go-backend/inec-server
+inec-go-backend/inec-backend
+inec-go-backend/server
+inec-backend/inec-go-backend
+inec-go-backend/coverage.out
+inec-go-backend/uploads/
 bin/
+
+# Frontend
+inec-frontend/.vite/
+dist/
+node_modules/
+
+# Environment
 .env
 .env.local
+
+# Logs
 *.log
-node_modules/
-dist/
 
 # ML artifacts (large binary weights)
 ml/models/*.pt
@@ -20,19 +33,34 @@ ml/models/*.pkl
 ml/models/*.onnx
 ml/data/processed/
 *.onnx
-# Keep model metadata JSON + trained XGBoost
 !ml/models/*.json
 !ml/models/.gitkeep
-inec-go-backend/coverage.out
-inec-go-backend/inec-go-backend
-inec-go-backend/uploads/
-inec-go-backend/inec-go-backend
 
-# Go binaries
-inec-go-backend/inec-backend
-inec-go-backend/server
-inec-go-backend/inec-go-backend
+# Python
 __pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# Rust
 target/
 Cargo.lock
-inec-go-backend/inec-go-backend
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
