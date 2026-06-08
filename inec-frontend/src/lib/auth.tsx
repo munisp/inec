@@ -48,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('user');
     // Clear httpOnly cookie via server call
     const apiUrl = import.meta.env.VITE_API_URL ?? '';
-    fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+    fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(err => console.error("API error:", err));
     setToken(null);
     setUser(null);
   };

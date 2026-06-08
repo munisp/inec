@@ -131,7 +131,7 @@ export default function GeoMapScreen() {
 
   const loadGeofences = async () => {
     try {
-      await geoApi.seedGeofenceZones().catch(() => {});
+      await geoApi.seedGeofenceZones().catch(err => console.error("API error:", err));
       const data = await geoApi.getGeofenceZones();
       const zones = data?.zones?.features || data?.zones || [];
       const parsed: GeofenceZone[] = zones.map((z: any) => ({

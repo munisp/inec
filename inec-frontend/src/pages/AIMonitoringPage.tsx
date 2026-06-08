@@ -15,12 +15,12 @@ export default function AIMonitoringPage() {
   const [tab, setTab] = useState('overview');
 
   useEffect(() => {
-    api.getAIMonitoringDashboard().then(setDashboard).catch(() => {});
-    api.getAIPredictions().then(setPredictions).catch(() => {});
-    api.getSentimentAnalysis().then(setSentiment).catch(() => {});
-    api.getMisinformationAlerts().then(setMisinfo).catch(() => {});
-    api.getSecurityThreats().then(setThreats).catch(() => {});
-    api.getCVMonitoring().then(setCvEvents).catch(() => {});
+    api.getAIMonitoringDashboard().then(setDashboard).catch(err => console.error("API error:", err));
+    api.getAIPredictions().then(setPredictions).catch(err => console.error("API error:", err));
+    api.getSentimentAnalysis().then(setSentiment).catch(err => console.error("API error:", err));
+    api.getMisinformationAlerts().then(setMisinfo).catch(err => console.error("API error:", err));
+    api.getSecurityThreats().then(setThreats).catch(err => console.error("API error:", err));
+    api.getCVMonitoring().then(setCvEvents).catch(err => console.error("API error:", err));
   }, []);
 
   return (

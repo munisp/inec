@@ -487,7 +487,7 @@ export default function MapPage() {
         const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(mapRef.current!);
         geofenceMarkers.current.push(marker);
       });
-    }).catch(() => {});
+    }).catch(err => console.error("API error:", err));
   }, [showGeofences, selectedState?.code]);
 
   // #20 Incident hotspot rendering
@@ -511,7 +511,7 @@ export default function MapPage() {
         const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(mapRef.current!);
         incidentMarkers.current.push(marker);
       });
-    }).catch(() => {});
+    }).catch(err => console.error("API error:", err));
   }, [showIncidents]);
 
   // #15 Weather overlay rendering
@@ -554,7 +554,7 @@ export default function MapPage() {
           paint: { 'line-color': '#6b7280', 'line-width': 0.5 }
         });
       }
-    }).catch(() => {});
+    }).catch(err => console.error("API error:", err));
   }, [showH3Grid]);
 
   // #26 Mesh network visualization (as GeoJSON lines between connected officials)
@@ -574,7 +574,7 @@ export default function MapPage() {
         paint: { 'line-color': '#8b5cf6', 'line-width': 1.5, 'line-opacity': 0.6, 'line-dasharray': [2, 2] }
       });
       meshLayerAdded.current = true;
-    }).catch(() => {});
+    }).catch(err => console.error("API error:", err));
   }, [showMesh]);
 
   // #13 Movement trails (tracking history as polylines)
@@ -591,7 +591,7 @@ export default function MapPage() {
         id: 'trails-line', type: 'line', source: 'trails-data',
         paint: { 'line-color': '#f59e0b', 'line-width': 2, 'line-opacity': 0.7 }
       });
-    }).catch(() => {});
+    }).catch(err => console.error("API error:", err));
   }, [showTrails, showTracking]);
 
   // #17 Time-slider: filter PU markers by submission time
@@ -1031,7 +1031,7 @@ export default function MapPage() {
     fetch(url, { signal: controller.signal, headers: { 'Accept-Language': 'en' } })
       .then(r => r.json())
       .then((data) => setPlaces(Array.isArray(data) ? data.map((d: any) => ({ name: d.display_name, lat: parseFloat(d.lat), lon: parseFloat(d.lon) })) : []))
-      .catch(() => {});
+      .catch(err => console.error("API error:", err));
     return () => controller.abort();
   }, [searchQuery]);
 
@@ -1547,7 +1547,7 @@ export default function MapPage() {
               <div className="flex items-center justify-between">
                 <span className="text-xs flex items-center gap-1"><Shield className="w-3 h-3" /> Geofences</span>
                 <Button size="sm" variant={showGeofences ? 'default' : 'outline'} className="h-6 text-xs px-2"
-                  onClick={() => { setShowGeofences(!showGeofences); if (!showGeofences) { api.seedGeofenceZones().catch(() => {}); } }}>
+                  onClick={() => { setShowGeofences(!showGeofences); if (!showGeofences) { api.seedGeofenceZones().catch(err => console.error("API error:", err)); } }}>
                   {showGeofences ? 'Hide' : 'Show'}
                 </Button>
               </div>
