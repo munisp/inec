@@ -35,4 +35,3 @@ dev:
 
 clean:
 	rm -rf bin/ inec-frontend/dist/
-	rm -f inec-go-backend/inec.db

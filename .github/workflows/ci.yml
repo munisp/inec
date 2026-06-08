@@ -2,9 +2,9 @@ name: INEC Platform CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, inec-platform]
   pull_request:
-    branches: [main]
+    branches: [main, inec-platform]
 
 jobs:
   backend-lint-build:
