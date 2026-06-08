@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 -- Core extended tables: voters, audit, collation, validation
 
 CREATE TABLE IF NOT EXISTS voters (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     vin text NOT NULL,
     first_name text NOT NULL,
     last_name text NOT NULL,
@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_voters_state ON voters USING btree (state_code);
 CREATE INDEX IF NOT EXISTS idx_voters_vin ON voters USING btree (vin);
 
 CREATE TABLE IF NOT EXISTS audit_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     action text NOT NULL,
     entity_type text NOT NULL,
     entity_id text,
@@ -55,7 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log USING btree ("timest
 CREATE INDEX IF NOT EXISTS idx_audit_user_action ON audit_log USING btree (user_id, action);
 
 CREATE TABLE IF NOT EXISTS collation_results (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     level text NOT NULL,
     area_code text NOT NULL,
@@ -78,14 +78,14 @@ CREATE INDEX IF NOT EXISTS idx_collation_election_level ON collation_results USI
 CREATE INDEX IF NOT EXISTS idx_collation_level_area ON collation_results USING btree (level, area_code);
 
 CREATE TABLE IF NOT EXISTS collation_party_scores (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     collation_result_id integer NOT NULL,
     party_code text NOT NULL,
     votes integer DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS validation_rules (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     rule_name text NOT NULL,
     rule_type text NOT NULL,
     entity_type text NOT NULL,
@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS validation_rules (
 );
 
 CREATE TABLE IF NOT EXISTS validation_results (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     entity_type text NOT NULL,
     entity_id text NOT NULL,
     rule_id integer NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS validation_results (
 CREATE INDEX IF NOT EXISTS idx_validation_entity ON validation_results USING btree (entity_type, entity_id);
 
 CREATE TABLE IF NOT EXISTS anomaly_escalations (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     anomaly_id text,
     severity text NOT NULL,
     state_code text,
@@ -127,14 +127,14 @@ CREATE TABLE IF NOT EXISTS anomaly_escalations (
 );
 
 CREATE TABLE IF NOT EXISTS citizen_verifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     pu_code text NOT NULL,
     ip_hash text,
     verified_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS command_alerts (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     level text NOT NULL,
     state_code text,
     message text NOT NULL,
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS command_center_config (
 );
 
 CREATE TABLE IF NOT EXISTS escalation_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     rule_name text NOT NULL,
     level text NOT NULL,
     state_code text,
@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS escalation_log (
 );
 
 CREATE TABLE IF NOT EXISTS escalation_rules (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     name text NOT NULL,
     condition text NOT NULL,
     level text NOT NULL,
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS escalation_rules (
 );
 
 CREATE TABLE IF NOT EXISTS gps_spoof_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     lat real NOT NULL,
     lng real NOT NULL,
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS gps_spoof_events (
 );
 
 CREATE TABLE IF NOT EXISTS grievances (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     stakeholder_id integer NOT NULL,
     grievance_type text NOT NULL,
     subject text NOT NULL,
@@ -201,7 +201,7 @@ CREATE TABLE IF NOT EXISTS grievances (
 CREATE INDEX IF NOT EXISTS idx_grievance_status ON grievances USING btree (status);
 
 CREATE TABLE IF NOT EXISTS metrics_client (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     ts text,
     event text,
     data text,
@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS metrics_client (
 );
 
 CREATE TABLE IF NOT EXISTS mojaloop_transactions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     transaction_id text,
     payer text,
     payee text,
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS mojaloop_transactions (
 );
 
 CREATE TABLE IF NOT EXISTS opensearch_documents (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     index_name text NOT NULL,
     doc_id text NOT NULL,
     body text NOT NULL,
@@ -247,7 +247,7 @@ CREATE TABLE IF NOT EXISTS tb_accounts (
 );
 
 CREATE TABLE IF NOT EXISTS tb_journal (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     transfer_id text NOT NULL,
     event_type text NOT NULL,
     debit_account text NOT NULL,

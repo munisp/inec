@@ -1,7 +1,7 @@
 -- Observer monitoring and dispute resolution
 
 CREATE TABLE IF NOT EXISTS observer_alert_rules (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     party_code text,
     state_code text,
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS observer_alert_rules (
 );
 
 CREATE TABLE IF NOT EXISTS observer_check_ins (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     observer_id integer NOT NULL,
     polling_unit_code text NOT NULL,
     latitude real,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS observer_check_ins (
 CREATE INDEX IF NOT EXISTS idx_observer_checkins_observer ON observer_check_ins USING btree (observer_id);
 
 CREATE TABLE IF NOT EXISTS observer_photo_verifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     observer_id integer,
     pu_code text,
     photo_hash text,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS observer_photo_verifications (
 );
 
 CREATE TABLE IF NOT EXISTS observer_reports (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     observer_id integer NOT NULL,
     polling_unit_code text NOT NULL,
     election_id integer NOT NULL,
@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_observer_reports_election ON observer_reports USI
 CREATE INDEX IF NOT EXISTS idx_observer_reports_pu ON observer_reports USING btree (polling_unit_code);
 
 CREATE TABLE IF NOT EXISTS disputes (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     polling_unit_code text,
     filed_by text NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS disputes (
 );
 
 CREATE TABLE IF NOT EXISTS dispute_comments (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     dispute_id integer NOT NULL,
     author text NOT NULL,
     content text NOT NULL,

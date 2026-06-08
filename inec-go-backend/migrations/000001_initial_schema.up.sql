@@ -2,7 +2,7 @@
 -- Auto-generated from actual PostgreSQL schema
 
 CREATE TABLE IF NOT EXISTS users (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     username text NOT NULL,
     password_hash text NOT NULL,
     full_name text NOT NULL,
@@ -22,7 +22,7 @@ CREATE INDEX IF NOT EXISTS idx_users_state ON users USING btree (state_code);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users USING btree (username);
 
 CREATE TABLE IF NOT EXISTS elections (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     title text NOT NULL,
     election_type text NOT NULL,
     election_date text NOT NULL,
@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_elections_date ON elections USING btree (election
 CREATE INDEX IF NOT EXISTS idx_elections_status ON elections USING btree (status);
 
 CREATE TABLE IF NOT EXISTS parties (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     code text NOT NULL,
     name text NOT NULL,
     abbreviation text NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS parties (
 );
 
 CREATE TABLE IF NOT EXISTS states (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     code text NOT NULL,
     name text NOT NULL,
     geo_zone text NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS states (
 );
 
 CREATE TABLE IF NOT EXISTS lgas (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     code text NOT NULL,
     name text NOT NULL,
     state_code text NOT NULL
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS lgas (
 CREATE INDEX IF NOT EXISTS idx_lgas_state ON lgas USING btree (state_code);
 
 CREATE TABLE IF NOT EXISTS wards (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     code text NOT NULL,
     name text NOT NULL,
     lga_code text NOT NULL
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS wards (
 CREATE INDEX IF NOT EXISTS idx_wards_lga ON wards USING btree (lga_code);
 
 CREATE TABLE IF NOT EXISTS polling_units (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     code text NOT NULL,
     name text NOT NULL,
     ward_code text NOT NULL,
@@ -88,7 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_polling_units_ward ON polling_units USING btree (
 CREATE INDEX IF NOT EXISTS idx_pu_lonlat ON polling_units USING btree (longitude, latitude);
 
 CREATE TABLE IF NOT EXISTS results (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     polling_unit_code text NOT NULL,
     presiding_officer_id integer,
@@ -120,7 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_results_status ON results USING btree (status);
 CREATE INDEX IF NOT EXISTS idx_results_submitted_at ON results USING btree (submitted_at);
 
 CREATE TABLE IF NOT EXISTS incidents (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     polling_unit_code text,
     reported_by integer,

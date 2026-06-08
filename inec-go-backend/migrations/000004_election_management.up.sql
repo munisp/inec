@@ -1,7 +1,7 @@
 -- Election management: lifecycle, materials, staff, EMS
 
 CREATE TABLE IF NOT EXISTS election_archive (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     archived_data text NOT NULL,
     checksum text NOT NULL,
@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS election_archive (
 );
 
 CREATE TABLE IF NOT EXISTS election_lifecycle (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     phase text NOT NULL,
     transitioned_by integer,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS election_lifecycle (
 CREATE INDEX IF NOT EXISTS idx_lifecycle_election ON election_lifecycle USING btree (election_id);
 
 CREATE TABLE IF NOT EXISTS election_materials (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     material_type text NOT NULL,
     quantity integer NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS election_materials (
 CREATE INDEX IF NOT EXISTS idx_materials_election ON election_materials USING btree (election_id);
 
 CREATE TABLE IF NOT EXISTS election_staff_assignments (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     user_id integer NOT NULL,
     role text NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS election_staff_assignments (
 CREATE INDEX IF NOT EXISTS idx_staff_election ON election_staff_assignments USING btree (election_id);
 
 CREATE TABLE IF NOT EXISTS election_state_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     from_state text NOT NULL,
     to_state text NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS election_state_log (
 );
 
 CREATE TABLE IF NOT EXISTS election_templates (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_type text NOT NULL,
     template_name text NOT NULL,
     party_count integer DEFAULT 18,
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS election_templates (
 );
 
 CREATE TABLE IF NOT EXISTS ems_workflow_phases (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     workflow_id integer NOT NULL,
     phase text NOT NULL,
     status text DEFAULT 'pending'::text NOT NULL,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS ems_workflow_phases (
 );
 
 CREATE TABLE IF NOT EXISTS ems_workflows (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer NOT NULL,
     workflow_type text NOT NULL,
     current_phase text DEFAULT 'planning'::text NOT NULL,
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS ems_workflows (
 );
 
 CREATE TABLE IF NOT EXISTS dedup_candidates (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     job_id integer NOT NULL,
     source_vin text NOT NULL,
     candidate_vin text NOT NULL,
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS dedup_candidates (
 CREATE INDEX IF NOT EXISTS idx_dedup_cand ON dedup_candidates USING btree (job_id, fused_score);
 
 CREATE TABLE IF NOT EXISTS dedup_jobs (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     job_type text NOT NULL,
     status text DEFAULT 'queued'::text NOT NULL,
     total_comparisons integer DEFAULT 0,
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS dedup_jobs (
 CREATE INDEX IF NOT EXISTS idx_dedup_job ON dedup_jobs USING btree (status, created_at);
 
 CREATE TABLE IF NOT EXISTS dedup_resolutions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_a_vin text NOT NULL,
     voter_b_vin text NOT NULL,
     decision text NOT NULL,
@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS dedup_resolutions (
 );
 
 CREATE TABLE IF NOT EXISTS kiosk_sessions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     session_id text NOT NULL,
     device_id text NOT NULL,
     voter_vin text,
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS kiosk_sessions (
 CREATE INDEX IF NOT EXISTS idx_kiosk_session ON kiosk_sessions USING btree (session_id, status);
 
 CREATE TABLE IF NOT EXISTS result_party_scores (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     result_id integer NOT NULL,
     party_code text NOT NULL,
     votes integer DEFAULT 0 NOT NULL
@@ -181,7 +181,7 @@ CREATE INDEX IF NOT EXISTS idx_rps_result ON result_party_scores USING btree (re
 CREATE INDEX IF NOT EXISTS idx_rps_result_party ON result_party_scores USING btree (result_id, party_code);
 
 CREATE TABLE IF NOT EXISTS result_signatures (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     result_id integer NOT NULL,
     officer_pubkey text NOT NULL,
     signature text NOT NULL,
@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS result_signatures (
 );
 
 CREATE TABLE IF NOT EXISTS stakeholder_incidents (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     reporter_id integer NOT NULL,
     incident_type text NOT NULL,
     description text NOT NULL,
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS stakeholder_incidents (
 );
 
 CREATE TABLE IF NOT EXISTS stakeholders (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     name text NOT NULL,
     organization text,
     stakeholder_type text NOT NULL,

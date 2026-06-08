@@ -1,7 +1,7 @@
 -- Blockchain: Fabric, IPFS, merkle trees, smart contracts
 
 CREATE TABLE IF NOT EXISTS blockchain_audit_trail (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     action text NOT NULL,
     entity_type text NOT NULL,
     entity_id text NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS blockchain_audit_trail (
 );
 
 CREATE TABLE IF NOT EXISTS blockchain_results (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     result_id integer NOT NULL,
     ec8a_hash text NOT NULL,
     prev_hash text DEFAULT ''::text NOT NULL,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS blockchain_results (
 CREATE INDEX IF NOT EXISTS idx_blockchain_result ON blockchain_results USING btree (result_id);
 
 CREATE TABLE IF NOT EXISTS chaincode_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     chaincode_id text NOT NULL,
     event_name text NOT NULL,
     tx_id text,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS fabric_chaincode (
 );
 
 CREATE TABLE IF NOT EXISTS fabric_endorsement_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     tx_id text NOT NULL,
     peer_id text NOT NULL,
     msp_id text NOT NULL,
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS ipfs_pins (
 );
 
 CREATE TABLE IF NOT EXISTS merkle_trees (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     root_hash text NOT NULL,
     tree_type text NOT NULL,
     leaf_count integer NOT NULL,
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS merkle_trees (
 );
 
 CREATE TABLE IF NOT EXISTS smart_contracts (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     contract_id text NOT NULL,
     contract_type text NOT NULL,
     level text NOT NULL,

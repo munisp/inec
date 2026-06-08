@@ -1,7 +1,7 @@
 -- API keys, webhooks, portal, push notifications
 
 CREATE TABLE IF NOT EXISTS api_keys (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     key_hash text NOT NULL,
     name text NOT NULL,
     owner text NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys USING btree (key_hash);
 
 CREATE TABLE IF NOT EXISTS api_usage (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     api_key_id integer,
     endpoint text NOT NULL,
     method text NOT NULL,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS api_usage (
 CREATE INDEX IF NOT EXISTS idx_api_usage_key ON api_usage USING btree (api_key_id);
 
 CREATE TABLE IF NOT EXISTS api_key_metadata (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     key_hash text NOT NULL,
     name text NOT NULL,
     owner_id integer NOT NULL,
@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_ingestion_idem ON ingestion_jobs USING btree (ide
 CREATE INDEX IF NOT EXISTS idx_ingestion_status ON ingestion_jobs USING btree (status);
 
 CREATE TABLE IF NOT EXISTS offline_sync_queue (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     sync_type text NOT NULL,
     payload text NOT NULL,
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS offline_sync_queue (
 CREATE INDEX IF NOT EXISTS idx_offline_status ON offline_sync_queue USING btree (status);
 
 CREATE TABLE IF NOT EXISTS portal_connections (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     portal_name text NOT NULL,
     portal_type text NOT NULL,
     base_url text NOT NULL,
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS portal_connections (
 );
 
 CREATE TABLE IF NOT EXISTS portal_sync_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     portal_id integer NOT NULL,
     sync_type text NOT NULL,
     entity_type text NOT NULL,
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS portal_sync_log (
 CREATE INDEX IF NOT EXISTS idx_portal_sync ON portal_sync_log USING btree (portal_id, started_at);
 
 CREATE TABLE IF NOT EXISTS portal_webhooks (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     portal_id integer NOT NULL,
     event_type text NOT NULL,
     payload text NOT NULL,
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS portal_webhooks (
 );
 
 CREATE TABLE IF NOT EXISTS push_devices (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     device_token text NOT NULL,
     platform text DEFAULT 'android'::text NOT NULL,
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS push_devices (
 );
 
 CREATE TABLE IF NOT EXISTS push_notifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     target_type text NOT NULL,
     target_value text,
     title text NOT NULL,
@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS push_notifications (
 );
 
 CREATE TABLE IF NOT EXISTS webhook_subscriptions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     url text NOT NULL,
     events text NOT NULL,
     secret text NOT NULL,

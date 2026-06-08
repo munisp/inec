@@ -1,7 +1,7 @@
 -- Biometric: profiles, templates, vault, ABIS, quality
 
 CREATE TABLE IF NOT EXISTS biometric_profiles (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     fingerprint_hash text,
     facial_hash text,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS biometric_profiles (
 CREATE INDEX IF NOT EXISTS idx_bio_voter ON biometric_profiles USING btree (voter_vin);
 
 CREATE TABLE IF NOT EXISTS biometric_templates (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     modality text NOT NULL,
     template_data bytea NOT NULL,
@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_bio_tmpl_mod ON biometric_templates USING btree (
 CREATE INDEX IF NOT EXISTS idx_bio_tmpl_vin ON biometric_templates USING btree (voter_vin);
 
 CREATE TABLE IF NOT EXISTS biometric_verifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     device_id text,
     modality text NOT NULL,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS biometric_verifications (
 CREATE INDEX IF NOT EXISTS idx_bio_verif ON biometric_verifications USING btree (voter_vin, verified_at);
 
 CREATE TABLE IF NOT EXISTS biometric_vault_keys (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     key_id text NOT NULL,
     encrypted_key bytea NOT NULL,
     key_type text DEFAULT 'AES-256-GCM'::text NOT NULL,
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS biometric_vault_keys (
 CREATE INDEX IF NOT EXISTS idx_vault_keys ON biometric_vault_keys USING btree (key_id, status);
 
 CREATE TABLE IF NOT EXISTS biometric_vault_audit (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     operation text NOT NULL,
     key_id text,
     voter_vin text,
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS biometric_vault_audit (
 CREATE INDEX IF NOT EXISTS idx_vault_audit ON biometric_vault_audit USING btree (voter_vin, "timestamp");
 
 CREATE TABLE IF NOT EXISTS biometric_match_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text,
     modality text NOT NULL,
     match_score real DEFAULT 0 NOT NULL,
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS biometric_match_log (
 CREATE INDEX IF NOT EXISTS idx_match_log_modality ON biometric_match_log USING btree (modality);
 
 CREATE TABLE IF NOT EXISTS biometric_quality_scores (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     capture_id text,
     modality text,
     blur_score real,
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS biometric_quality_scores (
 );
 
 CREATE TABLE IF NOT EXISTS biometric_sdk_providers (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     provider_name text NOT NULL,
     sdk_version text NOT NULL,
     modalities text NOT NULL,
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS biometric_sdk_providers (
 );
 
 CREATE TABLE IF NOT EXISTS bio_audit_timeline (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     event_type text NOT NULL,
     category text NOT NULL,
     severity text DEFAULT 'info'::text,
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS bio_audit_timeline (
 CREATE INDEX IF NOT EXISTS idx_audit_time ON bio_audit_timeline USING btree ("timestamp", event_type);
 
 CREATE TABLE IF NOT EXISTS bvas_capture_sessions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     session_id text NOT NULL,
     device_id text NOT NULL,
     voter_vin text NOT NULL,
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS bvas_capture_sessions (
 CREATE INDEX IF NOT EXISTS idx_bvas_cap ON bvas_capture_sessions USING btree (device_id, voter_vin);
 
 CREATE TABLE IF NOT EXISTS abis_duplicate_checks (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     source_vin text NOT NULL,
     candidate_vin text,
     similarity_score real NOT NULL,
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS abis_duplicate_checks (
 );
 
 CREATE TABLE IF NOT EXISTS abis_enrollment_pipeline (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     stage text NOT NULL,
     modality text NOT NULL,
@@ -206,7 +206,7 @@ CREATE TABLE IF NOT EXISTS abis_enrollment_pipeline (
 CREATE INDEX IF NOT EXISTS idx_abis_pipe ON abis_enrollment_pipeline USING btree (voter_vin, stage);
 
 CREATE TABLE IF NOT EXISTS cancelable_transforms (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     modality text NOT NULL,
     transform_id text NOT NULL,
@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS cancelable_transforms (
 CREATE INDEX IF NOT EXISTS idx_cancel_vin ON cancelable_transforms USING btree (voter_vin, modality);
 
 CREATE TABLE IF NOT EXISTS distributed_dedup_partitions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     job_id integer NOT NULL,
     partition_key text NOT NULL,
     worker_id text NOT NULL,
@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS distributed_dedup_partitions (
 );
 
 CREATE TABLE IF NOT EXISTS liveness_checks (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     passed integer DEFAULT 0,
     confidence real,
@@ -246,7 +246,7 @@ CREATE TABLE IF NOT EXISTS liveness_checks (
 );
 
 CREATE TABLE IF NOT EXISTS multi_finger_enrollments (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     finger_position text NOT NULL,
     finger_index integer NOT NULL,
@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS multi_finger_enrollments (
 CREATE INDEX IF NOT EXISTS idx_multi_finger ON multi_finger_enrollments USING btree (voter_vin, finger_position);
 
 CREATE TABLE IF NOT EXISTS nist_benchmark_results (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     benchmark_type text NOT NULL,
     modality text NOT NULL,
     dataset text NOT NULL,
@@ -278,7 +278,7 @@ CREATE TABLE IF NOT EXISTS nist_benchmark_results (
 );
 
 CREATE TABLE IF NOT EXISTS offline_enrollment_queue (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     voter_vin text NOT NULL,
     modality text NOT NULL,
@@ -295,7 +295,7 @@ CREATE TABLE IF NOT EXISTS offline_enrollment_queue (
 CREATE INDEX IF NOT EXISTS idx_offline_sync ON offline_enrollment_queue USING btree (sync_status, device_id);
 
 CREATE TABLE IF NOT EXISTS pad_attack_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text,
     modality text NOT NULL,
     attack_type text NOT NULL,
@@ -315,7 +315,7 @@ CREATE TABLE IF NOT EXISTS pad_attack_log (
 CREATE INDEX IF NOT EXISTS idx_pad_attack ON pad_attack_log USING btree (voter_vin, created_at);
 
 CREATE TABLE IF NOT EXISTS pad_models (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     model_name text NOT NULL,
     model_version text NOT NULL,
     modality text NOT NULL,
@@ -330,7 +330,7 @@ CREATE TABLE IF NOT EXISTS pad_models (
 );
 
 CREATE TABLE IF NOT EXISTS pad_results (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     modality text NOT NULL,
     device_id text,
@@ -352,7 +352,7 @@ CREATE TABLE IF NOT EXISTS pad_results (
 CREATE INDEX IF NOT EXISTS idx_pad_vin ON pad_results USING btree (voter_vin, checked_at);
 
 CREATE TABLE IF NOT EXISTS quality_gateway_rejections (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     voter_vin text NOT NULL,
     modality text NOT NULL,
@@ -366,7 +366,7 @@ CREATE TABLE IF NOT EXISTS quality_gateway_rejections (
 );
 
 CREATE TABLE IF NOT EXISTS score_normalization_cohorts (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     cohort_id text NOT NULL,
     modality text NOT NULL,
     norm_type text DEFAULT 'z_norm'::text NOT NULL,
@@ -380,7 +380,7 @@ CREATE TABLE IF NOT EXISTS score_normalization_cohorts (
 );
 
 CREATE TABLE IF NOT EXISTS template_aging_records (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     voter_vin text NOT NULL,
     modality text NOT NULL,
     enrolled_at timestamp without time zone NOT NULL,
@@ -398,7 +398,7 @@ CREATE INDEX IF NOT EXISTS idx_aging_status ON template_aging_records USING btre
 CREATE INDEX IF NOT EXISTS idx_aging_vin ON template_aging_records USING btree (voter_vin);
 
 CREATE TABLE IF NOT EXISTS threshold_tuning_runs (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     modality text NOT NULL,
     genuine_pairs integer DEFAULT 0,
     impostor_pairs integer DEFAULT 0,

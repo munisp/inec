@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS mfa_settings (
 );
 
 CREATE TABLE IF NOT EXISTS mfa_sms_otp (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     phone text NOT NULL,
     code text NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS mfa_sms_otp (
 );
 
 CREATE TABLE IF NOT EXISTS mfa_totp (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     secret text NOT NULL,
     verified integer DEFAULT 0,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS mfa_totp (
 );
 
 CREATE TABLE IF NOT EXISTS mfa_webauthn (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     credential_id text NOT NULL,
     public_key text NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS mfa_webauthn (
 );
 
 CREATE TABLE IF NOT EXISTS sms_delivery_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     provider text NOT NULL,
     message_id text,
     phone text NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS sms_delivery_log (
 CREATE INDEX IF NOT EXISTS idx_sms_delivery ON sms_delivery_log USING btree (phone, created_at);
 
 CREATE TABLE IF NOT EXISTS sms_verifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     phone text NOT NULL,
     polling_unit_code text,
     election_id integer,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS ussd_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS registration_centers (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     code text NOT NULL,
     name text NOT NULL,
     state_code text NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS registration_centers (
 );
 
 CREATE TABLE IF NOT EXISTS training_certificates (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     enrollment_id integer NOT NULL,
     user_id integer NOT NULL,
     course_id integer NOT NULL,
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS training_certificates (
 );
 
 CREATE TABLE IF NOT EXISTS training_courses (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     title text NOT NULL,
     description text,
     course_type text NOT NULL,
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS training_courses (
 );
 
 CREATE TABLE IF NOT EXISTS training_enrollments (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     course_id integer NOT NULL,
     progress_percent real DEFAULT 0,
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS training_enrollments (
 CREATE INDEX IF NOT EXISTS idx_training_enroll ON training_enrollments USING btree (user_id, course_id);
 
 CREATE TABLE IF NOT EXISTS training_vr_scenarios (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     course_id integer NOT NULL,
     scenario_name text NOT NULL,
     scenario_type text NOT NULL,

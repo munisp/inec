@@ -2,7 +2,7 @@
 -- Auto-generated from actual PostgreSQL schema
 
 CREATE TABLE IF NOT EXISTS waf_blocklist (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     ip_address text NOT NULL,
     reason text,
     blocked_at text

@@ -1,7 +1,7 @@
 -- BVAS extended: heartbeats, sync, capabilities, location
 
 CREATE TABLE IF NOT EXISTS bvas_accreditations (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     election_id integer NOT NULL,
     polling_unit_code text NOT NULL,
@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_bvas_acc_device ON bvas_accreditations USING btre
 CREATE INDEX IF NOT EXISTS idx_bvas_acc_pu ON bvas_accreditations USING btree (polling_unit_code, election_id);
 
 CREATE TABLE IF NOT EXISTS bvas_device_capabilities (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     firmware_version text NOT NULL,
     supported_modalities text DEFAULT 'fingerprint'::text NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS bvas_device_capabilities (
 );
 
 CREATE TABLE IF NOT EXISTS bvas_heartbeats (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     battery_level integer,
     signal_strength integer,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS bvas_heartbeats (
 CREATE INDEX IF NOT EXISTS idx_bvas_heartbeat_device ON bvas_heartbeats USING btree (device_id, "timestamp");
 
 CREATE TABLE IF NOT EXISTS bvas_location_logs (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     bvas_serial text NOT NULL,
     polling_unit_code text NOT NULL,
     latitude real NOT NULL,
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_bvas_loc_pu ON bvas_location_logs USING btree (po
 CREATE INDEX IF NOT EXISTS idx_bvas_loc_serial ON bvas_location_logs USING btree (bvas_serial);
 
 CREATE TABLE IF NOT EXISTS bvas_sync_queue (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     sync_type text NOT NULL,
     payload text NOT NULL,

@@ -1,7 +1,7 @@
 -- Security: encryption keys, HSM, audit events, access policies
 
 CREATE TABLE IF NOT EXISTS active_sessions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     jti text NOT NULL,
     user_id integer NOT NULL,
     ip_address text,
@@ -15,7 +15,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_jti ON active_sessions USING btree (jti)
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON active_sessions USING btree (user_id);
 
 CREATE TABLE IF NOT EXISTS data_classification (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     table_name text NOT NULL,
     column_name text NOT NULL,
     classification text NOT NULL,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS data_classification (
 );
 
 CREATE TABLE IF NOT EXISTS data_encryption_keys (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     key_id text NOT NULL,
     algorithm text DEFAULT 'AES-256-GCM'::text NOT NULL,
     purpose text NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS data_encryption_keys (
 CREATE INDEX IF NOT EXISTS idx_dek_purpose ON data_encryption_keys USING btree (purpose, status);
 
 CREATE TABLE IF NOT EXISTS device_keys (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id text NOT NULL,
     device_id text NOT NULL,
     device_secret text NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS device_keys (
 );
 
 CREATE TABLE IF NOT EXISTS device_locations (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     device_id text NOT NULL,
     ip_address text,
     latitude real,
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS device_locations (
 CREATE INDEX IF NOT EXISTS idx_device_locations_device ON device_locations USING btree (device_id);
 
 CREATE TABLE IF NOT EXISTS export_audit_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id text NOT NULL,
     export_type text,
     format text,
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS export_audit_log (
 CREATE INDEX IF NOT EXISTS idx_export_audit_user ON export_audit_log USING btree (user_id, "timestamp");
 
 CREATE TABLE IF NOT EXISTS hsm_audit (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     operation text NOT NULL,
     key_id text,
     hsm_slot integer,
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS hsm_audit (
 );
 
 CREATE TABLE IF NOT EXISTS hsm_keys (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     key_id text NOT NULL,
     key_type text DEFAULT 'AES-256-GCM'::text NOT NULL,
     purpose text NOT NULL,
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS hsm_keys (
 CREATE INDEX IF NOT EXISTS idx_hsm_keys_purpose ON hsm_keys USING btree (purpose, status);
 
 CREATE TABLE IF NOT EXISTS hsm_operations (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     operation text NOT NULL,
     key_id text NOT NULL,
     algorithm text,
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS hsm_slot_keys (
 );
 
 CREATE TABLE IF NOT EXISTS privacy_preserving_ops (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     operation_type text NOT NULL,
     encryption_scheme text DEFAULT 'paillier'::text NOT NULL,
     voter_vin text,
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS privacy_preserving_ops (
 );
 
 CREATE TABLE IF NOT EXISTS row_access_policies (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     table_name text NOT NULL,
     policy_name text NOT NULL,
     role text NOT NULL,
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS row_access_policies (
 );
 
 CREATE TABLE IF NOT EXISTS security_audit_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     event_type text NOT NULL,
     severity text NOT NULL,
     source text NOT NULL,
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS security_audit_events (
 CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_audit_events USING btree (event_type, severity, created_at);
 
 CREATE TABLE IF NOT EXISTS security_threats (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     threat_type text NOT NULL,
     location text NOT NULL,
     latitude real,

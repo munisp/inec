@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS mw_cache (
 CREATE INDEX IF NOT EXISTS idx_mw_cache_expires ON mw_cache USING btree (expires_at);
 
 CREATE TABLE IF NOT EXISTS mw_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     topic text NOT NULL,
     key text,
     value text NOT NULL,
@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_mw_events_offset ON mw_events USING btree (topic,
 CREATE INDEX IF NOT EXISTS idx_mw_events_topic ON mw_events USING btree (topic, created_at);
 
 CREATE TABLE IF NOT EXISTS mw_pubsub (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     channel text NOT NULL,
     message text NOT NULL,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS mw_pubsub (
 CREATE INDEX IF NOT EXISTS idx_mw_pubsub_channel ON mw_pubsub USING btree (channel, created_at);
 
 CREATE TABLE IF NOT EXISTS mw_streams (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     topic text NOT NULL,
     key text,
     value text NOT NULL,
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS mw_consumer_offsets (
 );
 
 CREATE TABLE IF NOT EXISTS mw_search_index (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     index_name text NOT NULL,
     doc_id text NOT NULL,
     body text NOT NULL,
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS mw_workflows (
 );
 
 CREATE TABLE IF NOT EXISTS mw_waf_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     request_id text,
     source_ip text,
     method text,
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS mw_waf_events (
 CREATE INDEX IF NOT EXISTS idx_mw_waf_created ON mw_waf_events USING btree (created_at);
 
 CREATE TABLE IF NOT EXISTS mw_circuit_breaker_log (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     service text NOT NULL,
     state text NOT NULL,
     failures integer DEFAULT 0,
@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS mw_mojaloop_transactions (
 CREATE INDEX IF NOT EXISTS idx_mw_mojaloop_phase ON mw_mojaloop_transactions USING btree (phase);
 
 CREATE TABLE IF NOT EXISTS event_bus (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     topic text NOT NULL,
     event_key text,
     payload text NOT NULL,

@@ -1,7 +1,7 @@
 -- Geospatial: landmarks, tracking, geofences, crowd
 
 CREATE TABLE IF NOT EXISTS landmarks (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     name text NOT NULL,
     category text NOT NULL,
     latitude real NOT NULL,
@@ -55,7 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_tracking_hist_staff ON official_tracking_history 
 CREATE INDEX IF NOT EXISTS idx_tracking_hist_time ON official_tracking_history USING btree (recorded_at DESC);
 
 CREATE TABLE IF NOT EXISTS crowd_density (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     pu_code text NOT NULL,
     latitude real,
     longitude real,
@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_crowd_density_pu ON crowd_density USING btree (pu
 CREATE INDEX IF NOT EXISTS idx_crowd_density_reported ON crowd_density USING btree (reported_at DESC);
 
 CREATE TABLE IF NOT EXISTS crowd_alerts (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     pu_code text NOT NULL,
     alert_type text NOT NULL,
     severity text DEFAULT 'warning'::text,
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS geo_analytics_cache (
 );
 
 CREATE TABLE IF NOT EXISTS geo_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     polling_unit_code text NOT NULL,
     event_type text NOT NULL,
     latitude real,
@@ -109,7 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_geo_events_created ON geo_events USING btree (cre
 CREATE INDEX IF NOT EXISTS idx_geo_events_pu ON geo_events USING btree (polling_unit_code);
 
 CREATE TABLE IF NOT EXISTS geofence_attestations (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     staff_id text NOT NULL,
     pu_code text NOT NULL,
     latitude double precision NOT NULL,
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS geofence_attestations (
 CREATE INDEX IF NOT EXISTS idx_geofence_att_staff ON geofence_attestations USING btree (staff_id, attested_at DESC);
 
 CREATE TABLE IF NOT EXISTS geofence_zones (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     pu_code text NOT NULL,
     center_lat double precision NOT NULL,
     center_lng double precision NOT NULL,
@@ -137,7 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_geofence_zones_geom ON geofence_zones USING gist 
 CREATE INDEX IF NOT EXISTS idx_geofence_zones_pu ON geofence_zones USING btree (pu_code);
 
 CREATE TABLE IF NOT EXISTS geofenced_submissions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     result_id integer,
     officer_lat real NOT NULL,
     officer_lng real NOT NULL,
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS geofenced_submissions (
 );
 
 CREATE TABLE IF NOT EXISTS incident_locations (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     incident_id integer,
     latitude double precision NOT NULL,
     longitude double precision NOT NULL,
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS incident_locations (
 CREATE INDEX IF NOT EXISTS idx_incident_loc_geom ON incident_locations USING gist (geom);
 
 CREATE TABLE IF NOT EXISTS pu_photos (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     pu_code text NOT NULL,
     photo_url text NOT NULL,
     caption text,

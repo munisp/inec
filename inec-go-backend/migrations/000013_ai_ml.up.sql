@@ -1,7 +1,7 @@
 -- AI/ML: predictions, document AI, KYC, sentiment analysis
 
 CREATE TABLE IF NOT EXISTS ai_predictions (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     prediction_type text NOT NULL,
     target_area text NOT NULL,
     target_level text NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS ai_predictions (
 CREATE INDEX IF NOT EXISTS idx_ai_pred ON ai_predictions USING btree (prediction_type, target_area);
 
 CREATE TABLE IF NOT EXISTS cv_monitoring (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     camera_id text NOT NULL,
     polling_unit_code text,
     event_type text NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS cv_monitoring (
 );
 
 CREATE TABLE IF NOT EXISTS document_analyses (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     report_id integer,
     analysis_type text DEFAULT 'full'::text NOT NULL,
     ocr_confidence real,
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS document_analyses (
 );
 
 CREATE TABLE IF NOT EXISTS kyb_verifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     entity_id integer NOT NULL,
     entity_type text NOT NULL,
     entity_name text NOT NULL,
@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_kyb_entity ON kyb_verifications USING btree (enti
 CREATE INDEX IF NOT EXISTS idx_kyb_status ON kyb_verifications USING btree (status);
 
 CREATE TABLE IF NOT EXISTS kyc_events (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     event_type text NOT NULL,
     trigger_source text NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS kyc_events (
 CREATE INDEX IF NOT EXISTS idx_kyc_events_user ON kyc_events USING btree (user_id, event_type);
 
 CREATE TABLE IF NOT EXISTS kyc_verifications (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     user_id integer NOT NULL,
     status text DEFAULT 'pending'::text NOT NULL,
     id_type text,
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS kyc_verifications (
 );
 
 CREATE TABLE IF NOT EXISTS media_api_keys (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     api_key text NOT NULL,
     org_name text NOT NULL,
     contact_email text,
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS media_api_keys (
 );
 
 CREATE TABLE IF NOT EXISTS misinformation_alerts (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     content text NOT NULL,
     source_platform text,
     source_url text,
@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS misinformation_alerts (
 CREATE INDEX IF NOT EXISTS idx_misinfo ON misinformation_alerts USING btree (status, detected_at);
 
 CREATE TABLE IF NOT EXISTS model_metrics (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     model_name text NOT NULL,
     accuracy real NOT NULL,
     latency_ms real,
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS model_metrics (
 CREATE INDEX IF NOT EXISTS idx_model_metrics_name ON model_metrics USING btree (model_name, evaluated_at);
 
 CREATE TABLE IF NOT EXISTS predictive_analytics (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     election_id integer,
     state_code text,
     predicted_turnout real,
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS predictive_analytics (
 );
 
 CREATE TABLE IF NOT EXISTS sentiment_analysis (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     source text NOT NULL,
     content_snippet text,
     sentiment text NOT NULL,
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS sentiment_analysis (
 CREATE INDEX IF NOT EXISTS idx_sentiment ON sentiment_analysis USING btree (sentiment, analyzed_at);
 
 CREATE TABLE IF NOT EXISTS video_analyses (
-    id integer NOT NULL,
+    id SERIAL PRIMARY KEY,
     report_id integer,
     observer_id integer,
     filename text,
