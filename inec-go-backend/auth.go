@@ -127,11 +127,20 @@ func decodeToken(tokenStr string) (jwt.MapClaims, error) {
 }
 
 func getCurrentUser(r *http.Request) (jwt.MapClaims, error) {
-	auth := r.Header.Get("Authorization")
-	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-		return nil, fmt.Errorf("not authenticated")
+	// First check context (set by jwtAuthMiddleware for both header and cookie auth)
+	if claims, ok := getUserFromContext(r); ok {
+		return claims, nil
 	}
-	return decodeToken(strings.TrimPrefix(auth, "Bearer "))
+	// Fallback: direct header check for paths that bypass middleware
+	auth := r.Header.Get("Authorization")
+	if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+		return decodeToken(strings.TrimPrefix(auth, "Bearer "))
+	}
+	// Fallback: httpOnly cookie
+	if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+		return decodeToken(cookie.Value)
+	}
+	return nil, fmt.Errorf("not authenticated")
 }
 
 func requireRole(r *http.Request, roles ...string) (jwt.MapClaims, error) {
