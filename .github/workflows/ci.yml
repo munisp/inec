@@ -35,7 +35,7 @@ jobs:
         run: go vet ./...
       - name: Build
         working-directory: inec-go-backend
-        run: CGO_ENABLED=1 go build -o inec-server ./...
+        run: CGO_ENABLED=1 go build -o inec-server .
       - name: Test
         working-directory: inec-go-backend
         env:
@@ -164,7 +164,7 @@ jobs:
           go-version: '1.26'
       - name: Build backend
         working-directory: inec-go-backend
-        run: CGO_ENABLED=1 go build -o inec-server ./...
+        run: CGO_ENABLED=1 go build -o inec-server .
       - name: Start backend
         working-directory: inec-go-backend
         run: ./inec-server &
@@ -260,7 +260,7 @@ jobs:
           go-version: '1.26'
       - name: Build backend
         working-directory: inec-go-backend
-        run: CGO_ENABLED=1 go build -o inec-server ./...
+        run: CGO_ENABLED=1 go build -o inec-server .
       - name: Start backend
         working-directory: inec-go-backend
         run: ./inec-server &
