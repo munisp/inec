@@ -1416,13 +1416,18 @@ func bToI(b bool) int {
 // Role-based rate limiting middleware (#10)
 func roleBasedRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Public/monitoring paths are already rate-limited by rateLimitMiddleware
+		if isPublicPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		role := "public"
-		if claims, ok := r.Context().Value("claims").(map[string]interface{}); ok {
+		if claims, ok := getUserFromContext(r); ok {
 			if rv, ok := claims["role"].(string); ok {
 				role = rv
 			}
 		}
-		limit := 30
+		limit := 60
 		switch role {
 		case "observer":
 			limit = 120
