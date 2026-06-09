@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	tbClient "github.com/tigerbeetle/tigerbeetle-go"
+	tbTypes "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
 )
 
 type TBTransfer struct {
@@ -445,26 +448,241 @@ func (t *dbBackedTigerBeetle) Status() MWStatus {
 
 func (t *dbBackedTigerBeetle) Close() error { return nil }
 
-func initTigerBeetleClient() TigerBeetleClient {
-	tbURL := envOrDefault("TIGERBEETLE_URL", "")
-	if tbURL != "" {
-		// NOTE: Real TigerBeetle uses a custom binary protocol on port 3000.
-		// The HTTP client here is for TigerBeetle's optional HTTP gateway (if deployed).
-		// For production, use github.com/tigerbeetle/tigerbeetle-go SDK directly.
-		client := &tbHTTPClient{
-			baseURL: tbURL,
-			client:  NewResilientHTTPClient("tigerbeetle"),
+// tbSDKClient wraps the official TigerBeetle Go SDK using the native binary protocol.
+type tbSDKClient struct {
+	client    tbClient.Client
+	addresses []string
+	mu        sync.RWMutex
+	transfers map[string]*TBTransfer // local cache for GetTransfer by string ID
+	accounts  map[string]*TBAccount
+}
+
+func newTBSDKClient(addresses []string) (*tbSDKClient, error) {
+	client, err := tbClient.NewClient(tbTypes.ToUint128(0), addresses)
+	if err != nil {
+		return nil, fmt.Errorf("tigerbeetle-go connect: %w", err)
+	}
+	// Verify connectivity with a Nop request
+	if err := client.Nop(); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("tigerbeetle nop: %w", err)
+	}
+	c := &tbSDKClient{
+		client:    client,
+		addresses: addresses,
+		transfers: make(map[string]*TBTransfer),
+		accounts:  make(map[string]*TBAccount),
+	}
+	// Create default ledger accounts
+	defaultAccounts := []tbTypes.Account{
+		{ID: tbTypes.ToUint128(1), Ledger: 1, Code: 1},
+		{ID: tbTypes.ToUint128(2), Ledger: 2, Code: 1},
+	}
+	_, _ = client.CreateAccounts(defaultAccounts)
+	c.accounts["inec-operational"] = &TBAccount{ID: "inec-operational", Ledger: 1, Code: 1}
+	c.accounts["inec-official"] = &TBAccount{ID: "inec-official", Ledger: 2, Code: 1}
+	return c, nil
+}
+
+func stringToUint128(s string) tbTypes.Uint128 {
+	h := sha256.Sum256([]byte(s))
+	var bytes [16]byte
+	copy(bytes[:], h[:16])
+	return tbTypes.BytesToUint128(bytes)
+}
+
+func (t *tbSDKClient) CreateTransfer(_ context.Context, transfer TBTransfer) (*TBTransfer, error) {
+	if transfer.ID == "" {
+		rngBuf := make([]byte, 16)
+		cryptoRand.Read(rngBuf)
+		h := sha256.Sum256(append([]byte(fmt.Sprintf("%d-", time.Now().UnixNano())), rngBuf...))
+		transfer.ID = "TB-" + hex.EncodeToString(h[:6])
+	}
+
+	tbTransfer := tbTypes.Transfer{
+		ID:              stringToUint128(transfer.ID),
+		DebitAccountID:  stringToUint128(transfer.DebitAccountID),
+		CreditAccountID: stringToUint128(transfer.CreditAccountID),
+		Amount:          tbTypes.ToUint128(uint64(transfer.Amount)),
+		Ledger:          uint32(transfer.Ledger),
+		Code:            uint16(transfer.Code),
+		Flags:           tbTypes.TransferFlags{Pending: true}.ToUint16(),
+	}
+	results, err := t.client.CreateTransfers([]tbTypes.Transfer{tbTransfer})
+	if err != nil {
+		return nil, fmt.Errorf("create transfer: %w", err)
+	}
+	for _, r := range results {
+		if r.Result != tbTypes.TransferOK {
+			return nil, fmt.Errorf("transfer rejected: %v", r.Result)
 		}
-		s := client.Status()
-		if s.Connected {
-			log.Info().Str("url", tbURL).Msg("TigerBeetle HTTP gateway connected")
+	}
+	transfer.Status = "PENDING"
+	transfer.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	t.mu.Lock()
+	t.transfers[transfer.ID] = &transfer
+	t.mu.Unlock()
+	return &transfer, nil
+}
+
+func (t *tbSDKClient) GetTransfer(_ context.Context, transferID string) (*TBTransfer, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	tr, ok := t.transfers[transferID]
+	if !ok {
+		return nil, fmt.Errorf("transfer not found: %s", transferID)
+	}
+	return tr, nil
+}
+
+func (t *tbSDKClient) VoidTransfer(_ context.Context, transferID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tr, ok := t.transfers[transferID]
+	if !ok {
+		return fmt.Errorf("transfer not found: %s", transferID)
+	}
+	voidTransfer := tbTypes.Transfer{
+		ID:        stringToUint128(transferID + "-void"),
+		PendingID: stringToUint128(transferID),
+		Flags:     tbTypes.TransferFlags{VoidPendingTransfer: true}.ToUint16(),
+	}
+	_, err := t.client.CreateTransfers([]tbTypes.Transfer{voidTransfer})
+	if err != nil {
+		return fmt.Errorf("void transfer: %w", err)
+	}
+	tr.Status = "VOIDED"
+	return nil
+}
+
+func (t *tbSDKClient) PostTransfer(_ context.Context, transferID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	tr, ok := t.transfers[transferID]
+	if !ok {
+		return fmt.Errorf("transfer not found: %s", transferID)
+	}
+	postTransfer := tbTypes.Transfer{
+		ID:        stringToUint128(transferID + "-post"),
+		PendingID: stringToUint128(transferID),
+		Flags:     tbTypes.TransferFlags{PostPendingTransfer: true}.ToUint16(),
+	}
+	_, err := t.client.CreateTransfers([]tbTypes.Transfer{postTransfer})
+	if err != nil {
+		return fmt.Errorf("post transfer: %w", err)
+	}
+	tr.Status = "POSTED"
+	return nil
+}
+
+func (t *tbSDKClient) CreateAccount(_ context.Context, account TBAccount) error {
+	tbAcct := tbTypes.Account{
+		ID:     stringToUint128(account.ID),
+		Ledger: uint32(account.Ledger),
+		Code:   uint16(account.Code),
+	}
+	_, err := t.client.CreateAccounts([]tbTypes.Account{tbAcct})
+	if err != nil {
+		return fmt.Errorf("create account: %w", err)
+	}
+	t.mu.Lock()
+	t.accounts[account.ID] = &account
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *tbSDKClient) GetAccount(_ context.Context, accountID string) (*TBAccount, error) {
+	results, err := t.client.LookupAccounts([]tbTypes.Uint128{stringToUint128(accountID)})
+	if err != nil {
+		return nil, fmt.Errorf("lookup account: %w", err)
+	}
+	if len(results) == 0 {
+		t.mu.RLock()
+		a, ok := t.accounts[accountID]
+		t.mu.RUnlock()
+		if ok {
+			return a, nil
+		}
+		return nil, fmt.Errorf("account not found: %s", accountID)
+	}
+	a := results[0]
+	cp := a.CreditsPosted.BigInt()
+	dp := a.DebitsPosted.BigInt()
+	cpn := a.CreditsPending.BigInt()
+	dpn := a.DebitsPending.BigInt()
+	return &TBAccount{
+		ID:             accountID,
+		Ledger:         int(a.Ledger),
+		Code:           int(a.Code),
+		CreditsPosted:  cp.Int64(),
+		DebitsPosted:   dp.Int64(),
+		CreditsPending: cpn.Int64(),
+		DebitsPending:  dpn.Int64(),
+	}, nil
+}
+
+func (t *tbSDKClient) LookupTransfers(_ context.Context, accountID string, limit int) ([]TBTransfer, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var result []TBTransfer
+	for _, tr := range t.transfers {
+		if tr.DebitAccountID == accountID || tr.CreditAccountID == accountID {
+			result = append(result, *tr)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (t *tbSDKClient) Status() MWStatus {
+	lat, err := measureLatency(func() error {
+		return t.client.Nop()
+	})
+	if err != nil {
+		return MWStatus{Name: "TigerBeetle", Connected: false, Mode: "native tigerbeetle-go (unreachable)", Details: err.Error()}
+	}
+	t.mu.RLock()
+	trCount := len(t.transfers)
+	acctCount := len(t.accounts)
+	t.mu.RUnlock()
+	return MWStatus{
+		Name: "TigerBeetle", Connected: true, Mode: "native tigerbeetle-go",
+		Latency: fmtLatency(lat),
+		Details: fmt.Sprintf("binary protocol, cluster=0, %d accounts, %d transfers", acctCount, trCount),
+	}
+}
+
+func (t *tbSDKClient) Close() error {
+	t.client.Close()
+	return nil
+}
+
+func initTigerBeetleClient() TigerBeetleClient {
+	// Try native binary protocol first (TIGERBEETLE_ADDRESSES="host:port")
+	tbAddrs := envOrDefault("TIGERBEETLE_ADDRESSES", "")
+	if tbAddrs == "" {
+		// Fallback: parse TIGERBEETLE_URL for host:port
+		tbURL := envOrDefault("TIGERBEETLE_URL", "")
+		if tbURL != "" {
+			// Strip http:// prefix and use as address
+			addr := strings.TrimPrefix(strings.TrimPrefix(tbURL, "http://"), "https://")
+			tbAddrs = addr
+		}
+	}
+	if tbAddrs != "" {
+		addresses := strings.Split(tbAddrs, ",")
+		client, err := newTBSDKClient(addresses)
+		if err == nil {
+			log.Info().Strs("addresses", addresses).Msg("TigerBeetle connected via native SDK (binary protocol)")
 			return client
 		}
-		log.Warn().Msg("TigerBeetle unreachable, falling back to DB-backed mode")
+		log.Warn().Err(err).Msg("TigerBeetle native SDK connection failed, trying fallback")
 	}
 	env := os.Getenv("APP_ENV")
 	if env == "production" || env == "staging" {
-		log.Fatal().Msg("TigerBeetle is REQUIRED in production/staging for double-entry ledger integrity. Set TIGERBEETLE_URL")
+		log.Fatal().Msg("TigerBeetle is REQUIRED in production/staging for double-entry ledger integrity. Set TIGERBEETLE_ADDRESSES")
 	}
 	log.Warn().Msg("TigerBeetle using DB-backed persistent ledger (DEV ONLY — reduced throughput)")
 	return newDBBackedTigerBeetle()

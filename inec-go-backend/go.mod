@@ -15,7 +15,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/rs/zerolog v1.35.1
 	github.com/segmentio/kafka-go v0.4.51
-	github.com/tigerbeetle/tigerbeetle-go v0.17.6
+	github.com/tigerbeetle/tigerbeetle-go v0.16.11
 	go.temporal.io/sdk v1.44.1
 	golang.org/x/crypto v0.53.0
 	google.golang.org/grpc v1.81.1

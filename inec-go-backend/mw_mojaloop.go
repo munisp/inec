@@ -270,19 +270,31 @@ func (m *mojaHTTPClient) ListTransactions(ctx context.Context, phase string, lim
 func (m *mojaHTTPClient) Status() MWStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", m.baseURL+"/health", nil)
-	lat, err := measureLatency(func() error {
-		resp, e := m.client.Client.Do(req)
-		if e != nil {
-			return e
+	// Try /health first, then root path — TTK may not have /health
+	var lat time.Duration
+	var lastErr error
+	for _, path := range []string{"/health", "/"} {
+		req, _ := http.NewRequestWithContext(ctx, "GET", m.baseURL+path, nil)
+		req.Header.Set("Accept", "application/json")
+		l, err := measureLatency(func() error {
+			resp, e := m.client.Client.Do(req)
+			if e != nil {
+				return e
+			}
+			resp.Body.Close()
+			return nil
+		})
+		if err == nil {
+			lat = l
+			lastErr = nil
+			break
 		}
-		resp.Body.Close()
-		return nil
-	})
-	if err != nil {
-		return MWStatus{Name: "Mojaloop", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
+		lastErr = err
 	}
-	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+	if lastErr != nil {
+		return MWStatus{Name: "Mojaloop", Connected: false, Mode: "external (unreachable)", Details: lastErr.Error()}
+	}
+	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "external (FSPIOP)", Latency: fmtLatency(lat)}
 }
 
 // HandleCallback processes async FSPIOP PUT callbacks from the Mojaloop switch.
@@ -500,12 +512,30 @@ func initMojaloopClient() MojaloopClient {
 			client:  NewResilientHTTPClient("mojaloop"),
 			baseURL: baseURL,
 		}
-		_, err := client.PartyLookup(context.Background(), "MSISDN", "test")
-		if err == nil {
-			log.Info().Msg("Mojaloop connected to external service")
+		// Check connectivity via /health endpoint (TTK), PartyLookup, or simple GET
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		connected := false
+		// Try /health first (Mojaloop TTK)
+		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil)
+		if resp, err := client.client.Client.Do(req); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				connected = true
+			}
+		}
+		if !connected {
+			// Try PartyLookup as fallback
+			_, err := client.PartyLookup(ctx, "MSISDN", "test")
+			if err == nil {
+				connected = true
+			}
+		}
+		if connected {
+			log.Info().Str("url", baseURL).Msg("Mojaloop connected to external service")
 			return client
 		}
-		log.Warn().Err(err).Msg("Mojaloop: external connection failed, using embedded")
+		log.Warn().Msg("Mojaloop: external connection failed, using embedded")
 	}
 	env := os.Getenv("APP_ENV")
 	if env == "production" || env == "staging" {

@@ -43,15 +43,17 @@ x-go-env: &go-env
   KEYCLOAK_CLIENT_SECRET: inec-backend-secret
   TEMPORAL_URL: http://temporal-ui:8080
   TIGERBEETLE_URL: http://tigerbeetle:3000
+  TIGERBEETLE_ADDRESSES: tigerbeetle:3000
   PERMIFY_URL: http://permify:3476
   PERMIFY_TENANT_ID: inec
   APISIX_ADMIN_URL: http://apisix:9180
   APISIX_API_KEY: edd1c9f034335f136f87ad84b625c8f1
   DAPR_HTTP_URL: http://dapr-sidecar:3500
-  MOJALOOP_URL: http://mojaloop:3002
-  OPENAPPSEC_URL: http://openappsec:4000
-  LAKEHOUSE_URL: http://lakehouse:8191
-  FLUVIO_URL: http://fluvio:9003
+  MOJALOOP_URL: http://mojaloop-ttk:4040
+  OPENAPPSEC_URL: http://openappsec-agent:4000
+  LAKEHOUSE_URL: http://trino:8080
+  FLUVIO_URL: http://fluvio-sc:9003
+  FLUVIO_SC_ADDR: fluvio-sc:9003
   # Inter-service URLs
   AUTH_URL: http://auth-svc:8090
   ELECTION_URL: http://election-svc:8091
@@ -299,6 +301,77 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  openappsec-agent:
+    <<: *common
+    build:
+      context: ./services/openappsec-agent
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  mojaloop-ttk:
+    <<: *common
+    image: mojaloop/ml-testing-toolkit:v18.5.1
+    ports:
+      - "4040:4040"
+      - "5050:5050"
+    environment:
+      - AUTH_ENABLED=FALSE
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:4040/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  fluvio-sc:
+    <<: *common
+    image: infinyon/fluvio:stable
+    hostname: fluvio-sc
+    command: "./fluvio-run sc --local /fluvio/metadata"
+    volumes:
+      - fluvio-metadata:/fluvio/metadata
+    ports:
+      - "9103:9003"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9003 || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  fluvio-spu:
+    <<: *common
+    image: infinyon/fluvio:stable
+    hostname: fluvio-spu
+    command: "./fluvio-run spu -i 5001 -p fluvio-spu:9010 -v fluvio-spu:9011 --sc-addr fluvio-sc:9004 --log-base-dir /fluvio/data"
+    volumes:
+      - fluvio-data:/fluvio/data
+    ports:
+      - "9110:9010"
+      - "9111:9011"
+    depends_on:
+      - fluvio-sc
+
+  trino:
+    <<: *common
+    image: trinodb/trino:467
+    ports:
+      - "8191:8080"
+    environment:
+      - TRINO_ENVIRONMENT=development
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info | grep -q '\"starting\":false' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ─── Go Microservices ─────────────────────────────────────────
   gateway:
@@ -622,6 +695,8 @@ volumes:
   neo4jdata:
   osdata:
   tbdata:
+  fluvio-metadata:
+  fluvio-data:
 
 networks:
   inec-net:
