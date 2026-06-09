@@ -151,7 +151,7 @@ async fn produce_event(
     }
 }
 
-// GET /consume — consume events from a Fluvio topic
+// GET /consume — consume events from a Fluvio topic (with timeout to prevent indefinite blocking)
 async fn consume_events(
     state: web::Data<Arc<AppState>>,
     query: web::Query<ConsumeQuery>,
@@ -176,18 +176,33 @@ async fn consume_events(
     let mut records = Vec::new();
     use futures_util::StreamExt;
     let mut stream = consumer.stream(Offset::absolute(offset).unwrap_or(Offset::beginning())).await.unwrap();
-    
-    while let Some(Ok(record)) = stream.next().await {
-        let value: serde_json::Value = serde_json::from_slice(record.value())
-            .unwrap_or(serde_json::Value::String(String::from_utf8_lossy(record.value()).to_string()));
-        records.push(serde_json::json!({
-            "offset": record.offset(),
-            "key": String::from_utf8_lossy(record.key().unwrap_or(&[])),
-            "value": value,
-            "timestamp": record.timestamp(),
-        }));
-        if records.len() >= limit {
-            break;
+
+    // Timeout prevents indefinite blocking on empty/slow topics
+    let timeout_duration = tokio::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+
+    loop {
+        let next = tokio::time::timeout_at(deadline, stream.next()).await;
+        match next {
+            Ok(Some(Ok(record))) => {
+                let value: serde_json::Value = serde_json::from_slice(record.value())
+                    .unwrap_or(serde_json::Value::String(String::from_utf8_lossy(record.value()).to_string()));
+                records.push(serde_json::json!({
+                    "offset": record.offset(),
+                    "key": String::from_utf8_lossy(record.key().unwrap_or(&[])),
+                    "value": value,
+                    "timestamp": record.timestamp(),
+                }));
+                if records.len() >= limit {
+                    break;
+                }
+            }
+            Ok(Some(Err(e))) => {
+                error!("Consumer stream error: {}", e);
+                break;
+            }
+            Ok(None) => break,       // Stream ended
+            Err(_) => break,         // Timeout reached — return what we have
         }
     }
 
@@ -198,6 +213,7 @@ async fn consume_events(
         "topic": topic,
         "records": records,
         "count": records.len(),
+        "timed_out": records.len() < limit,
     }))
 }
 

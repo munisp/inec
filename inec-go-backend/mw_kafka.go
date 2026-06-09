@@ -24,6 +24,8 @@ type KafkaMessage struct {
 type KafkaClient interface {
 	Produce(ctx context.Context, msg KafkaMessage) error
 	Subscribe(topic string, handler func(KafkaMessage)) error
+	// SubscribeGroup subscribes with a consumer group ID — only one consumer per group receives each message
+	SubscribeGroup(topic, groupID string, handler func(KafkaMessage)) error
 	Status() MWStatus
 	Close() error
 }
@@ -90,19 +92,24 @@ func (k *realKafkaClient) Produce(ctx context.Context, msg KafkaMessage) error {
 }
 
 func (k *realKafkaClient) Subscribe(topic string, handler func(KafkaMessage)) error {
+	return k.SubscribeGroup(topic, "inec-backend-"+topic, handler)
+}
+
+func (k *realKafkaClient) SubscribeGroup(topic, groupID string, handler func(KafkaMessage)) error {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        k.brokers,
 		Topic:          topic,
-		GroupID:        "inec-backend-" + topic,
+		GroupID:        groupID,
 		MinBytes:       1,
 		MaxBytes:       10e6,
 		CommitInterval: time.Second,
+		StartOffset:    kafka.LastOffset,
 	})
 	go func() {
 		for {
 			m, err := reader.ReadMessage(context.Background())
 			if err != nil {
-				log.Error().Err(err).Str("topic", topic).Msg("Kafka consume error")
+				log.Error().Err(err).Str("topic", topic).Str("group", groupID).Msg("Kafka consume error")
 				time.Sleep(time.Second)
 				continue
 			}
@@ -177,8 +184,16 @@ func (k *embeddedKafka) Produce(_ context.Context, msg KafkaMessage) error {
 }
 
 func (k *embeddedKafka) Subscribe(topic string, handler func(KafkaMessage)) error {
+	return k.SubscribeGroup(topic, "default", handler)
+}
+
+func (k *embeddedKafka) SubscribeGroup(topic, groupID string, handler func(KafkaMessage)) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	// Consumer group key ensures only one handler per group gets the message
+	key := topic + "::" + groupID
+	k.subscribers[key] = append(k.subscribers[key], handler)
+	// Also register under the topic for backward-compatible Produce dispatch
 	k.subscribers[topic] = append(k.subscribers[topic], handler)
 	return nil
 }

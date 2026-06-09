@@ -26,6 +26,7 @@ type TBTransfer struct {
 	Status          string `json:"status"`
 	Timestamp       string `json:"timestamp"`
 	UserData        string `json:"user_data"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
 }
 
 type TBAccount struct {
@@ -180,15 +181,17 @@ func (t *tbHTTPClient) Status() MWStatus {
 func (t *tbHTTPClient) Close() error { return nil }
 
 type embeddedTigerBeetle struct {
-	mu        sync.RWMutex
-	transfers map[string]*TBTransfer
-	accounts  map[string]*TBAccount
+	mu              sync.RWMutex
+	transfers       map[string]*TBTransfer
+	accounts        map[string]*TBAccount
+	idempotencyKeys map[string]string // idempotency_key → transfer_id
 }
 
 func newEmbeddedTigerBeetle() *embeddedTigerBeetle {
 	tb := &embeddedTigerBeetle{
-		transfers: make(map[string]*TBTransfer),
-		accounts:  make(map[string]*TBAccount),
+		transfers:       make(map[string]*TBTransfer),
+		accounts:        make(map[string]*TBAccount),
+		idempotencyKeys: make(map[string]string),
 	}
 	tb.accounts["inec-operational"] = &TBAccount{ID: "inec-operational", Ledger: 1, Code: 1}
 	tb.accounts["inec-official"] = &TBAccount{ID: "inec-official", Ledger: 2, Code: 1}
@@ -198,15 +201,36 @@ func newEmbeddedTigerBeetle() *embeddedTigerBeetle {
 func (t *embeddedTigerBeetle) CreateTransfer(_ context.Context, transfer TBTransfer) (*TBTransfer, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Idempotency check: if same key was used before, return existing transfer
+	if transfer.IdempotencyKey != "" {
+		if existingID, exists := t.idempotencyKeys[transfer.IdempotencyKey]; exists {
+			if existing, ok := t.transfers[existingID]; ok {
+				return existing, nil
+			}
+		}
+	}
+
 	if transfer.ID == "" {
 		rngBuf := make([]byte, 16)
 		cryptoRand.Read(rngBuf)
 		h := sha256.Sum256(append([]byte(fmt.Sprintf("%d-", time.Now().UnixNano())), rngBuf...))
 		transfer.ID = "TB-" + hex.EncodeToString(h[:6])
 	}
+
+	// Check for duplicate transfer ID
+	if _, exists := t.transfers[transfer.ID]; exists {
+		return t.transfers[transfer.ID], nil
+	}
+
 	transfer.Status = "PENDING"
 	transfer.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	t.transfers[transfer.ID] = &transfer
+
+	// Store idempotency mapping
+	if transfer.IdempotencyKey != "" {
+		t.idempotencyKeys[transfer.IdempotencyKey] = transfer.ID
+	}
 
 	if da, ok := t.accounts[transfer.DebitAccountID]; ok {
 		da.DebitsPending += transfer.Amount

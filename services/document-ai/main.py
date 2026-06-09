@@ -30,11 +30,13 @@ app = FastAPI(
     version="1.0.0",
     description="AI-powered document analysis for election result verification",
 )
+_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    allow_credentials=True,
 )
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/document-ai-uploads")
