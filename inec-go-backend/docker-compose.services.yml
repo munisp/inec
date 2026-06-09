@@ -1,0 +1,227 @@
+# Docker Compose for INEC Platform — Decomposed Microservices
+# Each service can be independently deployed but runs together locally.
+#
+# Usage:
+#   docker compose -f docker-compose.services.yml up
+#   docker compose -f docker-compose.services.yml up auth-svc election-svc
+
+version: "3.9"
+
+x-common-env: &common-env
+  DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+  LOG_LEVEL: info
+
+services:
+  # --- Infrastructure ---
+
+  postgres:
+    image: postgis/postgis:16-3.4
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ngapp
+      POSTGRES_PASSWORD: ngapp123
+      POSTGRES_DB: ngapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ngapp"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+
+  # --- Go Microservices ---
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: gateway
+    ports:
+      - "8088:8088"
+    environment:
+      <<: *common-env
+      PORT: "8088"
+      DISTRIBUTED: "true"
+      AUTH_URL: http://auth-svc:8090
+      ELECTION_URL: http://election-svc:8091
+      BIOMETRIC_URL: http://biometric-svc:8092
+      GEO_URL: http://geo-svc:8093
+    depends_on:
+      auth-svc:
+        condition: service_healthy
+      election-svc:
+        condition: service_healthy
+
+  auth-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: auth-svc
+    ports:
+      - "8090:8090"
+    environment:
+      <<: *common-env
+      PORT: "8090"
+      JWT_SECRET: ${JWT_SECRET:-inec-dev-secret-change-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+
+  election-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: election-svc
+    ports:
+      - "8091:8091"
+    environment:
+      <<: *common-env
+      PORT: "8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8091/health"]
+      interval: 10s
+      timeout: 5s
+
+  biometric-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: biometric-svc
+    ports:
+      - "8092:8092"
+    environment:
+      <<: *common-env
+      PORT: "8092"
+      VAULT_KEY: ${VAULT_KEY:-00000000000000000000000000000000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 5s
+
+  geo-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: geo-svc
+    ports:
+      - "8093:8093"
+    environment:
+      <<: *common-env
+      PORT: "8093"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8093/health"]
+      interval: 10s
+      timeout: 5s
+
+  compliance-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: compliance-svc
+    ports:
+      - "8094:8094"
+    environment:
+      <<: *common-env
+      PORT: "8094"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingestion-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: ingestion-svc
+    ports:
+      - "8095:8095"
+    environment:
+      <<: *common-env
+      PORT: "8095"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bvas-svc:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: bvas-svc
+    ports:
+      - "8096:8096"
+    environment:
+      <<: *common-env
+      PORT: "8096"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- Rust Services ---
+
+  inference-engine:
+    build:
+      context: ../services/inference-engine
+      dockerfile: Dockerfile
+    ports:
+      - "8097:8097"
+    environment:
+      PORT: "8097"
+      MODELS_DIR: /app/models
+
+  fluvio-stream:
+    build:
+      context: ../services/fluvio-stream
+      dockerfile: Dockerfile
+    ports:
+      - "8098:8098"
+    environment:
+      PORT: "8098"
+
+  # --- Python Services ---
+
+  lakehouse-analytics:
+    build:
+      context: ../services/lakehouse-analytics
+      dockerfile: Dockerfile
+    ports:
+      - "8099:8099"
+    environment:
+      PORT: "8099"
+      DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+      BACKEND_URL: http://gateway:8088
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

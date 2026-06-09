@@ -297,6 +297,162 @@ func (s *Service) GetCrowdDensity(ctx context.Context, since time.Duration) ([]C
 	return reports, nil
 }
 
+// PollingUnit represents a polling unit with geographic data.
+type PollingUnit struct {
+	Code      string  `json:"code"`
+	Name      string  `json:"name"`
+	State     string  `json:"state"`
+	LGA       string  `json:"lga"`
+	Ward      string  `json:"ward"`
+	Lat       float64 `json:"lat"`
+	Lng       float64 `json:"lng"`
+	Voters    int     `json:"registered_voters"`
+}
+
+// GeofenceResult is the result of a geofence check.
+type GeofenceResult struct {
+	WithinGeofence  bool    `json:"within_geofence"`
+	DistanceMeters  float64 `json:"distance_meters"`
+	AllowedRadiusM  int     `json:"allowed_radius_m"`
+	PollingUnitCode string  `json:"polling_unit_code"`
+}
+
+// ListPollingUnits returns polling units filtered by state/LGA.
+func (s *Service) ListPollingUnits(ctx context.Context, state, lga string) ([]PollingUnit, error) {
+	query := `SELECT code, name, COALESCE(state_name,''), COALESCE(lga_name,''), COALESCE(ward_name,''),
+	           COALESCE(ST_Y(location::geometry),0), COALESCE(ST_X(location::geometry),0),
+	           COALESCE(registered_voters,0) FROM polling_units WHERE 1=1`
+	args := []interface{}{}
+	idx := 1
+	if state != "" {
+		query += fmt.Sprintf(" AND state_code = $%d", idx)
+		args = append(args, state)
+		idx++
+	}
+	if lga != "" {
+		query += fmt.Sprintf(" AND lga_code = $%d", idx)
+		args = append(args, lga)
+		idx++
+	}
+	query += " ORDER BY name LIMIT 1000"
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pus []PollingUnit
+	for rows.Next() {
+		var pu PollingUnit
+		if rows.Scan(&pu.Code, &pu.Name, &pu.State, &pu.LGA, &pu.Ward, &pu.Lat, &pu.Lng, &pu.Voters) == nil {
+			pus = append(pus, pu)
+		}
+	}
+	return pus, nil
+}
+
+// GetPollingUnit returns a single polling unit by code.
+func (s *Service) GetPollingUnit(ctx context.Context, code string) (*PollingUnit, error) {
+	var pu PollingUnit
+	err := s.db.QueryRowContext(ctx,
+		`SELECT code, name, COALESCE(state_name,''), COALESCE(lga_name,''), COALESCE(ward_name,''),
+		 COALESCE(ST_Y(location::geometry),0), COALESCE(ST_X(location::geometry),0),
+		 COALESCE(registered_voters,0) FROM polling_units WHERE code = $1`, code).
+		Scan(&pu.Code, &pu.Name, &pu.State, &pu.LGA, &pu.Ward, &pu.Lat, &pu.Lng, &pu.Voters)
+	if err != nil {
+		return nil, fmt.Errorf("polling unit not found")
+	}
+	return &pu, nil
+}
+
+// NearbyPollingUnits finds polling units within a radius.
+func (s *Service) NearbyPollingUnits(ctx context.Context, lat, lng, radiusM float64) ([]PollingUnit, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT code, name, COALESCE(state_name,''), COALESCE(lga_name,''), COALESCE(ward_name,''),
+		 ST_Y(location::geometry), ST_X(location::geometry), COALESCE(registered_voters,0)
+		 FROM polling_units
+		 WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+		 ORDER BY ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography)
+		 LIMIT 50`, lng, lat, radiusM)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pus []PollingUnit
+	for rows.Next() {
+		var pu PollingUnit
+		if rows.Scan(&pu.Code, &pu.Name, &pu.State, &pu.LGA, &pu.Ward, &pu.Lat, &pu.Lng, &pu.Voters) == nil {
+			pus = append(pus, pu)
+		}
+	}
+	return pus, nil
+}
+
+// ListOfficials returns all active officials.
+func (s *Service) ListOfficials(ctx context.Context) ([]Official, error) {
+	return s.GetActiveOfficials(ctx, 24*time.Hour)
+}
+
+// CheckGeofence checks if a point is within a polling unit's geofence.
+func (s *Service) CheckGeofence(ctx context.Context, lat, lng float64, puCode string) (*GeofenceResult, error) {
+	return s.ValidateGeofence(ctx, lat, lng, puCode)
+}
+
+// ValidateGeofence checks if a device location is within an acceptable distance of a polling unit.
+func (s *Service) ValidateGeofence(ctx context.Context, lat, lng float64, puCode string) (*GeofenceResult, error) {
+	result := &GeofenceResult{PollingUnitCode: puCode, AllowedRadiusM: 500}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT ST_Distance(
+			ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+			location::geography
+		) FROM polling_units WHERE code = $3`, lng, lat, puCode).
+		Scan(&result.DistanceMeters)
+	if err != nil {
+		return nil, fmt.Errorf("polling unit %s not found or has no location", puCode)
+	}
+	result.WithinGeofence = result.DistanceMeters <= float64(result.AllowedRadiusM)
+	return result, nil
+}
+
+// Heatmap generates a heatmap of the given metric (turnout, incidents, etc).
+func (s *Service) Heatmap(ctx context.Context, metric string) ([]HeatmapPoint, error) {
+	if metric == "" {
+		metric = "turnout"
+	}
+	// Use turnout heatmap for election 1 as default
+	return s.GetTurnoutHeatmap(ctx, 1)
+}
+
+// Clusters returns geographic clusters of polling units.
+func (s *Service) Clusters(ctx context.Context) ([]map[string]interface{}, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT state_name, COUNT(*) as count,
+		 AVG(ST_Y(location::geometry)) as avg_lat, AVG(ST_X(location::geometry)) as avg_lng
+		 FROM polling_units
+		 WHERE location IS NOT NULL
+		 GROUP BY state_name ORDER BY count DESC LIMIT 37`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var clusters []map[string]interface{}
+	for rows.Next() {
+		var state string
+		var count int
+		var lat, lng float64
+		if rows.Scan(&state, &count, &lat, &lng) == nil {
+			clusters = append(clusters, map[string]interface{}{
+				"state": state, "count": count, "lat": lat, "lng": lng,
+			})
+		}
+	}
+	return clusters, nil
+}
+
+// UpdateOfficialLocation wraps the core method with simpler signature for cmd entry points.
+func (s *Service) UpdateOfficialLocationSimple(ctx context.Context, staffID string, lat, lng float64, battery int, speed float64) error {
+	return s.UpdateOfficialLocation(ctx, staffID, Point{Lat: lat, Lng: lng}, speed, 0, battery)
+}
+
 // checkGeofences evaluates all active geofences for an official.
 func (s *Service) checkGeofences(ctx context.Context, staffID string, loc Point) {
 	rows, err := s.db.QueryContext(ctx,

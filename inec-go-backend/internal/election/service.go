@@ -232,6 +232,48 @@ func (s *Service) SubmitResult(ctx context.Context, result *Result) error {
 	return tx.Commit()
 }
 
+// Stats returns election statistics (results received, total PUs, completion).
+func (s *Service) Stats(ctx context.Context, electionID int) (map[string]interface{}, error) {
+	e, err := s.Get(ctx, electionID)
+	if err != nil {
+		return nil, err
+	}
+	completion := 0.0
+	if e.TotalPUs > 0 {
+		completion = float64(e.ResultsIn) / float64(e.TotalPUs) * 100
+	}
+	return map[string]interface{}{
+		"election_id":     electionID,
+		"state":           e.State,
+		"total_pus":       e.TotalPUs,
+		"results_in":      e.ResultsIn,
+		"completion_pct":  completion,
+	}, nil
+}
+
+// ListResults returns all results for an election.
+func (s *Service) ListResults(ctx context.Context, electionID int) ([]Result, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, election_id, polling_unit_code, COALESCE(state,''), COALESCE(lga,''), COALESCE(ward,''),
+		        total_votes, COALESCE(rejected_votes,0), COALESCE(accredited_voters,0),
+		        status, COALESCE(submitted_by,0), submitted_at
+		 FROM results WHERE election_id = $1 ORDER BY submitted_at DESC`, electionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var results []Result
+	for rows.Next() {
+		var r Result
+		if err := rows.Scan(&r.ID, &r.ElectionID, &r.PollingUnitCode, &r.State, &r.LGA, &r.Ward,
+			&r.TotalVotes, &r.RejectedVotes, &r.AccreditedVoters, &r.Status, &r.SubmittedBy, &r.SubmittedAt); err != nil {
+			continue
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
 // Collate computes aggregated results for an election.
 func (s *Service) Collate(ctx context.Context, electionID int) (*CollationSummary, error) {
 	election, err := s.Get(ctx, electionID)

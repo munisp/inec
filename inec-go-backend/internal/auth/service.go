@@ -234,3 +234,63 @@ func generateJTI() string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// Authenticate verifies credentials and returns the user (without issuing tokens).
+func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
+	username = strings.TrimSpace(strings.ToLower(username))
+	var user User
+	var passwordHash string
+	var isActive int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, password_hash, full_name, role, COALESCE(staff_id,''), COALESCE(state_code,''), COALESCE(is_active, 1)
+		 FROM users WHERE LOWER(username) = $1`, username).
+		Scan(&user.ID, &user.Username, &passwordHash, &user.FullName, &user.Role, &user.StaffID, &user.State, &isActive)
+	if err != nil {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	if isActive != 1 {
+		return nil, fmt.Errorf("account is disabled")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	return &user, nil
+}
+
+// IssueTokens generates access and refresh tokens for a user.
+func (s *Service) IssueTokens(ctx context.Context, user *User) (string, string, error) {
+	pair, err := s.issueTokenPair(user)
+	if err != nil {
+		return "", "", err
+	}
+	return pair.AccessToken, pair.RefreshToken, nil
+}
+
+// Register creates a new user account.
+func (s *Service) Register(ctx context.Context, username, password, fullName, role string) (*User, error) {
+	hash, err := s.HashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	if role == "" {
+		role = "observer"
+	}
+	var id int
+	err = s.db.QueryRowContext(ctx,
+		`INSERT INTO users (username, password_hash, full_name, role, is_active) VALUES ($1, $2, $3, $4, 1) RETURNING id`,
+		strings.TrimSpace(strings.ToLower(username)), hash, fullName, role).Scan(&id)
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: %w", err)
+	}
+	return &User{ID: id, Username: username, FullName: fullName, Role: role}, nil
+}
+
+// Revoke blacklists a token JTI.
+func (s *Service) Revoke(ctx context.Context, tokenStr string) {
+	claims, err := s.ValidateToken(tokenStr)
+	if err != nil {
+		return
+	}
+	s.db.ExecContext(ctx, `INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		claims.JTI, claims.ExpiresAt.Time)
+}
