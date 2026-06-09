@@ -35,7 +35,23 @@ x-go-env: &go-env
   KAFKA_BROKERS: kafka:9092
   OPENSEARCH_URL: http://opensearch:9200
   APP_ENV: development
-  JWT_SECRET: dev-jwt-secret-change-in-prod
+  JWT_SECRET: dev-jwt-secret-change-in-production-minimum-32-chars
+  # Middleware service URLs
+  KEYCLOAK_URL: http://keycloak:8080
+  KEYCLOAK_REALM: inec
+  KEYCLOAK_CLIENT_ID: inec-backend
+  KEYCLOAK_CLIENT_SECRET: inec-backend-secret
+  TEMPORAL_URL: http://temporal-ui:8080
+  TIGERBEETLE_URL: http://tigerbeetle:3000
+  PERMIFY_URL: http://permify:3476
+  PERMIFY_TENANT_ID: inec
+  APISIX_ADMIN_URL: http://apisix:9180
+  APISIX_API_KEY: edd1c9f034335f136f87ad84b625c8f1
+  DAPR_HTTP_URL: http://dapr-sidecar:3500
+  MOJALOOP_URL: http://mojaloop:3002
+  OPENAPPSEC_URL: http://openappsec:4000
+  LAKEHOUSE_URL: http://lakehouse:8191
+  FLUVIO_URL: http://fluvio:9003
   # Inter-service URLs
   AUTH_URL: http://auth-svc:8090
   ELECTION_URL: http://election-svc:8091
@@ -46,9 +62,7 @@ x-go-env: &go-env
   BVAS_URL: http://bvas-svc:8096
   MIDDLEWARE_URL: http://middleware-svc:8085
   INFERENCE_URL: http://inference-engine:8097
-  LAKEHOUSE_URL: http://lakehouse-analytics:8098
   DOCUMENT_AI_URL: http://document-ai:8099
-  FLUVIO_URL: http://fluvio-stream:8100
 
 services:
   # ─── Infrastructure ───────────────────────────────────────────
@@ -134,6 +148,157 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ─── Middleware Services ───────────────────────────────────────
+  keycloak:
+    <<: *common
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/ngapp
+      KC_DB_USERNAME: ngapp
+      KC_DB_PASSWORD: ngapp123
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n' >&3;cat <&3 | grep -q 200"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  temporal:
+    <<: *common
+    image: temporalio/auto-setup:1.24
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ngapp
+      POSTGRES_PWD: ngapp123
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+
+  temporal-ui:
+    <<: *common
+    image: temporalio/ui:2.31.2
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8233:8080"
+    depends_on:
+      temporal:
+        condition: service_started
+
+  tigerbeetle:
+    <<: *common
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.16.11
+    privileged: true
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ ! -f /data/0_0.tigerbeetle ]; then
+          ./tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+        fi
+        exec ./tigerbeetle start --addresses=0.0.0.0:3000 /data/0_0.tigerbeetle
+    ports:
+      - "3000:3000"
+    volumes:
+      - tbdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'ok'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  permify:
+    <<: *common
+    image: ghcr.io/permify/permify:v1.2.5
+    command: ["serve"]
+    environment:
+      PERMIFY_DATABASE_ENGINE: postgres
+      PERMIFY_DATABASE_URI: "postgres://ngapp:ngapp123@postgres:5432/ngapp"
+    ports:
+      - "3476:3476"
+      - "3478:3478"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3476/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  etcd:
+    <<: *common
+    image: quay.io/coreos/etcd:v3.5.17
+    command: ["etcd", "--advertise-client-urls=http://etcd:2379", "--listen-client-urls=http://0.0.0.0:2379"]
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health", "--endpoints=http://localhost:2379"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  apisix:
+    <<: *common
+    image: apache/apisix:3.9.1-debian
+    volumes:
+      - ./apisix-conf/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    ports:
+      - "9080:9080"
+      - "9180:9180"
+      - "9443:9443"
+    depends_on:
+      etcd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9080/ -o /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  dapr-sidecar:
+    <<: *common
+    image: daprio/daprd:1.14.4
+    command: ["./daprd",
+      "--app-id", "inec-backend",
+      "--dapr-http-port", "3500",
+      "--dapr-grpc-port", "50001",
+      "--resources-path", "/components",
+      "--app-port", "8088"
+    ]
+    volumes:
+      - ./dapr-components:/components:ro
+    ports:
+      - "3500:3500"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3500/v1.0/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ─── Go Microservices ─────────────────────────────────────────
   gateway:
@@ -456,6 +621,7 @@ volumes:
   pgdata:
   neo4jdata:
   osdata:
+  tbdata:
 
 networks:
   inec-net:
