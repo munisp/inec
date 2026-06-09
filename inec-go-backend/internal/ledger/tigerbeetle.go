@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tb "github.com/tigerbeetle/tigerbeetle-go"
+	tbt "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -28,10 +29,10 @@ const (
 
 // Transfer represents a ledger transfer.
 type Transfer struct {
-	ID              tb.Uint128
-	DebitAccountID  tb.Uint128
-	CreditAccountID tb.Uint128
-	Amount          tb.Uint128
+	ID              tbt.Uint128
+	DebitAccountID  tbt.Uint128
+	CreditAccountID tbt.Uint128
+	Amount          tbt.Uint128
 	Ledger          uint32
 	Code            uint16
 	Timestamp       uint64
@@ -40,13 +41,13 @@ type Transfer struct {
 
 // Account represents a ledger account.
 type Account struct {
-	ID             tb.Uint128
+	ID             tbt.Uint128
 	Ledger         uint32
 	Code           uint16
-	CreditsPosted  tb.Uint128
-	DebitsPosted   tb.Uint128
-	CreditsPending tb.Uint128
-	DebitsPending  tb.Uint128
+	CreditsPosted  tbt.Uint128
+	DebitsPosted   tbt.Uint128
+	CreditsPending tbt.Uint128
+	DebitsPending  tbt.Uint128
 }
 
 // Service wraps the TigerBeetle client for INEC operations.
@@ -64,7 +65,7 @@ type Config struct {
 
 // NewService creates a new ledger service connected to TigerBeetle.
 func NewService(cfg Config) (*Service, error) {
-	clusterID := tb.ToUint128(cfg.ClusterID)
+	clusterID := tbt.ToUint128(cfg.ClusterID)
 
 	client, err := tb.NewClient(clusterID, cfg.Addresses)
 	if err != nil {
@@ -97,10 +98,10 @@ func (s *Service) Close() {
 }
 
 // CreateAccount creates a new account in the ledger.
-func (s *Service) CreateAccount(ctx context.Context, ledger uint32, code uint16, userData tb.Uint128) (tb.Uint128, error) {
-	id := tb.ID()
+func (s *Service) CreateAccount(ctx context.Context, ledger uint32, code uint16, userData tbt.Uint128) (tbt.Uint128, error) {
+	id := tbt.ID()
 
-	accounts := []tb.Account{{
+	accounts := []tbt.Account{{
 		ID:          id,
 		Ledger:      ledger,
 		Code:        code,
@@ -112,7 +113,7 @@ func (s *Service) CreateAccount(ctx context.Context, ledger uint32, code uint16,
 		return id, fmt.Errorf("create account: %w", err)
 	}
 	if len(results) > 0 {
-		return id, fmt.Errorf("create account failed: %s", results[0].Status.String())
+		return id, fmt.Errorf("create account failed: %s", results[0].Result.String())
 	}
 
 	log.Debug().Str("account_id", id.String()).Uint32("ledger", ledger).Msg("Ledger account created")
@@ -120,14 +121,14 @@ func (s *Service) CreateAccount(ctx context.Context, ledger uint32, code uint16,
 }
 
 // CreateTransfer records a double-entry transfer between two accounts.
-func (s *Service) CreateTransfer(ctx context.Context, debit, credit tb.Uint128, amount uint64, ledger uint32, code uint16) (tb.Uint128, error) {
-	id := tb.ID()
+func (s *Service) CreateTransfer(ctx context.Context, debit, credit tbt.Uint128, amount uint64, ledger uint32, code uint16) (tbt.Uint128, error) {
+	id := tbt.ID()
 
-	transfers := []tb.Transfer{{
+	transfers := []tbt.Transfer{{
 		ID:              id,
 		DebitAccountID:  debit,
 		CreditAccountID: credit,
-		Amount:          tb.ToUint128(amount),
+		Amount:          tbt.ToUint128(amount),
 		Ledger:          ledger,
 		Code:            code,
 	}}
@@ -137,7 +138,7 @@ func (s *Service) CreateTransfer(ctx context.Context, debit, credit tb.Uint128, 
 		return id, fmt.Errorf("create transfer: %w", err)
 	}
 	if len(results) > 0 {
-		return id, fmt.Errorf("transfer failed: %s", results[0].Status.String())
+		return id, fmt.Errorf("transfer failed: %s", results[0].Result.String())
 	}
 
 	log.Debug().Str("transfer_id", id.String()).Uint64("amount", amount).Msg("Ledger transfer posted")
@@ -145,17 +146,17 @@ func (s *Service) CreateTransfer(ctx context.Context, debit, credit tb.Uint128, 
 }
 
 // CreatePendingTransfer creates a two-phase transfer (pending).
-func (s *Service) CreatePendingTransfer(ctx context.Context, debit, credit tb.Uint128, amount uint64, ledger uint32, code uint16, timeout uint32) (tb.Uint128, error) {
-	id := tb.ID()
+func (s *Service) CreatePendingTransfer(ctx context.Context, debit, credit tbt.Uint128, amount uint64, ledger uint32, code uint16, timeout uint32) (tbt.Uint128, error) {
+	id := tbt.ID()
 
-	transfers := []tb.Transfer{{
+	transfers := []tbt.Transfer{{
 		ID:              id,
 		DebitAccountID:  debit,
 		CreditAccountID: credit,
-		Amount:          tb.ToUint128(amount),
+		Amount:          tbt.ToUint128(amount),
 		Ledger:          ledger,
 		Code:            code,
-		Flags:           tb.TransferFlags{Pending: true}.ToUint16(),
+		Flags:           tbt.TransferFlags{Pending: true}.ToUint16(),
 		Timeout:         timeout,
 	}}
 
@@ -164,20 +165,20 @@ func (s *Service) CreatePendingTransfer(ctx context.Context, debit, credit tb.Ui
 		return id, fmt.Errorf("create pending transfer: %w", err)
 	}
 	if len(results) > 0 {
-		return id, fmt.Errorf("pending transfer failed: %s", results[0].Status.String())
+		return id, fmt.Errorf("pending transfer failed: %s", results[0].Result.String())
 	}
 
 	return id, nil
 }
 
 // PostPendingTransfer confirms a pending two-phase transfer.
-func (s *Service) PostPendingTransfer(ctx context.Context, pendingID tb.Uint128) error {
-	id := tb.ID()
+func (s *Service) PostPendingTransfer(ctx context.Context, pendingID tbt.Uint128) error {
+	id := tbt.ID()
 
-	transfers := []tb.Transfer{{
+	transfers := []tbt.Transfer{{
 		ID:        id,
 		PendingID: pendingID,
-		Flags:     tb.TransferFlags{PostPendingTransfer: true}.ToUint16(),
+		Flags:     tbt.TransferFlags{PostPendingTransfer: true}.ToUint16(),
 	}}
 
 	results, err := s.client.CreateTransfers(transfers)
@@ -185,19 +186,19 @@ func (s *Service) PostPendingTransfer(ctx context.Context, pendingID tb.Uint128)
 		return fmt.Errorf("post pending transfer: %w", err)
 	}
 	if len(results) > 0 {
-		return fmt.Errorf("post failed: %s", results[0].Status.String())
+		return fmt.Errorf("post failed: %s", results[0].Result.String())
 	}
 	return nil
 }
 
 // VoidPendingTransfer cancels a pending two-phase transfer.
-func (s *Service) VoidPendingTransfer(ctx context.Context, pendingID tb.Uint128) error {
-	id := tb.ID()
+func (s *Service) VoidPendingTransfer(ctx context.Context, pendingID tbt.Uint128) error {
+	id := tbt.ID()
 
-	transfers := []tb.Transfer{{
+	transfers := []tbt.Transfer{{
 		ID:        id,
 		PendingID: pendingID,
-		Flags:     tb.TransferFlags{VoidPendingTransfer: true}.ToUint16(),
+		Flags:     tbt.TransferFlags{VoidPendingTransfer: true}.ToUint16(),
 	}}
 
 	results, err := s.client.CreateTransfers(transfers)
@@ -205,14 +206,14 @@ func (s *Service) VoidPendingTransfer(ctx context.Context, pendingID tb.Uint128)
 		return fmt.Errorf("void pending transfer: %w", err)
 	}
 	if len(results) > 0 {
-		return fmt.Errorf("void failed: %s", results[0].Status.String())
+		return fmt.Errorf("void failed: %s", results[0].Result.String())
 	}
 	return nil
 }
 
 // GetAccountBalance returns the current balance of an account.
-func (s *Service) GetAccountBalance(ctx context.Context, accountID tb.Uint128) (*Account, error) {
-	ids := []tb.Uint128{accountID}
+func (s *Service) GetAccountBalance(ctx context.Context, accountID tbt.Uint128) (*Account, error) {
+	ids := []tbt.Uint128{accountID}
 
 	accounts, err := s.client.LookupAccounts(ids)
 	if err != nil {
@@ -235,11 +236,11 @@ func (s *Service) GetAccountBalance(ctx context.Context, accountID tb.Uint128) (
 }
 
 // GetAccountTransfers returns transfers for a given account.
-func (s *Service) GetAccountTransfers(ctx context.Context, accountID tb.Uint128, limit uint32) ([]Transfer, error) {
-	filter := tb.AccountFilter{
+func (s *Service) GetAccountTransfers(ctx context.Context, accountID tbt.Uint128, limit uint32) ([]Transfer, error) {
+	filter := tbt.AccountFilter{
 		AccountID: accountID,
 		Limit:     limit,
-		Flags: tb.AccountFilterFlags{
+		Flags: tbt.AccountFilterFlags{
 			Credits: true,
 			Debits:  true,
 		}.ToUint32(),
@@ -266,13 +267,13 @@ func (s *Service) GetAccountTransfers(ctx context.Context, accountID tb.Uint128,
 }
 
 // BatchTransfer creates multiple transfers atomically.
-func (s *Service) BatchTransfer(ctx context.Context, transfers []tb.Transfer) error {
+func (s *Service) BatchTransfer(ctx context.Context, transfers []tbt.Transfer) error {
 	results, err := s.client.CreateTransfers(transfers)
 	if err != nil {
 		return fmt.Errorf("batch transfer: %w", err)
 	}
 	if len(results) > 0 {
-		return fmt.Errorf("batch transfer failed: %s", results[0].Status.String())
+		return fmt.Errorf("batch transfer failed: %s", results[0].Result.String())
 	}
 	return nil
 }
@@ -283,7 +284,7 @@ func (s *Service) Ping() error {
 }
 
 // ReconcileAccounts checks that debits equal credits across a set of accounts.
-func (s *Service) ReconcileAccounts(ctx context.Context, accountIDs []tb.Uint128) (bool, error) {
+func (s *Service) ReconcileAccounts(ctx context.Context, accountIDs []tbt.Uint128) (bool, error) {
 	accounts, err := s.client.LookupAccounts(accountIDs)
 	if err != nil {
 		return false, err
@@ -292,10 +293,10 @@ func (s *Service) ReconcileAccounts(ctx context.Context, accountIDs []tb.Uint128
 	// Use BigInt for accurate comparison
 	var totalCredits, totalDebits uint64
 	for _, a := range accounts {
-		cLo, _ := a.CreditsPosted.Uint64()
-		dLo, _ := a.DebitsPosted.Uint64()
-		totalCredits += cLo
-		totalDebits += dLo
+		c := a.CreditsPosted.BigInt()
+		d := a.DebitsPosted.BigInt()
+		totalCredits += c.Uint64()
+		totalDebits += d.Uint64()
 	}
 
 	balanced := totalCredits == totalDebits
@@ -307,9 +308,9 @@ func (s *Service) ReconcileAccounts(ctx context.Context, accountIDs []tb.Uint128
 }
 
 // ElectionAccountSetup creates the standard set of accounts for an election.
-func (s *Service) ElectionAccountSetup(ctx context.Context, electionID uint64) (map[string]tb.Uint128, error) {
-	userData := tb.ToUint128(electionID)
-	accounts := make(map[string]tb.Uint128)
+func (s *Service) ElectionAccountSetup(ctx context.Context, electionID uint64) (map[string]tbt.Uint128, error) {
+	userData := tbt.ToUint128(electionID)
+	accounts := make(map[string]tbt.Uint128)
 
 	categories := map[string]uint32{
 		"funding":      LedgerElectionFunding,
