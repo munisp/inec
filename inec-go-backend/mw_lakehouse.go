@@ -17,13 +17,19 @@ type LakehouseQuery struct {
 	Query      string                 `json:"query"`
 	Parameters map[string]interface{} `json:"parameters,omitempty"`
 	Format     string                 `json:"format,omitempty"`
+	Limit      int                    `json:"limit,omitempty"`
+	Offset     int                    `json:"offset,omitempty"`
 }
 
 type LakehouseResult struct {
-	Columns []string                 `json:"columns"`
-	Rows    []map[string]interface{} `json:"rows"`
-	Count   int                      `json:"count"`
-	QueryMs float64                  `json:"query_ms"`
+	Columns    []string                 `json:"columns"`
+	Rows       []map[string]interface{} `json:"rows"`
+	Count      int                      `json:"count"`
+	QueryMs    float64                  `json:"query_ms"`
+	TotalCount int                      `json:"total_count,omitempty"`
+	Limit      int                      `json:"limit,omitempty"`
+	Offset     int                      `json:"offset,omitempty"`
+	HasMore    bool                     `json:"has_more,omitempty"`
 }
 
 type LakehouseClient interface {
@@ -119,7 +125,7 @@ func (l *embeddedLakehouse) Query(_ context.Context, query LakehouseQuery) (*Lak
 	// Execute the actual query against the embedded DB (with safety checks)
 	q := strings.TrimSpace(query.Query)
 	if q == "" {
-		q = "SELECT r.id, r.election_id, r.polling_unit_code, r.status, r.submitted_at FROM results r LIMIT 100"
+		q = "SELECT r.id, r.election_id, r.polling_unit_code, r.status, r.submitted_at FROM results r"
 	}
 
 	// Only allow SELECT queries for safety
@@ -137,6 +143,21 @@ func (l *embeddedLakehouse) Query(_ context.Context, query LakehouseQuery) (*Lak
 	for k, v := range query.Parameters {
 		placeholder := ":" + k
 		q = strings.ReplaceAll(q, placeholder, fmt.Sprintf("'%v'", v))
+	}
+
+	// Get total count before applying pagination (wrap in a count query)
+	totalCount := 0
+	if query.Limit > 0 || query.Offset > 0 {
+		countQ := fmt.Sprintf("SELECT COUNT(*) FROM (%s) _cnt", q)
+		_ = db.QueryRow(countQ).Scan(&totalCount)
+	}
+
+	// Apply pagination via LIMIT/OFFSET if specified
+	if query.Limit > 0 {
+		q = fmt.Sprintf("%s LIMIT %d", q, query.Limit)
+		if query.Offset > 0 {
+			q = fmt.Sprintf("%s OFFSET %d", q, query.Offset)
+		}
 	}
 
 	dbRows, err := db.Query(q)
@@ -174,12 +195,19 @@ func (l *embeddedLakehouse) Query(_ context.Context, query LakehouseQuery) (*Lak
 	}
 	dbRows.Close()
 
-	return &LakehouseResult{
+	result := &LakehouseResult{
 		Columns: cols,
 		Rows:    rows,
 		Count:   len(rows),
 		QueryMs: float64(time.Since(t0).Microseconds()) / 1000.0,
-	}, nil
+	}
+	if query.Limit > 0 || query.Offset > 0 {
+		result.TotalCount = totalCount
+		result.Limit = query.Limit
+		result.Offset = query.Offset
+		result.HasMore = (query.Offset + len(rows)) < totalCount
+	}
+	return result, nil
 }
 
 func (l *embeddedLakehouse) Ingest(_ context.Context, table string, records []map[string]interface{}) error {

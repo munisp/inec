@@ -655,6 +655,7 @@ func main() {
 	r.HandleFunc("/command-center/live", adminOnly(handleCommandCenterLive)).Methods("GET")
 	r.HandleFunc("/command-center/stream", handleCommandCenterSSE).Methods("GET")
 	r.HandleFunc("/command-center/alerts", readAuth(handleCommandCenterAlerts)).Methods("GET")
+	r.HandleFunc("/command-center/dispatch", adminOnly(handleNotificationDispatch)).Methods("POST")
 	r.HandleFunc("/escalation/config", adminOnly(handleEscalationConfig)).Methods("GET", "POST")
 	r.HandleFunc("/load-shedding", adminOnly(handleLoadShedding)).Methods("GET", "POST")
 

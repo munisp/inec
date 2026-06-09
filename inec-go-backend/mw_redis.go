@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -213,9 +214,101 @@ func (r *embeddedRedis) Ping() MWStatus {
 
 func (r *embeddedRedis) Close() error { return nil }
 
+// --- Redis Cluster client using go-redis ClusterClient ---
+
+type realRedisClusterClient struct {
+	client *redis.ClusterClient
+	addrs  []string
+}
+
+func newRealRedisClusterClient(addrs []string, password string) *realRedisClusterClient {
+	rdb := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:        addrs,
+		Password:     password,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		PoolSize:     20,
+		MinIdleConns: 5,
+		ReadOnly:     true,
+		RouteByLatency: true,
+	})
+	return &realRedisClusterClient{client: rdb, addrs: addrs}
+}
+
+func (r *realRedisClusterClient) Get(ctx context.Context, key string) (string, error) {
+	return r.client.Get(ctx, key).Result()
+}
+
+func (r *realRedisClusterClient) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	return r.client.Set(ctx, key, value, ttl).Err()
+}
+
+func (r *realRedisClusterClient) Del(ctx context.Context, keys ...string) error {
+	return r.client.Del(ctx, keys...).Err()
+}
+
+func (r *realRedisClusterClient) Publish(ctx context.Context, channel string, message interface{}) error {
+	v, _ := json.Marshal(message)
+	return r.client.Publish(ctx, channel, string(v)).Err()
+}
+
+func (r *realRedisClusterClient) Subscribe(ctx context.Context, channel string, handler func(string)) error {
+	sub := r.client.Subscribe(ctx, channel)
+	go func() {
+		ch := sub.Channel()
+		for msg := range ch {
+			handler(msg.Payload)
+		}
+	}()
+	return nil
+}
+
+func (r *realRedisClusterClient) Incr(ctx context.Context, key string) (int64, error) {
+	return r.client.Incr(ctx, key).Result()
+}
+
+func (r *realRedisClusterClient) Expire(ctx context.Context, key string, ttl time.Duration) error {
+	return r.client.Expire(ctx, key, ttl).Err()
+}
+
+func (r *realRedisClusterClient) Ping() MWStatus {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	lat, err := measureLatency(func() error {
+		return r.client.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
+			return shard.Ping(ctx).Err()
+		})
+	})
+	if err != nil {
+		return MWStatus{Name: "Redis", Connected: false, Mode: "cluster (unreachable)", Details: err.Error()}
+	}
+	return MWStatus{Name: "Redis", Connected: true, Mode: "cluster", Latency: fmtLatency(lat),
+		Details: fmt.Sprintf("cluster with %d nodes, read replicas, route-by-latency", len(r.addrs))}
+}
+
+func (r *realRedisClusterClient) Close() error {
+	return r.client.Close()
+}
+
 // --- Init ---
 
 func initRedisClient() RedisClient {
+	// Check for cluster mode first (comma-separated addresses)
+	clusterAddrs := envOrDefault("REDIS_CLUSTER_ADDRS", "")
+	if clusterAddrs != "" {
+		addrs := splitAndTrim(clusterAddrs, ",")
+		password := envOrDefault("REDIS_PASSWORD", "")
+		client := newRealRedisClusterClient(addrs, password)
+		s := client.Ping()
+		if s.Connected {
+			log.Info().Strs("addrs", addrs).Msg("Redis connected via go-redis cluster client")
+			return client
+		}
+		log.Warn().Strs("addrs", addrs).Msg("Redis cluster unreachable, trying single-node")
+		client.Close()
+	}
+
 	redisAddr := envOrDefault("REDIS_ADDR", "")
 	if redisAddr == "" {
 		// Try legacy REDIS_URL
@@ -245,8 +338,19 @@ func initRedisClient() RedisClient {
 	}
 	env := os.Getenv("APP_ENV")
 	if env == "production" || env == "staging" {
-		log.Fatal().Msg("Redis is REQUIRED in production/staging for session store and caching. Set REDIS_ADDR or REDIS_URL")
+		log.Fatal().Msg("Redis is REQUIRED in production/staging for session store and caching. Set REDIS_CLUSTER_ADDRS or REDIS_ADDR or REDIS_URL")
 	}
 	log.Warn().Msg("Redis using embedded in-memory store (DEV ONLY)")
 	return newEmbeddedRedis()
+}
+
+func splitAndTrim(s, sep string) []string {
+	parts := make([]string, 0)
+	for _, p := range strings.Split(s, sep) {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
 }

@@ -21,9 +21,18 @@ type FluvioRecord struct {
 	Offset    int64                  `json:"offset"`
 }
 
+// FluvioConsumerGroup represents a consumer group with partition assignment.
+type FluvioConsumerGroup struct {
+	GroupID    string   `json:"group_id"`
+	Topic      string   `json:"topic"`
+	Members    []string `json:"members"`
+	Partitions int      `json:"partitions"`
+}
+
 type FluvioClient interface {
 	Produce(ctx context.Context, topic string, record FluvioRecord) error
 	Consume(ctx context.Context, topic string, offset int64, limit int) ([]FluvioRecord, error)
+	ConsumeGroup(ctx context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error
 	CreateTopic(ctx context.Context, topic string, partitions int) error
 	Status() MWStatus
 	Close() error
@@ -90,6 +99,25 @@ func (f *fluvioHTTPClient) Status() MWStatus {
 		return MWStatus{Name: "Fluvio", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
 	}
 	return MWStatus{Name: "Fluvio", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+}
+
+func (f *fluvioHTTPClient) ConsumeGroup(ctx context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error {
+	// Poll the Fluvio HTTP API with consumer-group semantics: track offset per group
+	url := fmt.Sprintf("%s/api/v1/topics/%s/consume?group_id=%s&member_id=%s&limit=50", f.baseURL, topic, groupID, memberID)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var records []FluvioRecord
+	json.NewDecoder(resp.Body).Decode(&records)
+	for _, r := range records {
+		if err := handler(r); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *fluvioHTTPClient) Close() error { return nil }
@@ -178,6 +206,50 @@ func (f *embeddedFluvio) Status() MWStatus {
 		Latency: "0.1ms",
 		Details: fmt.Sprintf("PostgreSQL-backed event bus, %d topics, %d records", topicCount, recordCount),
 	}
+}
+
+func (f *embeddedFluvio) ConsumeGroup(_ context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error {
+	f.mu.Lock()
+	// Create consumer_group_offsets table if not exists
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS consumer_group_offsets (
+		group_id TEXT NOT NULL,
+		topic TEXT NOT NULL,
+		member_id TEXT NOT NULL,
+		committed_offset INTEGER NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (group_id, topic)
+	)`)
+
+	// Get the last committed offset for this group+topic
+	var committedOffset int64
+	db.QueryRow("SELECT COALESCE(committed_offset, 0) FROM consumer_group_offsets WHERE group_id=? AND topic=?", groupID, topic).Scan(&committedOffset)
+	f.mu.Unlock()
+
+	// Consume from the committed offset
+	records, err := f.Consume(context.Background(), topic, committedOffset, 50)
+	if err != nil {
+		return err
+	}
+
+	var lastOffset int64 = committedOffset
+	for _, r := range records {
+		if err := handler(r); err != nil {
+			break
+		}
+		lastOffset = r.Offset + 1
+	}
+
+	// Commit the new offset
+	if lastOffset > committedOffset {
+		f.mu.Lock()
+		dbExecLog("consumer_group_offsets",
+			`INSERT INTO consumer_group_offsets (group_id, topic, member_id, committed_offset, updated_at)
+			 VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+			 ON CONFLICT(group_id, topic) DO UPDATE SET committed_offset=?, member_id=?, updated_at=CURRENT_TIMESTAMP`,
+			groupID, topic, memberID, lastOffset, lastOffset, memberID)
+		f.mu.Unlock()
+	}
+	return nil
 }
 
 func (f *embeddedFluvio) Close() error { return nil }

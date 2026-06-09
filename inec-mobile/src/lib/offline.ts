@@ -281,6 +281,156 @@ export async function getPendingBiometricCount(): Promise<number> {
   return row?.count ?? 0;
 }
 
+// ── Offline Conflict Resolution ──
+// Detects and resolves conflicts when server has newer data than locally queued changes.
+// Uses timestamp-based comparison: server version wins if newer, local version prompts merge.
+
+export interface ConflictRecord {
+  table: string;
+  localId: number;
+  localTimestamp: string;
+  serverTimestamp: string;
+  resolution: 'server_wins' | 'local_wins' | 'merged';
+  details: string;
+}
+
+export type ConflictStrategy = 'server_wins' | 'local_wins' | 'latest_wins';
+
+/**
+ * Sync pending reports with conflict detection.
+ * Compares local created_at with server's last_modified to detect conflicts.
+ */
+export async function syncWithConflictResolution(
+  strategy: ConflictStrategy = 'latest_wins'
+): Promise<{ synced: number; conflicts: ConflictRecord[]; skipped: number }> {
+  const state = await NetInfo.fetch();
+  if (!state.isConnected) {
+    return { synced: 0, conflicts: [], skipped: 0 };
+  }
+
+  const token = await getToken();
+  if (!token) return { synced: 0, conflicts: [], skipped: 0 };
+
+  const database = await getDb();
+
+  // Ensure conflict log table exists
+  await database.execAsync(`
+    CREATE TABLE IF NOT EXISTS conflict_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_name TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      local_timestamp TEXT,
+      server_timestamp TEXT,
+      resolution TEXT NOT NULL,
+      details TEXT,
+      resolved_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  let synced = 0;
+  let skipped = 0;
+  const conflicts: ConflictRecord[] = [];
+
+  // Sync pending reports with conflict checking
+  const pendingReports = await database.getAllAsync<{
+    id: number; polling_unit_code: string; election_id: number; report_type: string;
+    description: string; created_at: string;
+  }>('SELECT * FROM pending_reports WHERE synced = 0 ORDER BY created_at ASC');
+
+  for (const report of pendingReports) {
+    try {
+      // Check if server already has a report for this PU + election
+      const serverCheck = await api(`/observer/reports/check?pu_code=${report.polling_unit_code}&election_id=${report.election_id}`);
+      const serverData = serverCheck as { exists: boolean; last_modified?: string };
+
+      if (serverData.exists && serverData.last_modified) {
+        const localTime = new Date(report.created_at).getTime();
+        const serverTime = new Date(serverData.last_modified).getTime();
+
+        if (serverTime > localTime) {
+          // Server has newer version — apply conflict strategy
+          let resolution: ConflictRecord['resolution'];
+          if (strategy === 'server_wins' || (strategy === 'latest_wins' && serverTime > localTime)) {
+            resolution = 'server_wins';
+            await database.runAsync('UPDATE pending_reports SET synced = 2 WHERE id = ?', [report.id]);
+            skipped++;
+          } else {
+            resolution = 'local_wins';
+            // Force-push local version
+            await api('/observer/reports', {
+              method: 'POST',
+              body: JSON.stringify({
+                polling_unit_code: report.polling_unit_code,
+                election_id: report.election_id,
+                notes: report.description,
+                force: true,
+              }),
+            });
+            await database.runAsync('UPDATE pending_reports SET synced = 1 WHERE id = ?', [report.id]);
+            synced++;
+          }
+
+          const conflict: ConflictRecord = {
+            table: 'pending_reports',
+            localId: report.id,
+            localTimestamp: report.created_at,
+            serverTimestamp: serverData.last_modified,
+            resolution,
+            details: `PU ${report.polling_unit_code}, election ${report.election_id}`,
+          };
+          conflicts.push(conflict);
+
+          // Log conflict to local DB
+          await database.runAsync(
+            `INSERT INTO conflict_log (table_name, local_id, local_timestamp, server_timestamp, resolution, details) VALUES (?, ?, ?, ?, ?, ?)`,
+            [conflict.table, conflict.localId, conflict.localTimestamp, conflict.serverTimestamp, conflict.resolution, conflict.details]
+          );
+          continue;
+        }
+      }
+
+      // No conflict — normal sync
+      await api('/observer/reports', {
+        method: 'POST',
+        body: JSON.stringify({
+          polling_unit_code: report.polling_unit_code,
+          election_id: report.election_id,
+          notes: report.description,
+        }),
+      });
+      await database.runAsync('UPDATE pending_reports SET synced = 1 WHERE id = ?', [report.id]);
+      synced++;
+    } catch {
+      break;
+    }
+  }
+
+  return { synced, conflicts, skipped };
+}
+
+/**
+ * Get conflict history from local database.
+ */
+export async function getConflictHistory(): Promise<ConflictRecord[]> {
+  const database = await getDb();
+  try {
+    const rows = await database.getAllAsync<{
+      table_name: string; local_id: number; local_timestamp: string;
+      server_timestamp: string; resolution: string; details: string;
+    }>('SELECT * FROM conflict_log ORDER BY resolved_at DESC LIMIT 100');
+    return rows.map(r => ({
+      table: r.table_name,
+      localId: r.local_id,
+      localTimestamp: r.local_timestamp,
+      serverTimestamp: r.server_timestamp,
+      resolution: r.resolution as ConflictRecord['resolution'],
+      details: r.details,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // Get total offline queue size across all tables
 export async function getTotalPendingCount(): Promise<{ reports: number; checkins: number; biometrics: number; total: number }> {
   const database = await getDb();

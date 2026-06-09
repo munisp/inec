@@ -31,6 +31,33 @@ const defaultConfig: ServiceConfig = {
   distributed: false,
 };
 
+// ── CSRF Token Management ──
+// Generates a cryptographically random token on login, stores in memory,
+// and injects into X-CSRF-Token header on all state-changing requests.
+
+let csrfToken: string | null = null;
+
+function generateCSRFToken(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function initCSRFToken(): string {
+  csrfToken = generateCSRFToken();
+  return csrfToken;
+}
+
+export function getCSRFToken(): string | null {
+  return csrfToken;
+}
+
+export function clearCSRFToken(): void {
+  csrfToken = null;
+}
+
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 function serviceUrl(service: string, path: string, config = defaultConfig): string {
   if (config.distributed && config.serviceUrls?.[service]) {
     return `${config.serviceUrls[service]}${path}`;
@@ -45,10 +72,17 @@ async function serviceRequest<T = unknown>(
   config = defaultConfig,
 ): Promise<T> {
   const url = serviceUrl(service, path, config);
+  const method = (options.method ?? 'GET').toUpperCase();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
   };
+
+  // Inject CSRF token for state-changing requests
+  if (csrfToken && STATE_CHANGING_METHODS.has(method)) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+
   const res = await fetch(url, { ...options, headers, credentials: 'include' });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -60,11 +94,15 @@ async function serviceRequest<T = unknown>(
 // --- Auth Service ---
 
 export const authService = {
-  login: (username: string, password: string, totpCode?: string) =>
-    serviceRequest('auth-svc', '/auth/login', {
+  login: async (username: string, password: string, totpCode?: string) => {
+    const result = await serviceRequest<Record<string, unknown>>('auth-svc', '/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password, totp_code: totpCode }),
-    }),
+    });
+    // Initialize CSRF token on successful login
+    initCSRFToken();
+    return result;
+  },
 
   getMe: () => serviceRequest('auth-svc', '/auth/me'),
 

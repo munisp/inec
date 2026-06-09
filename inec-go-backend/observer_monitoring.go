@@ -26,6 +26,11 @@ const (
 )
 
 // SSE (Server-Sent Events) hub for pushing real-time result updates to connected observers
+const (
+	MaxGlobalSSEConnections = 10000 // Global limit across all users
+	MaxPerUserSSEConnections = 5    // Per-user limit to prevent abuse
+)
+
 type SSEHub struct {
 	mu          sync.RWMutex
 	subscribers map[string]*SSESubscriber
@@ -50,10 +55,44 @@ var sseHub = &SSEHub{
 	subscribers: make(map[string]*SSESubscriber),
 }
 
-func (h *SSEHub) subscribe(sub *SSESubscriber) {
+// subscribe adds a subscriber if connection limits allow. Returns false if rejected.
+func (h *SSEHub) subscribe(sub *SSESubscriber) bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Check global limit
+	if len(h.subscribers) >= MaxGlobalSSEConnections {
+		log.Warn().Int("global_count", len(h.subscribers)).Msg("SSE global connection limit reached")
+		return false
+	}
+
+	// Check per-user limit
+	userCount := 0
+	for _, s := range h.subscribers {
+		if s.UserID == sub.UserID {
+			userCount++
+		}
+	}
+	if userCount >= MaxPerUserSSEConnections {
+		log.Warn().Int("user_id", sub.UserID).Int("user_count", userCount).Msg("SSE per-user connection limit reached")
+		return false
+	}
+
 	h.subscribers[sub.ID] = sub
-	h.mu.Unlock()
+	return true
+}
+
+// connectionCount returns global and per-user counts.
+func (h *SSEHub) connectionCount(userID int) (global int, perUser int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	global = len(h.subscribers)
+	for _, s := range h.subscribers {
+		if s.UserID == userID {
+			perUser++
+		}
+	}
+	return
 }
 
 func (h *SSEHub) unsubscribe(id string) {
@@ -167,7 +206,10 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	sseHub.subscribe(sub)
+	if !sseHub.subscribe(sub) {
+		writeError(w, 429, "SSE connection limit reached")
+		return
+	}
 	defer sseHub.unsubscribe(subID)
 
 	w.Header().Set("Content-Type", "text/event-stream")

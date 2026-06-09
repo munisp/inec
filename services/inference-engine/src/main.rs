@@ -74,7 +74,7 @@ type SharedState = Arc<RwLock<AppState>>;
 
 // ── Request/Response Types ──
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct AnomalyRequest {
     registered_voters: u32,
     accredited_voters: u32,
@@ -280,50 +280,80 @@ async fn batch_predict(
     Json(req): Json<BatchAnomalyRequest>,
 ) -> Result<Json<BatchAnomalyResponse>, StatusCode> {
     let start = std::time::Instant::now();
-    let s = state.read().await;
 
-    let model = s.anomaly_model.as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-
-    let mut results = Vec::with_capacity(req.polling_units.len());
-    let mut total_anomalies = 0;
-
-    for pu in &req.polling_units {
-        let turnout = pu.accredited_voters as f64 / pu.registered_voters.max(1) as f64;
-        let features = vec![
-            pu.registered_voters as f64,
-            pu.accredited_voters as f64,
-            turnout,
-            pu.total_valid_votes as f64,
-            pu.rejected_votes as f64,
-            pu.party_a_votes as f64,
-            pu.party_b_votes as f64,
-            pu.party_a_votes as f64 / pu.total_valid_votes.max(1) as f64,
-            pu.party_b_votes as f64 / pu.total_valid_votes.max(1) as f64,
-            (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs() / pu.total_valid_votes.max(1) as f64,
-            pu.benford_deviation,
-            pu.submission_delay_hours,
-            pu.regional_mean_turnout,
-            turnout - pu.regional_mean_turnout,
-            pu.rejected_votes as f64 / pu.accredited_voters.max(1) as f64,
-            if pu.total_valid_votes > pu.accredited_voters { 1.0 } else { 0.0 },
-            if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
-        ];
-
-        let score = model.predict(&features);
-        let is_anomaly = score > 0.5;
-        if is_anomaly { total_anomalies += 1; }
-
-        results.push(AnomalyResponse {
-            anomaly_score: score,
-            is_anomaly,
-            confidence: (score - 0.5).abs() * 2.0,
-            risk_factors: vec![],
-            model: "xgboost-onnx-v1.0-batch".into(),
-            inference_time_us: 0,
-        });
+    // Verify model is available before spawning tasks
+    {
+        let s = state.read().await;
+        if s.anomaly_model.is_none() {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
     }
 
+    // Process polling units in parallel using tokio tasks, chunked to limit concurrency
+    let chunk_size = 100;
+    let chunks: Vec<Vec<AnomalyRequest>> = req.polling_units
+        .chunks(chunk_size)
+        .map(|c| c.to_vec())
+        .collect();
+
+    let mut handles = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let state_clone = state.clone();
+        handles.push(tokio::spawn(async move {
+            let s = state_clone.read().await;
+            let model = s.anomaly_model.as_ref().unwrap();
+            let mut chunk_results = Vec::with_capacity(chunk.len());
+
+            for pu in &chunk {
+                let turnout = pu.accredited_voters as f64 / pu.registered_voters.max(1) as f64;
+                let features = vec![
+                    pu.registered_voters as f64,
+                    pu.accredited_voters as f64,
+                    turnout,
+                    pu.total_valid_votes as f64,
+                    pu.rejected_votes as f64,
+                    pu.party_a_votes as f64,
+                    pu.party_b_votes as f64,
+                    pu.party_a_votes as f64 / pu.total_valid_votes.max(1) as f64,
+                    pu.party_b_votes as f64 / pu.total_valid_votes.max(1) as f64,
+                    (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs() / pu.total_valid_votes.max(1) as f64,
+                    pu.benford_deviation,
+                    pu.submission_delay_hours,
+                    pu.regional_mean_turnout,
+                    turnout - pu.regional_mean_turnout,
+                    pu.rejected_votes as f64 / pu.accredited_voters.max(1) as f64,
+                    if pu.total_valid_votes > pu.accredited_voters { 1.0 } else { 0.0 },
+                    if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
+                ];
+
+                let score = model.predict(&features);
+                let is_anomaly = score > 0.5;
+                chunk_results.push(AnomalyResponse {
+                    anomaly_score: score,
+                    is_anomaly,
+                    confidence: (score - 0.5).abs() * 2.0,
+                    risk_factors: vec![],
+                    model: "xgboost-onnx-v1.0-batch-parallel".into(),
+                    inference_time_us: 0,
+                });
+            }
+            chunk_results
+        }));
+    }
+
+    // Collect results from all parallel tasks in order
+    let mut results = Vec::with_capacity(req.polling_units.len());
+    for handle in handles {
+        match handle.await {
+            Ok(chunk_results) => results.extend(chunk_results),
+            Err(e) => {
+                warn!("Batch task failed: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    let total_anomalies = results.iter().filter(|r| r.is_anomaly).count();
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
     Ok(Json(BatchAnomalyResponse {

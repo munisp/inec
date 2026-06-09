@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -31,6 +32,185 @@ type CommandCenterState struct {
 	mu              sync.RWMutex
 	escalationRules []EscalationRule
 	loadShedLevel   int // 0=off, 1=shed LOW, 2=shed MEDIUM, 3=shed HIGH
+}
+
+// ── Multi-Channel Notification Dispatch ──
+
+// NotificationChannel represents a dispatch channel (email, sms, webhook, push).
+type NotificationChannel string
+
+const (
+	ChannelEmail   NotificationChannel = "email"
+	ChannelSMS     NotificationChannel = "sms"
+	ChannelWebhook NotificationChannel = "webhook"
+	ChannelPush    NotificationChannel = "push"
+)
+
+// NotificationDispatchRequest defines a multi-channel notification payload.
+type NotificationDispatchRequest struct {
+	Title      string               `json:"title"`
+	Body       string               `json:"body"`
+	Channels   []NotificationChannel `json:"channels"`
+	Recipients []string             `json:"recipients"`
+	Priority   string               `json:"priority"`
+	ElectionID int                  `json:"election_id"`
+	Metadata   map[string]string    `json:"metadata,omitempty"`
+}
+
+// NotificationDispatchResult summarizes dispatch outcomes per channel.
+type NotificationDispatchResult struct {
+	Channel  NotificationChannel `json:"channel"`
+	Status   string              `json:"status"`
+	Sent     int                 `json:"sent"`
+	Failed   int                 `json:"failed"`
+	Duration string              `json:"duration"`
+}
+
+// dispatchNotification sends a notification through a single channel.
+func dispatchNotification(ctx context.Context, channel NotificationChannel, req NotificationDispatchRequest) NotificationDispatchResult {
+	t0 := time.Now()
+	result := NotificationDispatchResult{Channel: channel, Status: "sent", Sent: len(req.Recipients)}
+
+	switch channel {
+	case ChannelEmail:
+		// Dispatch via configured SMTP or email service (Dapr binding)
+		emailURL := envOrDefault("EMAIL_SERVICE_URL", "")
+		if emailURL != "" {
+			body, _ := json.Marshal(map[string]interface{}{
+				"to": req.Recipients, "subject": req.Title, "body": req.Body, "priority": req.Priority,
+			})
+			httpReq, _ := http.NewRequestWithContext(ctx, "POST", emailURL+"/send", bytes.NewReader(body))
+			httpReq.Header.Set("Content-Type", "application/json")
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Do(httpReq)
+			if err != nil {
+				result.Status = "failed"
+				result.Failed = len(req.Recipients)
+				result.Sent = 0
+			} else {
+				resp.Body.Close()
+			}
+		} else {
+			log.Info().Str("channel", "email").Int("recipients", len(req.Recipients)).Msg("email dispatch (no EMAIL_SERVICE_URL configured, logged only)")
+		}
+
+	case ChannelSMS:
+		// Dispatch via configured SMS gateway
+		smsURL := envOrDefault("SMS_GATEWAY_URL", "")
+		if smsURL != "" {
+			for _, recipient := range req.Recipients {
+				body, _ := json.Marshal(map[string]interface{}{
+					"to": recipient, "message": fmt.Sprintf("%s: %s", req.Title, req.Body),
+				})
+				httpReq, _ := http.NewRequestWithContext(ctx, "POST", smsURL+"/send", bytes.NewReader(body))
+				httpReq.Header.Set("Content-Type", "application/json")
+				client := &http.Client{Timeout: 10 * time.Second}
+				resp, err := client.Do(httpReq)
+				if err != nil {
+					result.Failed++
+					result.Sent--
+				} else {
+					resp.Body.Close()
+				}
+			}
+		} else {
+			log.Info().Str("channel", "sms").Int("recipients", len(req.Recipients)).Msg("sms dispatch (no SMS_GATEWAY_URL configured, logged only)")
+		}
+
+	case ChannelWebhook:
+		// Dispatch to registered webhook URLs
+		webhookURL := envOrDefault("WEBHOOK_DISPATCH_URL", "")
+		if webhookURL != "" {
+			body, _ := json.Marshal(map[string]interface{}{
+				"event": "notification", "title": req.Title, "body": req.Body,
+				"recipients": req.Recipients, "priority": req.Priority,
+				"election_id": req.ElectionID, "metadata": req.Metadata,
+				"timestamp": time.Now().UTC(),
+			})
+			httpReq, _ := http.NewRequestWithContext(ctx, "POST", webhookURL, bytes.NewReader(body))
+			httpReq.Header.Set("Content-Type", "application/json")
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Do(httpReq)
+			if err != nil {
+				result.Status = "failed"
+				result.Failed = len(req.Recipients)
+				result.Sent = 0
+			} else {
+				resp.Body.Close()
+			}
+		} else {
+			log.Info().Str("channel", "webhook").Msg("webhook dispatch (no WEBHOOK_DISPATCH_URL configured, logged only)")
+		}
+
+	case ChannelPush:
+		// Use existing Kafka event bus for push notifications
+		if mwHub != nil && mwHub.Kafka != nil {
+			mwHub.Kafka.Produce(ctx, KafkaMessage{
+				Topic: "inec.notifications.push",
+				Key:   req.Priority,
+				Value: map[string]interface{}{
+					"title": req.Title, "body": req.Body,
+					"recipients": req.Recipients, "priority": req.Priority,
+				},
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	result.Duration = fmt.Sprintf("%.1fms", float64(time.Since(t0).Microseconds())/1000.0)
+	return result
+}
+
+// handleNotificationDispatch sends notifications through multiple channels simultaneously.
+func handleNotificationDispatch(w http.ResponseWriter, r *http.Request) {
+	var req NotificationDispatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid JSON")
+		return
+	}
+	if req.Title == "" || req.Body == "" {
+		writeError(w, 400, "title and body required")
+		return
+	}
+	if len(req.Channels) == 0 {
+		req.Channels = []NotificationChannel{ChannelPush}
+	}
+	if len(req.Recipients) == 0 {
+		req.Recipients = []string{"all"}
+	}
+	if req.Priority == "" {
+		req.Priority = "normal"
+	}
+
+	// Dispatch to all channels concurrently
+	var wg sync.WaitGroup
+	results := make([]NotificationDispatchResult, len(req.Channels))
+	for i, ch := range req.Channels {
+		wg.Add(1)
+		go func(idx int, channel NotificationChannel) {
+			defer wg.Done()
+			results[idx] = dispatchNotification(r.Context(), channel, req)
+		}(i, ch)
+	}
+	wg.Wait()
+
+	// Persist to DB
+	channelsJSON, _ := json.Marshal(req.Channels)
+	recipientsJSON, _ := json.Marshal(req.Recipients)
+	resultsJSON, _ := json.Marshal(results)
+	dbExecCtx(r.Context(), `INSERT INTO push_notifications (title, body, recipients, channel, priority, election_id, status, sent_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+		req.Title, req.Body, string(recipientsJSON), string(channelsJSON), req.Priority, req.ElectionID, string(resultsJSON))
+
+	totalSent, totalFailed := 0, 0
+	for _, res := range results {
+		totalSent += res.Sent
+		totalFailed += res.Failed
+	}
+
+	writeJSON(w, 201, M{
+		"channels": results, "total_sent": totalSent, "total_failed": totalFailed,
+		"message": "Notification dispatched across channels",
+	})
 }
 
 type StateVelocity struct {
