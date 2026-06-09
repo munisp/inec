@@ -105,10 +105,11 @@ func NewService(db *sql.DB) *Service {
 // List returns all elections.
 func (s *Service) List(ctx context.Context) ([]Election, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, title, COALESCE(type,'general'), state, COALESCE(scheduled_at, created_at),
-		        started_at, declared_at, COALESCE(total_polling_units, 0),
-		        COALESCE(results_received, 0), created_at
-		 FROM elections ORDER BY created_at DESC`)
+		`SELECT e.id, e.title, COALESCE(e.election_type,'general'), e.status,
+		        e.election_date, e.created_at,
+		        COALESCE(e.total_registered_voters, 0),
+		        (SELECT COUNT(*) FROM results r WHERE r.election_id = e.id)
+		 FROM elections e ORDER BY e.created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("query elections: %w", err)
 	}
@@ -117,9 +118,15 @@ func (s *Service) List(ctx context.Context) ([]Election, error) {
 	var elections []Election
 	for rows.Next() {
 		var e Election
-		if err := rows.Scan(&e.ID, &e.Title, &e.Type, &e.State, &e.ScheduledAt,
-			&e.StartedAt, &e.DeclaredAt, &e.TotalPUs, &e.ResultsIn, &e.CreatedAt); err != nil {
+		var electionDate string
+		if err := rows.Scan(&e.ID, &e.Title, &e.Type, &e.State,
+			&electionDate, &e.CreatedAt, &e.TotalPUs, &e.ResultsIn); err != nil {
 			continue
+		}
+		if t, err := time.Parse("2006-01-02", electionDate); err == nil {
+			e.ScheduledAt = t
+		} else {
+			e.ScheduledAt = e.CreatedAt
 		}
 		elections = append(elections, e)
 	}
@@ -129,18 +136,25 @@ func (s *Service) List(ctx context.Context) ([]Election, error) {
 // Get retrieves a single election by ID.
 func (s *Service) Get(ctx context.Context, id int) (*Election, error) {
 	var e Election
+	var electionDate string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, COALESCE(type,'general'), state, COALESCE(scheduled_at, created_at),
-		        started_at, declared_at, COALESCE(total_polling_units, 0),
-		        COALESCE(results_received, 0), created_at
-		 FROM elections WHERE id = $1`, id).
-		Scan(&e.ID, &e.Title, &e.Type, &e.State, &e.ScheduledAt,
-			&e.StartedAt, &e.DeclaredAt, &e.TotalPUs, &e.ResultsIn, &e.CreatedAt)
+		`SELECT e.id, e.title, COALESCE(e.election_type,'general'), e.status,
+		        e.election_date, e.created_at,
+		        COALESCE(e.total_registered_voters, 0),
+		        (SELECT COUNT(*) FROM results r WHERE r.election_id = e.id)
+		 FROM elections e WHERE e.id = $1`, id).
+		Scan(&e.ID, &e.Title, &e.Type, &e.State,
+			&electionDate, &e.CreatedAt, &e.TotalPUs, &e.ResultsIn)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("election not found")
 	}
 	if err != nil {
 		return nil, err
+	}
+	if t, err := time.Parse("2006-01-02", electionDate); err == nil {
+		e.ScheduledAt = t
+	} else {
+		e.ScheduledAt = e.CreatedAt
 	}
 	return &e, nil
 }
@@ -176,7 +190,7 @@ func (s *Service) Transition(ctx context.Context, electionID int, targetState St
 	defer tx.Rollback()
 
 	_, err = tx.ExecContext(ctx,
-		`UPDATE elections SET state = $1 WHERE id = $2`, targetState, electionID)
+		`UPDATE elections SET status = $1, updated_at = NOW() WHERE id = $2`, targetState, electionID)
 	if err != nil {
 		return err
 	}
@@ -190,12 +204,10 @@ func (s *Service) Transition(ctx context.Context, electionID int, targetState St
 		return err
 	}
 
-	// Handle state-specific logic
+	// Handle state-specific logic (update timestamp on key transitions)
 	switch targetState {
-	case StateVoting:
-		_, _ = tx.ExecContext(ctx, `UPDATE elections SET started_at = NOW() WHERE id = $1`, electionID)
-	case StateDeclared:
-		_, _ = tx.ExecContext(ctx, `UPDATE elections SET declared_at = NOW() WHERE id = $1`, electionID)
+	case StateVoting, StateDeclared:
+		_, _ = tx.ExecContext(ctx, `UPDATE elections SET updated_at = NOW() WHERE id = $1`, electionID)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -224,9 +236,9 @@ func (s *Service) SubmitResult(ctx context.Context, result *Result) error {
 		return fmt.Errorf("insert result: %w", err)
 	}
 
-	// Update election results count
+	// Update election updated_at timestamp
 	_, _ = tx.ExecContext(ctx,
-		`UPDATE elections SET results_received = COALESCE(results_received, 0) + 1 WHERE id = $1`,
+		`UPDATE elections SET updated_at = NOW() WHERE id = $1`,
 		result.ElectionID)
 
 	return tx.Commit()
