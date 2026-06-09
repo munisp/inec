@@ -23,6 +23,7 @@ use tracing::{info, warn};
 
 mod models;
 mod neo4j_client;
+pub mod service_client;
 
 use models::{AnomalyModel, FaceModel, LivenessModel};
 use neo4j_client::Neo4jClient;

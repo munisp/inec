@@ -8,6 +8,8 @@ use tracing::{info, error, warn};
 use chrono::Utc;
 use uuid::Uuid;
 
+pub mod service_client;
+
 // Election event types that flow through the streaming pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type")]

@@ -1,351 +1,418 @@
-version: "3.9"
+# INEC Election Platform — Full Microservice Orchestration
+#
+# Architecture: 12 services (8 Go, 2 Rust, 2 Python) + infrastructure + frontend
+#
+# Usage:
+#   docker compose up -d                  # Start all services
+#   docker compose up -d gateway auth-svc # Start specific services
+#   docker compose logs -f gateway        # Follow gateway logs
+#   docker compose ps                     # View service status
+#
+# Ports:
+#   8085 — middleware-svc (shared Kafka/Redis/Temporal access)
+#   8088 — gateway (API entrypoint)
+#   8090 — auth-svc
+#   8091 — election-svc
+#   8092 — biometric-svc
+#   8093 — geo-svc
+#   8094 — compliance-svc
+#   8095 — ingestion-svc
+#   8096 — bvas-svc
+#   8097 — inference-engine (Rust)
+#   8098 — lakehouse-analytics (Python)
+#   8099 — document-ai (Python)
+#   8100 — fluvio-stream (Rust)
+#   3000 — frontend (React PWA)
+
+x-common: &common
+  restart: unless-stopped
+  networks:
+    - inec-net
+
+x-go-env: &go-env
+  DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+  REDIS_URL: redis:6379
+  KAFKA_BROKERS: kafka:9092
+  APP_ENV: development
+  JWT_SECRET: dev-jwt-secret-change-in-prod
+  # Inter-service URLs
+  AUTH_URL: http://auth-svc:8090
+  ELECTION_URL: http://election-svc:8091
+  BIOMETRIC_URL: http://biometric-svc:8092
+  GEO_URL: http://geo-svc:8093
+  COMPLIANCE_URL: http://compliance-svc:8094
+  INGESTION_URL: http://ingestion-svc:8095
+  BVAS_URL: http://bvas-svc:8096
+  MIDDLEWARE_URL: http://middleware-svc:8085
+  INFERENCE_URL: http://inference-engine:8097
+  LAKEHOUSE_URL: http://lakehouse-analytics:8098
+  DOCUMENT_AI_URL: http://document-ai:8099
+  FLUVIO_URL: http://fluvio-stream:8100
 
 services:
-  # ── PostgreSQL Primary ──
-  pg-primary:
-    image: postgres:16-alpine
-    ports:
-      - "5433:5432"
+  # ─── Infrastructure ───────────────────────────────────────────
+  postgres:
+    <<: *common
+    image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_USER: ${PG_USER:-inec_admin}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: ${PG_DB:-inec_db}
-      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
-    volumes:
-      - pg-primary-data:/var/lib/postgresql/data
-      - ./config/postgres/primary-init.sh:/docker-entrypoint-initdb.d/01-replication.sh
-    command: postgres -c wal_level=replica -c max_wal_senders=5 -c max_replication_slots=5 -c hot_standby=on -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=8MB -c log_min_duration_statement=100
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U inec_admin -d inec_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - inec-network
-
-  # ── PostgreSQL Replica (Streaming Replication) ──
-  pg-replica:
-    image: postgres:16-alpine
-    ports:
-      - "5434:5432"
-    environment:
-      POSTGRES_USER: ${PG_USER:-inec_admin}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: ${PG_DB:-inec_db}
-      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
-      PGDATA: /var/lib/postgresql/data
-    volumes:
-      - pg-replica-data:/var/lib/postgresql/data
-      - ./config/postgres/replica-entrypoint.sh:/replica-entrypoint.sh
-    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
-    depends_on:
-      pg-primary:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U inec_admin -d inec_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
-    networks:
-      - inec-network
-
-  # ── Pgpool-II (Connection Pooling + Load Balancing + HA Failover) ──
-  pgpool:
-    image: pgpool/pgpool-ii:4.5
+      POSTGRES_USER: ngapp
+      POSTGRES_PASSWORD: ngapp123
+      POSTGRES_DB: ngapp
     ports:
       - "5432:5432"
-      - "9898:9898"
-    environment:
-      PGPOOL_BACKEND_NODES: 0:pg-primary:5432,1:pg-replica:5432
-      PGPOOL_SR_CHECK_USER: replicator
-      PGPOOL_SR_CHECK_PASSWORD: ${REPLICATOR_PASSWORD}
-      PGPOOL_POSTGRES_USERNAME: ${PG_USER:-inec_admin}
-      PGPOOL_POSTGRES_PASSWORD: ${PG_PASSWORD}
-      PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USER:-pgpool_admin}
-      PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD}
-      PGPOOL_ENABLE_LOAD_BALANCING: "yes"
-      PGPOOL_ENABLE_STATEMENT_LOAD_BALANCING: "yes"
-      PGPOOL_NUM_INIT_CHILDREN: "64"
-      PGPOOL_MAX_POOL: "4"
-      PGPOOL_CHILD_LIFE_TIME: "300"
-      PGPOOL_CLIENT_IDLE_LIMIT: "300"
-      PGPOOL_ENABLE_POOL_HBA: "yes"
-      PGPOOL_AUTO_FAILBACK: "yes"
     volumes:
-      - ./config/pgpool/pgpool.conf:/etc/pgpool-II/pgpool.conf
-      - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
-      - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
-    depends_on:
-      pg-primary:
-        condition: service_healthy
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U inec_admin"]
+      test: ["CMD-SHELL", "pg_isready -U ngapp"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    <<: *common
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  kafka:
+    <<: *common
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
-    networks:
-      - inec-network
 
-  # ── Core Application ──
-  go-backend:
+  # ─── Go Microservices ─────────────────────────────────────────
+  gateway:
+    <<: *common
     build:
       context: ./inec-go-backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: gateway
     ports:
       - "8088:8088"
     environment:
-      - PORT=8088
-      - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
-      - DATABASE_REPLICA_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pg-replica:5432/${PG_DB:-inec_db}?sslmode=disable
-      - PGPOOL_HOST=pgpool
-      - PGPOOL_PORT=5432
-      - PGPOOL_PCP_HOST=pgpool
-      - PGPOOL_PCP_PORT=9898
-      - REDIS_URL=http://redis:6379
-      - KAFKA_REST_URL=http://kafka-rest:8082
-      - TEMPORAL_URL=http://temporal:7233
-      - DAPR_HTTP_PORT=3500
-      - KEYCLOAK_URL=http://keycloak:8080
-      - KEYCLOAK_REALM=inec
-      - KEYCLOAK_CLIENT_ID=inec-backend
-      - PERMIFY_URL=http://permify:3476
-      - PERMIFY_TENANT_ID=inec
-      - FLUVIO_URL=http://fluvio:9003
-      - TIGERBEETLE_URL=http://tigerbeetle-http:3000
-      - APISIX_ADMIN_URL=http://apisix:9180
-      - APISIX_API_KEY=edd1c9f034335f136f87ad84b625c8f1
-      - LAKEHOUSE_URL=http://lakehouse:8090
-    volumes:
-      - app-data:/data
+      <<: *go-env
+      PORT: "8088"
+    command: ["./service", "--port=8088", "--distributed"]
     depends_on:
-      pgpool:
+      postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      auth-svc:
         condition: service_started
-      kafka:
+      election-svc:
         condition: service_started
-      temporal:
-        condition: service_started
-      keycloak:
-        condition: service_started
-      permify:
-        condition: service_started
-      apisix:
-        condition: service_started
-      lakehouse:
-        condition: service_started
-    networks:
-      - inec-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-  python-proxy:
+  auth-svc:
+    <<: *common
     build:
-      context: ./inec-backend
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: auth-svc
+    ports:
+      - "8090:8090"
+    environment:
+      <<: *go-env
+      PORT: "8090"
+    command: ["./service", "--port=8090"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  election-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: election-svc
+    ports:
+      - "8091:8091"
+    environment:
+      <<: *go-env
+      PORT: "8091"
+    command: ["./service", "--port=8091"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  biometric-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: biometric-svc
+    ports:
+      - "8092:8092"
+    environment:
+      <<: *go-env
+      PORT: "8092"
+    command: ["./service", "--port=8092"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  geo-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: geo-svc
+    ports:
+      - "8093:8093"
+    environment:
+      <<: *go-env
+      PORT: "8093"
+    command: ["./service", "--port=8093"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8093/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  compliance-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: compliance-svc
+    ports:
+      - "8094:8094"
+    environment:
+      <<: *go-env
+      PORT: "8094"
+    command: ["./service", "--port=8094"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8094/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  ingestion-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: ingestion-svc
+    ports:
+      - "8095:8095"
+    environment:
+      <<: *go-env
+      PORT: "8095"
+    command: ["./service", "--port=8095"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8095/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  bvas-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: bvas-svc
+    ports:
+      - "8096:8096"
+    environment:
+      <<: *go-env
+      PORT: "8096"
+    command: ["./service", "--port=8096"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  middleware-svc:
+    <<: *common
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: middleware-svc
+    ports:
+      - "8085:8085"
+    environment:
+      <<: *go-env
+      PORT: "8085"
+    command: ["./service", "--port=8085"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─── Rust Microservices ───────────────────────────────────────
+  inference-engine:
+    <<: *common
+    build:
+      context: ./services/inference-engine
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8097:8097"
     environment:
-      - DB_PATH=/data/app.db
-    volumes:
-      - app-data:/data
+      PORT: "8097"
+      DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+      AUTH_URL: http://auth-svc:8090
+      LAKEHOUSE_URL: http://lakehouse-analytics:8098
+      MIDDLEWARE_URL: http://middleware-svc:8085
+      GEO_URL: http://geo-svc:8093
+      RUST_LOG: info
     depends_on:
-      - go-backend
-    networks:
-      - inec-network
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8097/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
+  fluvio-stream:
+    <<: *common
+    build:
+      context: ./services/fluvio-stream
+      dockerfile: Dockerfile
+    ports:
+      - "8100:8100"
+    environment:
+      PORT: "8100"
+      KAFKA_BROKERS: kafka:9092
+      INFERENCE_URL: http://inference-engine:8097
+      ELECTION_URL: http://election-svc:8091
+      COMPLIANCE_URL: http://compliance-svc:8094
+      RUST_LOG: info
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─── Python Microservices ─────────────────────────────────────
+  lakehouse-analytics:
+    <<: *common
+    build:
+      context: ./services/lakehouse-analytics
+      dockerfile: Dockerfile
+    ports:
+      - "8098:8098"
+    environment:
+      PORT: "8098"
+      DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+      AUTH_URL: http://auth-svc:8090
+      ELECTION_URL: http://election-svc:8091
+      GEO_URL: http://geo-svc:8093
+      INFERENCE_URL: http://inference-engine:8097
+      MIDDLEWARE_URL: http://middleware-svc:8085
+      COMPLIANCE_URL: http://compliance-svc:8094
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8098/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  document-ai:
+    <<: *common
+    build:
+      context: ./services/document-ai
+      dockerfile: Dockerfile
+    ports:
+      - "8099:8099"
+    environment:
+      PORT: "8099"
+      AUTH_URL: http://auth-svc:8090
+      ELECTION_URL: http://election-svc:8091
+      COMPLIANCE_URL: http://compliance-svc:8094
+      MIDDLEWARE_URL: http://middleware-svc:8085
+      CORS_ORIGINS: http://localhost:3000,http://localhost:5173
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─── Frontend ─────────────────────────────────────────────────
   frontend:
+    <<: *common
     build:
       context: ./inec-frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:80"
-    depends_on:
-      - python-proxy
-    networks:
-      - inec-network
-
-  # ── Redis ──
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis-data:/data
-    networks:
-      - inec-network
-
-  # ── Kafka (KRaft mode, no Zookeeper) ──
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "3000:3000"
     environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,HOST://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_LOG_RETENTION_HOURS: 168
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    volumes:
-      - kafka-data:/var/lib/kafka/data
-    networks:
-      - inec-network
-
-  kafka-rest:
-    image: confluentinc/cp-kafka-rest:7.5.0
-    ports:
-      - "8082:8082"
-    environment:
-      KAFKA_REST_BOOTSTRAP_SERVERS: kafka:29092
-      KAFKA_REST_LISTENERS: http://0.0.0.0:8082
-    depends_on:
-      - kafka
-    networks:
-      - inec-network
-
-  # ── Temporal ──
-  temporal:
-    image: temporalio/auto-setup:1.22
-    ports:
-      - "7233:7233"
-    environment:
-      - DB=sqlite
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
-    volumes:
-      - temporal-data:/tmp/temporal
-    networks:
-      - inec-network
-
-  temporal-ui:
-    image: temporalio/ui:2.21.0
-    ports:
-      - "8233:8080"
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
-    depends_on:
-      - temporal
-    networks:
-      - inec-network
-
-  # ── Keycloak ──
-  keycloak:
-    image: quay.io/keycloak/keycloak:23.0
-    ports:
-      - "8180:8080"
-    environment:
-      - KEYCLOAK_ADMIN=admin
-      - KEYCLOAK_ADMIN_PASSWORD=admin
-      - KC_DB=dev-mem
-    command: start-dev --import-realm
-    volumes:
-      - ./config/keycloak:/opt/keycloak/data/import
-    networks:
-      - inec-network
-
-  # ── Permify ──
-  permify:
-    image: ghcr.io/permify/permify:latest
-    ports:
-      - "3476:3476"
-      - "3478:3478"
-    command: serve
-    volumes:
-      - permify-data:/tmp/permify
-    networks:
-      - inec-network
-
-  # ── APISIX ──
-  apisix:
-    image: apache/apisix:3.7.0-debian
-    ports:
-      - "9080:9080"
-      - "9443:9443"
-      - "9180:9180"
-    volumes:
-      - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml
-      - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml
-    depends_on:
-      - go-backend
-    networks:
-      - inec-network
-
-  # ── TigerBeetle ──
-  tigerbeetle:
-    image: ghcr.io/tigerbeetle/tigerbeetle:0.15.3
-    ports:
-      - "3001:3001"
-    command: start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
-    volumes:
-      - tigerbeetle-data:/data
-    networks:
-      - inec-network
-
-  # ── Fluvio (SC + SPU) ──
-  fluvio-sc:
-    image: infinyon/fluvio:0.11.0
-    ports:
-      - "9003:9003"
-    command: run sc --local /fluvio/metadata
-    volumes:
-      - fluvio-data:/fluvio
-    networks:
-      - inec-network
-
-  # ── Lakehouse (Python DuckDB Analytics) ──
-  lakehouse:
-    build:
-      context: ./inec-analytics
-      dockerfile: Dockerfile
-    ports:
-      - "8090:8090"
-    environment:
-      - DB_PATH=/data/app.db
-      - PORT=8090
-    volumes:
-      - app-data:/data
-      - lakehouse-data:/lakehouse
-    networks:
-      - inec-network
-
-  # ── Dapr Sidecar ──
-  dapr-sidecar:
-    image: daprio/dapr:1.12.0
-    command:
-      - ./daprd
-      - --app-id=inec-backend
-      - --app-port=8088
-      - --dapr-http-port=3500
-      - --dapr-grpc-port=50001
-      - --components-path=/components
-    volumes:
-      - ./config/dapr/components:/components
-    depends_on:
-      - go-backend
-      - redis
-      - kafka
-    network_mode: "service:go-backend"
+      VITE_API_URL: http://localhost:8088
 
 volumes:
-  app-data:
-  pg-primary-data:
-  pg-replica-data:
-  redis-data:
-  kafka-data:
-  temporal-data:
-  permify-data:
-  tigerbeetle-data:
-  fluvio-data:
-  lakehouse-data:
+  pgdata:
 
 networks:
-  inec-network:
+  inec-net:
     driver: bridge
