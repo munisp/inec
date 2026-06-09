@@ -33,6 +33,7 @@ x-go-env: &go-env
   DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
   REDIS_URL: redis:6379
   KAFKA_BROKERS: kafka:9092
+  OPENSEARCH_URL: http://opensearch:9200
   APP_ENV: development
   JWT_SECRET: dev-jwt-secret-change-in-prod
   # Inter-service URLs
@@ -81,19 +82,55 @@ services:
 
   kafka:
     <<: *common
-    image: bitnami/kafka:3.7
+    image: apache/kafka:3.7.0
     environment:
-      KAFKA_CFG_NODE_ID: 1
-      KAFKA_CFG_PROCESS_ROLES: broker,controller
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      CLUSTER_ID: inec-kafka-cluster-001
     ports:
-      - "9092:9092"
+      - "9094:9094"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  neo4j:
+    <<: *common
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/neo4jpassword
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opensearch:
+    <<: *common
+    image: opensearchproject/opensearch:2.17.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - osdata:/var/lib/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\"'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -316,6 +353,9 @@ services:
     environment:
       PORT: "8097"
       DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: neo4jpassword
       AUTH_URL: http://auth-svc:8090
       LAKEHOUSE_URL: http://lakehouse-analytics:8098
       MIDDLEWARE_URL: http://middleware-svc:8085
@@ -323,6 +363,8 @@ services:
       RUST_LOG: info
     depends_on:
       postgres:
+        condition: service_healthy
+      neo4j:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8097/health"]
@@ -412,6 +454,8 @@ services:
 
 volumes:
   pgdata:
+  neo4jdata:
+  osdata:
 
 networks:
   inec-net:

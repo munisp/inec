@@ -1593,11 +1593,15 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		ctx := context.Background()
-		mwHub.Kafka.Produce(ctx, KafkaMessage{
+		if err := mwHub.Kafka.Produce(ctx, KafkaMessage{
 			Topic: TopicIncidentReport,
 			Key:   fmt.Sprintf("incident-%d", lid),
 			Value: map[string]interface{}{"id": lid, "election_id": req.ElectionID, "type": req.IncidentType, "severity": req.Severity},
-		})
+		}); err != nil {
+			log.Error().Err(err).Str("topic", TopicIncidentReport).Msg("Kafka produce failed")
+		} else {
+			log.Info().Str("topic", TopicIncidentReport).Int64("id", lid).Msg("Kafka produce success")
+		}
 	}()
 
 	writeJSON(w, 200, M{"id": lid, "message": "Incident reported"})

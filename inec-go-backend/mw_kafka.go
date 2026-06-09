@@ -50,9 +50,39 @@ type realKafkaClient struct {
 }
 
 func newRealKafkaClient(brokers []string) *realKafkaClient {
-	return &realKafkaClient{
+	c := &realKafkaClient{
 		brokers: brokers,
 		writers: make(map[string]*kafka.Writer),
+	}
+	// Pre-create application topics (Kafka doesn't auto-create by default)
+	c.ensureTopics()
+	return c
+}
+
+func (k *realKafkaClient) ensureTopics() {
+	topics := []string{
+		TopicResultSubmitted, TopicResultValidated, TopicResultFinalized,
+		TopicResultDisputed, TopicAuditLog, TopicIncidentReport, TopicFluvioIngest,
+	}
+	conn, err := kafka.Dial("tcp", k.brokers[0])
+	if err != nil {
+		log.Warn().Err(err).Msg("Kafka: could not dial for topic creation")
+		return
+	}
+	defer conn.Close()
+	var topicConfigs []kafka.TopicConfig
+	for _, t := range topics {
+		topicConfigs = append(topicConfigs, kafka.TopicConfig{
+			Topic:             t,
+			NumPartitions:     3,
+			ReplicationFactor: 1,
+		})
+	}
+	err = conn.CreateTopics(topicConfigs...)
+	if err != nil {
+		log.Warn().Err(err).Msg("Kafka: topic creation (may already exist)")
+	} else {
+		log.Info().Int("count", len(topics)).Msg("Kafka: ensured application topics exist")
 	}
 }
 

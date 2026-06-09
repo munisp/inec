@@ -54,9 +54,14 @@ impl AppState {
             .map_err(|e| warn!("Face model not loaded: {}", e))
             .ok();
 
-        let neo4j = Neo4jClient::connect().await
-            .map_err(|e| warn!("Neo4j not connected: {}", e))
-            .ok();
+        let neo4j = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Neo4jClient::connect(),
+        ).await {
+            Ok(Ok(client)) => Some(client),
+            Ok(Err(e)) => { warn!("Neo4j not connected: {}", e); None }
+            Err(_) => { warn!("Neo4j connection timed out after 10s"); None }
+        };
 
         info!(
             anomaly = anomaly_model.is_some(),
@@ -560,7 +565,14 @@ async fn main() {
         )
         .init();
 
+    info!("Starting initialization...");
+
+    if std::env::var("ORT_DYLIB_PATH").is_err() {
+        warn!("ORT_DYLIB_PATH not set — ONNX models will be unavailable");
+    }
+
     let state: SharedState = Arc::new(RwLock::new(AppState::new().await));
+    info!("Initialization complete");
 
     let app = Router::new()
         .route("/health", get(health))

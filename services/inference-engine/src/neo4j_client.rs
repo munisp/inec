@@ -45,13 +45,19 @@ pub struct FraudRing {
 impl Neo4jClient {
     /// Connect to Neo4j using environment variables.
     pub async fn connect() -> Result<Self> {
-        let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".into());
+        let raw_uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".into());
         let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".into());
         let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| String::new());
 
         if password.is_empty() {
             anyhow::bail!("NEO4J_PASSWORD not set");
         }
+
+        // neo4rs expects host:port without scheme
+        let uri = raw_uri
+            .trim_start_matches("bolt://")
+            .trim_start_matches("neo4j://")
+            .to_string();
 
         let config = ConfigBuilder::default()
             .uri(&uri)
