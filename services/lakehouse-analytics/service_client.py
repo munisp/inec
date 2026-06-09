@@ -9,7 +9,7 @@ Provides typed Python clients for communicating with other INEC microservices:
 
 import os
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
