@@ -284,6 +284,11 @@ async fn batch_predict(
     State(state): State<SharedState>,
     Json(req): Json<BatchAnomalyRequest>,
 ) -> Result<Json<BatchAnomalyResponse>, StatusCode> {
+    // Reject oversized batches to prevent resource exhaustion
+    if req.polling_units.len() > 50_000 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     let start = std::time::Instant::now();
 
     // Verify model is available before spawning tasks
@@ -581,7 +586,22 @@ async fn main() {
         .route("/face/compare", post(compare_faces))
         .route("/graph/neighborhood", post(query_graph))
         .route("/gps/spoof-detect", post(detect_gps_spoof))
-        .layer(CorsLayer::permissive())
+        .layer({
+            let origins_str = std::env::var("CORS_ORIGINS")
+                .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
+            let origins: Vec<_> = origins_str.split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if origins.is_empty() {
+                CorsLayer::permissive()
+            } else {
+                CorsLayer::new()
+                    .allow_origin(origins)
+                    .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                    .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION])
+                    .allow_credentials(true)
+            }
+        })
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8091".to_string());
