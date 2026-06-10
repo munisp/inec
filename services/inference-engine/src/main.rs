@@ -552,7 +552,7 @@ async fn query_graph(
     let neo4j = s.neo4j.as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let hops = req.hops.unwrap_or(2);
+    let hops = req.hops.unwrap_or(2).min(5); // cap at 5 to prevent graph traversal explosion
     let result = neo4j.get_neighborhood(&req.pu_code, hops).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
