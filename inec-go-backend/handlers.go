@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -248,8 +247,8 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	auditWrite("user_logout", "user", userIDStr, r, nil)
 
 	// Clear httpOnly auth cookies
-	http.SetCookie(w, &http.Cookie{Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
-	http.SetCookie(w, &http.Cookie{Name: "inec_refresh", Value: "", Path: "/auth/refresh", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: "inec_refresh", Value: "", Path: "/auth/refresh", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 
 	writeJSON(w, 200, M{"message": "logged out successfully"})
 }
@@ -1033,8 +1032,8 @@ func handlePUTile(w http.ResponseWriter, r *http.Request) {
 
 	tile := encodeMVTTile(rows, z, x, y, lonMin, latMin, lonMax, latMax)
 
-	h := md5.Sum(tile)
-	etag := `W/"` + hex.EncodeToString(h[:]) + `"`
+	h := sha256.Sum256(tile)
+	etag := `W/"` + hex.EncodeToString(h[:16]) + `"`
 	if inm := r.Header.Get("If-None-Match"); inm == etag {
 		w.WriteHeader(304)
 		return

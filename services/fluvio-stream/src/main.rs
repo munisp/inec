@@ -103,7 +103,7 @@ impl OffsetCheckpoints {
     }
 }
 
-const CHECKPOINT_FILE: &str = "/tmp/fluvio_offsets.json";
+const CHECKPOINT_FILE: &str = "/data/fluvio_offsets.json";
 
 // Shared application state.
 struct AppState {

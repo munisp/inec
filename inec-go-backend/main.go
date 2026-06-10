@@ -174,6 +174,7 @@ func main() {
 	r.HandleFunc("/auth/sessions/revoke", writeAuth(handleRevokeSession)).Methods("POST")
 	r.HandleFunc("/auth/sessions/revoke-all", writeAuth(handleRevokeAllSessions)).Methods("POST")
 	r.HandleFunc("/auth/api-keys/rotate", adminOnly(handleRotateAPIKey)).Methods("POST")
+	r.HandleFunc("/auth/csrf-token", handleCSRFToken).Methods("GET")
 
 	// Geo-fencing
 	r.HandleFunc("/geofence/check", writeAuth(handleGeofenceCheck)).Methods("POST")

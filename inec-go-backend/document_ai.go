@@ -205,9 +205,13 @@ func handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the file from disk
-	filePath := strings.TrimPrefix(photoURL, "/")
-	fileBytes, err := os.ReadFile(filePath)
+	// Read the file from disk — validate path stays within uploads directory
+	filePath := filepath.Clean(strings.TrimPrefix(photoURL, "/"))
+	if !strings.HasPrefix(filePath, "uploads"+string(os.PathSeparator)) && !strings.HasPrefix(filePath, "uploads/") {
+		writeError(w, 400, "invalid file path")
+		return
+	}
+	fileBytes, err := os.ReadFile(filePath) // #nosec G304 -- path validated above
 	if err != nil {
 		writeError(w, 500, "cannot read photo file: "+err.Error())
 		return
@@ -287,7 +291,7 @@ func handleUploadVideo(w http.ResponseWriter, r *http.Request) {
 
 	// Save video to disk
 	uploadDir := filepath.Join("uploads", "observer-videos")
-	os.MkdirAll(uploadDir, 0755)
+	os.MkdirAll(uploadDir, 0750)
 	filename := fmt.Sprintf("%d_%d%s", userID, time.Now().UnixNano(), ext)
 	filePath := filepath.Join(uploadDir, filename)
 

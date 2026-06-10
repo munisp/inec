@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 func initSMSUSSDTables(database *sql.DB) {
-	database.Exec(`CREATE TABLE IF NOT EXISTS sms_verifications (
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS sms_verifications (
 		id SERIAL PRIMARY KEY,
 		phone TEXT NOT NULL,
 		polling_unit_code TEXT,
@@ -19,16 +21,22 @@ func initSMSUSSDTables(database *sql.DB) {
 		response_text TEXT,
 		channel TEXT NOT NULL DEFAULT 'sms' CHECK(channel IN ('sms','ussd')),
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	)`)
-	database.Exec(`CREATE TABLE IF NOT EXISTS ussd_sessions (
+	)`); err != nil {
+		log.Warn().Err(err).Msg("sms: failed to create sms_verifications table")
+	}
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS ussd_sessions (
 		id TEXT PRIMARY KEY,
 		phone TEXT NOT NULL,
 		stage TEXT NOT NULL DEFAULT 'main_menu',
 		data TEXT DEFAULT '{}',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	)`)
-	database.Exec(`CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_verifications(phone)`)
+	)`); err != nil {
+		log.Warn().Err(err).Msg("sms: failed to create ussd_sessions table")
+	}
+	if _, err := database.Exec(`CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_verifications(phone)`); err != nil {
+		log.Warn().Err(err).Msg("sms: failed to create idx_sms_phone index")
+	}
 }
 
 type SMSRequest struct {
@@ -113,7 +121,9 @@ func getSMSResult(puCode string, electionID int) string {
 	for rows.Next() {
 		var party string
 		var votes int
-		rows.Scan(&party, &votes)
+		if err := rows.Scan(&party, &votes); err != nil {
+			continue
+		}
 		lines = append(lines, fmt.Sprintf("%s: %d", party, votes))
 		total += votes
 	}
@@ -147,12 +157,12 @@ func getSMSVerify(puCode string, electionID int) string {
 func getSMSStatus(electionID int) string {
 	var name, status string
 	var totalPUs int
-	db.QueryRow("SELECT name, status FROM elections WHERE id=?", electionID).Scan(&name, &status)
-	db.QueryRow("SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
+	_ = db.QueryRow("SELECT name, status FROM elections WHERE id=?", electionID).Scan(&name, &status)
+	_ = db.QueryRow("SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
 
 	var submitted, finalized int
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=?", electionID).Scan(&submitted)
-	db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='finalized'", electionID).Scan(&finalized)
+	_ = db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=?", electionID).Scan(&submitted)
+	_ = db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='finalized'", electionID).Scan(&finalized)
 
 	pct := 0.0
 	if totalPUs > 0 {
@@ -229,11 +239,11 @@ func handleUSSDGateway(w http.ResponseWriter, r *http.Request) {
 
 func handleSMSStats(w http.ResponseWriter, r *http.Request) {
 	var totalSMS, totalUSSD int
-	db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE channel='sms'").Scan(&totalSMS)
-	db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE channel='ussd'").Scan(&totalUSSD)
+	_ = db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE channel='sms'").Scan(&totalSMS)
+	_ = db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE channel='ussd'").Scan(&totalUSSD)
 
 	var today int
-	db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE created_at >= CURRENT_DATE").Scan(&today)
+	_ = db.QueryRow("SELECT COUNT(*) FROM sms_verifications WHERE created_at >= CURRENT_DATE").Scan(&today)
 
 	rows, _ := db.Query(`SELECT request_type, COUNT(*) as cnt FROM sms_verifications
 		GROUP BY request_type ORDER BY cnt DESC`)
@@ -242,7 +252,9 @@ func handleSMSStats(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rt string
 		var cnt int
-		rows.Scan(&rt, &cnt)
+		if err := rows.Scan(&rt, &cnt); err != nil {
+			continue
+		}
 		byType = append(byType, M{"type": rt, "count": cnt})
 	}
 

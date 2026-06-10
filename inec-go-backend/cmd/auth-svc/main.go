@@ -221,7 +221,7 @@ func logout(svc *auth.Service) http.HandlerFunc {
 		}
 		svc.Revoke(context.Background(), token)
 		http.SetCookie(w, &http.Cookie{
-			Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+			Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "logged out"})

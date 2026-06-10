@@ -139,17 +139,23 @@ func (l *embeddedLakehouse) Query(_ context.Context, query LakehouseQuery) (*Lak
 		}, nil
 	}
 
-	// Apply named parameters by replacing :name with values inline (read-only is safe)
+	// Convert named parameters (:name) to positional placeholders ($N) for safe parameterized queries.
+	args := []interface{}{}
+	paramIdx := 1
 	for k, v := range query.Parameters {
 		placeholder := ":" + k
-		q = strings.ReplaceAll(q, placeholder, fmt.Sprintf("'%v'", v))
+		if strings.Contains(q, placeholder) {
+			q = strings.ReplaceAll(q, placeholder, fmt.Sprintf("$%d", paramIdx))
+			args = append(args, v)
+			paramIdx++
+		}
 	}
 
 	// Get total count before applying pagination (wrap in a count query)
 	totalCount := 0
 	if query.Limit > 0 || query.Offset > 0 {
 		countQ := fmt.Sprintf("SELECT COUNT(*) FROM (%s) _cnt", q)
-		_ = db.QueryRow(countQ).Scan(&totalCount)
+		_ = db.QueryRow(countQ, args...).Scan(&totalCount)
 	}
 
 	// Apply pagination via LIMIT/OFFSET if specified
@@ -160,7 +166,7 @@ func (l *embeddedLakehouse) Query(_ context.Context, query LakehouseQuery) (*Lak
 		}
 	}
 
-	dbRows, err := db.Query(q)
+	dbRows, err := db.Query(q, args...)
 	if err != nil {
 		return &LakehouseResult{
 			Columns: []string{"error"},

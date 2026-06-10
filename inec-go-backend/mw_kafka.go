@@ -136,15 +136,26 @@ func (k *realKafkaClient) SubscribeGroup(topic, groupID string, handler func(Kaf
 		StartOffset:    kafka.LastOffset,
 	})
 	go func() {
+		consecutiveErrors := 0
+		maxBackoff := 30 * time.Second
 		for {
-			m, err := reader.ReadMessage(context.Background())
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			m, err := reader.ReadMessage(ctx)
+			cancel()
 			if err != nil {
-				log.Error().Err(err).Str("topic", topic).Str("group", groupID).Msg("Kafka consume error")
-				time.Sleep(time.Second)
+				consecutiveErrors++
+				backoff := time.Duration(consecutiveErrors) * time.Second
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				log.Error().Err(err).Str("topic", topic).Str("group", groupID).
+					Int("consecutive_errors", consecutiveErrors).Msg("Kafka consume error")
+				time.Sleep(backoff)
 				continue
 			}
+			consecutiveErrors = 0
 			var val map[string]interface{}
-			json.Unmarshal(m.Value, &val)
+			_ = json.Unmarshal(m.Value, &val)
 			handler(KafkaMessage{
 				Topic:     topic,
 				Key:       string(m.Key),

@@ -227,9 +227,16 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Send initial connection event
-	fmt.Fprintf(w, "event: connected\ndata: {\"subscriber_id\":\"%s\",\"filters\":{\"party\":\"%s\",\"state\":\"%s\",\"lga\":\"%s\"}}\n\n",
-		subID, sub.PartyCode, sub.StateCode, sub.LGACode)
+	// Send initial connection event — sanitize user-supplied filter values
+	connData, _ := json.Marshal(map[string]interface{}{
+		"subscriber_id": subID,
+		"filters": map[string]string{
+			"party": sub.PartyCode,
+			"state": sub.StateCode,
+			"lga":   sub.LGACode,
+		},
+	})
+	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", string(connData))
 	flusher.Flush()
 
 	// Keep-alive ticker
@@ -307,8 +314,10 @@ func handleObserverPhotoUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Save file to uploads directory
 	uploadDir := filepath.Join("uploads", "observer-reports")
-	os.MkdirAll(uploadDir, 0755)
-	filename := fmt.Sprintf("%d_%s_%d%s", userID, pollingUnitCode, time.Now().UnixNano(), ext)
+	os.MkdirAll(uploadDir, 0750)
+	// Sanitize filename components to prevent path traversal
+	safePU := filepath.Base(strings.ReplaceAll(pollingUnitCode, "..", ""))
+	filename := fmt.Sprintf("%d_%s_%d%s", userID, safePU, time.Now().UnixNano(), ext)
 	filePath := filepath.Join(uploadDir, filename)
 
 	dst, err := os.Create(filePath)

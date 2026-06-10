@@ -348,13 +348,32 @@ func TestCSRFAllowsPostWithCSRFHeader(t *testing.T) {
 	})
 	handler := csrfMiddleware(inner)
 
+	// Generate a valid CSRF token via the server-side store
+	token := generateCSRFToken()
+
 	req := httptest.NewRequest("POST", "/some/endpoint", nil)
-	req.Header.Set("X-CSRF-Token", "some-csrf-token")
+	req.Header.Set("X-CSRF-Token", token)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != 200 {
-		t.Errorf("POST with X-CSRF-Token should pass, got %d", w.Code)
+		t.Errorf("POST with valid X-CSRF-Token should pass, got %d", w.Code)
+	}
+}
+
+func TestCSRFRejectsInvalidToken(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	handler := csrfMiddleware(inner)
+
+	req := httptest.NewRequest("POST", "/some/endpoint", nil)
+	req.Header.Set("X-CSRF-Token", "invalid-token-not-in-store")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 403 {
+		t.Errorf("POST with invalid CSRF token should be 403, got %d", w.Code)
 	}
 }
 

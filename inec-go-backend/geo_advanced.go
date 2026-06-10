@@ -798,8 +798,11 @@ func handleUploadPUPhoto(w http.ResponseWriter, r *http.Request) {
 
 	// Save to uploads directory
 	uploadDir := "uploads/pu_photos"
-	os.MkdirAll(uploadDir, 0755)
-	filename := fmt.Sprintf("%s_%d%s", puCode, time.Now().UnixMilli(), filepath.Ext(handler.Filename))
+	os.MkdirAll(uploadDir, 0750)
+	// Sanitize puCode to prevent path traversal
+	safePU := filepath.Base(strings.ReplaceAll(puCode, "..", ""))
+	safeExt := filepath.Ext(filepath.Base(handler.Filename))
+	filename := fmt.Sprintf("%s_%d%s", safePU, time.Now().UnixMilli(), safeExt)
 	dst, err := os.Create(filepath.Join(uploadDir, filename))
 	if err != nil {
 		writeJSON(w, 500, M{"error": "failed to save file"})
