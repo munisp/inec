@@ -2,6 +2,8 @@
 // Uses R-tree spatial index for O(log n) nearest-volunteer lookup.
 // Handles: ride matching, canvasser route optimization, polling unit proximity.
 
+mod middleware;
+
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -109,6 +111,7 @@ struct AppState {
     rtree: RwLock<RTree<VolunteerPoint>>,                   // spatial index
     polling_units: RwLock<HashMap<String, PollingUnit>>,     // code -> PU
     ride_requests: RwLock<Vec<RideRequest>>,
+    mw: middleware::Middleware,
 }
 
 impl AppState {
@@ -118,6 +121,7 @@ impl AppState {
             rtree: RwLock::new(RTree::new()),
             polling_units: RwLock::new(HashMap::new()),
             ride_requests: RwLock::new(Vec::new()),
+            mw: middleware::Middleware::new(),
         }
     }
 
@@ -147,6 +151,7 @@ impl AppState {
 #[derive(Deserialize)]
 struct MatchRideRequest {
     party_id: i64,
+    ride_id: Option<String>,
     pickup_lat: f64,
     pickup_lng: f64,
     polling_unit_code: String,
@@ -321,56 +326,76 @@ async fn match_ride(
     let max_dist = req.max_distance_km.unwrap_or(10.0);
     let require_vehicle = req.require_vehicle.unwrap_or(true);
 
-    let tree = state.rtree.read().unwrap();
-    let pickup = VolunteerPoint {
-        id: String::new(), party_id: req.party_id, lat: req.pickup_lat, lng: req.pickup_lng,
-        has_vehicle: false, capacity: 0, available: false,
-    };
+    // Scope RwLock guards so they're dropped before any .await
+    let (results, no_match) = {
+        let tree = state.rtree.read().unwrap();
+        let pickup = VolunteerPoint {
+            id: String::new(), party_id: req.party_id, lat: req.pickup_lat, lng: req.pickup_lng,
+            has_vehicle: false, capacity: 0, available: false,
+        };
 
-    // Find nearest volunteers using R-tree
-    let candidates: Vec<_> = tree
-        .nearest_neighbor_iter(&pickup)
-        .filter(|vp| vp.party_id == req.party_id && vp.available)
-        .filter(|vp| !require_vehicle || vp.has_vehicle)
-        .take(10)
-        .collect();
+        let candidates: Vec<_> = tree
+            .nearest_neighbor_iter(&pickup)
+            .filter(|vp| vp.party_id == req.party_id && vp.available)
+            .filter(|vp| !require_vehicle || vp.has_vehicle)
+            .take(10)
+            .collect();
 
-    if candidates.is_empty() {
+        if candidates.is_empty() {
+            (Vec::new(), true)
+        } else {
+            let pickup_point = Point::new(req.pickup_lng, req.pickup_lat);
+            let mut results: Vec<MatchResult> = candidates
+                .iter()
+                .map(|vp| {
+                    let vol_point = Point::new(vp.lng, vp.lat);
+                    let dist = pickup_point.haversine_distance(&vol_point) / 1000.0;
+                    MatchResult {
+                        volunteer_id: vp.id.clone(),
+                        volunteer_name: String::new(),
+                        distance_km: (dist * 100.0).round() / 100.0,
+                        has_vehicle: vp.has_vehicle,
+                        vehicle_capacity: vp.capacity,
+                        estimated_pickup_minutes: (dist / 30.0 * 60.0).round(),
+                    }
+                })
+                .filter(|m| m.distance_km <= max_dist)
+                .collect();
+            results.sort_by_key(|r| OrderedFloat(r.distance_km));
+
+            // Populate volunteer names
+            let vols = state.volunteers.read().unwrap();
+            if let Some(party_vols) = vols.get(&req.party_id) {
+                for result in &mut results {
+                    if let Some(vol) = party_vols.iter().find(|v| v.id == result.volunteer_id) {
+                        result.volunteer_name = vol.name.clone();
+                    }
+                }
+            }
+            (results, false)
+        }
+    }; // All RwLock guards dropped here
+
+    if no_match {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "no_available_volunteers", "message": "No volunteers found within range"})),
         );
     }
 
-    let pickup_point = Point::new(req.pickup_lng, req.pickup_lat);
-    let mut results: Vec<MatchResult> = candidates
-        .iter()
-        .map(|vp| {
-            let vol_point = Point::new(vp.lng, vp.lat);
-            let dist = pickup_point.haversine_distance(&vol_point) / 1000.0; // meters to km
-            MatchResult {
-                volunteer_id: vp.id.clone(),
-                volunteer_name: String::new(), // populated below
-                distance_km: (dist * 100.0).round() / 100.0,
-                has_vehicle: vp.has_vehicle,
-                vehicle_capacity: vp.capacity,
-                estimated_pickup_minutes: (dist / 30.0 * 60.0).round(), // ~30km/h urban speed
-            }
-        })
-        .filter(|m| m.distance_km <= max_dist)
-        .collect();
-
-    results.sort_by_key(|r| OrderedFloat(r.distance_km));
-
-    // Populate volunteer names
-    let vols = state.volunteers.read().unwrap();
-    if let Some(party_vols) = vols.get(&req.party_id) {
-        for result in &mut results {
-            if let Some(vol) = party_vols.iter().find(|v| v.id == result.volunteer_id) {
-                result.volunteer_name = vol.name.clone();
-            }
-        }
-    }
+    // Middleware: publish match event to Kafka + Fluvio (no locks held)
+    let best_match = results.first().map(|m| m.volunteer_id.clone());
+    let event = serde_json::json!({
+        "event": "ride_matched",
+        "ride_id": req.ride_id,
+        "party_id": req.party_id,
+        "pickup_lat": req.pickup_lat,
+        "pickup_lng": req.pickup_lng,
+        "candidates": results.len(),
+        "matched_volunteer": best_match,
+    });
+    state.mw.publish_kafka("gotv.rides", req.ride_id.as_deref().unwrap_or("unknown"), &event).await;
+    state.mw.stream_fluvio("gotv-ride-matches", &event).await;
 
     (StatusCode::OK, Json(serde_json::json!({
         "matches": results,
@@ -618,6 +643,16 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     r * c
 }
 
+// ─── Middleware Status ─────────────────────────────────────────────────────
+
+async fn middleware_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "service": "gotv-engine",
+        "language": "rust",
+        "middleware": state.mw.status(),
+    }))
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -641,6 +676,7 @@ async fn main() {
         .route("/gotv-engine/optimize-route", post(optimize_route))
         .route("/gotv-engine/proximity", get(proximity_polling_units))
         .route("/gotv-engine/coverage/:party_id", get(coverage_analysis))
+        .route("/gotv-engine/middleware/status", get(middleware_status))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

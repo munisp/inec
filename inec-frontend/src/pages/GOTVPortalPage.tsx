@@ -11,9 +11,18 @@ import {
 } from 'recharts';
 import {
   Users, Megaphone, Car, HandHeart, TrendingUp, Upload,
-  Plus, Search, Filter, RefreshCw, MapPin,
+  Plus, Search, Filter, RefreshCw, MapPin, X,
 } from 'lucide-react';
 import GOTVMapPage from './GOTVMapPage';
+
+// ─── Nigerian States for dropdowns ─────────────────────────────────────────
+const NIGERIAN_STATES = [
+  'Abia','Adamawa','Akwa Ibom','Anambra','Bauchi','Bayelsa','Benue','Borno',
+  'Cross River','Delta','Ebonyi','Edo','Ekiti','Enugu','FCT','Gombe','Imo',
+  'Jigawa','Kaduna','Kano','Katsina','Kebbi','Kogi','Kwara','Lagos','Nasarawa',
+  'Niger','Ogun','Ondo','Osun','Oyo','Plateau','Rivers','Sokoto','Taraba',
+  'Yobe','Zamfara',
+];
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -136,6 +145,44 @@ export default function GOTVPortalPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Form modals state
+  const [showCampaignForm, setShowCampaignForm] = useState(false);
+  const [showContactForm, setShowContactForm] = useState(false);
+  const [showVolunteerForm, setShowVolunteerForm] = useState(false);
+  const [showPledgeForm, setShowPledgeForm] = useState(false);
+  const [showRideForm, setShowRideForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [formSubmitting, setFormSubmitting] = useState(false);
+
+  // Campaign form
+  const [campaignName, setCampaignName] = useState('');
+  const [campaignType, setCampaignType] = useState('sms');
+  const [campaignState, setCampaignState] = useState('');
+  const [campaignMessage, setCampaignMessage] = useState('');
+
+  // Contact form
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactState, setContactState] = useState('');
+  const [contactLga, setContactLga] = useState('');
+
+  // Volunteer form
+  const [volName, setVolName] = useState('');
+  const [volPhone, setVolPhone] = useState('');
+  const [volRole, setVolRole] = useState('canvasser');
+  const [volHasVehicle, setVolHasVehicle] = useState(false);
+  const [volState, setVolState] = useState('');
+
+  // Pledge form
+  const [pledgeContactId, setPledgeContactId] = useState('');
+  const [pledgeType, setPledgeType] = useState('will_vote');
+
+  // Ride form
+  const [rideContactId, setRideContactId] = useState('');
+  const [ridePuCode, setRidePuCode] = useState('');
+  const [ridePickupLat, setRidePickupLat] = useState('');
+  const [ridePickupLng, setRidePickupLng] = useState('');
+
   const loadDashboard = useCallback(async () => {
     try {
       const data = await api.getGOTVDashboard();
@@ -196,6 +243,111 @@ export default function GOTVPortalPage() {
       case 'rides': loadRides(); break;
     }
   };
+
+  // ─── Form Handlers ──────────────────────────────────────────────────────
+
+  const submitCampaign = async () => {
+    if (!campaignName.trim()) { setFormError('Campaign name is required'); return; }
+    setFormSubmitting(true); setFormError(null);
+    try {
+      await api.createGOTVCampaign({
+        name: campaignName, campaign_type: campaignType,
+        target_state: campaignState || null, message_template: campaignMessage || null,
+      });
+      setShowCampaignForm(false);
+      setCampaignName(''); setCampaignType('sms'); setCampaignState(''); setCampaignMessage('');
+      loadCampaigns(); loadDashboard();
+    } catch (e: unknown) { setFormError(e instanceof Error ? e.message : 'Failed to create campaign'); }
+    setFormSubmitting(false);
+  };
+
+  const submitContact = async () => {
+    if (!contactPhone.trim()) { setFormError('Phone number is required'); return; }
+    setFormSubmitting(true); setFormError(null);
+    try {
+      await api.createGOTVContact({
+        phone: contactPhone, full_name: contactName || null,
+        state_code: contactState || null, lga_code: contactLga || null,
+        consent: true,
+      });
+      setShowContactForm(false);
+      setContactName(''); setContactPhone(''); setContactState(''); setContactLga('');
+      loadContacts(); loadDashboard();
+    } catch (e: unknown) { setFormError(e instanceof Error ? e.message : 'Failed to add contact'); }
+    setFormSubmitting(false);
+  };
+
+  const submitVolunteer = async () => {
+    if (!volName.trim() || !volPhone.trim()) { setFormError('Name and phone are required'); return; }
+    setFormSubmitting(true); setFormError(null);
+    try {
+      await api.createGOTVVolunteer({
+        full_name: volName, phone: volPhone, role: volRole,
+        has_vehicle: volHasVehicle, state_code: volState || null,
+      });
+      setShowVolunteerForm(false);
+      setVolName(''); setVolPhone(''); setVolRole('canvasser'); setVolHasVehicle(false); setVolState('');
+      loadVolunteers(); loadDashboard();
+    } catch (e: unknown) { setFormError(e instanceof Error ? e.message : 'Failed to add volunteer'); }
+    setFormSubmitting(false);
+  };
+
+  const submitPledge = async () => {
+    if (!pledgeContactId) { setFormError('Select a contact'); return; }
+    setFormSubmitting(true); setFormError(null);
+    try {
+      await api.createGOTVPledge({
+        contact_id: pledgeContactId, pledge_type: pledgeType,
+      });
+      setShowPledgeForm(false);
+      setPledgeContactId(''); setPledgeType('will_vote');
+      loadPledges(); loadDashboard();
+    } catch (e: unknown) { setFormError(e instanceof Error ? e.message : 'Failed to record pledge'); }
+    setFormSubmitting(false);
+  };
+
+  const submitRide = async () => {
+    if (!rideContactId || !ridePuCode) { setFormError('Contact and polling unit are required'); return; }
+    setFormSubmitting(true); setFormError(null);
+    try {
+      await api.createGOTVRide({
+        contact_id: rideContactId, polling_unit_code: ridePuCode,
+        pickup_lat: ridePickupLat ? parseFloat(ridePickupLat) : null,
+        pickup_lng: ridePickupLng ? parseFloat(ridePickupLng) : null,
+      });
+      setShowRideForm(false);
+      setRideContactId(''); setRidePuCode(''); setRidePickupLat(''); setRidePickupLng('');
+      loadRides(); loadDashboard();
+    } catch (e: unknown) { setFormError(e instanceof Error ? e.message : 'Failed to request ride'); }
+    setFormSubmitting(false);
+  };
+
+  // ─── Modal Component ──────────────────────────────────────────────────
+
+  const Modal = ({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: React.ReactNode }) => {
+    if (!open) return null;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between p-4 border-b">
+            <h2 className="text-lg font-semibold">{title}</h2>
+            <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded"><X className="h-4 w-4" /></button>
+          </div>
+          <div className="p-4 space-y-4">
+            {formError && <div className="text-sm text-red-600 bg-red-50 p-2 rounded">{formError}</div>}
+            {children}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const FormField = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="space-y-1">
+      <label className="text-sm font-medium text-gray-700">{label}</label>
+      {children}
+    </div>
+  );
 
   // ─── Dashboard Tab ─────────────────────────────────────────────────────
 
@@ -309,8 +461,35 @@ export default function GOTVPortalPage() {
           <Search className="h-4 w-4 text-muted-foreground" />
           <Input placeholder="Search campaigns..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-64" />
         </div>
-        <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Campaign</Button>
+        <Button size="sm" onClick={() => { setShowCampaignForm(true); setFormError(null); }}><Plus className="h-4 w-4 mr-1" /> New Campaign</Button>
       </div>
+      <Modal open={showCampaignForm} onClose={() => setShowCampaignForm(false)} title="Create New Campaign">
+        <FormField label="Campaign Name *">
+          <Input value={campaignName} onChange={e => setCampaignName(e.target.value)} placeholder="e.g. Lagos State SMS Outreach" />
+        </FormField>
+        <FormField label="Campaign Type">
+          <select className="w-full border rounded-md p-2 text-sm" value={campaignType} onChange={e => setCampaignType(e.target.value)}>
+            <option value="sms">SMS</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="push">Push Notification</option>
+            <option value="ussd">USSD</option>
+            <option value="call">Phone Call</option>
+          </select>
+        </FormField>
+        <FormField label="Target State">
+          <select className="w-full border rounded-md p-2 text-sm" value={campaignState} onChange={e => setCampaignState(e.target.value)}>
+            <option value="">All States</option>
+            {NIGERIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Message Template">
+          <textarea className="w-full border rounded-md p-2 text-sm" rows={3} value={campaignMessage} onChange={e => setCampaignMessage(e.target.value)} placeholder="Dear {name}, remember to vote on..." />
+        </FormField>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => setShowCampaignForm(false)}>Cancel</Button>
+          <Button onClick={submitCampaign} disabled={formSubmitting}>{formSubmitting ? 'Creating...' : 'Create Campaign'}</Button>
+        </div>
+      </Modal>
       <div className="space-y-2">
         {campaigns
           .filter(c => !searchTerm || c.name.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -350,9 +529,30 @@ export default function GOTVPortalPage() {
         </div>
         <div className="flex gap-2">
           <Button size="sm" variant="outline"><Upload className="h-4 w-4 mr-1" /> Import CSV</Button>
-          <Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Contact</Button>
+          <Button size="sm" onClick={() => { setShowContactForm(true); setFormError(null); }}><Plus className="h-4 w-4 mr-1" /> Add Contact</Button>
         </div>
       </div>
+      <Modal open={showContactForm} onClose={() => setShowContactForm(false)} title="Add Contact">
+        <FormField label="Phone Number *">
+          <Input value={contactPhone} onChange={e => setContactPhone(e.target.value)} placeholder="08012345678" />
+        </FormField>
+        <FormField label="Full Name">
+          <Input value={contactName} onChange={e => setContactName(e.target.value)} placeholder="Adebayo Ogunwale" />
+        </FormField>
+        <FormField label="State">
+          <select className="w-full border rounded-md p-2 text-sm" value={contactState} onChange={e => setContactState(e.target.value)}>
+            <option value="">Select State</option>
+            {NIGERIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FormField>
+        <FormField label="LGA">
+          <Input value={contactLga} onChange={e => setContactLga(e.target.value)} placeholder="Ikeja" />
+        </FormField>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => setShowContactForm(false)}>Cancel</Button>
+          <Button onClick={submitContact} disabled={formSubmitting}>{formSubmitting ? 'Adding...' : 'Add Contact'}</Button>
+        </div>
+      </Modal>
       <div className="rounded-md border">
         <table className="w-full text-sm">
           <thead>
@@ -389,8 +589,39 @@ export default function GOTVPortalPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Input placeholder="Search volunteers..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-64" />
-        <Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Volunteer</Button>
+        <Button size="sm" onClick={() => { setShowVolunteerForm(true); setFormError(null); }}><Plus className="h-4 w-4 mr-1" /> Add Volunteer</Button>
       </div>
+      <Modal open={showVolunteerForm} onClose={() => setShowVolunteerForm(false)} title="Add Volunteer">
+        <FormField label="Full Name *">
+          <Input value={volName} onChange={e => setVolName(e.target.value)} placeholder="Chinedu Eze" />
+        </FormField>
+        <FormField label="Phone Number *">
+          <Input value={volPhone} onChange={e => setVolPhone(e.target.value)} placeholder="08098765432" />
+        </FormField>
+        <FormField label="Role">
+          <select className="w-full border rounded-md p-2 text-sm" value={volRole} onChange={e => setVolRole(e.target.value)}>
+            <option value="canvasser">Canvasser (Door-to-door)</option>
+            <option value="driver">Driver (Ride-to-polls)</option>
+            <option value="caller">Phone Caller</option>
+            <option value="observer">Polling Unit Observer</option>
+            <option value="coordinator">Ward Coordinator</option>
+          </select>
+        </FormField>
+        <FormField label="State">
+          <select className="w-full border rounded-md p-2 text-sm" value={volState} onChange={e => setVolState(e.target.value)}>
+            <option value="">Select State</option>
+            {NIGERIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FormField>
+        <div className="flex items-center gap-2">
+          <input type="checkbox" id="hasVehicle" checked={volHasVehicle} onChange={e => setVolHasVehicle(e.target.checked)} />
+          <label htmlFor="hasVehicle" className="text-sm">Has vehicle available</label>
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => setShowVolunteerForm(false)}>Cancel</Button>
+          <Button onClick={submitVolunteer} disabled={formSubmitting}>{formSubmitting ? 'Adding...' : 'Add Volunteer'}</Button>
+        </div>
+      </Modal>
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
         {volunteers
           .filter(v => !searchTerm || v.full_name.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -433,8 +664,28 @@ export default function GOTVPortalPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Input placeholder="Search pledges..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-64" />
-        <Button size="sm"><Plus className="h-4 w-4 mr-1" /> Record Pledge</Button>
+        <Button size="sm" onClick={() => { setShowPledgeForm(true); setFormError(null); }}><Plus className="h-4 w-4 mr-1" /> Record Pledge</Button>
       </div>
+      <Modal open={showPledgeForm} onClose={() => setShowPledgeForm(false)} title="Record Pledge">
+        <FormField label="Contact *">
+          <select className="w-full border rounded-md p-2 text-sm" value={pledgeContactId} onChange={e => setPledgeContactId(e.target.value)}>
+            <option value="">Select a contact</option>
+            {contacts.map(c => <option key={c.contact_id} value={c.contact_id}>{c.full_name || c.phone_masked} ({c.state_code || 'N/A'})</option>)}
+          </select>
+        </FormField>
+        <FormField label="Pledge Type">
+          <select className="w-full border rounded-md p-2 text-sm" value={pledgeType} onChange={e => setPledgeType(e.target.value)}>
+            <option value="will_vote">Will Vote</option>
+            <option value="will_volunteer">Will Volunteer</option>
+            <option value="needs_ride">Needs a Ride</option>
+            <option value="will_donate">Will Donate</option>
+          </select>
+        </FormField>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => setShowPledgeForm(false)}>Cancel</Button>
+          <Button onClick={submitPledge} disabled={formSubmitting}>{formSubmitting ? 'Recording...' : 'Record Pledge'}</Button>
+        </div>
+      </Modal>
       <div className="rounded-md border">
         <table className="w-full text-sm">
           <thead>
@@ -474,8 +725,31 @@ export default function GOTVPortalPage() {
           <Filter className="h-4 w-4 text-muted-foreground" />
           <Input placeholder="Filter rides..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-64" />
         </div>
-        <Button size="sm"><Car className="h-4 w-4 mr-1" /> New Ride Request</Button>
+        <Button size="sm" onClick={() => { setShowRideForm(true); setFormError(null); }}><Car className="h-4 w-4 mr-1" /> New Ride Request</Button>
       </div>
+      <Modal open={showRideForm} onClose={() => setShowRideForm(false)} title="New Ride Request">
+        <FormField label="Contact *">
+          <select className="w-full border rounded-md p-2 text-sm" value={rideContactId} onChange={e => setRideContactId(e.target.value)}>
+            <option value="">Select a contact</option>
+            {contacts.map(c => <option key={c.contact_id} value={c.contact_id}>{c.full_name || c.phone_masked}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Polling Unit Code *">
+          <Input value={ridePuCode} onChange={e => setRidePuCode(e.target.value)} placeholder="e.g. LA/IKJ/001" />
+        </FormField>
+        <div className="grid grid-cols-2 gap-2">
+          <FormField label="Pickup Latitude">
+            <Input value={ridePickupLat} onChange={e => setRidePickupLat(e.target.value)} placeholder="6.5244" />
+          </FormField>
+          <FormField label="Pickup Longitude">
+            <Input value={ridePickupLng} onChange={e => setRidePickupLng(e.target.value)} placeholder="3.3792" />
+          </FormField>
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => setShowRideForm(false)}>Cancel</Button>
+          <Button onClick={submitRide} disabled={formSubmitting}>{formSubmitting ? 'Requesting...' : 'Request Ride'}</Button>
+        </div>
+      </Modal>
       <div className="rounded-md border">
         <table className="w-full text-sm">
           <thead>

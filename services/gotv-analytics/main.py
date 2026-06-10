@@ -259,7 +259,8 @@ class VolunteerMetricsResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("GOTV Analytics starting")
+    from middleware import middleware_status
+    logger.info("GOTV Analytics starting", middleware=middleware_status())
     yield
     logger.info("GOTV Analytics shutting down")
 
@@ -287,6 +288,28 @@ async def health():
             "volunteer_metrics",
         ],
     }
+
+
+@app.get("/gotv-analytics/middleware/status")
+async def mw_status():
+    from middleware import middleware_status
+    return middleware_status()
+
+
+@app.get("/gotv-analytics/search")
+async def opensearch_search(q: str, party_id: int = Query(...), index: str = "gotv-contacts"):
+    """Full-text search across GOTV data via OpenSearch."""
+    from middleware import search_opensearch
+    results = search_opensearch(index, q, party_id)
+    return {"results": results, "count": len(results), "source": "opensearch" if results else "unavailable"}
+
+
+@app.get("/gotv-analytics/lakehouse")
+async def lakehouse_query(sql: str = Query(...)):
+    """Run analytical query against Lakehouse/Trino."""
+    from middleware import query_lakehouse
+    results = query_lakehouse(sql)
+    return {"data": results, "count": len(results), "source": "lakehouse"}
 
 
 @app.get("/gotv-analytics/campaign/{campaign_id}")
@@ -372,6 +395,15 @@ async def ml_targeting(party_id: int, limit: int = Query(100, le=500)):
         model.fit(party_id)
 
     scores = model.predict(party_id, limit=limit)
+
+    # Middleware: publish scoring event to Kafka, cache results in Redis
+    from middleware import publish_kafka, cache_set
+    publish_kafka("gotv.analytics", f"targeting-{party_id}", {
+        "event": "ml_targeting_run", "party_id": party_id,
+        "total_scored": len(scores), "model_fitted": model.is_fitted,
+    })
+    cache_set(f"targeting:{party_id}", {"total_scored": len(scores)}, ttl=600)
+
     return {
         "party_id": party_id,
         "model_fitted": model.is_fitted,
@@ -384,6 +416,18 @@ async def ml_targeting(party_id: int, limit: int = Query(100, le=500)):
 async def anomaly_detection(party_id: int):
     """Detect anomalous campaign patterns (spam, bot-like behavior)."""
     anomalies = _anomaly_detector.detect(party_id)
+
+    # Middleware: publish anomaly events to Kafka + Fluvio for real-time alerting
+    if anomalies:
+        from middleware import publish_kafka, stream_fluvio
+        publish_kafka("gotv.analytics", f"anomalies-{party_id}", {
+            "event": "anomalies_detected", "party_id": party_id,
+            "count": len(anomalies),
+        })
+        stream_fluvio("gotv-anomalies", {
+            "party_id": party_id, "anomalies": anomalies[:5],
+        })
+
     return {
         "party_id": party_id,
         "anomalies": anomalies,

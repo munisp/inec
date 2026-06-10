@@ -73,6 +73,9 @@ func main() {
 		log.Warn().Err(err).Msg("GOTV table init had issues (non-fatal if tables exist)")
 	}
 
+	// Initialize all 13 middleware connections
+	initAllMiddleware()
+
 	// Initialize subsystems
 	wsHub = gotv.NewWSHub(10000, 5)
 	go wsHub.Run()
@@ -98,6 +101,9 @@ func main() {
 	webhookCtx, webhookCancel := context.WithCancel(context.Background())
 	defer webhookCancel()
 	webhooks.StartRetryWorker(webhookCtx)
+
+	// Seed demo data if tables are empty
+	seedGOTVData(db)
 
 	authMid = gotv.NewAuthMiddleware(db, gotv.AuthConfig{
 		AuthServiceURL: *authURL,
@@ -167,8 +173,19 @@ func main() {
 	// Dashboard
 	r.HandleFunc("/gotv/dashboard", auth(handleDashboard)).Methods("GET")
 
+	// Middleware-powered endpoints
+	r.HandleFunc("/gotv/search", auth(handleGOTVSearch)).Methods("GET")
+	r.HandleFunc("/gotv/analytics", auth(handleGOTVAnalytics)).Methods("GET")
+	r.HandleFunc("/gotv/middleware/status", handleMiddlewareStatus).Methods("GET")
+
+	// Apply WAF middleware if OpenAppSec is configured
+	var handler http.Handler = r
+	if openappsecURL != "" {
+		handler = wafMiddleware(r)
+	}
+
 	addr := fmt.Sprintf(":%d", *port)
-	srv := &http.Server{Addr: addr, Handler: r, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: handler, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
 
 	go func() {
 		log.Info().Str("addr", addr).Msg("GOTV service starting")
@@ -301,6 +318,18 @@ func handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc.Audit(pid, user, "create_campaign", "campaign", campaignID)
+
+	// Middleware: publish to Kafka, index in OpenSearch
+	publishEvent(TopicGOTVCampaignEvent, campaignID, map[string]interface{}{
+		"event": "campaign_created", "campaign_id": campaignID, "party_id": pid,
+		"campaign_type": req.CampaignType, "name": req.Name, "timestamp": time.Now().UTC(),
+	})
+	indexDocument("gotv-campaigns", campaignID, map[string]interface{}{
+		"party_id": pid, "name": req.Name, "status": "draft",
+		"state": req.TargetState, "campaign_type": req.CampaignType, "created_at": time.Now().UTC(),
+	})
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+
 	w.WriteHeader(http.StatusCreated)
 	jsonResp(w, map[string]interface{}{"campaign_id": campaignID, "status": "draft"})
 }
@@ -430,6 +459,15 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc.Audit(pid, user, "launch_campaign", "campaign", id)
+
+	// Middleware: Kafka event, Temporal workflow, TigerBeetle spend tracking, cache invalidation
+	publishEvent(TopicGOTVCampaignEvent, id, map[string]interface{}{
+		"event": "campaign_launched", "campaign_id": id, "party_id": pid, "timestamp": time.Now().UTC(),
+	})
+	startCampaignWorkflow(id, pid, "", 0)
+	recordCampaignSpend(id, pid, 0, "Campaign launch")
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+
 	jsonResp(w, map[string]interface{}{"launched": true, "campaign_id": id})
 }
 
@@ -548,6 +586,18 @@ func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc.Audit(pid, user, "create_contact", "contact", contactID)
+
+	// Middleware: Kafka event, OpenSearch index, cache invalidation
+	publishEvent(TopicGOTVAuditLog, contactID, map[string]interface{}{
+		"event": "contact_created", "contact_id": contactID, "party_id": pid,
+		"state": req.StateCode, "timestamp": time.Now().UTC(),
+	})
+	indexDocument("gotv-contacts", contactID, map[string]interface{}{
+		"party_id": pid, "name": req.FullName, "state": req.StateCode,
+		"lga": req.LGACode, "tags": req.Tags, "status": "unknown", "created_at": time.Now().UTC(),
+	})
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+
 	w.WriteHeader(http.StatusCreated)
 	jsonResp(w, map[string]interface{}{"contact_id": contactID})
 }
@@ -803,6 +853,19 @@ func handleCreateVolunteer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc.Audit(pid, user, "create_volunteer", "volunteer", vid)
+
+	// Middleware: Kafka event, OpenSearch index, cache invalidation
+	publishEvent(TopicGOTVVolunteerEvent, vid, map[string]interface{}{
+		"event": "volunteer_created", "volunteer_id": vid, "party_id": pid,
+		"role": req.Role, "state": req.State, "has_vehicle": req.HasVehicle,
+		"lat": req.Latitude, "lng": req.Longitude, "timestamp": time.Now().UTC(),
+	})
+	indexDocument("gotv-volunteers", vid, map[string]interface{}{
+		"party_id": pid, "name": req.FullName, "role": req.Role,
+		"state": req.State, "lga": req.LGA, "status": "active", "created_at": time.Now().UTC(),
+	})
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+
 	w.WriteHeader(http.StatusCreated)
 	jsonResp(w, map[string]interface{}{"volunteer_id": vid})
 }
@@ -981,6 +1044,27 @@ func handleCreateRide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc.Audit(pid, user, "create_ride", "ride", rid)
+
+	// Middleware: Kafka event, Dapr invoke Rust engine for matching, cache invalidation
+	publishEvent(TopicGOTVRideEvent, rid, map[string]interface{}{
+		"event": "ride_requested", "ride_id": rid, "party_id": pid,
+		"contact_id": req.ContactID, "pu_code": req.PollingUnitCode,
+		"pickup_lat": req.PickupLatitude, "pickup_lng": req.PickupLongitude,
+		"timestamp": time.Now().UTC(),
+	})
+	// Try auto-matching via Rust gotv-engine
+	go func() {
+		if match, err := invokeRustMatchRide(rid, req.PickupLatitude, req.PickupLongitude, pid); err == nil {
+			if volID, ok := match["volunteer_id"].(string); ok && volID != "" {
+				svc.DB.Exec("UPDATE gotv_ride_requests SET volunteer_id=$1, status='matched' WHERE request_id=$2", volID, rid)
+				publishEvent(TopicGOTVRideEvent, rid, map[string]interface{}{
+					"event": "ride_matched", "ride_id": rid, "volunteer_id": volID,
+				})
+			}
+		}
+	}()
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+
 	w.WriteHeader(http.StatusCreated)
 	jsonResp(w, map[string]interface{}{"request_id": rid})
 }
@@ -1117,6 +1201,15 @@ func handleTurnout(w http.ResponseWriter, r *http.Request) {
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
 
+	// Redis cache: dashboard stats cached for 30s to reduce DB load
+	cacheKey := fmt.Sprintf("dashboard:%d", pid)
+	if cached, ok := cacheGet(r.Context(), cacheKey); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
+
 	var totalContacts, totalVolunteers, totalPledges, activeCampaigns, pendingRides int
 	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE", pid).Scan(&totalContacts)
 	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_volunteers WHERE party_id=$1 AND is_active=TRUE", pid).Scan(&totalVolunteers)
@@ -1124,14 +1217,19 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_campaigns WHERE party_id=$1 AND status='active'", pid).Scan(&activeCampaigns)
 	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_ride_requests WHERE party_id=$1 AND status='pending'", pid).Scan(&pendingRides)
 
-	jsonResp(w, map[string]interface{}{
+	result := map[string]interface{}{
 		"party_id":          pid,
 		"total_contacts":    totalContacts,
 		"total_volunteers":  totalVolunteers,
 		"total_pledges":     totalPledges,
 		"active_campaigns":  activeCampaigns,
 		"pending_rides":     pendingRides,
-	})
+	}
+
+	// Cache for 30 seconds
+	cacheSet(r.Context(), cacheKey, result, 30*time.Second)
+	w.Header().Set("X-Cache", "MISS")
+	jsonResp(w, result)
 }
 
 // ─── Volunteer Location (real-time GPS) ────────────────────────────────────
@@ -1474,6 +1572,16 @@ func handleCanvassDoorKnock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc.Audit(pid, user, "door_knock", "canvass", req.ContactID)
+
+	// Middleware: Kafka canvass event, Fluvio real-time stream
+	canvassEvent := map[string]interface{}{
+		"event": "door_knock", "volunteer_id": req.VolunteerID, "contact_id": req.ContactID,
+		"outcome": req.Outcome, "lat": req.Latitude, "lng": req.Longitude,
+		"suspicious": isSuspicious, "party_id": pid, "timestamp": time.Now().UTC(),
+	}
+	publishEvent(TopicGOTVCanvassEvent, req.VolunteerID, canvassEvent)
+	streamCanvassEvent(canvassEvent)
+
 	w.WriteHeader(http.StatusCreated)
 	jsonResp(w, map[string]interface{}{"recorded": true, "suspicious": isSuspicious})
 }
