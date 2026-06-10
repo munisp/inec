@@ -50,6 +50,7 @@ func main() {
 	defer db.Close()
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	cfg := auth.DefaultConfig([]byte(*jwtSecret))
 	svc := auth.NewService(db, cfg)

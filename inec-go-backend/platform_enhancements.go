@@ -1247,7 +1247,7 @@ func handleElectionArchive(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid request")
 		return
 	}
-	rows, _ := dbQueryCtx(r.Context(), `SELECT * FROM results WHERE election_id=?`, body.ElectionID)
+	rows, _ := dbQueryCtx(r.Context(), `SELECT * FROM results WHERE election_id=? ORDER BY id LIMIT 50000`, body.ElectionID)
 	data, _ := json.Marshal(scanRows(rows))
 	h := sha256.Sum256(data)
 	cs := hex.EncodeToString(h[:])

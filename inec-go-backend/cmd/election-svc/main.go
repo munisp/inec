@@ -50,6 +50,7 @@ func main() {
 	defer db.Close()
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	svc := election.NewService(db)
 	bus := eventbus.NewLocal()

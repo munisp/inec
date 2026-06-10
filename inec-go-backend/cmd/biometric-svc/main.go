@@ -45,6 +45,7 @@ func main() {
 	defer db.Close()
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	vaultKey := make([]byte, 32)
 	rand.Read(vaultKey)

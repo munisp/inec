@@ -43,6 +43,9 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to connect to database")
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	svc := geo.NewService(db)
 
