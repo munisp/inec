@@ -108,7 +108,7 @@ func initGOTVTables() {
 		user_id INTEGER,
 		full_name TEXT NOT NULL,
 		phone TEXT NOT NULL,
-		role TEXT NOT NULL DEFAULT 'canvasser' CHECK(role IN ('canvasser','driver','coordinator','phone_banker','team_lead')),
+		role TEXT NOT NULL DEFAULT 'canvasser' CHECK(role IN ('canvasser','driver','coordinator','phone_banker','team_lead','caller','observer')),
 		assigned_state TEXT,
 		assigned_lga TEXT,
 		assigned_ward TEXT,
@@ -1280,7 +1280,7 @@ func handleGOTVCreateVolunteer(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "canvasser"
 	}
-	validRoles := map[string]bool{"canvasser": true, "driver": true, "coordinator": true, "phone_banker": true, "team_lead": true}
+	validRoles := map[string]bool{"canvasser": true, "driver": true, "coordinator": true, "phone_banker": true, "team_lead": true, "caller": true, "observer": true}
 	if !validRoles[req.Role] {
 		http.Error(w, `{"error":"invalid role"}`, http.StatusBadRequest)
 		return

@@ -118,7 +118,7 @@ func (s *Service) InitTables(ctx context.Context) error {
 		user_id INTEGER,
 		full_name TEXT NOT NULL,
 		phone TEXT NOT NULL,
-		role TEXT NOT NULL DEFAULT 'canvasser' CHECK(role IN ('canvasser','driver','coordinator','phone_banker','team_lead')),
+		role TEXT NOT NULL DEFAULT 'canvasser' CHECK(role IN ('canvasser','driver','coordinator','phone_banker','team_lead','caller','observer')),
 		assigned_state TEXT,
 		assigned_lga TEXT,
 		assigned_ward TEXT,

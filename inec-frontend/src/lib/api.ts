@@ -1,4 +1,7 @@
 const API_URL = import.meta.env.VITE_API_URL ?? '';
+// GOTV service runs on a separate port (8103) and is proxied via Vite dev server.
+// Use relative URLs so requests go through the proxy instead of directly to API_URL.
+const GOTV_API_URL = '';
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -11,7 +14,8 @@ export class ApiError extends Error {
 
 function xhrFallback(path: string, method: string, headers: Record<string, string>, body?: string): unknown {
   const xhr = new XMLHttpRequest();
-  xhr.open(method, `${API_URL}${path}`, false);
+  const base = path.startsWith('/gotv') ? GOTV_API_URL : API_URL;
+  xhr.open(method, `${base}${path}`, false);
   xhr.withCredentials = true;
   Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
   xhr.send(body || null);
@@ -33,10 +37,13 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
   };
+  // GOTV routes are served by a separate microservice and proxied via Vite/gateway.
+  // Use relative URLs so requests go through the proxy instead of directly to API_URL.
+  const baseUrl = path.startsWith('/gotv') ? GOTV_API_URL : API_URL;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(`${API_URL}${path}`, { ...options, headers, credentials: 'include' });
+      const res = await fetch(`${baseUrl}${path}`, { ...options, headers, credentials: 'include' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         if (res.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {

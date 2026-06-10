@@ -1222,7 +1222,7 @@ func handleGeoRides(w http.ResponseWriter, r *http.Request) {
 		        rr.pickup_latitude, rr.pickup_longitude, rr.status, rr.distance_km,
 		        COALESCE(pu.latitude, 0), COALESCE(pu.longitude, 0)
 		 FROM gotv_ride_requests rr
-		 LEFT JOIN polling_units pu ON pu.unique_id = rr.polling_unit_code
+		 LEFT JOIN polling_units pu ON pu.code = rr.polling_unit_code
 		 WHERE rr.party_id=$1 AND rr.status IN ('pending','matched','en_route','picked_up')`,
 		pid)
 	if err != nil {
