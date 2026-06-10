@@ -207,22 +207,27 @@ func (s *Service) InitTables(ctx context.Context) error {
 
 	CREATE TABLE IF NOT EXISTS gotv_door_knocks (
 		id SERIAL PRIMARY KEY,
+		knock_id TEXT UNIQUE,
 		party_id INTEGER NOT NULL,
 		volunteer_id TEXT NOT NULL,
 		contact_id TEXT,
-		latitude REAL NOT NULL,
-		longitude REAL NOT NULL,
-		outcome TEXT NOT NULL CHECK(outcome IN ('home','not_home','refused','pledged','already_voted')),
+		shift_id TEXT,
+		latitude REAL NOT NULL DEFAULT 0,
+		longitude REAL NOT NULL DEFAULT 0,
+		outcome TEXT NOT NULL CHECK(outcome IN ('home','not_home','refused','pledged','already_voted','moved','callback')),
 		notes TEXT,
 		speed_kmh REAL DEFAULT 0,
 		is_suspicious BOOLEAN DEFAULT FALSE,
+		knocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_party ON gotv_door_knocks(party_id);
 	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_vol ON gotv_door_knocks(volunteer_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_shift ON gotv_door_knocks(shift_id);
 
 	CREATE TABLE IF NOT EXISTS gotv_shifts (
 		id SERIAL PRIMARY KEY,
+		shift_id TEXT UNIQUE,
 		party_id INTEGER NOT NULL,
 		volunteer_id TEXT NOT NULL,
 		start_lat REAL,
@@ -233,6 +238,7 @@ func (s *Service) InitTables(ctx context.Context) error {
 		ended_at TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_shifts_vol ON gotv_shifts(volunteer_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_shifts_shift ON gotv_shifts(shift_id);
 
 	CREATE TABLE IF NOT EXISTS gotv_import_log (
 		id SERIAL PRIMARY KEY,
@@ -241,6 +247,31 @@ func (s *Service) InitTables(ctx context.Context) error {
 		imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_import_party ON gotv_import_log(party_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_mobile_users (
+		id SERIAL PRIMARY KEY,
+		user_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
+		phone_hash TEXT NOT NULL,
+		phone_encrypted TEXT NOT NULL,
+		display_name TEXT NOT NULL,
+		volunteer_id TEXT,
+		role TEXT DEFAULT 'canvasser' CHECK(role IN ('canvasser','driver','coordinator','observer','caller')),
+		is_active BOOLEAN DEFAULT TRUE,
+		otp_code_hash TEXT,
+		otp_expires_at TIMESTAMP,
+		otp_attempts INTEGER DEFAULT 0,
+		jwt_refresh_token TEXT,
+		jwt_expires_at TIMESTAMP,
+		last_login_at TIMESTAMP,
+		last_sync_at TIMESTAMP,
+		device_info JSONB,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(party_id, phone_hash)
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_mobile_users_party ON gotv_mobile_users(party_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_mobile_users_phone ON gotv_mobile_users(party_id, phone_hash);
 	`
 	_, err := s.DB.ExecContext(ctx, tables)
 	if err != nil {

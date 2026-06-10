@@ -10,8 +10,10 @@ import {
   logConflict, setSyncMeta, getPendingCounts,
   type PendingDoorKnock, type PendingPledge, type PendingLocationUpdate,
 } from './storage';
+import { getMobileToken } from './gotv-auth';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8088';
+// Use GOTV mobile backend (standalone from INEC portal)
+const API_URL = process.env.EXPO_PUBLIC_GOTV_API_URL ?? 'http://localhost:8103';
 
 export type SyncState = 'idle' | 'syncing' | 'offline' | 'error';
 
@@ -101,12 +103,12 @@ class SyncManager {
     const knocks = await getPendingDoorKnocks();
     for (const knock of knocks) {
       try {
-        const res = await fetch(`${API_URL}/gotv/canvass/knock`, {
+        const token = await getMobileToken();
+        const res = await fetch(`${API_URL}/gotv/mobile/knock`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer token',
-            'X-Party-ID': '1',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             volunteer_id: knock.volunteer_id,
@@ -140,12 +142,12 @@ class SyncManager {
     const pledges = await getPendingPledges();
     for (const pledge of pledges) {
       try {
-        const res = await fetch(`${API_URL}/gotv/pledges`, {
+        const token = await getMobileToken();
+        const res = await fetch(`${API_URL}/gotv/mobile/knock`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer token',
-            'X-Party-ID': '1',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             contact_id: pledge.contact_id,
@@ -175,12 +177,12 @@ class SyncManager {
     const syncedIds: number[] = [];
     for (const [, loc] of latestByVol) {
       try {
+        const token = await getMobileToken();
         const res = await fetch(`${API_URL}/gotv/volunteers/${loc.volunteer_id}/location`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer token',
-            'X-Party-ID': '1',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             latitude: loc.latitude,

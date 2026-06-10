@@ -70,9 +70,10 @@ func seedGOTVData(db *sql.DB) {
 		{randID(), "Yusuf Garba", "08012345015", "Plateau", "Jos North", "confirmed", "{volunteer}"},
 	}
 	for _, c := range contacts {
-		db.Exec(`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, voter_status, tags, opted_out, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,FALSE,$10) ON CONFLICT DO NOTHING`,
-			c.id, pid, c.phone, c.phone, c.name, c.state, c.lga, c.status, c.tags, now)
+		consentID := "consent-" + randID()
+		db.Exec(`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, voter_status, tags, opted_out, consent_id, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,FALSE,$10,$11) ON CONFLICT DO NOTHING`,
+			c.id, pid, c.phone, c.phone, c.name, c.state, c.lga, c.status, c.tags, consentID, now)
 	}
 
 	// ─── Volunteers ─────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ var (
 	dispatcher *gotv.DispatchEngine
 	webhooks   *gotv.WebhookManager
 	authMid    *gotv.AuthMiddleware
+	mobileAuth *gotv.MobileAuth
 )
 
 func main() {
@@ -111,6 +112,10 @@ func main() {
 	})
 	auth := authMid.Wrap // shorthand
 
+	// Standalone mobile auth (separate from INEC portal Keycloak)
+	mobileAuth = gotv.NewMobileAuth(db, svc, os.Getenv("GOTV_MOBILE_JWT_SECRET"))
+	mauth := mobileAuth.MobileAuthWrap // shorthand for mobile-protected routes
+
 	r := mux.NewRouter()
 
 	// Health
@@ -177,6 +182,21 @@ func main() {
 	r.HandleFunc("/gotv/search", auth(handleGOTVSearch)).Methods("GET")
 	r.HandleFunc("/gotv/analytics", auth(handleGOTVAnalytics)).Methods("GET")
 	r.HandleFunc("/gotv/middleware/status", auth(handleMiddlewareStatus)).Methods("GET")
+
+	// ─── Standalone Mobile App Auth (NOT shared with INEC portal) ────────
+	// Public endpoints (no auth required)
+	r.HandleFunc("/gotv/mobile/auth/request-otp", mobileAuth.HandleRequestOTP).Methods("POST")
+	r.HandleFunc("/gotv/mobile/auth/verify-otp", mobileAuth.HandleVerifyOTP).Methods("POST")
+	r.HandleFunc("/gotv/mobile/auth/refresh", mobileAuth.HandleRefreshToken).Methods("POST")
+
+	// Mobile-protected endpoints (require mobile JWT)
+	r.HandleFunc("/gotv/mobile/profile", mauth(handleMobileProfile)).Methods("GET")
+	r.HandleFunc("/gotv/mobile/contacts", mauth(handleMobileContacts)).Methods("GET")
+	r.HandleFunc("/gotv/mobile/shift/start", mauth(handleMobileShiftStart)).Methods("POST")
+	r.HandleFunc("/gotv/mobile/shift/end", mauth(handleMobileShiftEnd)).Methods("POST")
+	r.HandleFunc("/gotv/mobile/knock", mauth(handleMobileDoorKnock)).Methods("POST")
+	r.HandleFunc("/gotv/mobile/sync", mauth(handleMobileSync)).Methods("POST")
+	r.HandleFunc("/gotv/mobile/dashboard", mauth(handleMobileDashboard)).Methods("GET")
 
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
@@ -480,17 +500,22 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	if totalContacts == 0 {
 		var targetState sql.NullString
 		svc.DB.QueryRow("SELECT target_state FROM gotv_campaigns WHERE campaign_id=$1", id).Scan(&targetState)
-		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE"
+		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE)"
 		var countArgs []interface{}
 		countArgs = append(countArgs, pid)
 		if targetState.Valid && targetState.String != "" {
 			countQuery += " AND state_code=$2"
 			countArgs = append(countArgs, targetState.String)
 		}
-		svc.DB.QueryRow(countQuery, countArgs...).Scan(&totalContacts)
+		if err := svc.DB.QueryRow(countQuery, countArgs...).Scan(&totalContacts); err != nil {
+			log.Warn().Err(err).Int("party", pid).Msg("GOTV: failed to count contacts for campaign")
+		}
+		log.Info().Int("total_contacts", totalContacts).Str("campaign", id).Msg("GOTV: counted target contacts")
 	}
 
-	svc.DB.Exec("UPDATE gotv_campaigns SET status='active', started_at=NOW(), total_contacts=$3 WHERE campaign_id=$1 AND party_id=$2", id, pid, totalContacts)
+	if _, err := svc.DB.Exec("UPDATE gotv_campaigns SET status='active', started_at=NOW(), total_contacts=$1 WHERE campaign_id=$2 AND party_id=$3", totalContacts, id, pid); err != nil {
+		log.Warn().Err(err).Str("campaign", id).Msg("GOTV: failed to activate campaign")
+	}
 
 	// Launch async dispatch
 	if err := dispatcher.LaunchCampaign(context.Background(), id, pid); err != nil {
@@ -1859,6 +1884,230 @@ func corsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// ─── Standalone Mobile App Handlers ──────────────────────────────────────
+// These endpoints are for GOTV canvasser/volunteer mobile app (React Native).
+// Auth is via mobile JWT (phone+OTP), NOT INEC portal Keycloak.
+
+func handleMobileProfile(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var displayName, role, phone string
+	var lastSync sql.NullTime
+	var volunteerID sql.NullString
+	err := svc.DB.QueryRow(
+		`SELECT display_name, role, phone_encrypted, last_sync_at, volunteer_id
+		 FROM gotv_mobile_users WHERE user_id=$1 AND party_id=$2`, user, pid,
+	).Scan(&displayName, &role, &phone, &lastSync, &volunteerID)
+	if err != nil {
+		jsonErr(w, "user not found", http.StatusNotFound)
+		return
+	}
+	jsonResp(w, map[string]interface{}{
+		"user_id":      user,
+		"party_id":     pid,
+		"display_name": displayName,
+		"role":         role,
+		"volunteer_id": volunteerID.String,
+		"last_sync_at": lastSync.Time,
+	})
+}
+
+func handleMobileContacts(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	since := r.URL.Query().Get("since") // ISO timestamp for incremental sync
+
+	query := `SELECT contact_id, full_name_encrypted, phone_encrypted, state_code, lga_code,
+		ward_code, voter_status, tags, COALESCE(latitude,0), COALESCE(longitude,0), updated_at
+		FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE)`
+	args := []interface{}{pid}
+
+	if since != "" {
+		query += " AND updated_at > $2"
+		args = append(args, since)
+	}
+	query += " ORDER BY updated_at DESC LIMIT 500"
+
+	rows, err := svc.DB.Query(query, args...)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var contacts []map[string]interface{}
+	for rows.Next() {
+		var cID, nameEnc, phoneEnc, state, lga string
+		var ward sql.NullString
+		var status string
+		var tags []uint8
+		var lat, lng float64
+		var updatedAt time.Time
+		if err := rows.Scan(&cID, &nameEnc, &phoneEnc, &state, &lga, &ward, &status, &tags, &lat, &lng, &updatedAt); err != nil {
+			continue
+		}
+		name, _ := svc.Decrypt(nameEnc)
+		if name == "" {
+			name = nameEnc
+		}
+		contacts = append(contacts, map[string]interface{}{
+			"contact_id":   cID,
+			"name":         name,
+			"state":        state,
+			"lga":          lga,
+			"ward":         ward.String,
+			"voter_status": status,
+			"latitude":     lat,
+			"longitude":    lng,
+			"updated_at":   updatedAt,
+		})
+	}
+	jsonResp(w, map[string]interface{}{
+		"contacts":   contacts,
+		"count":      len(contacts),
+		"sync_token": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func handleMobileShiftStart(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		Lat float64 `json:"latitude"`
+		Lng float64 `json:"longitude"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		jsonErr(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	shiftID := "shift-" + uuid.New().String()[:8]
+	svc.DB.Exec(
+		`INSERT INTO gotv_shifts (party_id, volunteer_id, shift_id, start_lat, start_lng, started_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW())`,
+		pid, user, shiftID, req.Lat, req.Lng,
+	)
+	jsonResp(w, map[string]interface{}{"shift_id": shiftID, "started": true})
+}
+
+func handleMobileShiftEnd(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		ShiftID string  `json:"shift_id"`
+		Lat     float64 `json:"latitude"`
+		Lng     float64 `json:"longitude"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		jsonErr(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	svc.DB.Exec(
+		`UPDATE gotv_shifts SET ended_at=NOW(), end_lat=$1, end_lng=$2 WHERE shift_id=$3 AND party_id=$4 AND volunteer_id=$5`,
+		req.Lat, req.Lng, req.ShiftID, pid, user,
+	)
+	jsonResp(w, map[string]interface{}{"ended": true})
+}
+
+func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		ContactID string  `json:"contact_id"`
+		ShiftID   string  `json:"shift_id"`
+		Outcome   string  `json:"outcome"` // pledged, not_home, refused, moved, etc.
+		Notes     string  `json:"notes"`
+		Lat       float64 `json:"latitude"`
+		Lng       float64 `json:"longitude"`
+		Timestamp string  `json:"timestamp"` // client-side timestamp for offline syncs
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+		jsonErr(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	knockID := "knock-" + uuid.New().String()[:8]
+	_, err := svc.DB.Exec(
+		`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamp, NOW()))
+		 ON CONFLICT DO NOTHING`,
+		pid, user, req.ContactID, knockID, req.ShiftID, req.Outcome, req.Notes, req.Lat, req.Lng, nullStr(req.Timestamp),
+	)
+	if err != nil {
+		jsonErr(w, "failed to record knock", http.StatusInternalServerError)
+		return
+	}
+
+	// Update contact status
+	if req.Outcome == "pledged" {
+		svc.DB.Exec("UPDATE gotv_contacts SET voter_status='pledged', updated_at=NOW() WHERE contact_id=$1 AND party_id=$2", req.ContactID, pid)
+	}
+
+	jsonResp(w, map[string]interface{}{"knock_id": knockID, "recorded": true})
+}
+
+func handleMobileSync(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		Knocks []struct {
+			ContactID string  `json:"contact_id"`
+			ShiftID   string  `json:"shift_id"`
+			Outcome   string  `json:"outcome"`
+			Notes     string  `json:"notes"`
+			Lat       float64 `json:"latitude"`
+			Lng       float64 `json:"longitude"`
+			Timestamp string  `json:"timestamp"`
+		} `json:"knocks"`
+		LastSyncToken string `json:"last_sync_token"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		jsonErr(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	synced := 0
+	for _, k := range req.Knocks {
+		knockID := "knock-" + uuid.New().String()[:8]
+		_, err := svc.DB.Exec(
+			`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamp, NOW()))
+			 ON CONFLICT DO NOTHING`,
+			pid, user, k.ContactID, knockID, k.ShiftID, k.Outcome, k.Notes, k.Lat, k.Lng, nullStr(k.Timestamp),
+		)
+		if err == nil {
+			synced++
+		}
+		if k.Outcome == "pledged" {
+			svc.DB.Exec("UPDATE gotv_contacts SET voter_status='pledged', updated_at=NOW() WHERE contact_id=$1 AND party_id=$2", k.ContactID, pid)
+		}
+	}
+
+	// Update last sync timestamp
+	svc.DB.Exec("UPDATE gotv_mobile_users SET last_sync_at=NOW() WHERE user_id=$1 AND party_id=$2", user, pid)
+
+	jsonResp(w, map[string]interface{}{
+		"synced":     synced,
+		"total":      len(req.Knocks),
+		"sync_token": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func handleMobileDashboard(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+
+	var totalKnocks, pledged, notHome, refused int
+	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2", pid, user).Scan(&totalKnocks)
+	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2 AND outcome='pledged'", pid, user).Scan(&pledged)
+	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2 AND outcome='not_home'", pid, user).Scan(&notHome)
+	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2 AND outcome='refused'", pid, user).Scan(&refused)
+
+	var activeShift sql.NullString
+	svc.DB.QueryRow("SELECT shift_id FROM gotv_shifts WHERE party_id=$1 AND volunteer_id=$2 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1", pid, user).Scan(&activeShift)
+
+	jsonResp(w, map[string]interface{}{
+		"total_knocks":  totalKnocks,
+		"pledged":       pledged,
+		"not_home":      notHome,
+		"refused":       refused,
+		"active_shift":  activeShift.String,
+		"has_active_shift": activeShift.Valid,
 	})
 }
 

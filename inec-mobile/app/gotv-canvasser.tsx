@@ -1,5 +1,6 @@
 // GOTV Canvasser Field Workflow — door-to-door tracking with offline-first storage.
 // Uses expo-location for GPS, expo-sqlite for offline queue, background sync via lib/sync.ts.
+// Auth: standalone GOTV mobile JWT (NOT INEC portal Keycloak).
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -7,6 +8,7 @@ import {
   TextInput, Alert, Platform, Vibration,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 import {
@@ -15,6 +17,7 @@ import {
   type CachedContact,
 } from '../lib/storage';
 import { syncManager, type SyncState } from '../lib/sync';
+import { getMobileUser, isAuthenticated, logout, type GOTVUser } from '../lib/gotv-auth';
 
 const OUTCOMES = [
   { key: 'home', label: 'Home — Spoke', icon: 'checkmark-circle', color: '#10b981' },
@@ -22,13 +25,16 @@ const OUTCOMES = [
   { key: 'refused', label: 'Refused', icon: 'ban', color: '#ef4444' },
   { key: 'pledged', label: 'Pledged to Vote', icon: 'thumbs-up', color: '#3b82f6' },
   { key: 'already_voted', label: 'Already Voted', icon: 'checkmark-done', color: '#8b5cf6' },
+  { key: 'moved', label: 'Moved Away', icon: 'swap-horizontal', color: '#f59e0b' },
+  { key: 'callback', label: 'Call Back Later', icon: 'time', color: '#6366f1' },
 ] as const;
 
 type Outcome = typeof OUTCOMES[number]['key'];
 
 export default function GOTVCanvasserScreen() {
   const [shiftActive, setShiftActive] = useState(false);
-  const [volunteerId] = useState('vol-001'); // Would come from auth
+  const [user, setUser] = useState<GOTVUser | null>(null);
+  const [volunteerId, setVolunteerId] = useState('vol-001');
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
   const [walklist, setWalklist] = useState<CachedContact[]>([]);
   const [selectedContact, setSelectedContact] = useState<CachedContact | null>(null);
@@ -38,6 +44,27 @@ export default function GOTVCanvasserScreen() {
   const [syncState, setSyncState] = useState<SyncState>('idle');
   const [pendingCount, setPendingCount] = useState(0);
   const locationWatcher = useRef<Location.LocationSubscription | null>(null);
+
+  // ─── Auth Check ────────────────────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      const authed = await isAuthenticated();
+      if (!authed) {
+        router.replace('/gotv-login');
+        return;
+      }
+      const mobileUser = await getMobileUser();
+      if (mobileUser) {
+        setUser(mobileUser);
+        setVolunteerId(mobileUser.user_id);
+      }
+    })();
+  }, []);
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/gotv-login');
+  };
 
   // ─── Location Tracking ──────────────────────────────────────────────────
 

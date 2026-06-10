@@ -210,7 +210,7 @@ func initOpenSearch() {
 		}`))
 		if req != nil {
 			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := mwHTTPClient.Do(req)
 			if err == nil {
 				resp.Body.Close()
 			}
@@ -226,7 +226,7 @@ func indexDocument(index, id string, doc interface{}) {
 	data, _ := json.Marshal(doc)
 	req, _ := http.NewRequest("PUT", fmt.Sprintf("%s/%s/_doc/%s", opensearchURL, index, id), bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mwHTTPClient.Do(req)
 	if err != nil {
 		log.Warn().Err(err).Str("index", index).Msg("GOTV OpenSearch index failed")
 		return
@@ -241,7 +241,7 @@ func searchDocuments(index, query string, partyID int) ([]map[string]interface{}
 	body := fmt.Sprintf(`{"query":{"bool":{"must":[{"multi_match":{"query":"%s","fields":["name","state","lga","role","tags"]}},{"term":{"party_id":%d}}]}},"size":50}`, query, partyID)
 	req, _ := http.NewRequest("POST", opensearchURL+"/"+index+"/_search", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mwHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func startCampaignWorkflow(campaignID string, partyID int, campaignType string, 
 		"retry_policy":   map[string]interface{}{"maximum_attempts": 3, "initial_interval": "10s"},
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(temporalURL+"/api/v1/namespaces/gotv/workflows", "application/json", bytes.NewReader(data))
+	resp, err := mwHTTPClient.Post(temporalURL+"/api/v1/namespaces/gotv/workflows", "application/json", bytes.NewReader(data))
 	if err != nil {
 		log.Warn().Err(err).Str("campaign", campaignID).Msg("GOTV Temporal workflow start failed")
 		return
@@ -330,7 +330,7 @@ func validateKeycloakToken(token string) (map[string]interface{}, error) {
 	req, _ := http.NewRequest("GET",
 		fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", keycloakURL, keycloakRealm), nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mwHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +360,7 @@ func initPermify() {
 	}`
 	req, _ := http.NewRequest("POST", permifyURL+"/v1/tenants/gotv/schemas/write", strings.NewReader(schema))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mwHTTPClient.Do(req)
 	if err == nil {
 		resp.Body.Close()
 	}
@@ -676,7 +676,7 @@ func initAPISIX() {
 		if apiKey != "" {
 			req.Header.Set("X-API-KEY", apiKey)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := mwHTTPClient.Do(req)
 		if err == nil {
 			resp.Body.Close()
 		}

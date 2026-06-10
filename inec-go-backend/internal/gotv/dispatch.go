@@ -178,7 +178,8 @@ func (d *DispatchEngine) dispatch(ctx context.Context, campaignID string, partyI
 		contacts = append(contacts, c)
 	}
 
-	d.db.Exec("UPDATE gotv_campaigns SET total_contacts=$1 WHERE campaign_id=$2", len(contacts), campaignID)
+	// Update total_contacts only if handler didn't already set it
+	d.db.Exec("UPDATE gotv_campaigns SET total_contacts=$1 WHERE campaign_id=$2 AND (total_contacts IS NULL OR total_contacts=0)", len(contacts), campaignID)
 
 	// Rate limiter: token bucket
 	interval := time.Hour / time.Duration(rateLimit)
