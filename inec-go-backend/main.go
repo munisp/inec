@@ -130,6 +130,8 @@ func main() {
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
 	initComplianceTables()
+	initGOTVTables()
+	initGOTVEncryption()
 	initMFA()
 	seedComprehensive(db)
 	seedAllTables(db)
@@ -234,6 +236,7 @@ func main() {
 	// blockchain attestation, mesh network, H3 hex grid, offline tiles, MVT tiles
 	registerGeoAdvancedRoutes(r)
 	registerComplianceRoutes(r)
+	registerGOTVRoutes(r)
 
 	// Dashboard — read auth for data, write auth for metrics
 	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")

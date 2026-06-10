@@ -66,9 +66,18 @@ func main() {
 	inferenceURL := flag.String("inference-url", envOr("INFERENCE_URL", "http://localhost:8097"), "Rust inference engine URL")
 	fluvioURL := flag.String("fluvio-url", envOr("FLUVIO_URL", "http://localhost:8100"), "Rust Fluvio stream URL")
 
+	// GOTV service (Go)
+	gotvURL := flag.String("gotv-url", envOr("GOTV_URL", "http://localhost:8103"), "GOTV voter mobilization service URL")
+
 	// Python services
 	lakehouseURL := flag.String("lakehouse-url", envOr("LAKEHOUSE_URL", "http://localhost:8098"), "Python lakehouse analytics URL")
 	documentAIURL := flag.String("docai-url", envOr("DOCUMENT_AI_URL", "http://localhost:8099"), "Python document AI URL")
+
+	// GOTV analytics (Python)
+	gotvAnalyticsURL := flag.String("gotv-analytics-url", envOr("GOTV_ANALYTICS_URL", "http://localhost:8102"), "GOTV Python analytics URL")
+
+	// GOTV engine (Rust)
+	gotvEngineURL := flag.String("gotv-engine-url", envOr("GOTV_ENGINE_URL", "http://localhost:8101"), "GOTV Rust geo-matching engine URL")
 
 	flag.Parse()
 
@@ -88,6 +97,11 @@ func main() {
 		// Rust microservices
 		{Name: "inference-engine", URL: *inferenceURL, Prefix: "/inference", Lang: "rust"},
 		{Name: "fluvio-stream", URL: *fluvioURL, Prefix: "/stream", Lang: "rust"},
+
+		// GOTV microservices
+		{Name: "gotv-svc", URL: *gotvURL, Prefix: "/gotv", Lang: "go"},
+		{Name: "gotv-engine", URL: *gotvEngineURL, Prefix: "/gotv-engine", Lang: "rust"},
+		{Name: "gotv-analytics", URL: *gotvAnalyticsURL, Prefix: "/gotv-analytics", Lang: "python"},
 
 		// Python microservices
 		{Name: "lakehouse-analytics", URL: *lakehouseURL, Prefix: "/analytics", Lang: "python"},
