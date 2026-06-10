@@ -259,7 +259,7 @@ func (m *MFAService) VerifyTOTPCode(secret, code string) bool {
 
 // validateCode checks a TOTP code against the secret with ±1 window.
 func (m *MFAService) validateCode(secret, code string, t time.Time) bool {
-	counter := uint64(t.Unix()) / uint64(m.period)
+	counter := uint64(t.Unix()) / uint64(m.period) // #nosec G115 -- Unix() is non-negative after epoch; period is always 30
 	// Check current step and ±1 for clock drift
 	for i := int64(-1); i <= 1; i++ {
 		expected := m.generateTOTP(secret, counter+uint64(i))

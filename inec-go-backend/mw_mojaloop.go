@@ -517,8 +517,8 @@ func initMojaloopClient() MojaloopClient {
 		defer cancel()
 		connected := false
 		// Try /health first (Mojaloop TTK)
-		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil)
-		if resp, err := client.client.Client.Do(req); err == nil {
+		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil) // #nosec G704 -- baseURL is admin-configured env var
+		if resp, err := client.client.Client.Do(req); err == nil {               // #nosec G704
 			resp.Body.Close()
 			if resp.StatusCode < 500 {
 				connected = true

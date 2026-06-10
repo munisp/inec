@@ -492,6 +492,15 @@ func stringToUint128(s string) tbTypes.Uint128 {
 }
 
 func (t *tbSDKClient) CreateTransfer(_ context.Context, transfer TBTransfer) (*TBTransfer, error) {
+	if transfer.Amount < 0 {
+		return nil, fmt.Errorf("transfer amount must be non-negative, got %d", transfer.Amount)
+	}
+	if transfer.Ledger < 0 || transfer.Ledger > 0xFFFFFFFF {
+		return nil, fmt.Errorf("ledger out of uint32 range: %d", transfer.Ledger)
+	}
+	if transfer.Code < 0 || transfer.Code > 0xFFFF {
+		return nil, fmt.Errorf("code out of uint16 range: %d", transfer.Code)
+	}
 	if transfer.ID == "" {
 		rngBuf := make([]byte, 16)
 		cryptoRand.Read(rngBuf)
@@ -503,9 +512,9 @@ func (t *tbSDKClient) CreateTransfer(_ context.Context, transfer TBTransfer) (*T
 		ID:              stringToUint128(transfer.ID),
 		DebitAccountID:  stringToUint128(transfer.DebitAccountID),
 		CreditAccountID: stringToUint128(transfer.CreditAccountID),
-		Amount:          tbTypes.ToUint128(uint64(transfer.Amount)),
-		Ledger:          uint32(transfer.Ledger),
-		Code:            uint16(transfer.Code),
+		Amount:          tbTypes.ToUint128(uint64(transfer.Amount)), // #nosec G115 -- validated non-negative above
+		Ledger:          uint32(transfer.Ledger),                    // #nosec G115 -- validated in range above
+		Code:            uint16(transfer.Code),                      // #nosec G115 -- validated in range above
 		Flags:           tbTypes.TransferFlags{Pending: true}.ToUint16(),
 	}
 	results, err := t.client.CreateTransfers([]tbTypes.Transfer{tbTransfer})
@@ -576,10 +585,16 @@ func (t *tbSDKClient) PostTransfer(_ context.Context, transferID string) error {
 }
 
 func (t *tbSDKClient) CreateAccount(_ context.Context, account TBAccount) error {
+	if account.Ledger < 0 || account.Ledger > 0xFFFFFFFF {
+		return fmt.Errorf("ledger out of uint32 range: %d", account.Ledger)
+	}
+	if account.Code < 0 || account.Code > 0xFFFF {
+		return fmt.Errorf("code out of uint16 range: %d", account.Code)
+	}
 	tbAcct := tbTypes.Account{
 		ID:     stringToUint128(account.ID),
-		Ledger: uint32(account.Ledger),
-		Code:   uint16(account.Code),
+		Ledger: uint32(account.Ledger), // #nosec G115 -- validated in range above
+		Code:   uint16(account.Code),   // #nosec G115 -- validated in range above
 	}
 	_, err := t.client.CreateAccounts([]tbTypes.Account{tbAcct})
 	if err != nil {

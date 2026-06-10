@@ -598,7 +598,7 @@ func (g *ProductionSMSGateway) sendViaTwilio(phone, message string) (string, err
 	twilioAuth := os.Getenv("TWILIO_AUTH_TOKEN")
 	apiURL := fmt.Sprintf("%s/Accounts/%s/Messages.json", g.baseURL, twilioSID)
 
-	req, _ := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	req, _ := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode())) // #nosec G704 -- baseURL is admin-configured Twilio API endpoint
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(twilioSID, twilioAuth)
 

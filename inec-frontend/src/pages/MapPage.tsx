@@ -322,7 +322,7 @@ export default function MapPage() {
       const el = document.createElement('div');
       const color = roleColors[off.role] || '#6b7280';
       el.style.cssText = `width:40px;height:40px;border-radius:50%;background:${color};border:3px solid white;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 10px rgba(0,0,0,0.5);z-index:10;`;
-      el.innerHTML = roleIcons[off.role] || '👤';
+      el.textContent = roleIcons[off.role] || '👤';
       el.title = `${off.staff_id} (${off.role}) - ${off.activity}\nBattery: ${off.battery_pct}%\nPU: ${off.pu_code}`;
 
       // Label below marker
@@ -524,9 +524,12 @@ export default function MapPage() {
       if (!w.lat || !w.lng) return;
       const el = document.createElement('div');
       el.style.cssText = 'background:rgba(255,255,255,0.9);border-radius:6px;padding:2px 6px;font-size:10px;box-shadow:0 1px 3px rgba(0,0,0,0.2);pointer-events:auto;white-space:nowrap;';
-      const temp = String(w.weather?.temp_c ?? '--').replace(/[<>&"]/g, '');
-      const desc = String(w.weather?.description || '').replace(/[<>&"]/g, '');
-      el.innerHTML = `<b>${temp}°C</b> ${desc}`;
+      const temp = String(w.weather?.temp_c ?? '--');
+      const desc = String(w.weather?.description || '');
+      const b = document.createElement('b');
+      b.textContent = `${temp}°C`;
+      el.appendChild(b);
+      el.appendChild(document.createTextNode(` ${desc}`));
       el.title = `${w.name}: ${temp}°C, ${w.weather?.humidity || '--'}% humidity, wind ${w.weather?.wind_kmh || '--'} km/h`;
       const marker = new maplibregl.Marker({ element: el }).setLngLat([w.lng, w.lat]).addTo(mapRef.current!);
       weatherMarkers.current.push(marker);

@@ -1488,7 +1488,7 @@ func validateTOTP(secret, code string) bool {
 
 func genTOTP(key []byte, counter int64) string {
 	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, uint64(counter))
+	binary.BigEndian.PutUint64(buf, uint64(counter)) // #nosec G115 -- counter is time-derived, always non-negative
 	mac := hmac.New(sha1.New, key)
 	mac.Write(buf)
 	sum := mac.Sum(nil)

@@ -625,10 +625,14 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use OSRM public API (or self-hosted)
+	// Use OSRM public API (or self-hosted) -- admin-configured via env, not user input
 	osrmURL := os.Getenv("OSRM_URL")
 	if osrmURL == "" {
 		osrmURL = "https://router.project-osrm.org"
+	}
+	if !strings.HasPrefix(osrmURL, "https://") && !strings.HasPrefix(osrmURL, "http://") {
+		writeJSON(w, 500, M{"error": "invalid OSRM URL scheme"})
+		return
 	}
 
 	url := fmt.Sprintf("%s/route/v1/%s/%.6f,%.6f;%.6f,%.6f?overview=full&geometries=geojson&steps=true",
@@ -637,7 +641,7 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil) // #nosec G704 -- URL host is admin-configured (env var)
 	if err != nil {
 		writeJSON(w, 500, M{"error": "failed to create request"})
 		return
@@ -751,8 +755,8 @@ func fetchWeather(ctx context.Context, lat, lng float64) M {
 
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
-	resp, err := geoHTTPClient.Do(req)
+	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil) // #nosec G704 -- hardcoded host, lat/lng are float64
+	resp, err := geoHTTPClient.Do(req)                            // #nosec G704
 	if err != nil {
 		return M{"error": err.Error(), "simulated": true, "temp_c": 28, "description": "unknown"}
 	}
@@ -1059,24 +1063,28 @@ func handleOfflineTile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check local cache first
+	// Check local cache first (defense-in-depth: verify resolved path stays under cache dir)
 	cacheDir := "cache/tiles"
-	cachePath := filepath.Join(cacheDir, z, x, y+".png")
-	if data, err := os.ReadFile(cachePath); err == nil {
+	cachePath := filepath.Clean(filepath.Join(cacheDir, z, x, y+".png"))
+	if !strings.HasPrefix(cachePath, cacheDir+string(os.PathSeparator)) && cachePath != cacheDir {
+		http.Error(w, "invalid tile path", 400)
+		return
+	}
+	if data, err := os.ReadFile(cachePath); err == nil { // #nosec G703 -- path validated above
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Write(data)
 		return
 	}
 
-	// Fetch from OSM
+	// Fetch from OSM (hardcoded origin, z/x/y validated numeric above)
 	tileURL := fmt.Sprintf("https://tile.openstreetmap.org/%s/%s/%s.png", z, x, y)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", tileURL, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", tileURL, nil) // #nosec G704 -- hardcoded host + numeric-only path params
 	req.Header.Set("User-Agent", "INEC-Election-Platform/1.0")
-	resp, err := geoHTTPClient.Do(req)
+	resp, err := geoHTTPClient.Do(req) // #nosec G704
 	if err != nil {
 		http.Error(w, "tile fetch failed", 502)
 		return
@@ -1090,9 +1098,9 @@ func handleOfflineTile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache locally
-	os.MkdirAll(filepath.Join(cacheDir, z, x), 0750)
-	os.WriteFile(cachePath, data, 0600)
+	// Cache locally (path already validated above)
+	os.MkdirAll(filepath.Join(cacheDir, z, x), 0750) // #nosec G703 -- z/x validated numeric above
+	os.WriteFile(cachePath, data, 0600)               // #nosec G703 -- cachePath validated above
 
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
