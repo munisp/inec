@@ -1159,28 +1159,45 @@ func (d *DeduplicationManager) runDedup(jobID int, modalities string, threshold 
 	mods := strings.Split(modalities, ",")
 	primaryMod := mods[0]
 
-	rows, err := d.db.Query(`SELECT voter_vin FROM biometric_templates WHERE modality=? ORDER BY voter_vin`, primaryMod)
-	if err != nil {
-		dbExecLog("dedup_update", `UPDATE dedup_jobs SET status='failed', error_detail=? WHERE id=?`, err.Error(), jobID)
-		return
-	}
+	// Process in batches to avoid OOM with millions of biometric records
+	const batchSize = 10000
 	var vins []string
-	for rows.Next() {
-		var v string
-		rows.Scan(&v)
-		vins = append(vins, v)
+	lastVin := ""
+	for {
+		var rows *sql.Rows
+		var err error
+		if lastVin == "" {
+			rows, err = d.db.Query(`SELECT voter_vin FROM biometric_templates WHERE modality=? ORDER BY voter_vin LIMIT ?`, primaryMod, batchSize)
+		} else {
+			rows, err = d.db.Query(`SELECT voter_vin FROM biometric_templates WHERE modality=? AND voter_vin > ? ORDER BY voter_vin LIMIT ?`, primaryMod, lastVin, batchSize)
+		}
+		if err != nil {
+			dbExecLog("dedup_update", `UPDATE dedup_jobs SET status='failed', error_detail=? WHERE id=?`, err.Error(), jobID)
+			return
+		}
+		count := 0
+		for rows.Next() {
+			var v string
+			rows.Scan(&v)
+			vins = append(vins, v)
+			lastVin = v
+			count++
+		}
+		rows.Close()
+		if count < batchSize {
+			break
+		}
 	}
-	rows.Close()
 
 	totalComparisons := 0
 	dupsFound := 0
 
-	batchSize := 50
-	if len(vins) < batchSize {
-		batchSize = len(vins)
+	compareBatch := 50
+	if len(vins) < compareBatch {
+		compareBatch = len(vins)
 	}
 
-	for i := 0; i < len(vins) && i < batchSize; i++ {
+	for i := 0; i < len(vins) && i < compareBatch; i++ {
 		candidates := d.engine.Identify(vins[i], primaryMod, 5)
 		totalComparisons += len(candidates)
 		for _, c := range candidates {
@@ -1730,7 +1747,7 @@ func handleVaultAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBVASDeviceCapabilities(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT device_id, firmware_version, supported_modalities, fingerprint_sensor, fingerprint_fap_level, camera_resolution, iris_sensor_type, nfc_capable, secure_element, tls_version, last_calibrated_at, registered_at, status FROM bvas_device_capabilities ORDER BY registered_at DESC")
+	rows, _ := db.Query("SELECT device_id, firmware_version, supported_modalities, fingerprint_sensor, fingerprint_fap_level, camera_resolution, iris_sensor_type, nfc_capable, secure_element, tls_version, last_calibrated_at, registered_at, status FROM bvas_device_capabilities ORDER BY registered_at DESC LIMIT 5000")
 	defer rows.Close()
 
 	devices := []M{}

@@ -609,7 +609,7 @@ func callDocumentAIAnalyze(fileBytes []byte, filename string, reportID int) (*Fu
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		return nil, fmt.Errorf("document AI returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -639,7 +639,7 @@ func callVideoAnalyze(videoBytes []byte, filename string) (*VideoAnalysis, error
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		return nil, fmt.Errorf("video analysis returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -682,7 +682,7 @@ func callKYCVerify(userID int, fullName, idType, idNumber, dob, phone string, id
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		return nil, fmt.Errorf("KYC service returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -714,7 +714,7 @@ func callLivenessCheck(userID int, method string, videoBytes []byte) (*LivenessR
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 		return nil, fmt.Errorf("liveness service returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
