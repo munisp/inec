@@ -882,4 +882,32 @@ export const api = {
   updateGOTVRideStatus: (id: string, status: string) =>
     request(`/gotv/rides/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   getGOTVTurnout: (electionId: number) => request(`/gotv/turnout/${electionId}`),
+
+  // GOTV Geo endpoints (for map visualization)
+  getGOTVGeoVolunteers: () => request('/gotv/geo/volunteers'),
+  getGOTVGeoRides: () => request('/gotv/geo/rides'),
+  getGOTVGeoCoverage: () => request('/gotv/geo/coverage'),
+  getGOTVGeoTrails: (volunteerId?: string) =>
+    request(`/gotv/geo/canvass-trails${volunteerId ? `?volunteer_id=${volunteerId}` : ''}`),
+
+  // GOTV Canvass workflow
+  getGOTVWalklist: (volunteerId: string, lat?: number, lng?: number) =>
+    request(`/gotv/canvass/walklist?volunteer_id=${volunteerId}${lat ? `&lat=${lat}&lng=${lng}` : ''}`),
+  recordGOTVDoorKnock: (data: Record<string, unknown>) =>
+    request('/gotv/canvass/knock', { method: 'POST', body: JSON.stringify(data) }),
+  startGOTVShift: (data: Record<string, unknown>) =>
+    request('/gotv/canvass/shift/start', { method: 'POST', body: JSON.stringify(data) }),
+  endGOTVShift: (data: Record<string, unknown>) =>
+    request('/gotv/canvass/shift/end', { method: 'POST', body: JSON.stringify(data) }),
+
+  // GOTV Volunteer location
+  updateGOTVVolunteerLocation: (id: string, data: Record<string, unknown>) =>
+    request(`/gotv/volunteers/${id}/location`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // GOTV Webhooks
+  getGOTVWebhooks: () => request('/gotv/webhooks'),
+  createGOTVWebhook: (data: Record<string, unknown>) =>
+    request('/gotv/webhooks', { method: 'POST', body: JSON.stringify(data) }),
+  deleteGOTVWebhook: (id: number) =>
+    request(`/gotv/webhooks/${id}`, { method: 'DELETE' }),
 };

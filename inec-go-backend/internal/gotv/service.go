@@ -176,10 +176,13 @@ func (s *Service) InitTables(ctx context.Context) error {
 		party_id INTEGER NOT NULL,
 		campaign_id TEXT,
 		contact_id TEXT,
-		channel TEXT NOT NULL CHECK(channel IN ('sms','ussd','push','whatsapp','email','door_knock','phone_call')),
+		channel TEXT NOT NULL CHECK(channel IN ('sms','ussd','push','whatsapp','email','door_knock','phone_call','log')),
 		direction TEXT NOT NULL DEFAULT 'outbound' CHECK(direction IN ('outbound','inbound')),
 		message_variant TEXT DEFAULT 'a',
-		status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sent','delivered','read','responded','failed','opted_out')),
+		status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sent','delivered','pending','read','responded','failed','opted_out')),
+		message_id TEXT,
+		error_detail TEXT,
+		latency_ms INTEGER DEFAULT 0,
 		response_text TEXT,
 		sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		delivered_at TIMESTAMP,
@@ -201,6 +204,43 @@ func (s *Service) InitTables(ctx context.Context) error {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_audit_party ON gotv_audit_log(party_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_door_knocks (
+		id SERIAL PRIMARY KEY,
+		party_id INTEGER NOT NULL,
+		volunteer_id TEXT NOT NULL,
+		contact_id TEXT,
+		latitude REAL NOT NULL,
+		longitude REAL NOT NULL,
+		outcome TEXT NOT NULL CHECK(outcome IN ('home','not_home','refused','pledged','already_voted')),
+		notes TEXT,
+		speed_kmh REAL DEFAULT 0,
+		is_suspicious BOOLEAN DEFAULT FALSE,
+		recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_party ON gotv_door_knocks(party_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_vol ON gotv_door_knocks(volunteer_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_shifts (
+		id SERIAL PRIMARY KEY,
+		party_id INTEGER NOT NULL,
+		volunteer_id TEXT NOT NULL,
+		start_lat REAL,
+		start_lng REAL,
+		end_lat REAL,
+		end_lng REAL,
+		started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		ended_at TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_shifts_vol ON gotv_shifts(volunteer_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_import_log (
+		id SERIAL PRIMARY KEY,
+		party_id INTEGER NOT NULL,
+		import_count INTEGER NOT NULL,
+		imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_import_party ON gotv_import_log(party_id);
 	`
 	_, err := s.DB.ExecContext(ctx, tables)
 	if err != nil {

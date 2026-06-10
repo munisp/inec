@@ -28,17 +28,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
-	_ "github.com/lib/pq"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
-var svc *gotv.Service
+var (
+	svc        *gotv.Service
+	wsHub      *gotv.WSHub
+	dispatcher *gotv.DispatchEngine
+	webhooks   *gotv.WebhookManager
+	authMid    *gotv.AuthMiddleware
+)
 
 func main() {
 	port := flag.Int("port", 8103, "HTTP port")
 	dbURL := flag.String("db", os.Getenv("DATABASE_URL"), "PostgreSQL connection string")
 	encKey := flag.String("enc-key", os.Getenv("GOTV_ENCRYPTION_KEY"), "AES-256 encryption key (64 hex chars)")
+	authURL := flag.String("auth-url", os.Getenv("AUTH_SERVICE_URL"), "auth-svc base URL for JWT validation")
+	devMode := flag.Bool("dev", os.Getenv("GOTV_DEV_MODE") == "true", "enable dev mode (relaxed auth)")
 	flag.Parse()
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
@@ -66,46 +73,99 @@ func main() {
 		log.Warn().Err(err).Msg("GOTV table init had issues (non-fatal if tables exist)")
 	}
 
+	// Initialize subsystems
+	wsHub = gotv.NewWSHub(10000, 5)
+	go wsHub.Run()
+
+	dispatcher = gotv.NewDispatchEngine(db, wsHub, 10)
+	dispatcher.RegisterAdapter(&gotv.LogAdapter{}) // default; real adapters configured via env
+	if smsKey := os.Getenv("AFRICASTALKING_API_KEY"); smsKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewSMSAdapter("africastalking",
+			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER")))
+	}
+	if pushKey := os.Getenv("FCM_SERVER_KEY"); pushKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewPushAdapter(pushKey, os.Getenv("FCM_PROJECT_ID")))
+	}
+	if waToken := os.Getenv("WHATSAPP_TOKEN"); waToken != "" {
+		dispatcher.RegisterAdapter(gotv.NewWhatsAppAdapter(
+			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID")))
+	}
+
+	webhooks = gotv.NewWebhookManager(db)
+	if err := webhooks.InitTables(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("Webhook table init had issues")
+	}
+	webhookCtx, webhookCancel := context.WithCancel(context.Background())
+	defer webhookCancel()
+	webhooks.StartRetryWorker(webhookCtx)
+
+	authMid = gotv.NewAuthMiddleware(db, gotv.AuthConfig{
+		AuthServiceURL: *authURL,
+		DevMode:        *devMode,
+	})
+	auth := authMid.Wrap // shorthand
+
 	r := mux.NewRouter()
 
 	// Health
 	r.HandleFunc("/health", handleHealth).Methods("GET")
 
+	// WebSocket (real-time events)
+	r.HandleFunc("/gotv/ws", handleWebSocket).Methods("GET")
+
 	// Campaigns
-	r.HandleFunc("/gotv/campaigns", authMW(handleListCampaigns)).Methods("GET")
-	r.HandleFunc("/gotv/campaigns", authMW(handleCreateCampaign)).Methods("POST")
-	r.HandleFunc("/gotv/campaigns/{id}", authMW(handleGetCampaign)).Methods("GET")
-	r.HandleFunc("/gotv/campaigns/{id}", authMW(handleUpdateCampaign)).Methods("PATCH")
-	r.HandleFunc("/gotv/campaigns/{id}/launch", authMW(handleLaunchCampaign)).Methods("POST")
+	r.HandleFunc("/gotv/campaigns", auth(handleListCampaigns)).Methods("GET")
+	r.HandleFunc("/gotv/campaigns", auth(handleCreateCampaign)).Methods("POST")
+	r.HandleFunc("/gotv/campaigns/{id}", auth(handleGetCampaign)).Methods("GET")
+	r.HandleFunc("/gotv/campaigns/{id}", auth(handleUpdateCampaign)).Methods("PATCH")
+	r.HandleFunc("/gotv/campaigns/{id}/launch", auth(handleLaunchCampaign)).Methods("POST")
 
 	// Contacts
-	r.HandleFunc("/gotv/contacts", authMW(handleListContacts)).Methods("GET")
-	r.HandleFunc("/gotv/contacts", authMW(handleCreateContact)).Methods("POST")
-	r.HandleFunc("/gotv/contacts/import", authMW(handleImportContacts)).Methods("POST")
-	r.HandleFunc("/gotv/contacts/{id}", authMW(handleGetContact)).Methods("GET")
-	r.HandleFunc("/gotv/contacts/{id}/opt-out", authMW(handleOptOut)).Methods("POST")
+	r.HandleFunc("/gotv/contacts", auth(handleListContacts)).Methods("GET")
+	r.HandleFunc("/gotv/contacts", auth(handleCreateContact)).Methods("POST")
+	r.HandleFunc("/gotv/contacts/import", auth(handleImportContacts)).Methods("POST")
+	r.HandleFunc("/gotv/contacts/{id}", auth(handleGetContact)).Methods("GET")
+	r.HandleFunc("/gotv/contacts/{id}/opt-out", auth(handleOptOut)).Methods("POST")
 
 	// Volunteers
-	r.HandleFunc("/gotv/volunteers", authMW(handleListVolunteers)).Methods("GET")
-	r.HandleFunc("/gotv/volunteers", authMW(handleCreateVolunteer)).Methods("POST")
-	r.HandleFunc("/gotv/volunteers/{id}/checkin", authMW(handleVolunteerCheckin)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers", auth(handleListVolunteers)).Methods("GET")
+	r.HandleFunc("/gotv/volunteers", auth(handleCreateVolunteer)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/{id}/checkin", auth(handleVolunteerCheckin)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/{id}/location", auth(handleVolunteerLocation)).Methods("POST")
 
 	// Pledges
-	r.HandleFunc("/gotv/pledges", authMW(handleListPledges)).Methods("GET")
-	r.HandleFunc("/gotv/pledges", authMW(handleCreatePledge)).Methods("POST")
-	r.HandleFunc("/gotv/pledges/{id}", authMW(handleUpdatePledge)).Methods("PATCH")
+	r.HandleFunc("/gotv/pledges", auth(handleListPledges)).Methods("GET")
+	r.HandleFunc("/gotv/pledges", auth(handleCreatePledge)).Methods("POST")
+	r.HandleFunc("/gotv/pledges/{id}", auth(handleUpdatePledge)).Methods("PATCH")
 
 	// Ride-to-polls
-	r.HandleFunc("/gotv/rides", authMW(handleListRides)).Methods("GET")
-	r.HandleFunc("/gotv/rides", authMW(handleCreateRide)).Methods("POST")
-	r.HandleFunc("/gotv/rides/{id}/match", authMW(handleMatchRide)).Methods("POST")
-	r.HandleFunc("/gotv/rides/{id}/status", authMW(handleUpdateRideStatus)).Methods("PATCH")
+	r.HandleFunc("/gotv/rides", auth(handleListRides)).Methods("GET")
+	r.HandleFunc("/gotv/rides", auth(handleCreateRide)).Methods("POST")
+	r.HandleFunc("/gotv/rides/{id}/match", auth(handleMatchRide)).Methods("POST")
+	r.HandleFunc("/gotv/rides/{id}/status", auth(handleUpdateRideStatus)).Methods("PATCH")
+
+	// Webhooks
+	r.HandleFunc("/gotv/webhooks", auth(handleListWebhooks)).Methods("GET")
+	r.HandleFunc("/gotv/webhooks", auth(handleCreateWebhook)).Methods("POST")
+	r.HandleFunc("/gotv/webhooks/{id}", auth(handleDeleteWebhook)).Methods("DELETE")
+
+	// Geospatial data endpoints (for map visualization)
+	r.HandleFunc("/gotv/geo/volunteers", auth(handleGeoVolunteers)).Methods("GET")
+	r.HandleFunc("/gotv/geo/rides", auth(handleGeoRides)).Methods("GET")
+	r.HandleFunc("/gotv/geo/coverage", auth(handleGeoCoverage)).Methods("GET")
+	r.HandleFunc("/gotv/geo/canvass-trails", auth(handleGeoCanvassTrails)).Methods("GET")
+
+	// Canvasser field workflow
+	r.HandleFunc("/gotv/canvass/walklist", auth(handleCanvassWalklist)).Methods("GET")
+	r.HandleFunc("/gotv/canvass/knock", auth(handleCanvassDoorKnock)).Methods("POST")
+	r.HandleFunc("/gotv/canvass/shift/start", auth(handleCanvassShiftStart)).Methods("POST")
+	r.HandleFunc("/gotv/canvass/shift/end", auth(handleCanvassShiftEnd)).Methods("POST")
 
 	// Turnout (public aggregate data)
 	r.HandleFunc("/gotv/turnout/{election_id}", handleTurnout).Methods("GET")
 
 	// Dashboard
-	r.HandleFunc("/gotv/dashboard", authMW(handleDashboard)).Methods("GET")
+	r.HandleFunc("/gotv/dashboard", auth(handleDashboard)).Methods("GET")
 
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{Addr: addr, Handler: r, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
@@ -126,37 +186,15 @@ func main() {
 	srv.Shutdown(ctx)
 }
 
-// ─── Auth Middleware ────────────────────────────────────────────────────────
+// ─── WebSocket Handler ─────────────────────────────────────────────────────
 
-func authMW(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract party from JWT or X-Party-ID header
-		// In standalone mode, accept X-Party-ID for inter-service calls
-		partyIDStr := r.Header.Get("X-Party-ID")
-		if partyIDStr == "" {
-			// Try to extract from Bearer token (simplified for standalone)
-			auth := r.Header.Get("Authorization")
-			if auth == "" {
-				jsonErr(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			// For standalone mode, accept any Bearer token and use X-Party-ID
-			partyIDStr = "1" // default for dev
-		}
-
-		partyID, err := strconv.Atoi(partyIDStr)
-		if err != nil {
-			jsonErr(w, "invalid party_id", http.StatusBadRequest)
-			return
-		}
-
-		r.Header.Set("X-GOTV-Party-ID", strconv.Itoa(partyID))
-		r.Header.Set("X-GOTV-User", r.Header.Get("X-User"))
-		if r.Header.Get("X-GOTV-User") == "" {
-			r.Header.Set("X-GOTV-User", "system")
-		}
-		next(w, r)
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	partyIDStr := r.URL.Query().Get("party_id")
+	partyID, _ := strconv.Atoi(partyIDStr)
+	if partyID == 0 {
+		partyID = 1
 	}
+	wsHub.HandleWS(w, r, partyID)
 }
 
 func getParty(r *http.Request) (int, string) {
@@ -380,6 +418,17 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svc.DB.Exec("UPDATE gotv_campaigns SET status='active', started_at=NOW() WHERE campaign_id=$1 AND party_id=$2", id, pid)
+
+	// Launch async dispatch
+	if err := dispatcher.LaunchCampaign(context.Background(), id, pid); err != nil {
+		log.Warn().Err(err).Str("campaign", id).Msg("dispatch engine launch failed (campaign set active)")
+	}
+
+	// Emit webhook
+	if webhooks != nil {
+		webhooks.Emit(pid, gotv.EventCampaignCompleted, map[string]interface{}{"campaign_id": id, "action": "launched"})
+	}
+
 	svc.Audit(pid, user, "launch_campaign", "campaign", id)
 	jsonResp(w, map[string]interface{}{"launched": true, "campaign_id": id})
 }
@@ -505,6 +554,17 @@ func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 
 func handleImportContacts(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
+
+	// Rate limiting: max 10,000 contacts per day per party
+	var importedToday int
+	svc.DB.QueryRow(
+		"SELECT COALESCE(SUM(import_count),0) FROM gotv_import_log WHERE party_id=$1 AND imported_at > NOW() - INTERVAL '24 hours'",
+		pid).Scan(&importedToday)
+	if importedToday >= 10000 {
+		jsonErr(w, "daily import limit reached (10,000 contacts/day)", http.StatusTooManyRequests)
+		return
+	}
+
 	r.ParseMultipartForm(10 << 20) // 10MB max
 	file, _, err := r.FormFile("file")
 	if err != nil {
@@ -531,8 +591,15 @@ func handleImportContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imported, skipped := 0, 0
+	// Enforce remaining daily quota
+	remaining := 10000 - importedToday
+	imported, skipped, anomalyFlags := 0, 0, 0
 	for {
+		// Enforce per-request quota from daily remaining
+		if imported >= remaining {
+			break
+		}
+
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
@@ -583,8 +650,32 @@ func handleImportContacts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	svc.Audit(pid, user, "import_contacts", "contacts", fmt.Sprintf("imported=%d,skipped=%d", imported, skipped))
-	jsonResp(w, map[string]interface{}{"imported": imported, "skipped": skipped})
+	// Record in import log for rate limiting
+	svc.DB.Exec("INSERT INTO gotv_import_log (party_id, import_count) VALUES ($1,$2)", pid, imported)
+
+	// Anomaly detection: flag if >90% of phones are unknown status (suspicious bulk import)
+	if imported > 100 {
+		var unknownCount int
+		svc.DB.QueryRow(
+			"SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND voter_status='unknown' AND created_at > NOW() - INTERVAL '1 hour'",
+			pid).Scan(&unknownCount)
+		var totalRecent int
+		svc.DB.QueryRow(
+			"SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND created_at > NOW() - INTERVAL '1 hour'",
+			pid).Scan(&totalRecent)
+		if totalRecent > 0 && float64(unknownCount)/float64(totalRecent) > 0.9 {
+			anomalyFlags = 1
+			svc.Audit(pid, user, "anomaly_detected", "import", fmt.Sprintf("high_unknown_ratio=%d/%d", unknownCount, totalRecent))
+		}
+	}
+
+	svc.Audit(pid, user, "import_contacts", "contacts", fmt.Sprintf("imported=%d,skipped=%d,anomaly=%d", imported, skipped, anomalyFlags))
+	jsonResp(w, map[string]interface{}{
+		"imported":       imported,
+		"skipped":        skipped,
+		"anomaly_flagged": anomalyFlags > 0,
+		"daily_remaining": remaining - imported,
+	})
 }
 
 func handleGetContact(w http.ResponseWriter, r *http.Request) {
@@ -1041,6 +1132,481 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"active_campaigns":  activeCampaigns,
 		"pending_rides":     pendingRides,
 	})
+}
+
+// ─── Volunteer Location (real-time GPS) ────────────────────────────────────
+
+func handleVolunteerLocation(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Battery   int     `json:"battery"`
+		Speed     float64 `json:"speed_kmh"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	svc.DB.Exec(
+		"UPDATE gotv_volunteers SET latitude=$1, longitude=$2, last_checkin_at=NOW() WHERE volunteer_id=$3 AND party_id=$4",
+		req.Latitude, req.Longitude, id, pid)
+
+	// Broadcast to WebSocket
+	if wsHub != nil {
+		wsHub.Broadcast("volunteer.location", pid, map[string]interface{}{
+			"volunteer_id": id,
+			"latitude":     req.Latitude,
+			"longitude":    req.Longitude,
+			"battery":      req.Battery,
+			"speed_kmh":    req.Speed,
+		})
+	}
+
+	jsonResp(w, map[string]interface{}{"updated": true})
+}
+
+// ─── Geospatial Data Endpoints (for map visualization) ─────────────────────
+
+func handleGeoVolunteers(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	rows, err := svc.DB.Query(
+		`SELECT volunteer_id, full_name, role, latitude, longitude, is_active,
+		        has_vehicle, vehicle_capacity, doors_knocked, calls_made, rides_given,
+		        last_checkin_at
+		 FROM gotv_volunteers WHERE party_id=$1 AND latitude IS NOT NULL AND longitude IS NOT NULL`,
+		pid)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type geoVol struct {
+		ID              string      `json:"id"`
+		Name            string      `json:"name"`
+		Role            string      `json:"role"`
+		Lat             float64     `json:"lat"`
+		Lng             float64     `json:"lng"`
+		Active          bool        `json:"active"`
+		HasVehicle      bool        `json:"has_vehicle"`
+		VehicleCapacity int         `json:"vehicle_capacity"`
+		DoorsKnocked    int         `json:"doors_knocked"`
+		CallsMade       int         `json:"calls_made"`
+		RidesGiven      int         `json:"rides_given"`
+		LastCheckin     interface{} `json:"last_checkin"`
+	}
+	var vols []geoVol
+	for rows.Next() {
+		var v geoVol
+		var lastCheckin sql.NullTime
+		if err := rows.Scan(&v.ID, &v.Name, &v.Role, &v.Lat, &v.Lng, &v.Active,
+			&v.HasVehicle, &v.VehicleCapacity, &v.DoorsKnocked, &v.CallsMade, &v.RidesGiven,
+			&lastCheckin); err != nil {
+			continue
+		}
+		if lastCheckin.Valid {
+			v.LastCheckin = lastCheckin.Time
+		}
+		vols = append(vols, v)
+	}
+	jsonResp(w, map[string]interface{}{"volunteers": vols, "total": len(vols)})
+}
+
+func handleGeoRides(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	rows, err := svc.DB.Query(
+		`SELECT rr.request_id, rr.contact_id, rr.volunteer_id, rr.polling_unit_code,
+		        rr.pickup_latitude, rr.pickup_longitude, rr.status, rr.distance_km,
+		        COALESCE(pu.latitude, 0), COALESCE(pu.longitude, 0)
+		 FROM gotv_ride_requests rr
+		 LEFT JOIN polling_units pu ON pu.unique_id = rr.polling_unit_code
+		 WHERE rr.party_id=$1 AND rr.status IN ('pending','matched','en_route','picked_up')`,
+		pid)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type geoRide struct {
+		ID        string  `json:"id"`
+		ContactID string  `json:"contact_id"`
+		VolID     *string `json:"volunteer_id"`
+		PUCode    string  `json:"pu_code"`
+		PickupLat float64 `json:"pickup_lat"`
+		PickupLng float64 `json:"pickup_lng"`
+		PULat     float64 `json:"pu_lat"`
+		PULng     float64 `json:"pu_lng"`
+		Status    string  `json:"status"`
+		DistKm    float64 `json:"distance_km"`
+	}
+	var rides []geoRide
+	for rows.Next() {
+		var r geoRide
+		var volID sql.NullString
+		var distKm sql.NullFloat64
+		if err := rows.Scan(&r.ID, &r.ContactID, &volID, &r.PUCode,
+			&r.PickupLat, &r.PickupLng, &r.Status, &distKm, &r.PULat, &r.PULng); err != nil {
+			continue
+		}
+		if volID.Valid {
+			r.VolID = &volID.String
+		}
+		if distKm.Valid {
+			r.DistKm = distKm.Float64
+		}
+		rides = append(rides, r)
+	}
+	jsonResp(w, map[string]interface{}{"rides": rides, "total": len(rides)})
+}
+
+func handleGeoCoverage(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+
+	// H3-style hex coverage: count contacts and volunteers per state/lga
+	type coverageHex struct {
+		State      string `json:"state"`
+		LGA        string `json:"lga"`
+		Contacts   int    `json:"contacts"`
+		Volunteers int    `json:"volunteers"`
+		Score      float64 `json:"score"` // 0.0 (no coverage) to 1.0 (fully covered)
+	}
+
+	rows, err := svc.DB.Query(`
+		SELECT COALESCE(c.state_code,'unknown') AS state,
+		       COALESCE(c.lga_code,'unknown') AS lga,
+		       COUNT(DISTINCT c.contact_id) AS contacts,
+		       COUNT(DISTINCT v.volunteer_id) AS volunteers
+		FROM gotv_contacts c
+		LEFT JOIN gotv_volunteers v ON v.party_id = c.party_id
+		  AND v.assigned_state = c.state_code AND v.is_active = TRUE
+		WHERE c.party_id = $1 AND c.opted_out = FALSE
+		GROUP BY c.state_code, c.lga_code
+		ORDER BY contacts DESC
+		LIMIT 500`, pid)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var hexes []coverageHex
+	for rows.Next() {
+		var h coverageHex
+		if err := rows.Scan(&h.State, &h.LGA, &h.Contacts, &h.Volunteers); err != nil {
+			continue
+		}
+		if h.Contacts > 0 {
+			h.Score = math.Min(float64(h.Volunteers)/float64(h.Contacts)*100, 1.0)
+		}
+		hexes = append(hexes, h)
+	}
+	jsonResp(w, map[string]interface{}{"coverage": hexes, "total": len(hexes)})
+}
+
+func handleGeoCanvassTrails(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	volID := r.URL.Query().Get("volunteer_id")
+
+	query := `SELECT volunteer_id, latitude, longitude, outcome, recorded_at
+	          FROM gotv_door_knocks WHERE party_id=$1`
+	args := []interface{}{pid}
+	if volID != "" {
+		query += " AND volunteer_id=$2"
+		args = append(args, volID)
+	}
+	query += " ORDER BY recorded_at DESC LIMIT 5000"
+
+	rows, err := svc.DB.Query(query, args...)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type trail struct {
+		VolID   string    `json:"volunteer_id"`
+		Lat     float64   `json:"lat"`
+		Lng     float64   `json:"lng"`
+		Outcome string    `json:"outcome"`
+		Time    time.Time `json:"time"`
+	}
+	var trails []trail
+	for rows.Next() {
+		var t trail
+		if err := rows.Scan(&t.VolID, &t.Lat, &t.Lng, &t.Outcome, &t.Time); err != nil {
+			continue
+		}
+		trails = append(trails, t)
+	}
+	jsonResp(w, map[string]interface{}{"trails": trails, "total": len(trails)})
+}
+
+// ─── Canvasser Field Workflow ──────────────────────────────────────────────
+
+func handleCanvassWalklist(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	volID := r.URL.Query().Get("volunteer_id")
+	lat, _ := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
+	lng, _ := strconv.ParseFloat(r.URL.Query().Get("lng"), 64)
+
+	// Get volunteer's assigned area
+	var assignedState, assignedLGA, assignedWard string
+	svc.DB.QueryRow(
+		"SELECT COALESCE(assigned_state,''), COALESCE(assigned_lga,''), COALESCE(assigned_ward,'') FROM gotv_volunteers WHERE volunteer_id=$1 AND party_id=$2",
+		volID, pid).Scan(&assignedState, &assignedLGA, &assignedWard)
+
+	// Fetch contacts in assigned area, sorted by proximity if lat/lng provided
+	query := `SELECT contact_id, phone_encrypted, full_name_encrypted, state_code, lga_code, ward_code, voter_status
+	          FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE`
+	args := []interface{}{pid}
+	idx := 2
+	if assignedState != "" {
+		query += fmt.Sprintf(" AND state_code=$%d", idx)
+		args = append(args, assignedState)
+		idx++
+	}
+	if assignedLGA != "" {
+		query += fmt.Sprintf(" AND lga_code=$%d", idx)
+		args = append(args, assignedLGA)
+		idx++
+	}
+	query += " ORDER BY created_at LIMIT 200"
+
+	rows, err := svc.DB.Query(query, args...)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type walkItem struct {
+		ContactID string `json:"contact_id"`
+		Phone     string `json:"phone_masked"`
+		Name      string `json:"full_name"`
+		State     string `json:"state"`
+		LGA       string `json:"lga"`
+		Ward      string `json:"ward"`
+		Status    string `json:"voter_status"`
+	}
+	var list []walkItem
+	for rows.Next() {
+		var cid, phoneEnc, vStatus string
+		var nameEnc, st, lga, ward sql.NullString
+		if err := rows.Scan(&cid, &phoneEnc, &nameEnc, &st, &lga, &ward, &vStatus); err != nil {
+			continue
+		}
+		phone, _ := svc.Decrypt(phoneEnc)
+		name := ""
+		if nameEnc.Valid {
+			name, _ = svc.Decrypt(nameEnc.String)
+		}
+		list = append(list, walkItem{
+			ContactID: cid, Phone: maskPhone(phone), Name: name,
+			State: st.String, LGA: lga.String, Ward: ward.String, Status: vStatus,
+		})
+	}
+
+	_ = lat
+	_ = lng
+	jsonResp(w, map[string]interface{}{"walklist": list, "total": len(list)})
+}
+
+func handleCanvassDoorKnock(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		VolunteerID string  `json:"volunteer_id"`
+		ContactID   string  `json:"contact_id"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+		Outcome     string  `json:"outcome"` // home, not_home, refused, pledged, already_voted
+		Notes       string  `json:"notes"`
+		SpeedKmh    float64 `json:"speed_kmh"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	validOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true}
+	if !validOutcomes[req.Outcome] {
+		jsonErr(w, "invalid outcome", http.StatusBadRequest)
+		return
+	}
+
+	// Anti-fraud: flag if speed > 30 km/h (driving, not walking)
+	isSuspicious := req.SpeedKmh > 30
+
+	_, err := svc.DB.Exec(
+		`INSERT INTO gotv_door_knocks
+		 (party_id, volunteer_id, contact_id, latitude, longitude, outcome, notes, speed_kmh, is_suspicious, recorded_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+		pid, req.VolunteerID, req.ContactID, req.Latitude, req.Longitude,
+		req.Outcome, req.Notes, req.SpeedKmh, isSuspicious)
+	if err != nil {
+		jsonErr(w, "failed to record knock", http.StatusInternalServerError)
+		return
+	}
+
+	// Update volunteer stats
+	svc.DB.Exec("UPDATE gotv_volunteers SET doors_knocked=doors_knocked+1 WHERE volunteer_id=$1 AND party_id=$2",
+		req.VolunteerID, pid)
+
+	// Update contact status if pledged
+	if req.Outcome == "pledged" {
+		svc.DB.Exec("UPDATE gotv_contacts SET voter_status='pledged', updated_at=NOW() WHERE contact_id=$1 AND party_id=$2",
+			req.ContactID, pid)
+	}
+
+	// Broadcast canvass event
+	if wsHub != nil {
+		wsHub.Broadcast("canvass.log", pid, map[string]interface{}{
+			"volunteer_id": req.VolunteerID,
+			"contact_id":   req.ContactID,
+			"outcome":      req.Outcome,
+			"latitude":     req.Latitude,
+			"longitude":    req.Longitude,
+			"suspicious":   isSuspicious,
+		})
+	}
+
+	svc.Audit(pid, user, "door_knock", "canvass", req.ContactID)
+	w.WriteHeader(http.StatusCreated)
+	jsonResp(w, map[string]interface{}{"recorded": true, "suspicious": isSuspicious})
+}
+
+func handleCanvassShiftStart(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		VolunteerID string  `json:"volunteer_id"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	_, err := svc.DB.Exec(
+		`INSERT INTO gotv_shifts (party_id, volunteer_id, start_lat, start_lng, started_at)
+		 VALUES ($1,$2,$3,$4,NOW())`,
+		pid, req.VolunteerID, req.Latitude, req.Longitude)
+	if err != nil {
+		jsonErr(w, "failed to start shift", http.StatusInternalServerError)
+		return
+	}
+
+	svc.DB.Exec("UPDATE gotv_volunteers SET is_active=TRUE, latitude=$1, longitude=$2, last_checkin_at=NOW() WHERE volunteer_id=$3 AND party_id=$4",
+		req.Latitude, req.Longitude, req.VolunteerID, pid)
+
+	svc.Audit(pid, user, "shift_start", "canvass", req.VolunteerID)
+	w.WriteHeader(http.StatusCreated)
+	jsonResp(w, map[string]interface{}{"shift_started": true})
+}
+
+func handleCanvassShiftEnd(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		VolunteerID string  `json:"volunteer_id"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	svc.DB.Exec(
+		`UPDATE gotv_shifts SET end_lat=$1, end_lng=$2, ended_at=NOW()
+		 WHERE volunteer_id=$3 AND party_id=$4 AND ended_at IS NULL`,
+		req.Latitude, req.Longitude, req.VolunteerID, pid)
+
+	// Count knocks during this shift
+	var knocks int
+	svc.DB.QueryRow(
+		`SELECT COUNT(*) FROM gotv_door_knocks
+		 WHERE volunteer_id=$1 AND party_id=$2 AND recorded_at >= (
+		   SELECT started_at FROM gotv_shifts WHERE volunteer_id=$1 AND party_id=$2 ORDER BY started_at DESC LIMIT 1
+		 )`, req.VolunteerID, pid).Scan(&knocks)
+
+	svc.Audit(pid, user, "shift_end", "canvass", req.VolunteerID)
+	jsonResp(w, map[string]interface{}{"shift_ended": true, "doors_knocked": knocks})
+}
+
+// ─── Webhook Management ────────────────────────────────────────────────────
+
+func handleListWebhooks(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	rows, err := svc.DB.Query(
+		"SELECT id, url, event_types, is_active, failure_count, created_at FROM gotv_webhooks WHERE party_id=$1",
+		pid)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type wh struct {
+		ID           int      `json:"id"`
+		URL          string   `json:"url"`
+		EventTypes   []string `json:"event_types"`
+		IsActive     bool     `json:"is_active"`
+		FailureCount int      `json:"failure_count"`
+		CreatedAt    string   `json:"created_at"`
+	}
+	var hooks []wh
+	for rows.Next() {
+		var h wh
+		var events pq.StringArray
+		var createdAt time.Time
+		if err := rows.Scan(&h.ID, &h.URL, &events, &h.IsActive, &h.FailureCount, &createdAt); err != nil {
+			continue
+		}
+		h.EventTypes = events
+		h.CreatedAt = createdAt.Format(time.RFC3339)
+		hooks = append(hooks, h)
+	}
+	jsonResp(w, map[string]interface{}{"webhooks": hooks, "total": len(hooks)})
+}
+
+func handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	var req struct {
+		URL        string   `json:"url"`
+		Secret     string   `json:"secret"`
+		EventTypes []string `json:"event_types"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.URL == "" || req.Secret == "" || len(req.EventTypes) == 0 {
+		jsonErr(w, "url, secret, and event_types required", http.StatusBadRequest)
+		return
+	}
+
+	_, err := svc.DB.Exec(
+		"INSERT INTO gotv_webhooks (party_id, url, secret, event_types) VALUES ($1,$2,$3,$4)",
+		pid, req.URL, req.Secret, pq.Array(req.EventTypes))
+	if err != nil {
+		jsonErr(w, "create failed", http.StatusInternalServerError)
+		return
+	}
+
+	svc.Audit(pid, user, "create_webhook", "webhook", req.URL)
+	w.WriteHeader(http.StatusCreated)
+	jsonResp(w, map[string]interface{}{"created": true})
+}
+
+func handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	id := mux.Vars(r)["id"]
+	svc.DB.Exec("DELETE FROM gotv_webhooks WHERE id=$1 AND party_id=$2", id, pid)
+	svc.Audit(pid, user, "delete_webhook", "webhook", id)
+	jsonResp(w, map[string]interface{}{"deleted": true})
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

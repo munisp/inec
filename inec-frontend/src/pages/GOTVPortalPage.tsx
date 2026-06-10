@@ -11,8 +11,9 @@ import {
 } from 'recharts';
 import {
   Users, Megaphone, Car, HandHeart, TrendingUp, Upload,
-  Plus, Search, Filter, RefreshCw,
+  Plus, Search, Filter, RefreshCw, MapPin,
 } from 'lucide-react';
+import GOTVMapPage from './GOTVMapPage';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -122,7 +123,7 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides';
+type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides' | 'map';
 
 export default function GOTVPortalPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -511,6 +512,7 @@ export default function GOTVPortalPage() {
 
   const tabs: { key: Tab; label: string; icon: typeof Users }[] = [
     { key: 'dashboard', label: 'Dashboard', icon: TrendingUp },
+    { key: 'map', label: 'Live Map', icon: MapPin },
     { key: 'campaigns', label: 'Campaigns', icon: Megaphone },
     { key: 'contacts', label: 'Contacts', icon: Users },
     { key: 'volunteers', label: 'Volunteers', icon: HandHeart },
@@ -552,6 +554,7 @@ export default function GOTVPortalPage() {
       ) : (
         <>
           {activeTab === 'dashboard' && renderDashboard()}
+          {activeTab === 'map' && <GOTVMapPage />}
           {activeTab === 'campaigns' && renderCampaigns()}
           {activeTab === 'contacts' && renderContacts()}
           {activeTab === 'volunteers' && renderVolunteers()}
