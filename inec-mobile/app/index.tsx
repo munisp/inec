@@ -8,6 +8,8 @@ import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { login, getToken } from '../src/lib/api';
+import { isAuthenticated as isGOTVAuthenticated } from '../lib/gotv-auth';
+import { getAuthMode, setAuthMode } from '../lib/auth-context';
 
 const { width } = Dimensions.get('window');
 
@@ -24,18 +26,34 @@ export default function LoginScreen() {
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    getToken().then((token) => {
-      if (token) {
-        router.replace('/(tabs)/feed');
-      } else {
-        setLoading(false);
-        Animated.parallel([
-          Animated.spring(logoScale, { toValue: 1, tension: 60, friction: 8, useNativeDriver: true }),
-          Animated.timing(cardSlide, { toValue: 0, duration: 500, delay: 200, useNativeDriver: true }),
-          Animated.timing(cardOpacity, { toValue: 1, duration: 500, delay: 200, useNativeDriver: true }),
-        ]).start();
+    // Check both auth systems on startup
+    (async () => {
+      const mode = await getAuthMode();
+
+      // If GOTV user is already authenticated, go straight to canvasser
+      if (mode === 'gotv') {
+        const gotvAuthed = await isGOTVAuthenticated();
+        if (gotvAuthed) {
+          router.replace('/gotv-canvasser');
+          return;
+        }
       }
-    });
+
+      // If INEC user is already authenticated, go to feed
+      const token = await getToken();
+      if (token && mode === 'inec') {
+        router.replace('/(tabs)/feed');
+        return;
+      }
+
+      // No active session — show login chooser
+      setLoading(false);
+      Animated.parallel([
+        Animated.spring(logoScale, { toValue: 1, tension: 60, friction: 8, useNativeDriver: true }),
+        Animated.timing(cardSlide, { toValue: 0, duration: 500, delay: 200, useNativeDriver: true }),
+        Animated.timing(cardOpacity, { toValue: 1, duration: 500, delay: 200, useNativeDriver: true }),
+      ]).start();
+    })();
   }, [logoScale, cardSlide, cardOpacity]);
 
   const shake = () => {
@@ -60,6 +78,7 @@ export default function LoginScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       await login(username, password);
+      await setAuthMode('inec');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace('/(tabs)/feed');
     } catch (e: unknown) {
@@ -68,6 +87,12 @@ export default function LoginScreen() {
       setLoading(false);
       shake();
     }
+  };
+
+  const handleGOTVEntry = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    await setAuthMode('gotv');
+    router.push('/gotv-login');
   };
 
   const quickFill = (user: string, pass: string) => {
@@ -99,8 +124,8 @@ export default function LoginScreen() {
           <View style={styles.logoContainer}>
             <Ionicons name="shield-checkmark" size={48} color="#fff" />
           </View>
-          <Text style={styles.title}>INEC Observer</Text>
-          <Text style={styles.subtitle}>Election Monitoring Platform</Text>
+          <Text style={styles.title}>INEC Platform</Text>
+          <Text style={styles.subtitle}>Election Management System</Text>
         </Animated.View>
 
         <Animated.View
@@ -118,6 +143,9 @@ export default function LoginScreen() {
               <Text style={styles.errorText}>{error}</Text>
             </View>
           ) : null}
+
+          {/* INEC Observer Login */}
+          <Text style={styles.sectionTitle}>INEC Observer Login</Text>
 
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Username</Text>
@@ -165,15 +193,9 @@ export default function LoginScreen() {
             {loading ? (
               <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Text style={styles.buttonText}>Sign In</Text>
+              <Text style={styles.buttonText}>Sign In as Observer</Text>
             )}
           </TouchableOpacity>
-
-          <View style={styles.divider}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>Quick Access</Text>
-            <View style={styles.dividerLine} />
-          </View>
 
           <View style={styles.quickAccess}>
             <TouchableOpacity style={styles.quickButton} onPress={() => quickFill('observer', 'observer123')}>
@@ -195,6 +217,33 @@ export default function LoginScreen() {
               <Text style={styles.quickText}>Officer</Text>
             </TouchableOpacity>
           </View>
+
+          {/* GOTV Separator */}
+          <View style={styles.divider}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>Party Volunteer?</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
+          {/* GOTV Entry Point */}
+          <TouchableOpacity
+            style={styles.gotvButton}
+            onPress={handleGOTVEntry}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="megaphone" size={20} color="#006b3f" />
+            <View style={styles.gotvButtonContent}>
+              <Text style={styles.gotvButtonTitle}>GOTV — Get Out The Vote</Text>
+              <Text style={styles.gotvButtonSubtitle}>
+                Party canvassers and volunteers sign in here
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#006b3f" />
+          </TouchableOpacity>
+
+          <Text style={styles.gotvNote}>
+            GOTV uses phone + OTP login — separate from INEC portal accounts
+          </Text>
         </Animated.View>
       </KeyboardAvoidingView>
     </LinearGradient>
@@ -249,6 +298,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 24,
     elevation: 12,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#166534',
+    marginBottom: 12,
+    textAlign: 'center',
   },
   errorBox: {
     flexDirection: 'row',
@@ -338,6 +394,7 @@ const styles = StyleSheet.create({
   quickAccess: {
     flexDirection: 'row',
     gap: 10,
+    marginTop: 12,
   },
   quickButton: {
     flex: 1,
@@ -361,5 +418,34 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#4b5563',
     fontWeight: '600',
+  },
+  gotvButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    gap: 12,
+  },
+  gotvButtonContent: {
+    flex: 1,
+  },
+  gotvButtonTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#006b3f',
+  },
+  gotvButtonSubtitle: {
+    fontSize: 12,
+    color: '#4b5563',
+    marginTop: 2,
+  },
+  gotvNote: {
+    fontSize: 11,
+    color: '#9ca3af',
+    textAlign: 'center',
+    marginTop: 10,
   },
 });

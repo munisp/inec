@@ -15,6 +15,7 @@ import {
   requestOTP, verifyOTP, isAuthenticated,
   type GOTVUser,
 } from '../lib/gotv-auth';
+import { setAuthMode } from '../lib/auth-context';
 
 const { width } = Dimensions.get('window');
 
@@ -99,6 +100,7 @@ export default function GOTVLoginScreen() {
     setError('');
     try {
       const user: GOTVUser = await verifyOTP(phone, partyCode, otpCode);
+      await setAuthMode('gotv');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Welcome!', `Signed in as ${user.display_name} (${user.role})`);
       router.replace('/gotv-canvasser');

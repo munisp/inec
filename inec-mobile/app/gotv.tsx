@@ -1,15 +1,18 @@
-import { useState, useCallback } from 'react';
+// GOTV Party Portal — dashboard, campaigns, volunteers, rides.
+// Uses standalone GOTV mobile auth (phone+OTP, NOT INEC Keycloak).
+// Party-scoped: all data isolated per party_id from JWT token.
+
+import { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  RefreshControl, Platform, TextInput, Alert,
+  RefreshControl, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, router } from 'expo-router';
 import { EmptyState } from '../src/components/EmptyState';
 import { CardSkeleton } from '../src/components/SkeletonLoader';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8088';
+import { gotvFetch, isAuthenticated, getMobileUser, type GOTVUser } from '../lib/gotv-auth';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -49,16 +52,6 @@ interface RideRequest {
   distance_km: number | null;
 }
 
-// ─── API ───────────────────────────────────────────────────────────────────
-
-async function gotvFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: { 'Authorization': 'Bearer token', 'X-Party-ID': '1' },
-  });
-  if (!res.ok) throw new Error(`GOTV API error: ${res.status}`);
-  return res.json();
-}
-
 // ─── Colors ────────────────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
@@ -82,6 +75,20 @@ export default function GOTVScreen() {
   const [rides, setRides] = useState<RideRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [user, setUser] = useState<GOTVUser | null>(null);
+
+  // Auth check — redirect to GOTV login if not authenticated
+  useEffect(() => {
+    (async () => {
+      const authed = await isAuthenticated();
+      if (!authed) {
+        router.replace('/gotv-login');
+        return;
+      }
+      const mobileUser = await getMobileUser();
+      setUser(mobileUser);
+    })();
+  }, []);
 
   const loadAll = useCallback(async () => {
     try {
@@ -249,8 +256,18 @@ export default function GOTVScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>GOTV Portal</Text>
-        <Text style={styles.headerSubtitle}>Get Out The Vote</Text>
+        <View style={styles.headerTop}>
+          <View>
+            <Text style={styles.headerTitle}>GOTV Portal</Text>
+            <Text style={styles.headerSubtitle}>
+              {user ? `${user.party_code} — ${user.display_name}` : 'Get Out The Vote'}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => router.push('/gotv-canvasser')} style={styles.canvassButton}>
+            <Ionicons name="walk" size={16} color="#006b3f" />
+            <Text style={styles.canvassButtonText}>Canvass</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.tabBar}>
@@ -296,8 +313,14 @@ export default function GOTVScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
   header: { paddingTop: 60, paddingBottom: 16, paddingHorizontal: 20, backgroundColor: '#006b3f' },
+  headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   headerTitle: { fontSize: 24, fontWeight: '700', color: '#fff' },
   headerSubtitle: { fontSize: 14, color: '#bbf7d0', marginTop: 2 },
+  canvassButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8,
+  },
+  canvassButtonText: { fontSize: 13, fontWeight: '600', color: '#006b3f' },
   tabBar: { flexDirection: 'row', backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e5e7eb', paddingHorizontal: 4 },
   tabItem: { flex: 1, alignItems: 'center', paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: 'transparent' },
   tabItemActive: { borderBottomColor: '#006b3f' },

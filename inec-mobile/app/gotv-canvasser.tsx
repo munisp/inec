@@ -18,6 +18,7 @@ import {
 } from '../lib/storage';
 import { syncManager, type SyncState } from '../lib/sync';
 import { getMobileUser, isAuthenticated, logout, type GOTVUser } from '../lib/gotv-auth';
+import { setAuthMode } from '../lib/auth-context';
 
 const OUTCOMES = [
   { key: 'home', label: 'Home — Spoke', icon: 'checkmark-circle', color: '#10b981' },
@@ -63,7 +64,8 @@ export default function GOTVCanvasserScreen() {
 
   const handleLogout = async () => {
     await logout();
-    router.replace('/gotv-login');
+    await setAuthMode('none');
+    router.replace('/');
   };
 
   // ─── Location Tracking ──────────────────────────────────────────────────
