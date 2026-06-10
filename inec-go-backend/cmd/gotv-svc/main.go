@@ -1918,8 +1918,8 @@ func handleMobileContacts(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
 	since := r.URL.Query().Get("since") // ISO timestamp for incremental sync
 
-	query := `SELECT contact_id, full_name_encrypted, phone_encrypted, state_code, lga_code,
-		ward_code, voter_status, tags, COALESCE(latitude,0), COALESCE(longitude,0), updated_at
+	query := `SELECT contact_id, full_name_encrypted, state_code, lga_code,
+		COALESCE(ward_code,''), voter_status, updated_at
 		FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE)`
 	args := []interface{}{pid}
 
@@ -1931,6 +1931,7 @@ func handleMobileContacts(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := svc.DB.Query(query, args...)
 	if err != nil {
+		log.Warn().Err(err).Msg("GOTV mobile: contacts query failed")
 		jsonErr(w, "query failed", http.StatusInternalServerError)
 		return
 	}
@@ -1938,13 +1939,9 @@ func handleMobileContacts(w http.ResponseWriter, r *http.Request) {
 
 	var contacts []map[string]interface{}
 	for rows.Next() {
-		var cID, nameEnc, phoneEnc, state, lga string
-		var ward sql.NullString
-		var status string
-		var tags []uint8
-		var lat, lng float64
+		var cID, nameEnc, state, lga, ward, status string
 		var updatedAt time.Time
-		if err := rows.Scan(&cID, &nameEnc, &phoneEnc, &state, &lga, &ward, &status, &tags, &lat, &lng, &updatedAt); err != nil {
+		if err := rows.Scan(&cID, &nameEnc, &state, &lga, &ward, &status, &updatedAt); err != nil {
 			continue
 		}
 		name, _ := svc.Decrypt(nameEnc)
@@ -1956,10 +1953,8 @@ func handleMobileContacts(w http.ResponseWriter, r *http.Request) {
 			"name":         name,
 			"state":        state,
 			"lga":          lga,
-			"ward":         ward.String,
+			"ward":         ward,
 			"voter_status": status,
-			"latitude":     lat,
-			"longitude":    lng,
 			"updated_at":   updatedAt,
 		})
 	}
