@@ -137,7 +137,7 @@ export default function GOTVPortalPage() {
 
   const loadDashboard = useCallback(async () => {
     try {
-      const data = await api.get('/gotv/dashboard');
+      const data = await api.getGOTVDashboard();
       setDashboard(data as DashboardData);
     } catch {
       /* fallback handled by empty state */
@@ -146,35 +146,35 @@ export default function GOTVPortalPage() {
 
   const loadCampaigns = useCallback(async () => {
     try {
-      const data = await api.get('/gotv/campaigns') as { campaigns: Campaign[] };
+      const data = await api.getGOTVCampaigns() as { campaigns: Campaign[] };
       setCampaigns(data.campaigns || []);
     } catch { /* empty */ }
   }, []);
 
   const loadContacts = useCallback(async () => {
     try {
-      const data = await api.get('/gotv/contacts') as { contacts: Contact[] };
+      const data = await api.getGOTVContacts() as { contacts: Contact[] };
       setContacts(data.contacts || []);
     } catch { /* empty */ }
   }, []);
 
   const loadVolunteers = useCallback(async () => {
     try {
-      const data = await api.get('/gotv/volunteers') as { volunteers: Volunteer[] };
+      const data = await api.getGOTVVolunteers() as { volunteers: Volunteer[] };
       setVolunteers(data.volunteers || []);
     } catch { /* empty */ }
   }, []);
 
   const loadPledges = useCallback(async () => {
     try {
-      const data = await api.get('/gotv/pledges') as { pledges: Pledge[] };
+      const data = await api.getGOTVPledges() as { pledges: Pledge[] };
       setPledges(data.pledges || []);
     } catch { /* empty */ }
   }, []);
 
   const loadRides = useCallback(async () => {
     try {
-      const data = await api.get('/gotv/rides') as { rides: Ride[] };
+      const data = await api.getGOTVRides() as { rides: Ride[] };
       setRides(data.rides || []);
     } catch { /* empty */ }
   }, []);

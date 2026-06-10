@@ -844,4 +844,42 @@ export const api = {
     if (electionId) p.set('election_id', String(electionId));
     return request(`/geo/h3/grid?${p}`);
   },
+
+  // GOTV — Party voter mobilization
+  getGOTVDashboard: () => request('/gotv/dashboard'),
+  getGOTVCampaigns: (status?: string) =>
+    request(`/gotv/campaigns${status ? `?status=${status}` : ''}`),
+  getGOTVCampaign: (id: string) => request(`/gotv/campaigns/${id}`),
+  createGOTVCampaign: (data: Record<string, unknown>) =>
+    request('/gotv/campaigns', { method: 'POST', body: JSON.stringify(data) }),
+  launchGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}/launch`, { method: 'POST' }),
+  getGOTVContacts: (params?: Record<string, string>) => {
+    const q = params ? `?${new URLSearchParams(params)}` : '';
+    return request(`/gotv/contacts${q}`);
+  },
+  createGOTVContact: (data: Record<string, unknown>) =>
+    request('/gotv/contacts', { method: 'POST', body: JSON.stringify(data) }),
+  importGOTVContacts: (formData: FormData) =>
+    request('/gotv/contacts/import', { method: 'POST', body: formData, headers: {} }),
+  optOutGOTVContact: (id: string) =>
+    request(`/gotv/contacts/${id}/opt-out`, { method: 'POST' }),
+  getGOTVVolunteers: () => request('/gotv/volunteers'),
+  createGOTVVolunteer: (data: Record<string, unknown>) =>
+    request('/gotv/volunteers', { method: 'POST', body: JSON.stringify(data) }),
+  checkinGOTVVolunteer: (id: string, lat: number, lng: number) =>
+    request(`/gotv/volunteers/${id}/checkin`, { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng }) }),
+  getGOTVPledges: () => request('/gotv/pledges'),
+  createGOTVPledge: (data: Record<string, unknown>) =>
+    request('/gotv/pledges', { method: 'POST', body: JSON.stringify(data) }),
+  updateGOTVPledge: (id: string, status: string) =>
+    request(`/gotv/pledges/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  getGOTVRides: () => request('/gotv/rides'),
+  createGOTVRide: (data: Record<string, unknown>) =>
+    request('/gotv/rides', { method: 'POST', body: JSON.stringify(data) }),
+  matchGOTVRide: (id: string) =>
+    request(`/gotv/rides/${id}/match`, { method: 'POST' }),
+  updateGOTVRideStatus: (id: string, status: string) =>
+    request(`/gotv/rides/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  getGOTVTurnout: (electionId: number) => request(`/gotv/turnout/${electionId}`),
 };
