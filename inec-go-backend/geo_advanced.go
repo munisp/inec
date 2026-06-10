@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,18 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+// geoHTTPClient is a timeout-configured HTTP client for external geo APIs.
+// Avoids http.DefaultClient which has no timeouts for TLS handshake/headers.
+var geoHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+		MaxIdleConns:        20,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
 
 // ═══════════════════════════════════════════════════════════
 // GEO ADVANCED — 30 enhancements for mapping & real-time tracking
@@ -605,6 +618,12 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	if body.Profile == "" {
 		body.Profile = "driving"
 	}
+	// Security: whitelist profiles to prevent SSRF via path manipulation
+	validProfiles := map[string]bool{"driving": true, "walking": true, "cycling": true}
+	if !validProfiles[body.Profile] {
+		writeJSON(w, 400, M{"error": "invalid profile, must be: driving, walking, cycling"})
+		return
+	}
 
 	// Use OSRM public API (or self-hosted)
 	osrmURL := os.Getenv("OSRM_URL")
@@ -624,7 +643,7 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geoHTTPClient.Do(req)
 	if err != nil {
 		// Fallback: return straight line with Haversine distance
 		dist := haversineDistance(body.OriginLat, body.OriginLng, body.DestLat, body.DestLng)
@@ -641,7 +660,7 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	var osrmResp map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&osrmResp)
+	json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&osrmResp)
 	writeJSON(w, 200, osrmResp)
 }
 
@@ -733,7 +752,7 @@ func fetchWeather(ctx context.Context, lat, lng float64) M {
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geoHTTPClient.Do(req)
 	if err != nil {
 		return M{"error": err.Error(), "simulated": true, "temp_c": 28, "description": "unknown"}
 	}
@@ -1026,6 +1045,20 @@ func handleOfflineTile(w http.ResponseWriter, r *http.Request) {
 	z, x, yPng := parts[0], parts[1], parts[2]
 	y := strings.TrimSuffix(yPng, ".png")
 
+	// Security: validate z/x/y are numeric to prevent path traversal
+	for _, v := range []string{z, x, y} {
+		for _, c := range v {
+			if c < '0' || c > '9' {
+				http.Error(w, "invalid tile coordinates", 400)
+				return
+			}
+		}
+		if len(v) > 6 { // max zoom ~22, max tile index ~4M (7 digits)
+			http.Error(w, "tile coordinate out of range", 400)
+			return
+		}
+	}
+
 	// Check local cache first
 	cacheDir := "cache/tiles"
 	cachePath := filepath.Join(cacheDir, z, x, y+".png")
@@ -1043,22 +1076,23 @@ func handleOfflineTile(w http.ResponseWriter, r *http.Request) {
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", tileURL, nil)
 	req.Header.Set("User-Agent", "INEC-Election-Platform/1.0")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geoHTTPClient.Do(req)
 	if err != nil {
 		http.Error(w, "tile fetch failed", 502)
 		return
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	// Security: limit tile response to 5MB to prevent OOM
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
 		http.Error(w, "tile read failed", 502)
 		return
 	}
 
 	// Cache locally
-	os.MkdirAll(filepath.Join(cacheDir, z, x), 0755)
-	os.WriteFile(cachePath, data, 0644)
+	os.MkdirAll(filepath.Join(cacheDir, z, x), 0750)
+	os.WriteFile(cachePath, data, 0600)
 
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")

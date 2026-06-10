@@ -226,8 +226,9 @@ func (s *Service) processJob(jobID string) {
 					s.queue[i].Error = err.Error()
 				} else {
 					s.queue[i].Status = StatusPending
+					retries := s.queue[i].Retries
 					go func() {
-						time.Sleep(time.Duration(s.queue[i].Retries) * 5 * time.Second)
+						time.Sleep(time.Duration(retries) * 5 * time.Second)
 						s.processJob(jobID)
 					}()
 				}

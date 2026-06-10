@@ -410,8 +410,10 @@ class DocLingEngine:
 
     def _extract_with_docling(self, file_bytes: bytes, filename: str) -> DocLingResult:
         """Real DocLing extraction."""
-        # Write to temp file for DocLing
+        # Write to temp file for DocLing — sanitize suffix to prevent path injection
         suffix = Path(filename).suffix
+        if not re.match(r'^\.[a-zA-Z0-9]{1,10}$', suffix):
+            suffix = ".bin"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
             f.write(file_bytes)
             tmp_path = f.name
@@ -496,8 +498,10 @@ class VideoAnalyzer:
         """Full video analysis with OpenCV."""
         cv2 = self._cv2
 
-        # Write to temp file
+        # Write to temp file — sanitize suffix
         suffix = Path(filename).suffix or ".mp4"
+        if not re.match(r'^\.[a-zA-Z0-9]{1,10}$', suffix):
+            suffix = ".mp4"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
             f.write(video_bytes)
             tmp_path = f.name

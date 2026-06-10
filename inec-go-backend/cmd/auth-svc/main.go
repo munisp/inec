@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -284,10 +285,26 @@ func mfaStatus(svc *auth.Service, mfaSvc *auth.MFAService) http.HandlerFunc {
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
+	allowed := os.Getenv("CORS_ORIGINS")
+	if allowed == "" {
+		allowed = "*"
+	}
+	origins := strings.Split(allowed, ",")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if allowed == "*" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else {
+			for _, o := range origins {
+				if strings.TrimSpace(o) == origin {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					break
+				}
+			}
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
 			return

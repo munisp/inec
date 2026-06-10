@@ -242,9 +242,9 @@ func handleListElections(w http.ResponseWriter, r *http.Request) {
 	var rows *sql.Rows
 	var err error
 	if status != "" {
-		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections WHERE status=? ORDER BY election_date DESC", status)
+		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections WHERE status=? ORDER BY election_date DESC LIMIT 500", status)
 	} else {
-		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections ORDER BY election_date DESC")
+		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections ORDER BY election_date DESC LIMIT 500")
 	}
 	if err != nil {
 		writeError(w, 500, err.Error())

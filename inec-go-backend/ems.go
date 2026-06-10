@@ -874,7 +874,7 @@ func handleBVASConflictResolve(w http.ResponseWriter, r *http.Request) {
 // ══════════════════════════════════════════════════════════════
 
 func handleListPortals(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT * FROM portal_connections ORDER BY portal_name")
+	rows, _ := db.Query("SELECT * FROM portal_connections ORDER BY portal_name LIMIT 100")
 	writeJSON(w, 200, scanRows(rows))
 }
 

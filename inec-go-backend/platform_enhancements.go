@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -945,6 +946,7 @@ func handleExportPDFReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func renderHTMLReport(w http.ResponseWriter, title string, data M) {
+	safeTitle := html.EscapeString(title)
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>%s</title>
 <style>body{font-family:Arial,sans-serif;margin:40px;color:#333}
 h1{color:#006837;border-bottom:3px solid #006837;padding-bottom:10px}
@@ -952,13 +954,13 @@ table{border-collapse:collapse;width:100%%}
 th,td{border:1px solid #ddd;padding:8px;text-align:left}
 th{background:#006837;color:white}
 .footer{margin-top:40px;font-size:12px;color:#666}
-</style></head><body>`, title)
-	fmt.Fprintf(w, `<h1>%s</h1>`, title)
-	fmt.Fprintf(w, `<p>Generated: %v</p>`, data["generated"])
+</style></head><body>`, safeTitle)
+	fmt.Fprintf(w, `<h1>%s</h1>`, safeTitle)
+	fmt.Fprintf(w, `<p>Generated: %v</p>`, html.EscapeString(fmt.Sprintf("%v", data["generated"])))
 	if parties, ok := data["parties"].([]M); ok && len(parties) > 0 {
 		fmt.Fprintf(w, `<h2>Party Results</h2><table><tr><th>Party</th><th>Total Votes</th></tr>`)
 		for _, p := range parties {
-			fmt.Fprintf(w, `<tr><td>%v</td><td>%v</td></tr>`, p["party_code"], p["tv"])
+			fmt.Fprintf(w, `<tr><td>%s</td><td>%v</td></tr>`, html.EscapeString(fmt.Sprintf("%v", p["party_code"])), p["tv"])
 		}
 		fmt.Fprintf(w, `</table>`)
 	}

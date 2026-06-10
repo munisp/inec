@@ -524,8 +524,8 @@ export default function MapPage() {
       if (!w.lat || !w.lng) return;
       const el = document.createElement('div');
       el.style.cssText = 'background:rgba(255,255,255,0.9);border-radius:6px;padding:2px 6px;font-size:10px;box-shadow:0 1px 3px rgba(0,0,0,0.2);pointer-events:auto;white-space:nowrap;';
-      const temp = w.weather?.temp_c ?? '--';
-      const desc = w.weather?.description || '';
+      const temp = String(w.weather?.temp_c ?? '--').replace(/[<>&"]/g, '');
+      const desc = String(w.weather?.description || '').replace(/[<>&"]/g, '');
       el.innerHTML = `<b>${temp}°C</b> ${desc}`;
       el.title = `${w.name}: ${temp}°C, ${w.weather?.humidity || '--'}% humidity, wind ${w.weather?.wind_kmh || '--'} km/h`;
       const marker = new maplibregl.Marker({ element: el }).setLngLat([w.lng, w.lat]).addTo(mapRef.current!);

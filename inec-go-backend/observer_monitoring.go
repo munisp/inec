@@ -196,12 +196,22 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	userID, _ := strconv.Atoi(userIDStr)
 
 	subID := fmt.Sprintf("sse-%d-%d", userID, time.Now().UnixNano())
+	// Security: sanitize filter values to prevent SSE event injection
+	sanitizeSSE := func(s string) string {
+		s = strings.ReplaceAll(s, "\n", "")
+		s = strings.ReplaceAll(s, "\r", "")
+		s = strings.ReplaceAll(s, "\"", "")
+		if len(s) > 50 {
+			s = s[:50]
+		}
+		return s
+	}
 	sub := &SSESubscriber{
 		ID:        subID,
 		UserID:    userID,
-		PartyCode: r.URL.Query().Get("party"),
-		StateCode: r.URL.Query().Get("state"),
-		LGACode:   r.URL.Query().Get("lga"),
+		PartyCode: sanitizeSSE(r.URL.Query().Get("party")),
+		StateCode: sanitizeSSE(r.URL.Query().Get("state")),
+		LGACode:   sanitizeSSE(r.URL.Query().Get("lga")),
 		Channel:   make(chan SSEEvent, 100),
 		CreatedAt: time.Now(),
 	}
