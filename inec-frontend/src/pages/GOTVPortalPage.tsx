@@ -373,7 +373,7 @@ export default function GOTVPortalPage() {
                   <td className="p-3 font-mono text-sm">{c.phone_masked}</td>
                   <td className="p-3">{c.state_code || '—'}</td>
                   <td className="p-3"><Badge className={VOTER_STATUS_COLORS[c.voter_status] || ''}>{c.voter_status}</Badge></td>
-                  <td className="p-3">{c.tags.map(t => <Badge key={t} variant="outline" className="mr-1">{t}</Badge>)}</td>
+                  <td className="p-3">{(c.tags || []).map(t => <Badge key={t} variant="outline" className="mr-1">{t}</Badge>)}</td>
                 </tr>
               ))}
           </tbody>
