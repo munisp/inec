@@ -840,6 +840,12 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 }
 
 func writeError(w http.ResponseWriter, code int, detail string) {
+	// In production, suppress internal error details from 500 responses
+	if code >= 500 && os.Getenv("APP_ENV") == "production" {
+		log.Error().Int("code", code).Str("detail", detail).Msg("internal error")
+		writeJSON(w, code, M{"detail": "internal server error"})
+		return
+	}
 	writeJSON(w, code, M{"detail": detail})
 }
 func securityHeaders(next http.Handler) http.Handler {
@@ -1031,6 +1037,12 @@ func queryParamInt(r *http.Request, key string, def int) int {
 	}
 	var i int
 	fmt.Sscanf(v, "%d", &i)
+	if i <= 0 {
+		return def
+	}
+	if i > 10000 {
+		return 10000
+	}
 	return i
 }
 
