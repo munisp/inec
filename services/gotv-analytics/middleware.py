@@ -20,19 +20,24 @@ logger = structlog.get_logger()
 KAFKA_REST_URL = os.getenv("KAFKA_REST_URL")
 
 
-def publish_kafka(topic: str, key: str, payload: dict) -> None:
-    """Publish an event to Kafka via REST proxy."""
+def publish_kafka(topic: str, key: str, payload: dict, retries: int = 3) -> None:
+    """Publish an event to Kafka via REST proxy with retry."""
     if not KAFKA_REST_URL:
         logger.debug("gotv_analytics_event", topic=topic, key=key, payload=payload)
         return
-    try:
-        httpx.post(
-            f"{KAFKA_REST_URL}/produce",
-            json={"topic": topic, "key": key, "value": payload},
-            timeout=5.0,
-        )
-    except Exception as e:
-        logger.warning("kafka_publish_failed", topic=topic, error=str(e))
+    last_err = None
+    for attempt in range(retries):
+        try:
+            httpx.post(
+                f"{KAFKA_REST_URL}/produce",
+                json={"topic": topic, "key": key, "value": payload},
+                timeout=5.0,
+            )
+            return
+        except Exception as e:
+            last_err = e
+            time.sleep(0.1 * (2 ** attempt))
+    logger.warning("kafka_publish_failed", topic=topic, attempts=retries, error=str(last_err))
 
 
 # ─── Redis Integration ──────────────────────────────────────────────────────
@@ -148,10 +153,22 @@ def aggregate_opensearch(index: str, party_id: int, field: str) -> dict:
 LAKEHOUSE_URL = os.getenv("LAKEHOUSE_URL")
 
 
+FORBIDDEN_SQL_KEYWORDS = {"DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "EXEC", "--", ";"}
+
+
 def query_lakehouse(sql: str) -> list[dict]:
-    """Run an analytical query against the Lakehouse/Trino cluster."""
+    """Run an analytical query against the Lakehouse/Trino cluster.
+    Only SELECT queries are allowed to prevent injection."""
     if not LAKEHOUSE_URL:
         return []
+    trimmed = sql.strip().upper()
+    if not trimmed.startswith("SELECT"):
+        logger.warning("lakehouse_query_rejected", reason="not a SELECT")
+        return []
+    for kw in FORBIDDEN_SQL_KEYWORDS:
+        if kw in trimmed:
+            logger.warning("lakehouse_query_rejected", keyword=kw)
+            return []
     try:
         resp = httpx.post(f"{LAKEHOUSE_URL}/query", json={"query": sql}, timeout=30.0)
         result = resp.json()

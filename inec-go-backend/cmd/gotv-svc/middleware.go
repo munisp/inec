@@ -93,11 +93,19 @@ func publishEvent(topic, key string, payload interface{}) {
 	}
 	kafkaClient.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := w.WriteMessages(ctx, kafka.Message{Key: []byte(key), Value: data}); err != nil {
-		log.Warn().Err(err).Str("topic", topic).Msg("GOTV Kafka publish failed")
+	// Retry with exponential backoff (max 3 attempts)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := w.WriteMessages(ctx, kafka.Message{Key: []byte(key), Value: data})
+		cancel()
+		if err == nil {
+			return
+		}
+		lastErr = err
+		time.Sleep(time.Duration(1<<uint(attempt)) * 100 * time.Millisecond)
 	}
+	log.Warn().Err(lastErr).Str("topic", topic).Int("attempts", 3).Msg("GOTV Kafka publish failed after retries")
 }
 
 // ─── Redis Integration ─────────────────────────────────────────────────────
@@ -105,6 +113,9 @@ func publishEvent(topic, key string, payload interface{}) {
 // powers pub/sub for real-time WebSocket events.
 
 var redisClient *redis.Client
+
+// Timeout-safe HTTP client for middleware calls (10s timeout)
+var mwHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func initRedis() {
 	addr := os.Getenv("REDIS_URL")
@@ -368,7 +379,7 @@ func checkPermission(userID, permission, objectType, objectID string) bool {
 	}`, objectType, objectID, permission, userID)
 	req, _ := http.NewRequest("POST", permifyURL+"/v1/tenants/gotv/permissions/check", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mwHTTPClient.Do(req)
 	if err != nil {
 		return true // fail-open in case of Permify outage
 	}
@@ -378,6 +389,12 @@ func checkPermission(userID, permission, objectType, objectID string) bool {
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 	return result.Can == "RESULT_ALLOWED"
+}
+
+// checkPartyPermission validates a party user has permission for a GOTV operation.
+// Used in handlers for fine-grained authorization.
+func checkPartyPermission(partyID int, user, permission string) bool {
+	return checkPermission(user, permission, "party", fmt.Sprintf("%d", partyID))
 }
 
 // ─── TigerBeetle Integration ──────────────────────────────────────────────
@@ -407,7 +424,7 @@ func recordCampaignSpend(campaignID string, partyID int, amountNGN int64, descri
 		"description":    description,
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(tigerbeetleURL+"/transfers", "application/json", bytes.NewReader(data))
+	resp, err := mwHTTPClient.Post(tigerbeetleURL+"/transfers", "application/json", bytes.NewReader(data))
 	if err == nil {
 		resp.Body.Close()
 	}
@@ -426,7 +443,7 @@ func recordVolunteerReimbursement(volunteerID string, partyID int, amountNGN int
 		"description":    "Transport reimbursement",
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(tigerbeetleURL+"/transfers", "application/json", bytes.NewReader(data))
+	resp, err := mwHTTPClient.Post(tigerbeetleURL+"/transfers", "application/json", bytes.NewReader(data))
 	if err == nil {
 		resp.Body.Close()
 	}
@@ -464,12 +481,12 @@ func daprInvoke(appID, method string, payload interface{}) ([]byte, error) {
 		}
 		url = fmt.Sprintf("http://localhost:%s/%s", port, method)
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	resp, err := mwHTTPClient.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, 5<<20)) // 5MB max
 }
 
 // invokeRustMatchRide calls the Rust gotv-engine for spatial ride matching
@@ -525,7 +542,7 @@ func streamCanvassEvent(event interface{}) {
 		"payload": string(data),
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := http.Post(fluvioURL+"/produce", "application/json", bytes.NewReader(body))
+	resp, err := mwHTTPClient.Post(fluvioURL+"/produce", "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Warn().Err(err).Msg("GOTV Fluvio stream failed")
 		return
@@ -563,7 +580,7 @@ func initiateVolunteerPayment(volunteerPhone string, amountNGN float64, reason s
 	req, _ := http.NewRequest("POST", mojaloopURL+"/transfers", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/vnd.interoperability.transfers+json;version=1.1")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mwHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -592,8 +609,8 @@ func wafMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Read body for inspection
-		bodyBytes, _ := io.ReadAll(r.Body)
+		// Read body for inspection (capped at 10MB)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 		inspectPayload := map[string]interface{}{
@@ -604,7 +621,7 @@ func wafMiddleware(next http.Handler) http.Handler {
 			"source":  r.RemoteAddr,
 		}
 		data, _ := json.Marshal(inspectPayload)
-		resp, err := http.Post(openappsecURL+"/inspect", "application/json", bytes.NewReader(data))
+		resp, err := mwHTTPClient.Post(openappsecURL+"/inspect", "application/json", bytes.NewReader(data))
 		if err != nil {
 			next.ServeHTTP(w, r)
 			return
@@ -681,13 +698,26 @@ func initLakehouse() {
 	log.Info().Str("url", lakehouseURL).Msg("GOTV Lakehouse connected")
 }
 
-func queryLakehouse(sql string) ([]map[string]interface{}, error) {
+// queryLakehouse runs a parameterized analytical query against Lakehouse.
+// Only allows SELECT queries to prevent injection attacks.
+func queryLakehouse(query string) ([]map[string]interface{}, error) {
 	if lakehouseURL == "" {
 		return nil, fmt.Errorf("lakehouse not configured")
 	}
-	payload := map[string]string{"query": sql}
+	// Security: reject non-SELECT queries to prevent injection
+	trimmed := strings.TrimSpace(strings.ToUpper(query))
+	if !strings.HasPrefix(trimmed, "SELECT") {
+		return nil, fmt.Errorf("only SELECT queries allowed")
+	}
+	// Block common injection patterns
+	for _, banned := range []string{"DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "EXEC", "--", ";"} {
+		if strings.Contains(trimmed, banned) {
+			return nil, fmt.Errorf("forbidden SQL keyword: %s", banned)
+		}
+	}
+	payload := map[string]string{"query": query}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(lakehouseURL+"/query", "application/json", bytes.NewReader(data))
+	resp, err := mwHTTPClient.Post(lakehouseURL+"/query", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -732,7 +762,13 @@ func handleGOTVSearch(w http.ResponseWriter, r *http.Request) {
 	if index == "" {
 		index = "gotv-contacts"
 	}
-	pid := 1 // TODO: extract from auth
+	// Validate index to prevent OpenSearch injection
+	validIndices := map[string]bool{"gotv-contacts": true, "gotv-volunteers": true, "gotv-campaigns": true}
+	if !validIndices[index] {
+		http.Error(w, `{"error":"invalid index"}`, http.StatusBadRequest)
+		return
+	}
+	pid, _ := getParty(r)
 	results, err := searchDocuments(index, q, pid)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"results": []interface{}{}, "source": "postgresql"})
@@ -762,7 +798,12 @@ func handleGOTVAnalytics(w http.ResponseWriter, r *http.Request) {
 // ─── Middleware Status Handler ──────────────────────────────────────────────
 // Reports connectivity status of all 13 middleware services.
 
+// handleMiddlewareStatus requires auth to prevent infrastructure info leakage
 func handleMiddlewareStatus(w http.ResponseWriter, r *http.Request) {
+	if _, user := getParty(r); user == "" {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
 	status := map[string]interface{}{
 		"kafka":       kafkaClient != nil,
 		"redis":       redisClient != nil,

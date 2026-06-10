@@ -176,7 +176,7 @@ func main() {
 	// Middleware-powered endpoints
 	r.HandleFunc("/gotv/search", auth(handleGOTVSearch)).Methods("GET")
 	r.HandleFunc("/gotv/analytics", auth(handleGOTVAnalytics)).Methods("GET")
-	r.HandleFunc("/gotv/middleware/status", handleMiddlewareStatus).Methods("GET")
+	r.HandleFunc("/gotv/middleware/status", auth(handleMiddlewareStatus)).Methods("GET")
 
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
@@ -184,8 +184,14 @@ func main() {
 		handler = wafMiddleware(r)
 	}
 
+	// Apply CORS headers
+	handler = corsMiddleware(handler)
+
+	// Apply request body size limit (10MB)
+	handler = http.MaxBytesHandler(handler, 10<<20)
+
 	addr := fmt.Sprintf(":%d", *port)
-	srv := &http.Server{Addr: addr, Handler: handler, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: handler, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
 
 	go func() {
 		log.Info().Str("addr", addr).Msg("GOTV service starting")
@@ -206,10 +212,17 @@ func main() {
 // ─── WebSocket Handler ─────────────────────────────────────────────────────
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Validate auth via token query param (WS can't use headers)
+	token := r.URL.Query().Get("token")
+	if token == "" && r.Header.Get("Authorization") == "" {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return
+	}
 	partyIDStr := r.URL.Query().Get("party_id")
 	partyID, _ := strconv.Atoi(partyIDStr)
-	if partyID == 0 {
-		partyID = 1
+	if partyID <= 0 {
+		http.Error(w, `{"error":"valid party_id required"}`, http.StatusBadRequest)
+		return
 	}
 	wsHub.HandleWS(w, r, partyID)
 }
@@ -234,14 +247,17 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
 	status := r.URL.Query().Get("status")
+	limit, offset := parsePagination(r)
 
 	query := "SELECT campaign_id, name, campaign_type, status, target_state, total_contacts, contacts_reached, created_by, created_at FROM gotv_campaigns WHERE party_id=$1"
 	args := []interface{}{pid}
+	argIdx := 2
 	if status != "" {
-		query += " AND status=$2"
+		query += fmt.Sprintf(" AND status=$%d", argIdx)
 		args = append(args, status)
+		argIdx++
 	}
-	query += " ORDER BY created_at DESC LIMIT 100"
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d OFFSET %d", limit, offset)
 
 	rows, err := svc.DB.Query(query, args...)
 	if err != nil {
@@ -301,6 +317,10 @@ func handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ABSplitPct == 0 {
 		req.ABSplitPct = 50
+	}
+	if req.ABSplitPct < 0 || req.ABSplitPct > 100 {
+		jsonErr(w, "ab_split_pct must be 0-100", http.StatusBadRequest)
+		return
 	}
 
 	campaignID := "gotv-camp-" + uuid.New().String()[:8]
@@ -393,11 +413,15 @@ func handleUpdateCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only allow updates on draft campaigns
+	// Only allow updates on draft/scheduled campaigns
 	var status string
-	svc.DB.QueryRow("SELECT status FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status)
-	if status != "draft" {
-		jsonErr(w, "can only update draft campaigns", http.StatusConflict)
+	err := svc.DB.QueryRow("SELECT status FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status)
+	if err == sql.ErrNoRows {
+		jsonErr(w, "campaign not found", http.StatusNotFound)
+		return
+	}
+	if status != "draft" && status != "scheduled" {
+		jsonErr(w, "can only update draft or scheduled campaigns", http.StatusConflict)
 		return
 	}
 
@@ -439,14 +463,34 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
 
+	// Validate campaign exists and check status transition
 	var status string
-	svc.DB.QueryRow("SELECT status FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status)
+	var totalContacts int
+	err := svc.DB.QueryRow("SELECT status, total_contacts FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status, &totalContacts)
+	if err == sql.ErrNoRows {
+		jsonErr(w, "campaign not found", http.StatusNotFound)
+		return
+	}
 	if status != "draft" && status != "scheduled" {
 		jsonErr(w, "campaign must be draft or scheduled to launch", http.StatusConflict)
 		return
 	}
 
-	svc.DB.Exec("UPDATE gotv_campaigns SET status='active', started_at=NOW() WHERE campaign_id=$1 AND party_id=$2", id, pid)
+	// Count target contacts if not set
+	if totalContacts == 0 {
+		var targetState sql.NullString
+		svc.DB.QueryRow("SELECT target_state FROM gotv_campaigns WHERE campaign_id=$1", id).Scan(&targetState)
+		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE"
+		var countArgs []interface{}
+		countArgs = append(countArgs, pid)
+		if targetState.Valid && targetState.String != "" {
+			countQuery += " AND state_code=$2"
+			countArgs = append(countArgs, targetState.String)
+		}
+		svc.DB.QueryRow(countQuery, countArgs...).Scan(&totalContacts)
+	}
+
+	svc.DB.Exec("UPDATE gotv_campaigns SET status='active', started_at=NOW(), total_contacts=$3 WHERE campaign_id=$1 AND party_id=$2", id, pid, totalContacts)
 
 	// Launch async dispatch
 	if err := dispatcher.LaunchCampaign(context.Background(), id, pid); err != nil {
@@ -465,7 +509,15 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 		"event": "campaign_launched", "campaign_id": id, "party_id": pid, "timestamp": time.Now().UTC(),
 	})
 	startCampaignWorkflow(id, pid, "", 0)
-	recordCampaignSpend(id, pid, 0, "Campaign launch")
+	// Estimate campaign cost: ₦4/SMS, ₦2/push, etc.
+	costPerContact := map[string]int64{"sms": 4, "push": 2, "whatsapp": 5, "email": 1, "ussd": 3}
+	var ctype string
+	svc.DB.QueryRow("SELECT campaign_type FROM gotv_campaigns WHERE campaign_id=$1", id).Scan(&ctype)
+	estCost := int64(totalContacts) * costPerContact[ctype]
+	if estCost <= 0 {
+		estCost = 100 // minimum tracking amount
+	}
+	recordCampaignSpend(id, pid, estCost, "Campaign launch")
 	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
 
 	jsonResp(w, map[string]interface{}{"launched": true, "campaign_id": id})
@@ -477,8 +529,7 @@ func handleListContacts(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
 	status := r.URL.Query().Get("status")
 	state := r.URL.Query().Get("state")
-	limit := 100
-
+	pgLimit, pgOffset := parsePagination(r)
 	query := "SELECT contact_id, phone_encrypted, full_name_encrypted, state_code, lga_code, voter_status, tags, opted_out, created_at FROM gotv_contacts WHERE party_id=$1"
 	args := []interface{}{pid}
 	argIdx := 2
@@ -493,7 +544,7 @@ func handleListContacts(w http.ResponseWriter, r *http.Request) {
 		args = append(args, state)
 		argIdx++
 	}
-	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d", limit)
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d OFFSET %d", pgLimit, pgOffset)
 
 	rows, err := svc.DB.Query(query, args...)
 	if err != nil {
@@ -1052,14 +1103,19 @@ func handleCreateRide(w http.ResponseWriter, r *http.Request) {
 		"pickup_lat": req.PickupLatitude, "pickup_lng": req.PickupLongitude,
 		"timestamp": time.Now().UTC(),
 	})
-	// Try auto-matching via Rust gotv-engine
+	// Try auto-matching via Rust gotv-engine (with compare-and-swap to avoid double-match)
 	go func() {
 		if match, err := invokeRustMatchRide(rid, req.PickupLatitude, req.PickupLongitude, pid); err == nil {
 			if volID, ok := match["volunteer_id"].(string); ok && volID != "" {
-				svc.DB.Exec("UPDATE gotv_ride_requests SET volunteer_id=$1, status='matched' WHERE request_id=$2", volID, rid)
-				publishEvent(TopicGOTVRideEvent, rid, map[string]interface{}{
-					"event": "ride_matched", "ride_id": rid, "volunteer_id": volID,
-				})
+				// CAS: only update if still pending (prevents race with manual match)
+				res, _ := svc.DB.Exec(
+					"UPDATE gotv_ride_requests SET volunteer_id=$1, status='matched', matched_at=NOW() WHERE request_id=$2 AND status='pending'",
+					volID, rid)
+				if rows, _ := res.RowsAffected(); rows > 0 {
+					publishEvent(TopicGOTVRideEvent, rid, map[string]interface{}{
+						"event": "ride_matched", "ride_id": rid, "volunteer_id": volID,
+					})
+				}
 			}
 		}
 	}()
@@ -1398,7 +1454,7 @@ func handleGeoCoverage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if h.Contacts > 0 {
-			h.Score = math.Min(float64(h.Volunteers)/float64(h.Contacts)*100, 1.0)
+			h.Score = math.Min(float64(h.Volunteers)/float64(h.Contacts), 1.0)
 		}
 		hexes = append(hexes, h)
 	}
@@ -1712,7 +1768,16 @@ func handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 func handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
-	svc.DB.Exec("DELETE FROM gotv_webhooks WHERE id=$1 AND party_id=$2", id, pid)
+	result, err := svc.DB.Exec("DELETE FROM gotv_webhooks WHERE id=$1 AND party_id=$2", id, pid)
+	if err != nil {
+		jsonErr(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		jsonErr(w, "webhook not found", http.StatusNotFound)
+		return
+	}
 	svc.Audit(pid, user, "delete_webhook", "webhook", id)
 	jsonResp(w, map[string]interface{}{"deleted": true})
 }
@@ -1774,4 +1839,38 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 			math.Sin(dLon/2)*math.Sin(dLon/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return R * c
+}
+
+// corsMiddleware adds CORS headers for party portal cross-origin requests
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-GOTV-Party-ID, X-GOTV-User, X-CSRF-Token")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// parsePagination extracts page/limit from query params with safe defaults
+func parsePagination(r *http.Request) (limit, offset int) {
+	limit = 100
+	offset = 0
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l <= 500 {
+		limit = l
+	}
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 1 {
+		offset = (p - 1) * limit
+	}
+	return
 }

@@ -50,7 +50,11 @@ impl Middleware {
         );
 
         Self {
-            http: Client::new(),
+            http: Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_default(),
             kafka_url,
             redis_url,
             opensearch_url,
@@ -62,6 +66,7 @@ impl Middleware {
     }
 
     /// Publish a domain event to Kafka via the Go backend's Kafka REST proxy.
+    /// Publish with retry (up to 3 attempts with exponential backoff).
     pub async fn publish_kafka(&self, topic: &str, key: &str, payload: &impl Serialize) {
         let url = match &self.kafka_url {
             Some(u) => u,
@@ -72,12 +77,18 @@ impl Middleware {
             "key": key,
             "value": payload,
         });
-        if let Err(e) = self.http.post(format!("{}/produce", url))
-            .json(&body)
-            .send()
-            .await
-        {
-            warn!(error = %e, topic, "GOTV Engine: Kafka publish failed");
+        for attempt in 0..3u32 {
+            match self.http.post(format!("{}/produce", url))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(_) => return,
+                Err(e) => {
+                    warn!(error = %e, topic, attempt, "GOTV Engine: Kafka publish attempt failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * 2u64.pow(attempt))).await;
+                }
+            }
         }
     }
 
@@ -168,8 +179,20 @@ impl Middleware {
     }
 
     /// Query the Lakehouse for analytical data.
+    /// Only allows SELECT queries to prevent injection.
     pub async fn query_lakehouse(&self, sql: &str) -> Option<Vec<serde_json::Value>> {
         let url = self.lakehouse_url.as_ref()?;
+        let trimmed = sql.trim().to_uppercase();
+        if !trimmed.starts_with("SELECT") {
+            warn!("Lakehouse query rejected: not a SELECT");
+            return None;
+        }
+        for banned in &["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "--", ";"] {
+            if trimmed.contains(banned) {
+                warn!(keyword = banned, "Lakehouse query rejected: forbidden keyword");
+                return None;
+            }
+        }
         let body = serde_json::json!({"query": sql});
         let resp = self.http.post(format!("{}/query", url))
             .json(&body)
