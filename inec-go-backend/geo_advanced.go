@@ -647,7 +647,7 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := geoHTTPClient.Do(req)
+	resp, err := geoHTTPClient.Do(req) // #nosec G704 -- URL constructed from admin-configured OSRM env var
 	if err != nil {
 		// Fallback: return straight line with Haversine distance
 		dist := haversineDistance(body.OriginLat, body.OriginLng, body.DestLat, body.DestLng)
