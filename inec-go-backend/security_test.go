@@ -63,7 +63,7 @@ func TestRegisterBlocksAdminRole(t *testing.T) {
 	r := mux.NewRouter()
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 
-	body := `{"username":"attacker1","password":"longpassword123","full_name":"Bad Actor","role":"admin"}`
+	body := `{"username":"attacker1","password":"LongPassword123","full_name":"Bad Actor","role":"admin"}`
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -87,7 +87,7 @@ func TestRegisterBlocksStaffRole(t *testing.T) {
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 
 	for _, role := range []string{"presiding_officer", "collation_officer"} {
-		body := fmt.Sprintf(`{"username":"attacker_%s","password":"longpassword123","full_name":"Bad Actor","role":"%s"}`, role, role)
+		body := fmt.Sprintf(`{"username":"attacker_%s","password":"LongPassword123","full_name":"Bad Actor","role":"%s"}`, role, role)
 		req := httptest.NewRequest("POST", "/auth/register", bytes.NewReader([]byte(body)))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -107,7 +107,7 @@ func TestRegisterAllowsPublicRole(t *testing.T) {
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 
 	ts := fmt.Sprintf("%d", time.Now().UnixNano())
-	body := fmt.Sprintf(`{"username":"pub_%s","password":"longpassword123","full_name":"Public User","role":"public"}`, ts)
+	body := fmt.Sprintf(`{"username":"pub_%s","password":"LongPassword123","full_name":"Public User","role":"public"}`, ts)
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -126,7 +126,7 @@ func TestRegisterAllowsObserverRole(t *testing.T) {
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 
 	ts := fmt.Sprintf("%d", time.Now().UnixNano())
-	body := fmt.Sprintf(`{"username":"obs_%s","password":"longpassword123","full_name":"Observer User","role":"observer"}`, ts)
+	body := fmt.Sprintf(`{"username":"obs_%s","password":"LongPassword123","full_name":"Observer User","role":"observer"}`, ts)
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -162,7 +162,7 @@ func TestRegisterRejectsShortUsername(t *testing.T) {
 	r := mux.NewRouter()
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 
-	body := `{"username":"ab","password":"longpassword123","full_name":"Short User"}`
+	body := `{"username":"ab","password":"LongPassword123","full_name":"Short User"}`
 	req := httptest.NewRequest("POST", "/auth/register", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

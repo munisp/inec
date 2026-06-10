@@ -143,6 +143,25 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "password must be at least 8 characters")
 		return
 	}
+	if len(req.Password) > 128 {
+		writeError(w, 400, "password must be at most 128 characters")
+		return
+	}
+	hasUpper, hasLower, hasDigit := false, false, false
+	for _, c := range req.Password {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		writeError(w, 400, "password must contain uppercase, lowercase, and digit")
+		return
+	}
 	if len(req.FullName) < 2 {
 		writeError(w, 400, "full_name is required")
 		return
