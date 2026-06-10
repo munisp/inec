@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -625,10 +626,12 @@ func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if req.Phone == "" {
-		jsonErr(w, "phone required", http.StatusBadRequest)
+	phone := strings.TrimSpace(req.Phone)
+	if phone == "" || len(phone) < 10 || len(phone) > 15 {
+		jsonErr(w, "valid phone number required (10-15 digits)", http.StatusBadRequest)
 		return
 	}
+	req.Phone = phone
 
 	phoneEnc, err := svc.Encrypt(req.Phone)
 	if err != nil {
@@ -849,7 +852,16 @@ func handleGetContact(w http.ResponseWriter, r *http.Request) {
 func handleOptOut(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
-	svc.DB.Exec("UPDATE gotv_contacts SET opted_out=TRUE, opted_out_at=NOW() WHERE contact_id=$1 AND party_id=$2", id, pid)
+	result, err := svc.DB.Exec("UPDATE gotv_contacts SET opted_out=TRUE, opted_out_at=NOW() WHERE contact_id=$1 AND party_id=$2", id, pid)
+	if err != nil {
+		jsonErr(w, "opt-out failed", http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		jsonErr(w, "contact not found", http.StatusNotFound)
+		return
+	}
 	svc.Audit(pid, user, "opt_out", "contact", id)
 	jsonResp(w, map[string]interface{}{"opted_out": true})
 }
@@ -953,9 +965,21 @@ func handleVolunteerCheckin(w http.ResponseWriter, r *http.Request) {
 		Latitude  float64 `json:"latitude"`
 		Longitude float64 `json:"longitude"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
-	svc.DB.Exec("UPDATE gotv_volunteers SET latitude=$1, longitude=$2, last_checkin_at=NOW() WHERE volunteer_id=$3 AND party_id=$4",
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	result, err := svc.DB.Exec("UPDATE gotv_volunteers SET latitude=$1, longitude=$2, last_checkin_at=NOW() WHERE volunteer_id=$3 AND party_id=$4",
 		req.Latitude, req.Longitude, id, pid)
+	if err != nil {
+		jsonErr(w, "checkin failed", http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		jsonErr(w, "volunteer not found", http.StatusNotFound)
+		return
+	}
 	jsonResp(w, map[string]interface{}{"checked_in": true})
 }
 
@@ -1610,7 +1634,7 @@ func handleCanvassDoorKnock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	validOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true}
+	validOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
 	if !validOutcomes[req.Outcome] {
 		jsonErr(w, "invalid outcome", http.StatusBadRequest)
 		return
@@ -1777,9 +1801,11 @@ func handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hash the webhook secret before storing (never store plaintext secrets)
+	secretHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.Secret)))
 	_, err := svc.DB.Exec(
 		"INSERT INTO gotv_webhooks (party_id, url, secret, event_types) VALUES ($1,$2,$3,$4)",
-		pid, req.URL, req.Secret, pq.Array(req.EventTypes))
+		pid, req.URL, secretHash, pq.Array(req.EventTypes))
 	if err != nil {
 		jsonErr(w, "create failed", http.StatusInternalServerError)
 		return
@@ -1866,11 +1892,23 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 	return R * c
 }
 
-// corsMiddleware adds CORS headers for party portal cross-origin requests
+// corsMiddleware adds CORS headers for party portal cross-origin requests.
+// In production, GOTV_CORS_ORIGINS env var should whitelist specific origins.
 func corsMiddleware(next http.Handler) http.Handler {
+	allowedOrigins := map[string]bool{}
+	if origins := os.Getenv("GOTV_CORS_ORIGINS"); origins != "" {
+		for _, o := range strings.Split(origins, ",") {
+			allowedOrigins[strings.TrimSpace(o)] = true
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// In production (GOTV_CORS_ORIGINS set), only allow whitelisted origins
+		if len(allowedOrigins) > 0 && !allowedOrigins[origin] {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -2018,6 +2056,12 @@ func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	validMobileOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
+	if req.Outcome != "" && !validMobileOutcomes[req.Outcome] {
+		jsonErr(w, "invalid outcome", http.StatusBadRequest)
+		return
+	}
+
 	knockID := "knock-" + uuid.New().String()[:8]
 	_, err := svc.DB.Exec(
 		`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
@@ -2057,8 +2101,12 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	syncOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
 	synced := 0
 	for _, k := range req.Knocks {
+		if k.Outcome != "" && !syncOutcomes[k.Outcome] {
+			continue
+		}
 		knockID := "knock-" + uuid.New().String()[:8]
 		_, err := svc.DB.Exec(
 			`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
@@ -2088,10 +2136,14 @@ func handleMobileDashboard(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 
 	var totalKnocks, pledged, notHome, refused int
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2", pid, user).Scan(&totalKnocks)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2 AND outcome='pledged'", pid, user).Scan(&pledged)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2 AND outcome='not_home'", pid, user).Scan(&notHome)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2 AND outcome='refused'", pid, user).Scan(&refused)
+	svc.DB.QueryRow(
+		`SELECT COUNT(*),
+		        COUNT(*) FILTER (WHERE outcome='pledged'),
+		        COUNT(*) FILTER (WHERE outcome='not_home'),
+		        COUNT(*) FILTER (WHERE outcome='refused')
+		 FROM gotv_door_knocks WHERE party_id=$1 AND volunteer_id=$2`,
+		pid, user,
+	).Scan(&totalKnocks, &pledged, &notHome, &refused)
 
 	var activeShift sql.NullString
 	svc.DB.QueryRow("SELECT shift_id FROM gotv_shifts WHERE party_id=$1 AND volunteer_id=$2 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1", pid, user).Scan(&activeShift)

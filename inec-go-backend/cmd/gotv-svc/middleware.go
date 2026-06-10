@@ -238,8 +238,29 @@ func searchDocuments(index, query string, partyID int) ([]map[string]interface{}
 	if opensearchURL == "" {
 		return nil, fmt.Errorf("opensearch not configured")
 	}
-	body := fmt.Sprintf(`{"query":{"bool":{"must":[{"multi_match":{"query":"%s","fields":["name","state","lga","role","tags"]}},{"term":{"party_id":%d}}]}},"size":50}`, query, partyID)
-	req, _ := http.NewRequest("POST", opensearchURL+"/"+index+"/_search", strings.NewReader(body))
+	// Build query as structured JSON to prevent injection
+	searchBody := map[string]interface{}{
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": []interface{}{
+					map[string]interface{}{
+						"multi_match": map[string]interface{}{
+							"query":  query,
+							"fields": []string{"name", "state", "lga", "role", "tags"},
+						},
+					},
+					map[string]interface{}{
+						"term": map[string]interface{}{
+							"party_id": partyID,
+						},
+					},
+				},
+			},
+		},
+		"size": 50,
+	}
+	data, _ := json.Marshal(searchBody)
+	req, _ := http.NewRequest("POST", opensearchURL+"/"+index+"/_search", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := mwHTTPClient.Do(req)
 	if err != nil {

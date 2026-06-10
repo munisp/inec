@@ -128,8 +128,8 @@ func (ma *MobileAuth) HandleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// In production, send OTP via SMS (AfricasTalking, etc.)
-	// For dev/demo, log it
-	log.Info().Str("phone", phone[:4]+"****").Str("otp", otp).Int("party", partyID).Msg("GOTV Mobile OTP generated (dev mode — would send via SMS in production)")
+	// Never log the OTP code itself — only log metadata for debugging
+	log.Info().Str("phone", phone[:4]+"****").Int("party", partyID).Str("session", sessionID).Msg("GOTV Mobile OTP generated")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
