@@ -526,9 +526,32 @@ export default function GOTVPortalPage() {
                       {c.target_state && <Badge variant="secondary">{c.target_state}</Badge>}
                     </div>
                   </div>
-                  <div className="text-right text-sm">
-                    <div>{c.contacts_reached}/{c.total_contacts} contacts</div>
-                    <div className="text-muted-foreground">{new Date(c.created_at).toLocaleDateString()}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-right text-sm mr-4">
+                      <div>{c.contacts_reached}/{c.total_contacts} contacts</div>
+                      <div className="text-muted-foreground">{new Date(c.created_at).toLocaleDateString()}</div>
+                    </div>
+                    {(c.status === 'draft' || c.status === 'scheduled') && (
+                      <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={async () => {
+                        try { await api.launchGOTVCampaign(c.campaign_id); loadCampaigns(); loadDashboard(); } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Launch failed'); }
+                      }}>Launch</Button>
+                    )}
+                    {c.status === 'active' && (
+                      <Button size="sm" variant="outline" onClick={async () => {
+                        try { await api.pauseGOTVCampaign(c.campaign_id); loadCampaigns(); loadDashboard(); } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Pause failed'); }
+                      }}>Pause</Button>
+                    )}
+                    {c.status === 'paused' && (
+                      <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={async () => {
+                        try { await api.resumeGOTVCampaign(c.campaign_id); loadCampaigns(); loadDashboard(); } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Resume failed'); }
+                      }}>Resume</Button>
+                    )}
+                    {c.status === 'draft' && (
+                      <Button size="sm" variant="destructive" onClick={async () => {
+                        if (!confirm('Delete this campaign?')) return;
+                        try { await api.deleteGOTVCampaign(c.campaign_id); loadCampaigns(); loadDashboard(); } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Delete failed'); }
+                      }}>Delete</Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -549,7 +572,15 @@ export default function GOTVPortalPage() {
           <Input placeholder="Search contacts..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-64" />
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline"><Upload className="h-4 w-4 mr-1" /> Import CSV</Button>
+          <input type="file" accept=".csv" className="hidden" id="csv-import" onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            try { await api.importGOTVContacts(formData); loadContacts(); loadDashboard(); } catch (err: unknown) { alert(err instanceof Error ? err.message : 'Import failed'); }
+            e.target.value = '';
+          }} />
+          <Button size="sm" variant="outline" onClick={() => document.getElementById('csv-import')?.click()}><Upload className="h-4 w-4 mr-1" /> Import CSV</Button>
           <Button size="sm" onClick={() => { setShowContactForm(true); setFormError(null); }}><Plus className="h-4 w-4 mr-1" /> Add Contact</Button>
         </div>
       </div>
@@ -723,7 +754,7 @@ export default function GOTVPortalPage() {
             {pledges.map(p => (
               <tr key={p.pledge_id} className="border-b">
                 <td className="p-3 font-mono text-xs">{p.pledge_id}</td>
-                <td className="p-3">{p.contact_id}</td>
+                <td className="p-3">{contacts.find(c => c.contact_id === p.contact_id)?.full_name || contacts.find(c => c.contact_id === p.contact_id)?.phone_masked || p.contact_id}</td>
                 <td className="p-3"><Badge variant="outline">{p.pledge_type}</Badge></td>
                 <td className="p-3"><Badge className={PLEDGE_STATUS_COLORS[p.status] || ''}>{p.status}</Badge></td>
                 <td className="p-3">{p.reminder_sent ? 'Sent' : 'Pending'}</td>
@@ -789,8 +820,8 @@ export default function GOTVPortalPage() {
               .map(r => (
                 <tr key={r.request_id} className="border-b">
                   <td className="p-3 font-mono text-xs">{r.request_id}</td>
-                  <td className="p-3">{r.contact_id}</td>
-                  <td className="p-3">{r.volunteer_id || '—'}</td>
+                  <td className="p-3">{contacts.find(c => c.contact_id === r.contact_id)?.full_name || contacts.find(c => c.contact_id === r.contact_id)?.phone_masked || r.contact_id}</td>
+                  <td className="p-3">{r.volunteer_id ? (volunteers.find(v => v.volunteer_id === r.volunteer_id)?.full_name || r.volunteer_id) : '—'}</td>
                   <td className="p-3">{r.polling_unit_code}</td>
                   <td className="p-3"><Badge className={RIDE_STATUS_COLORS[r.status] || ''}>{r.status}</Badge></td>
                   <td className="p-3">{r.distance_km ? `${r.distance_km} km` : '—'}</td>

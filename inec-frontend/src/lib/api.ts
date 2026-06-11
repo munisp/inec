@@ -863,6 +863,12 @@ export const api = {
     request('/gotv/campaigns', { method: 'POST', body: JSON.stringify(data) }),
   launchGOTVCampaign: (id: string) =>
     request(`/gotv/campaigns/${id}/launch`, { method: 'POST' }),
+  deleteGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}`, { method: 'DELETE' }),
+  pauseGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}/pause`, { method: 'POST' }),
+  resumeGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}/resume`, { method: 'POST' }),
   getGOTVContacts: (params?: Record<string, string>) => {
     const q = params ? `?${new URLSearchParams(params)}` : '';
     return request(`/gotv/contacts${q}`);

@@ -75,6 +75,7 @@ export default function GOTVScreen() {
   const [rides, setRides] = useState<RideRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [user, setUser] = useState<GOTVUser | null>(null);
 
   // Auth check — redirect to GOTV login if not authenticated
@@ -92,6 +93,7 @@ export default function GOTVScreen() {
 
   const loadAll = useCallback(async () => {
     try {
+      setError(null);
       const [dash, camps, vols, rds] = await Promise.all([
         gotvFetch<DashboardData>('/gotv/dashboard'),
         gotvFetch<{ campaigns: Campaign[] }>('/gotv/campaigns'),
@@ -102,8 +104,8 @@ export default function GOTVScreen() {
       setCampaigns(camps.campaigns || []);
       setVolunteers(vols.volunteers || []);
       setRides(rds.rides || []);
-    } catch {
-      /* empty */
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load data. Pull down to retry.');
     }
     setLoading(false);
   }, []);
@@ -296,6 +298,12 @@ export default function GOTVScreen() {
             <CardSkeleton />
             <CardSkeleton />
           </>
+        ) : error ? (
+          <View style={{ padding: 24, alignItems: 'center' }}>
+            <Ionicons name="cloud-offline" size={48} color="#ef4444" />
+            <Text style={{ fontSize: 16, fontWeight: '600', color: '#111827', marginTop: 12 }}>Connection Error</Text>
+            <Text style={{ fontSize: 14, color: '#6b7280', textAlign: 'center', marginTop: 4 }}>{error}</Text>
+          </View>
         ) : (
           <>
             {tab === 'dashboard' && renderDashboard()}

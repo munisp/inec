@@ -232,6 +232,9 @@ func main() {
 	r.HandleFunc("/gotv/campaigns/{id}", auth(handleGetCampaign)).Methods("GET")
 	r.HandleFunc("/gotv/campaigns/{id}", auth(handleUpdateCampaign)).Methods("PATCH")
 	r.HandleFunc("/gotv/campaigns/{id}/launch", auth(handleLaunchCampaign)).Methods("POST")
+	r.HandleFunc("/gotv/campaigns/{id}", auth(handleDeleteCampaign)).Methods("DELETE")
+	r.HandleFunc("/gotv/campaigns/{id}/pause", auth(handlePauseCampaign)).Methods("POST")
+	r.HandleFunc("/gotv/campaigns/{id}/resume", auth(handleResumeCampaign)).Methods("POST")
 
 	// Contacts
 	r.HandleFunc("/gotv/contacts", auth(handleListContacts)).Methods("GET")
@@ -667,6 +670,65 @@ func handleUpdateCampaign(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{"updated": true})
 }
 
+func handleDeleteCampaign(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	id := mux.Vars(r)["id"]
+	var status string
+	err := svc.DB.QueryRow("SELECT status FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status)
+	if err == sql.ErrNoRows {
+		jsonErr(w, "campaign not found", http.StatusNotFound)
+		return
+	}
+	if status != "draft" {
+		jsonErr(w, "only draft campaigns can be deleted", http.StatusConflict)
+		return
+	}
+	svc.DB.Exec("DELETE FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid)
+	svc.Audit(pid, user, "delete_campaign", "campaign", id)
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+	jsonResp(w, map[string]interface{}{"deleted": true})
+}
+
+func handlePauseCampaign(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	id := mux.Vars(r)["id"]
+	var status string
+	err := svc.DB.QueryRow("SELECT status FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status)
+	if err == sql.ErrNoRows {
+		jsonErr(w, "campaign not found", http.StatusNotFound)
+		return
+	}
+	if status != "active" {
+		jsonErr(w, "only active campaigns can be paused", http.StatusConflict)
+		return
+	}
+	svc.DB.Exec("UPDATE gotv_campaigns SET status='paused', updated_at=NOW() WHERE campaign_id=$1 AND party_id=$2", id, pid)
+	svc.Audit(pid, user, "pause_campaign", "campaign", id)
+	publishEvent(TopicGOTVCampaignEvent, id, map[string]interface{}{"event": "campaign_paused", "campaign_id": id, "party_id": pid})
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+	jsonResp(w, map[string]interface{}{"paused": true})
+}
+
+func handleResumeCampaign(w http.ResponseWriter, r *http.Request) {
+	pid, user := getParty(r)
+	id := mux.Vars(r)["id"]
+	var status string
+	err := svc.DB.QueryRow("SELECT status FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, pid).Scan(&status)
+	if err == sql.ErrNoRows {
+		jsonErr(w, "campaign not found", http.StatusNotFound)
+		return
+	}
+	if status != "paused" {
+		jsonErr(w, "only paused campaigns can be resumed", http.StatusConflict)
+		return
+	}
+	svc.DB.Exec("UPDATE gotv_campaigns SET status='active', updated_at=NOW() WHERE campaign_id=$1 AND party_id=$2", id, pid)
+	svc.Audit(pid, user, "resume_campaign", "campaign", id)
+	publishEvent(TopicGOTVCampaignEvent, id, map[string]interface{}{"event": "campaign_resumed", "campaign_id": id, "party_id": pid})
+	cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+	jsonResp(w, map[string]interface{}{"resumed": true})
+}
+
 func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
@@ -781,7 +843,12 @@ func handleListContacts(w http.ResponseWriter, r *http.Request) {
 		masked := maskPhone(phone)
 		var fullName string
 		if nameEnc.Valid {
-			fullName, _ = svc.Decrypt(nameEnc.String)
+			decrypted, err := svc.Decrypt(nameEnc.String)
+			if err != nil || decrypted == "" {
+				fullName = "(Name unavailable)"
+			} else {
+				fullName = decrypted
+			}
 		}
 
 		contacts = append(contacts, map[string]interface{}{
