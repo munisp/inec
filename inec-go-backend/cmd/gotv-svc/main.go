@@ -82,7 +82,7 @@ func main() {
 	wsHub = gotv.NewWSHub(10000, 5)
 	go wsHub.Run()
 
-	dispatcher = gotv.NewDispatchEngine(db, wsHub, 10)
+	dispatcher = gotv.NewDispatchEngine(db, svc, wsHub, 10)
 	dispatcher.RegisterAdapter(&gotv.LogAdapter{}) // default; real adapters configured via env
 	if smsKey := os.Getenv("AFRICASTALKING_API_KEY"); smsKey != "" {
 		dispatcher.RegisterAdapter(gotv.NewSMSAdapter("africastalking",
@@ -94,6 +94,33 @@ func main() {
 	if waToken := os.Getenv("WHATSAPP_TOKEN"); waToken != "" {
 		dispatcher.RegisterAdapter(gotv.NewWhatsAppAdapter(
 			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID")))
+	}
+	// USSD adapter
+	if ussdKey := os.Getenv("AFRICASTALKING_API_KEY"); ussdKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewUSSDAdapter(
+			"https://api.africastalking.com/version1", ussdKey, os.Getenv("AFRICASTALKING_USERNAME")))
+	}
+	// Email adapter (SendGrid or Mailgun)
+	if sgKey := os.Getenv("SENDGRID_API_KEY"); sgKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewEmailAdapter("sendgrid",
+			"https://api.sendgrid.com", sgKey, os.Getenv("GOTV_FROM_EMAIL")))
+	} else if mgKey := os.Getenv("MAILGUN_API_KEY"); mgKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewEmailAdapter("mailgun",
+			os.Getenv("MAILGUN_DOMAIN"), mgKey, os.Getenv("GOTV_FROM_EMAIL")))
+	}
+	// Social media adapters
+	if twToken := os.Getenv("TWITTER_BEARER_TOKEN"); twToken != "" {
+		dispatcher.RegisterAdapter(gotv.NewTwitterAdapter(twToken))
+	}
+	if fbToken := os.Getenv("FACEBOOK_PAGE_TOKEN"); fbToken != "" {
+		dispatcher.RegisterAdapter(gotv.NewFacebookAdapter(os.Getenv("FACEBOOK_PAGE_ID"), fbToken))
+	}
+	if igToken := os.Getenv("INSTAGRAM_ACCESS_TOKEN"); igToken != "" {
+		dispatcher.RegisterAdapter(gotv.NewInstagramAdapter(os.Getenv("INSTAGRAM_ACCOUNT_ID"), igToken))
+	}
+	// NCC DND registry
+	if dndURL := os.Getenv("NCC_DND_REGISTRY_URL"); dndURL != "" {
+		gotv.InitDNDCheck(dndURL, os.Getenv("NCC_DND_API_KEY"))
 	}
 
 	webhooks = gotv.NewWebhookManager(db)
@@ -183,6 +210,17 @@ func main() {
 	r.HandleFunc("/gotv/search", auth(handleGOTVSearch)).Methods("GET")
 	r.HandleFunc("/gotv/analytics", auth(handleGOTVAnalytics)).Methods("GET")
 	r.HandleFunc("/gotv/middleware/status", auth(handleMiddlewareStatus)).Methods("GET")
+
+	// Delivery receipt webhooks (public — providers POST here)
+	r.HandleFunc("/gotv/webhooks/delivery/africastalking", handleDeliveryReceiptAT).Methods("POST")
+	r.HandleFunc("/gotv/webhooks/delivery/twilio", handleDeliveryReceiptTwilio).Methods("POST")
+	r.HandleFunc("/gotv/webhooks/delivery/whatsapp", handleDeliveryReceiptWhatsApp).Methods("POST")
+
+	// Inbound opt-out (STOP keyword from SMS providers)
+	r.HandleFunc("/gotv/webhooks/inbound/sms", handleInboundSMS).Methods("POST")
+
+	// Dispatch metrics (Prometheus-compatible)
+	r.HandleFunc("/gotv/metrics/dispatch", auth(handleDispatchMetrics)).Methods("GET")
 
 	// ─── Standalone Mobile App Auth (NOT shared with INEC portal) ────────
 	// Public endpoints (no auth required)
@@ -331,7 +369,7 @@ func handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "name and campaign_type required", http.StatusBadRequest)
 		return
 	}
-	validTypes := map[string]bool{"sms": true, "ussd": true, "push": true, "whatsapp": true, "email": true, "door_to_door": true, "phone_bank": true, "ride_to_polls": true}
+	validTypes := map[string]bool{"sms": true, "ussd": true, "push": true, "whatsapp": true, "email": true, "door_to_door": true, "phone_bank": true, "ride_to_polls": true, "twitter": true, "facebook": true, "instagram": true}
 	if !validTypes[req.CampaignType] {
 		jsonErr(w, "invalid campaign_type", http.StatusBadRequest)
 		return
@@ -2169,4 +2207,115 @@ func parsePagination(r *http.Request) (limit, offset int) {
 		offset = (p - 1) * limit
 	}
 	return
+}
+
+// ─── Delivery Receipt Webhook Handlers ──────────────────────────────────
+
+func handleDeliveryReceiptAT(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if err := dispatcher.ProcessDeliveryReceipt("africastalking", payload); err != nil {
+		log.Warn().Err(err).Msg("AT delivery receipt processing failed")
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleDeliveryReceiptTwilio(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	payload := make(map[string]interface{})
+	for k, v := range r.Form {
+		if len(v) > 0 {
+			payload[k] = v[0]
+		}
+	}
+	if err := dispatcher.ProcessDeliveryReceipt("twilio", payload); err != nil {
+		log.Warn().Err(err).Msg("Twilio delivery receipt processing failed")
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleDeliveryReceiptWhatsApp(w http.ResponseWriter, r *http.Request) {
+	// WhatsApp webhook verification (GET with hub.challenge)
+	if r.Method == "GET" {
+		challenge := r.URL.Query().Get("hub.challenge")
+		if challenge != "" {
+			w.Write([]byte(challenge))
+			return
+		}
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if err := dispatcher.ProcessDeliveryReceipt("whatsapp", payload); err != nil {
+		log.Warn().Err(err).Msg("WhatsApp delivery receipt processing failed")
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// ─── Inbound SMS Opt-Out Handler ────────────────────────────────────────
+
+func handleInboundSMS(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	phone := r.FormValue("from")
+	if phone == "" {
+		phone = r.FormValue("From") // Twilio uses "From"
+	}
+	text := strings.ToUpper(strings.TrimSpace(r.FormValue("text")))
+	if text == "" {
+		text = strings.ToUpper(strings.TrimSpace(r.FormValue("Body"))) // Twilio uses "Body"
+	}
+
+	if phone != "" && text != "" {
+		if err := dispatcher.ProcessInboundOptOut(phone); err != nil {
+			log.Warn().Err(err).Str("phone", phone[:4]+"****").Msg("inbound opt-out failed")
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// ─── Dispatch Metrics (Prometheus-compatible) ───────────────────────────
+
+func handleDispatchMetrics(w http.ResponseWriter, r *http.Request) {
+	m := dispatcher.GetMetrics()
+
+	// Return Prometheus text format if Accept header requests it
+	if strings.Contains(r.Header.Get("Accept"), "text/plain") {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, "# HELP gotv_dispatch_total Total messages dispatched\n")
+		fmt.Fprintf(w, "# TYPE gotv_dispatch_total counter\n")
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"sent\"} %d\n", m.TotalSent)
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"delivered\"} %d\n", m.TotalDelivered)
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"failed\"} %d\n", m.TotalFailed)
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"retried\"} %d\n", m.TotalRetried)
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"dnd_blocked\"} %d\n", m.TotalDNDBlock)
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"opted_out\"} %d\n", m.TotalOptOut)
+		fmt.Fprintf(w, "# HELP gotv_dispatch_cost_kobo Total dispatch cost in kobo\n")
+		fmt.Fprintf(w, "# TYPE gotv_dispatch_cost_kobo counter\n")
+		fmt.Fprintf(w, "gotv_dispatch_cost_kobo %d\n", m.TotalCost)
+		return
+	}
+
+	jsonResp(w, m)
 }

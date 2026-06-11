@@ -52,7 +52,7 @@ func initGOTVTables() {
 		party_id INTEGER NOT NULL REFERENCES parties(id),
 		name TEXT NOT NULL,
 		description TEXT,
-		campaign_type TEXT NOT NULL CHECK(campaign_type IN ('sms','ussd','push','whatsapp','email','door_to_door','phone_bank','ride_to_polls')),
+		campaign_type TEXT NOT NULL CHECK(campaign_type IN ('sms','ussd','push','whatsapp','email','door_to_door','phone_bank','ride_to_polls','twitter','facebook','instagram')),
 		status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','scheduled','active','paused','completed','cancelled')),
 		target_state TEXT,
 		target_lga TEXT,
@@ -153,7 +153,7 @@ func initGOTVTables() {
 		party_id INTEGER NOT NULL REFERENCES parties(id),
 		contact_id TEXT REFERENCES gotv_contacts(contact_id),
 		volunteer_id TEXT REFERENCES gotv_volunteers(volunteer_id),
-		channel TEXT NOT NULL CHECK(channel IN ('sms','ussd','push','whatsapp','email','door_knock','phone_call')),
+		channel TEXT NOT NULL CHECK(channel IN ('sms','ussd','push','whatsapp','email','door_knock','phone_call','log','twitter','facebook','instagram')),
 		direction TEXT NOT NULL DEFAULT 'outbound' CHECK(direction IN ('outbound','inbound')),
 		message_text TEXT,
 		message_variant TEXT DEFAULT 'A' CHECK(message_variant IN ('A','B')),
@@ -560,7 +560,7 @@ func handleGOTVCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	validTypes := map[string]bool{"sms": true, "ussd": true, "push": true, "whatsapp": true, "email": true, "door_to_door": true, "phone_bank": true, "ride_to_polls": true}
+	validTypes := map[string]bool{"sms": true, "ussd": true, "push": true, "whatsapp": true, "email": true, "door_to_door": true, "phone_bank": true, "ride_to_polls": true, "twitter": true, "facebook": true, "instagram": true}
 	if !validTypes[req.CampaignType] {
 		http.Error(w, `{"error":"invalid campaign_type"}`, http.StatusBadRequest)
 		return

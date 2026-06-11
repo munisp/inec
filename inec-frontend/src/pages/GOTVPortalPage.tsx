@@ -469,11 +469,23 @@ export default function GOTVPortalPage() {
         </FormField>
         <FormField label="Campaign Type">
           <select className="w-full border rounded-md p-2 text-sm" value={campaignType} onChange={e => setCampaignType(e.target.value)}>
-            <option value="sms">SMS</option>
-            <option value="whatsapp">WhatsApp</option>
-            <option value="push">Push Notification</option>
-            <option value="ussd">USSD</option>
-            <option value="call">Phone Call</option>
+            <optgroup label="Direct Messaging">
+              <option value="sms">SMS (Africa's Talking / Twilio)</option>
+              <option value="whatsapp">WhatsApp Business</option>
+              <option value="push">Push Notification (FCM)</option>
+              <option value="ussd">USSD Push</option>
+              <option value="email">Email (SendGrid / Mailgun)</option>
+            </optgroup>
+            <optgroup label="Social Media">
+              <option value="twitter">Twitter / X</option>
+              <option value="facebook">Facebook Page Post</option>
+              <option value="instagram">Instagram Post</option>
+            </optgroup>
+            <optgroup label="Field Operations">
+              <option value="door_to_door">Door-to-Door Canvass</option>
+              <option value="phone_bank">Phone Bank</option>
+              <option value="ride_to_polls">Ride-to-Polls</option>
+            </optgroup>
           </select>
         </FormField>
         <FormField label="Target State">
@@ -483,7 +495,8 @@ export default function GOTVPortalPage() {
           </select>
         </FormField>
         <FormField label="Message Template">
-          <textarea className="w-full border rounded-md p-2 text-sm" rows={3} value={campaignMessage} onChange={e => setCampaignMessage(e.target.value)} placeholder="Dear {name}, remember to vote on..." />
+          <textarea className="w-full border rounded-md p-2 text-sm" rows={3} value={campaignMessage} onChange={e => setCampaignMessage(e.target.value)} placeholder="Dear {{name}}, remember to vote at {{polling_unit}} on {{election_date}}. Your party {{party}} is counting on you!" />
+          <p className="text-xs text-gray-500 mt-1">Variables: {'{'}{'{'} name {'}'}{'}'}, {'{'}{'{'} first_name {'}'}{'}'}, {'{'}{'{'} polling_unit {'}'}{'}'}, {'{'}{'{'} ward {'}'}{'}'}, {'{'}{'{'} party {'}'}{'}'}, {'{'}{'{'} election_date {'}'}{'}'}  </p>
         </FormField>
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="outline" onClick={() => setShowCampaignForm(false)}>Cancel</Button>
