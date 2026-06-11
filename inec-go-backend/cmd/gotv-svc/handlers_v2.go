@@ -28,7 +28,7 @@ func handleLaunchCampaignV2(w http.ResponseWriter, r *http.Request) {
 	campaignID := mux.Vars(r)["id"]
 
 	if err := dispatcher.LaunchCampaignV2(r.Context(), campaignID, partyID, kafkaDisp); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		jsonErr(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "launched", "campaign_id": campaignID, "engine": "kafka_v2"})
@@ -63,7 +63,7 @@ func handleScheduleCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := scheduler.ScheduleCampaign(r.Context(), sc); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -103,7 +103,7 @@ func handleCreateSequence(w http.ResponseWriter, r *http.Request) {
 	seq.PartyID = partyID
 	seq.SequenceID = "seq-" + uuid.New().String()[:8]
 	if err := dispatcher.CreateSequence(r.Context(), seq); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -144,7 +144,7 @@ func handleNextWave(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if err := dispatcher.ExecuteNextWave(r.Context(), seqID, partyID, req.WaveNumber); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "wave_executing"})
@@ -162,7 +162,7 @@ func handleCreateSegment(w http.ResponseWriter, r *http.Request) {
 	seg.PartyID = partyID
 	seg.SegmentID = "seg-" + uuid.New().String()[:8]
 	if err := dispatcher.SaveSegment(r.Context(), seg); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -214,7 +214,7 @@ func handleEvaluateSegment(w http.ResponseWriter, r *http.Request) {
 		SegmentID: segID, PartyID: partyID, Name: name, Filters: filters,
 	})
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -314,7 +314,7 @@ func handleAssignTerritories(w http.ResponseWriter, r *http.Request) {
 	}
 	territories, err := dispatcher.AssignTerritories(r.Context(), partyID, req.WardCode)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		jsonErr(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	json.NewEncoder(w).Encode(territories)
@@ -420,7 +420,7 @@ func handleSendWhatsAppFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := waFlows.SendPledgeFlow(r.Context(), req.Phone, req.FlowID, req.ContactID); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"status": "flow_sent"})
@@ -461,7 +461,7 @@ func handleHashPledge(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := pledgeVerifier.StorePledgeHash(r.Context(), partyID, contactID, req.ElectionID, wardCode)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"pledge_hash": hash, "status": "stored"})
@@ -473,7 +473,7 @@ func handleVerifyPledges(w http.ResponseWriter, r *http.Request) {
 
 	total, verified, rate, err := pledgeVerifier.VerifyPledgeFulfillment(r.Context(), partyID, electionID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -493,7 +493,7 @@ func handleCreateAlliance(w http.ResponseWriter, r *http.Request) {
 		grant.ExpiresAt = time.Now().Add(30 * 24 * time.Hour)
 	}
 	if err := allianceMgr.CreateAlliance(r.Context(), grant); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		jsonErr(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -924,7 +924,9 @@ func handlePlaceVoiceCall(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := voiceAI.PlaceCall(r.Context(), req.CampaignID, req.ContactID, req.Phone, partyID); err != nil {
 		svc.DB.ExecContext(r.Context(), `UPDATE gotv_voice_calls SET status='failed', error_detail=$1 WHERE call_id=$2`, err.Error(), callID)
-		http.Error(w, fmt.Sprintf(`{"error":"%s","call_id":"%s"}`, err.Error(), callID), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error(), "call_id": callID})
 		return
 	}
 	svc.DB.ExecContext(r.Context(), `UPDATE gotv_voice_calls SET status='in_progress' WHERE call_id=$1`, callID)

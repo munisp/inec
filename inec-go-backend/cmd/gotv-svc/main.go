@@ -1626,8 +1626,12 @@ func handleVolunteerLocation(w http.ResponseWriter, r *http.Request) {
 		Battery   int     `json:"battery"`
 		Speed     float64 `json:"speed_kmh"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		jsonErr(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.Latitude < -90 || req.Latitude > 90 || req.Longitude < -180 || req.Longitude > 180 {
+		jsonErr(w, "invalid coordinates", http.StatusBadRequest)
 		return
 	}
 
@@ -2307,6 +2311,15 @@ func handleMobileShiftStart(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	if req.Lat < -90 || req.Lat > 90 || req.Lng < -180 || req.Lng > 180 {
+		jsonErr(w, "invalid coordinates", http.StatusBadRequest)
+		return
+	}
+	// Auto-close any existing active shift
+	svc.DB.Exec(
+		`UPDATE gotv_shifts SET ended_at=NOW() WHERE party_id=$1 AND volunteer_id=$2 AND ended_at IS NULL`,
+		pid, user,
+	)
 	shiftID := "shift-" + uuid.New().String()[:8]
 	svc.DB.Exec(
 		`INSERT INTO gotv_shifts (party_id, volunteer_id, shift_id, start_lat, start_lng, started_at)
@@ -2327,10 +2340,18 @@ func handleMobileShiftEnd(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	svc.DB.Exec(
-		`UPDATE gotv_shifts SET ended_at=NOW(), end_lat=$1, end_lng=$2 WHERE shift_id=$3 AND party_id=$4 AND volunteer_id=$5`,
+	if req.ShiftID == "" {
+		jsonErr(w, "shift_id required", http.StatusBadRequest)
+		return
+	}
+	res, _ := svc.DB.Exec(
+		`UPDATE gotv_shifts SET ended_at=NOW(), end_lat=$1, end_lng=$2 WHERE shift_id=$3 AND party_id=$4 AND volunteer_id=$5 AND ended_at IS NULL`,
 		req.Lat, req.Lng, req.ShiftID, pid, user,
 	)
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		jsonErr(w, "shift not found or already ended", http.StatusNotFound)
+		return
+	}
 	jsonResp(w, map[string]interface{}{"ended": true})
 }
 
@@ -2350,6 +2371,10 @@ func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ContactID == "" {
+		jsonErr(w, "contact_id required", http.StatusBadRequest)
+		return
+	}
 	validMobileOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
 	if req.Outcome != "" && !validMobileOutcomes[req.Outcome] {
 		jsonErr(w, "invalid outcome", http.StatusBadRequest)
@@ -2566,7 +2591,8 @@ func handleInboundSMS(w http.ResponseWriter, r *http.Request) {
 		text = strings.ToUpper(strings.TrimSpace(r.FormValue("Body"))) // Twilio uses "Body"
 	}
 
-	if phone != "" && text != "" {
+	optOutKeywords := map[string]bool{"STOP": true, "UNSUBSCRIBE": true, "OPT OUT": true, "OPTOUT": true, "CANCEL": true, "END": true, "QUIT": true}
+	if phone != "" && text != "" && optOutKeywords[text] {
 		if err := dispatcher.ProcessInboundOptOut(phone); err != nil {
 			log.Warn().Err(err).Str("phone", phone[:4]+"****").Msg("inbound opt-out failed")
 		}

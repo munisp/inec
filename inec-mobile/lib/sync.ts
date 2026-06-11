@@ -143,7 +143,7 @@ class SyncManager {
     for (const pledge of pledges) {
       try {
         const token = await getMobileToken();
-        const res = await fetch(`${API_URL}/gotv/mobile/knock`, {
+        const res = await fetch(`${API_URL}/gotv/pledges`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

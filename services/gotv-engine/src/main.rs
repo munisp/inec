@@ -7,10 +7,12 @@ mod persistence;
 
 use axum::{
     extract::{Json, Path, Query, State},
-    http::StatusCode,
+    http::{StatusCode, Request},
+    middleware as axum_mw,
     response::IntoResponse,
     routing::{get, post},
     Router,
+    body::Body,
 };
 use geo::HaversineDistance;
 use geo::Point;
@@ -268,6 +270,33 @@ struct StateCoverage {
     drivers: i32,
     polling_units: i32,
     capacity: i32,
+}
+
+// ─── Internal API Key Auth ─────────────────────────────────────────────────
+
+async fn internal_api_key_auth(
+    req: Request<Body>,
+    next: axum_mw::Next,
+) -> impl IntoResponse {
+    // Health endpoint is always public
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+    // Accept dapr-api-token or GOTV_ENGINE_API_KEY
+    let expected_key = std::env::var("GOTV_ENGINE_API_KEY").unwrap_or_default();
+    let has_dapr = req.headers().get("dapr-api-token").is_some();
+    let has_key = req.headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !expected_key.is_empty() && v == expected_key)
+        .unwrap_or(false);
+
+    // In dev mode (no key configured), allow all requests
+    if expected_key.is_empty() || has_dapr || has_key {
+        return next.run(req).await;
+    }
+
+    (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response()
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -904,6 +933,7 @@ async fn main() {
         .route("/gotv-engine/turnout/predict", post(predict_turnout))
         .route("/gotv-engine/isochrone", post(calculate_isochrone))
         .route("/gotv-engine/geofence/check", post(check_geofence))
+        .layer(axum_mw::from_fn(internal_api_key_auth))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

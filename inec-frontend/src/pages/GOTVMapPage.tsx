@@ -133,7 +133,8 @@ export default function GOTVMapPage() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsToken = localStorage.getItem('auth_token') || '';
     const wsPartyId = localStorage.getItem('gotv_party_id') || '1';
-    const wsUrl = `${protocol}//${window.location.hostname}:8103/gotv/ws?party_id=${wsPartyId}&token=${wsToken}`;
+    const wsHost = import.meta.env.VITE_GOTV_WS_HOST || window.location.host;
+    const wsUrl = `${protocol}//${wsHost}/gotv/ws?party_id=${wsPartyId}&token=${wsToken}`;
     let ws: WebSocket | null = null;
 
     try {
