@@ -480,6 +480,10 @@ export default function GOTVPortalPage() {
               <option value="twitter">Twitter / X</option>
               <option value="facebook">Facebook Page Post</option>
               <option value="instagram">Instagram Post</option>
+              <option value="tiktok">TikTok</option>
+            </optgroup>
+            <optgroup label="Interactive">
+              <option value="whatsapp_interactive">WhatsApp Interactive (Buttons)</option>
             </optgroup>
             <optgroup label="Field Operations">
               <option value="door_to_door">Door-to-Door Canvass</option>

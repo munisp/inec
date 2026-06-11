@@ -122,6 +122,21 @@ func main() {
 	if dndURL := os.Getenv("NCC_DND_REGISTRY_URL"); dndURL != "" {
 		gotv.InitDNDCheck(dndURL, os.Getenv("NCC_DND_API_KEY"))
 	}
+	// TikTok adapter
+	if ttToken := os.Getenv("TIKTOK_ACCESS_TOKEN"); ttToken != "" {
+		dispatcher.RegisterAdapter(gotv.NewTikTokAdapter(ttToken))
+	}
+	// WhatsApp Interactive (quick reply buttons + CTA)
+	if waToken := os.Getenv("WHATSAPP_TOKEN"); waToken != "" && os.Getenv("WHATSAPP_INTERACTIVE") == "true" {
+		dispatcher.RegisterAdapter(gotv.NewWhatsAppInteractiveAdapter(
+			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID")))
+	}
+	// Webhook signature verification secrets
+	gotv.InitWebhookSecrets(
+		os.Getenv("AT_WEBHOOK_SECRET"),
+		os.Getenv("TWILIO_AUTH_TOKEN"),
+		os.Getenv("WHATSAPP_APP_SECRET"),
+	)
 
 	webhooks = gotv.NewWebhookManager(db)
 	if err := webhooks.InitTables(context.Background()); err != nil {
@@ -221,6 +236,11 @@ func main() {
 
 	// Dispatch metrics (Prometheus-compatible)
 	r.HandleFunc("/gotv/metrics/dispatch", auth(handleDispatchMetrics)).Methods("GET")
+
+	// Dead-letter queue management
+	r.HandleFunc("/gotv/dlq", auth(handleDLQList)).Methods("GET")
+	r.HandleFunc("/gotv/dlq/retry", auth(handleDLQRetry)).Methods("POST")
+	r.HandleFunc("/gotv/dlq/count", auth(handleDLQCount)).Methods("GET")
 
 	// ─── Standalone Mobile App Auth (NOT shared with INEC portal) ────────
 	// Public endpoints (no auth required)
@@ -369,7 +389,7 @@ func handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "name and campaign_type required", http.StatusBadRequest)
 		return
 	}
-	validTypes := map[string]bool{"sms": true, "ussd": true, "push": true, "whatsapp": true, "email": true, "door_to_door": true, "phone_bank": true, "ride_to_polls": true, "twitter": true, "facebook": true, "instagram": true}
+	validTypes := map[string]bool{"sms": true, "ussd": true, "push": true, "whatsapp": true, "whatsapp_interactive": true, "email": true, "door_to_door": true, "phone_bank": true, "ride_to_polls": true, "twitter": true, "facebook": true, "instagram": true, "tiktok": true}
 	if !validTypes[req.CampaignType] {
 		jsonErr(w, "invalid campaign_type", http.StatusBadRequest)
 		return
@@ -2217,6 +2237,12 @@ func handleDeliveryReceiptAT(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	// Verify AT webhook signature
+	sig := r.Header.Get("X-AT-Signature")
+	if !gotv.VerifyATSignature(body, sig) {
+		http.Error(w, "invalid signature", http.StatusForbidden)
+		return
+	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -2233,11 +2259,22 @@ func handleDeliveryReceiptTwilio(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	payload := make(map[string]interface{})
+	// Verify Twilio signature
+	sig := r.Header.Get("X-Twilio-Signature")
+	params := make(map[string]string)
 	for k, v := range r.Form {
 		if len(v) > 0 {
-			payload[k] = v[0]
+			params[k] = v[0]
 		}
+	}
+	requestURL := "https://" + r.Host + r.URL.Path
+	if !gotv.VerifyTwilioSignature(requestURL, params, sig) {
+		http.Error(w, "invalid signature", http.StatusForbidden)
+		return
+	}
+	payload := make(map[string]interface{})
+	for k, v := range params {
+		payload[k] = v
 	}
 	if err := dispatcher.ProcessDeliveryReceipt("twilio", payload); err != nil {
 		log.Warn().Err(err).Msg("Twilio delivery receipt processing failed")
@@ -2258,6 +2295,12 @@ func handleDeliveryReceiptWhatsApp(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// Verify Meta X-Hub-Signature-256
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if !gotv.VerifyWhatsAppSignature(body, sig) {
+		http.Error(w, "invalid signature", http.StatusForbidden)
 		return
 	}
 	var payload map[string]interface{}
@@ -2311,6 +2354,7 @@ func handleDispatchMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "gotv_dispatch_total{status=\"retried\"} %d\n", m.TotalRetried)
 		fmt.Fprintf(w, "gotv_dispatch_total{status=\"dnd_blocked\"} %d\n", m.TotalDNDBlock)
 		fmt.Fprintf(w, "gotv_dispatch_total{status=\"opted_out\"} %d\n", m.TotalOptOut)
+		fmt.Fprintf(w, "gotv_dispatch_total{status=\"dead_letter\"} %d\n", m.TotalDLQ)
 		fmt.Fprintf(w, "# HELP gotv_dispatch_cost_kobo Total dispatch cost in kobo\n")
 		fmt.Fprintf(w, "# TYPE gotv_dispatch_cost_kobo counter\n")
 		fmt.Fprintf(w, "gotv_dispatch_cost_kobo %d\n", m.TotalCost)
@@ -2318,4 +2362,64 @@ func handleDispatchMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResp(w, m)
+}
+
+// ─── Dead-Letter Queue Handlers ─────────────────────────────────────────
+
+func handleDLQList(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	limit, offset := parsePagination(r)
+
+	rows, err := svc.DB.Query(
+		`SELECT id, campaign_id, contact_id, channel, error_detail, retry_count, resolved, created_at
+		 FROM gotv_dead_letter_queue WHERE party_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+		pid, limit, offset,
+	)
+	if err != nil {
+		jsonErr(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type dlqItem struct {
+		ID          int       `json:"id"`
+		CampaignID  string    `json:"campaign_id"`
+		ContactID   string    `json:"contact_id"`
+		Channel     string    `json:"channel"`
+		ErrorDetail string    `json:"error_detail"`
+		RetryCount  int       `json:"retry_count"`
+		Resolved    bool      `json:"resolved"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	var items []dlqItem
+	for rows.Next() {
+		var item dlqItem
+		if err := rows.Scan(&item.ID, &item.CampaignID, &item.ContactID, &item.Channel, &item.ErrorDetail, &item.RetryCount, &item.Resolved, &item.CreatedAt); err != nil {
+			continue
+		}
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []dlqItem{}
+	}
+	jsonResp(w, items)
+}
+
+func handleDLQRetry(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	retried, succeeded, err := dispatcher.RetryDLQ(r.Context(), pid)
+	if err != nil {
+		jsonErr(w, "retry failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResp(w, map[string]interface{}{
+		"retried":   retried,
+		"succeeded": succeeded,
+	})
+}
+
+func handleDLQCount(w http.ResponseWriter, r *http.Request) {
+	pid, _ := getParty(r)
+	count := dispatcher.GetDLQCount(pid)
+	jsonResp(w, map[string]int{"unresolved": count})
 }

@@ -16,8 +16,11 @@ package gotv
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +72,7 @@ type DispatchMetrics struct {
 	TotalDNDBlock  int64
 	TotalOptOut    int64
 	TotalCost      int64 // kobo
+	TotalDLQ       int64 // dead-letter queue entries
 }
 
 // DispatchEngine runs campaign message delivery.
@@ -118,6 +122,7 @@ func (d *DispatchEngine) GetMetrics() DispatchMetrics {
 		TotalDNDBlock:  atomic.LoadInt64(&d.metrics.TotalDNDBlock),
 		TotalOptOut:    atomic.LoadInt64(&d.metrics.TotalOptOut),
 		TotalCost:      atomic.LoadInt64(&d.metrics.TotalCost),
+		TotalDLQ:       atomic.LoadInt64(&d.metrics.TotalDLQ),
 	}
 }
 
@@ -337,6 +342,8 @@ func (d *DispatchEngine) dispatch(ctx context.Context, campaignID string, partyI
 					atomic.AddInt64(&d.metrics.TotalDelivered, 1)
 				} else {
 					atomic.AddInt64(&d.metrics.TotalFailed, 1)
+					// Dead-letter queue: permanently failed after all retries
+					d.enqueueDLQ(partyID, campaignID, c.ContactID, adapter.Name(), result.Error, personalizedMsg, phone)
 				}
 
 				cur := atomic.LoadInt64(&reached)
@@ -1152,4 +1159,366 @@ func (a *InstagramAdapter) Send(ctx context.Context, msg OutboundMessage) Delive
 		return DeliveryResult{Status: "delivered", MessageID: igResp.ID, Latency: time.Since(start)}
 	}
 	return DeliveryResult{Status: "failed", Error: fmt.Sprintf("Instagram HTTP %d", resp.StatusCode), Latency: time.Since(start)}
+}
+
+// ── Dead-Letter Queue ──────────────────────────────────────────────────
+
+// enqueueDLQ stores permanently failed messages for manual review or retry.
+func (d *DispatchEngine) enqueueDLQ(partyID int, campaignID, contactID, channel, errDetail, messageBody, phone string) {
+	_, err := d.db.Exec(
+		`INSERT INTO gotv_dead_letter_queue (party_id, campaign_id, contact_id, channel, error_detail, message_body, phone_encrypted, retry_count, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+		partyID, campaignID, contactID, channel, errDetail, messageBody, phone, maxRetries,
+	)
+	if err == nil {
+		atomic.AddInt64(&d.metrics.TotalDLQ, 1)
+	}
+}
+
+// RetryDLQ retries all messages in the dead-letter queue for a party.
+func (d *DispatchEngine) RetryDLQ(ctx context.Context, partyID int) (retried, succeeded int, err error) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, campaign_id, contact_id, channel, message_body, phone_encrypted
+		 FROM gotv_dead_letter_queue WHERE party_id=$1 AND resolved=FALSE ORDER BY created_at LIMIT 500`,
+		partyID,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	type dlqRow struct {
+		ID         int
+		CampaignID string
+		ContactID  string
+		Channel    string
+		MsgBody    string
+		Phone      string
+	}
+	var items []dlqRow
+	for rows.Next() {
+		var r dlqRow
+		if err := rows.Scan(&r.ID, &r.CampaignID, &r.ContactID, &r.Channel, &r.MsgBody, &r.Phone); err != nil {
+			continue
+		}
+		items = append(items, r)
+	}
+
+	for _, item := range items {
+		retried++
+		d.mu.RLock()
+		adapter, ok := d.adapters[item.Channel]
+		d.mu.RUnlock()
+		if !ok {
+			continue
+		}
+
+		result := adapter.Send(ctx, OutboundMessage{
+			CampaignID: item.CampaignID,
+			ContactID:  item.ContactID,
+			PartyID:    partyID,
+			Phone:      item.Phone,
+			Template:   item.MsgBody,
+			Channel:    item.Channel,
+		})
+
+		if result.Status == "delivered" || result.Status == "pending" {
+			succeeded++
+			d.db.Exec("UPDATE gotv_dead_letter_queue SET resolved=TRUE, resolved_at=NOW() WHERE id=$1", item.ID)
+		} else {
+			d.db.Exec("UPDATE gotv_dead_letter_queue SET retry_count=retry_count+1, last_error=$1, updated_at=NOW() WHERE id=$2", result.Error, item.ID)
+		}
+	}
+	return retried, succeeded, nil
+}
+
+// GetDLQCount returns the number of unresolved dead-letter queue items.
+func (d *DispatchEngine) GetDLQCount(partyID int) int {
+	var count int
+	d.db.QueryRow("SELECT COUNT(*) FROM gotv_dead_letter_queue WHERE party_id=$1 AND resolved=FALSE", partyID).Scan(&count)
+	return count
+}
+
+// ── Webhook Signature Verification ─────────────────────────────────────
+
+var (
+	webhookSecretAT      string // Africa's Talking webhook secret
+	webhookSecretTwilio   string // Twilio Auth Token
+	webhookSecretWhatsApp string // Meta App Secret
+)
+
+// InitWebhookSecrets configures provider webhook signature verification keys.
+func InitWebhookSecrets(atSecret, twilioToken, whatsappSecret string) {
+	webhookSecretAT = atSecret
+	webhookSecretTwilio = twilioToken
+	webhookSecretWhatsApp = whatsappSecret
+}
+
+// VerifyATSignature verifies Africa's Talking delivery receipt HMAC.
+func VerifyATSignature(body []byte, signature string) bool {
+	if webhookSecretAT == "" {
+		return true // verification disabled
+	}
+	mac := hmac.New(sha256.New, []byte(webhookSecretAT))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// VerifyTwilioSignature verifies Twilio request signature (X-Twilio-Signature).
+func VerifyTwilioSignature(requestURL string, params map[string]string, signature string) bool {
+	if webhookSecretTwilio == "" {
+		return true
+	}
+	// Twilio signature: HMAC-SHA1 of URL + sorted POST params
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	// Sort keys
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i] > keys[j] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	data := requestURL
+	for _, k := range keys {
+		data += k + params[k]
+	}
+	mac := hmac.New(sha256.New, []byte(webhookSecretTwilio))
+	mac.Write([]byte(data))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// VerifyWhatsAppSignature verifies Meta webhook payload (X-Hub-Signature-256).
+func VerifyWhatsAppSignature(body []byte, signature string) bool {
+	if webhookSecretWhatsApp == "" {
+		return true
+	}
+	mac := hmac.New(sha256.New, []byte(webhookSecretWhatsApp))
+	mac.Write(body)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// ── TikTok Adapter ─────────────────────────────────────────────────────
+
+// TikTokAdapter posts video/text via TikTok Content Posting API.
+type TikTokAdapter struct {
+	AccessToken string
+	client      *http.Client
+}
+
+func NewTikTokAdapter(accessToken string) *TikTokAdapter {
+	return &TikTokAdapter{
+		AccessToken: accessToken,
+		client:      &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+func (a *TikTokAdapter) Name() string { return "tiktok" }
+
+func (a *TikTokAdapter) Send(ctx context.Context, msg OutboundMessage) DeliveryResult {
+	start := time.Now()
+
+	// TikTok Content Posting API — create a text post (photo mode with caption)
+	// Step 1: Initialize post
+	initPayload := map[string]interface{}{
+		"post_info": map[string]interface{}{
+			"title":              msg.Template,
+			"privacy_level":      "PUBLIC_TO_EVERYONE",
+			"disable_duet":       false,
+			"disable_comment":    false,
+			"disable_stitch":     false,
+			"brand_content_toggle": false,
+			"brand_organic_toggle": false,
+		},
+		"source_info": map[string]interface{}{
+			"source":       "PULL_FROM_URL",
+			"video_url":    "", // text-only post
+		},
+	}
+	body, _ := json.Marshal(initPayload)
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		"https://open.tiktokapis.com/v2/post/publish/content/init/",
+		strings.NewReader(string(body)))
+	if err != nil {
+		return DeliveryResult{Status: "failed", Error: err.Error(), Latency: time.Since(start)}
+	}
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return DeliveryResult{Status: "failed", Error: err.Error(), Latency: time.Since(start)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var ttResp struct {
+			Data struct {
+				PublishID string `json:"publish_id"`
+			} `json:"data"`
+		}
+		json.NewDecoder(resp.Body).Decode(&ttResp)
+		return DeliveryResult{Status: "pending", MessageID: ttResp.Data.PublishID, Latency: time.Since(start)}
+	}
+
+	respBody := make([]byte, 512)
+	n, _ := io.ReadAtLeast(resp.Body, respBody, 1)
+	return DeliveryResult{Status: "failed", Error: fmt.Sprintf("TikTok HTTP %d: %s", resp.StatusCode, string(respBody[:n])), Latency: time.Since(start)}
+}
+
+// ── WhatsApp Interactive Buttons ────────────────────────────────────────
+
+// WhatsAppInteractiveAdapter sends WhatsApp messages with quick reply buttons and CTA.
+type WhatsAppInteractiveAdapter struct {
+	APIURL     string
+	Token      string
+	PhoneNumID string
+	client     *http.Client
+}
+
+func NewWhatsAppInteractiveAdapter(apiURL, token, phoneNumID string) *WhatsAppInteractiveAdapter {
+	return &WhatsAppInteractiveAdapter{
+		APIURL:     apiURL,
+		Token:      token,
+		PhoneNumID: phoneNumID,
+		client:     &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (a *WhatsAppInteractiveAdapter) Name() string { return "whatsapp_interactive" }
+
+// SendInteractive sends a WhatsApp message with quick reply buttons.
+func (a *WhatsAppInteractiveAdapter) Send(ctx context.Context, msg OutboundMessage) DeliveryResult {
+	start := time.Now()
+
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                msg.Phone,
+		"type":              "interactive",
+		"interactive": map[string]interface{}{
+			"type": "button",
+			"header": map[string]interface{}{
+				"type": "text",
+				"text": "Election Day Reminder",
+			},
+			"body": map[string]string{
+				"text": msg.Template,
+			},
+			"footer": map[string]string{
+				"text": "Reply STOP to opt out",
+			},
+			"action": map[string]interface{}{
+				"buttons": []map[string]interface{}{
+					{
+						"type": "reply",
+						"reply": map[string]string{
+							"id":    "btn_will_vote",
+							"title": "I'll Vote!",
+						},
+					},
+					{
+						"type": "reply",
+						"reply": map[string]string{
+							"id":    "btn_need_ride",
+							"title": "Need a Ride",
+						},
+					},
+					{
+						"type": "reply",
+						"reply": map[string]string{
+							"id":    "btn_find_pu",
+							"title": "Find My PU",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	apiURL := fmt.Sprintf("%s/%s/messages", a.APIURL, a.PhoneNumID)
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(body)))
+	if err != nil {
+		return DeliveryResult{Status: "failed", Error: err.Error(), Latency: time.Since(start)}
+	}
+	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return DeliveryResult{Status: "failed", Error: err.Error(), Latency: time.Since(start)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var waResp struct {
+			Messages []struct {
+				ID string `json:"id"`
+			} `json:"messages"`
+		}
+		msgID := ""
+		if json.NewDecoder(resp.Body).Decode(&waResp) == nil && len(waResp.Messages) > 0 {
+			msgID = waResp.Messages[0].ID
+		}
+		return DeliveryResult{Status: "pending", MessageID: msgID, Latency: time.Since(start), Cost: 500}
+	}
+
+	respBody := make([]byte, 512)
+	n, _ := io.ReadAtLeast(resp.Body, respBody, 1)
+	return DeliveryResult{Status: "failed", Error: fmt.Sprintf("WhatsApp Interactive HTTP %d: %s", resp.StatusCode, string(respBody[:n])), Latency: time.Since(start)}
+}
+
+// SendCTA sends a WhatsApp message with a Call-to-Action URL button.
+func (a *WhatsAppInteractiveAdapter) SendCTA(ctx context.Context, msg OutboundMessage, buttonText, ctaURL string) DeliveryResult {
+	start := time.Now()
+
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                msg.Phone,
+		"type":              "interactive",
+		"interactive": map[string]interface{}{
+			"type": "cta_url",
+			"header": map[string]interface{}{
+				"type": "text",
+				"text": "Election Information",
+			},
+			"body": map[string]string{
+				"text": msg.Template,
+			},
+			"action": map[string]interface{}{
+				"name":       "cta_url",
+				"parameters": map[string]string{
+					"display_text": buttonText,
+					"url":          ctaURL,
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	apiURL := fmt.Sprintf("%s/%s/messages", a.APIURL, a.PhoneNumID)
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(body)))
+	if err != nil {
+		return DeliveryResult{Status: "failed", Error: err.Error(), Latency: time.Since(start)}
+	}
+	req.Header.Set("Authorization", "Bearer "+a.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return DeliveryResult{Status: "failed", Error: err.Error(), Latency: time.Since(start)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return DeliveryResult{Status: "pending", Latency: time.Since(start), Cost: 500}
+	}
+	return DeliveryResult{Status: "failed", Error: fmt.Sprintf("WhatsApp CTA HTTP %d", resp.StatusCode), Latency: time.Since(start)}
 }

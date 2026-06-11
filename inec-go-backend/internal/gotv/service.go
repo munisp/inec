@@ -64,7 +64,7 @@ func (s *Service) InitTables(ctx context.Context) error {
 		party_id INTEGER NOT NULL REFERENCES parties(id),
 		name TEXT NOT NULL,
 		description TEXT,
-		campaign_type TEXT NOT NULL CHECK(campaign_type IN ('sms','ussd','push','whatsapp','email','door_to_door','phone_bank','ride_to_polls','twitter','facebook','instagram')),
+		campaign_type TEXT NOT NULL CHECK(campaign_type IN ('sms','ussd','push','whatsapp','whatsapp_interactive','email','door_to_door','phone_bank','ride_to_polls','twitter','facebook','instagram','tiktok')),
 		status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','scheduled','active','paused','completed','cancelled')),
 		target_state TEXT,
 		target_lga TEXT,
@@ -176,7 +176,7 @@ func (s *Service) InitTables(ctx context.Context) error {
 		party_id INTEGER NOT NULL,
 		campaign_id TEXT,
 		contact_id TEXT,
-		channel TEXT NOT NULL CHECK(channel IN ('sms','ussd','push','whatsapp','email','door_knock','phone_call','log','twitter','facebook','instagram')),
+		channel TEXT NOT NULL CHECK(channel IN ('sms','ussd','push','whatsapp','whatsapp_interactive','email','door_knock','phone_call','log','twitter','facebook','instagram','tiktok')),
 		direction TEXT NOT NULL DEFAULT 'outbound' CHECK(direction IN ('outbound','inbound')),
 		message_variant TEXT DEFAULT 'a',
 		status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sent','delivered','pending','read','responded','failed','opted_out','dnd_blocked','deferred')),
@@ -192,6 +192,25 @@ func (s *Service) InitTables(ctx context.Context) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_outreach_party ON gotv_outreach_log(party_id);
 	CREATE INDEX IF NOT EXISTS idx_gotv_outreach_campaign ON gotv_outreach_log(campaign_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_dead_letter_queue (
+		id SERIAL PRIMARY KEY,
+		party_id INTEGER NOT NULL,
+		campaign_id TEXT,
+		contact_id TEXT,
+		channel TEXT NOT NULL,
+		error_detail TEXT,
+		message_body TEXT,
+		phone_encrypted TEXT,
+		retry_count INTEGER DEFAULT 0,
+		last_error TEXT,
+		resolved BOOLEAN DEFAULT FALSE,
+		resolved_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_dlq_party ON gotv_dead_letter_queue(party_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_dlq_resolved ON gotv_dead_letter_queue(resolved);
 
 	CREATE TABLE IF NOT EXISTS gotv_audit_log (
 		id SERIAL PRIMARY KEY,
