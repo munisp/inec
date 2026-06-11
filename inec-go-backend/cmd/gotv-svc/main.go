@@ -47,6 +47,7 @@ var (
 	pledgeVerifier *gotv.PledgeVerifier
 	allianceMgr    *gotv.AllianceManager
 	waFlows        *gotv.WhatsAppFlowSender
+	voiceAI        *gotv.VoiceAICaller
 )
 
 func main() {
@@ -187,6 +188,7 @@ func main() {
 	}
 
 	// V2: Voice AI adapter
+	voiceAI = gotv.NewVoiceAICaller(db) // reads VOICE_AI_API_KEY etc. from env
 	if voiceKey := os.Getenv("VOICE_AI_API_KEY"); voiceKey != "" {
 		dispatcher.RegisterAdapter(gotv.NewVoiceAIAdapter(
 			os.Getenv("VOICE_AI_PROVIDER"), os.Getenv("VOICE_AI_API_URL"), voiceKey, os.Getenv("VOICE_AI_AGENT_ID"), db))
@@ -340,9 +342,11 @@ func main() {
 
 	// V2: Channel ROI Analytics
 	r.HandleFunc("/gotv/analytics/roi", auth(handleChannelROI)).Methods("GET")
+	r.HandleFunc("/gotv/roi/channels", auth(handleChannelROI)).Methods("GET") // alias for frontend
 
 	// V2: AI Message Optimization
 	r.HandleFunc("/gotv/ai/generate-variants", auth(handleAIGenerateVariants)).Methods("POST")
+	r.HandleFunc("/gotv/ai/variants", auth(handleListAIVariants)).Methods("GET")
 
 	// V2: WhatsApp Button Reply Processing
 	r.HandleFunc("/gotv/webhooks/whatsapp/button-reply", handleWhatsAppButtonReply).Methods("POST")
@@ -362,11 +366,16 @@ func main() {
 	r.HandleFunc("/gotv/alliances", auth(handleListAlliances)).Methods("GET")
 	r.HandleFunc("/gotv/alliances/rides", auth(handleSharedRides)).Methods("GET")
 
+	// V2: Turnout Prediction
+	r.HandleFunc("/gotv/turnout/predict", auth(handleTurnoutPredict)).Methods("POST")
+
 	// V2: Field Reports
 	r.HandleFunc("/gotv/reports", auth(handleListFieldReports)).Methods("GET")
+	r.HandleFunc("/gotv/reports", auth(handleCreateFieldReport)).Methods("POST")
 
 	// V2: Voice AI calls
 	r.HandleFunc("/gotv/voice/calls", auth(handleListVoiceCalls)).Methods("GET")
+	r.HandleFunc("/gotv/voice/calls", auth(handlePlaceVoiceCall)).Methods("POST")
 
 	// V2: War Room (SSE real-time stream)
 	r.HandleFunc("/gotv/warroom/stream", auth(handleWarRoomStream)).Methods("GET")

@@ -133,7 +133,50 @@ func seedGOTVData(db *sql.DB) {
 			puCodes[i], s, float64(i+1)*1.5, now.Add(-time.Duration(7-i)*time.Hour))
 	}
 
-	log.Info().Msg("GOTV demo data seeded successfully")
+	// ─── V2: Segments ──────────────────────────────────────────────────
+	db.Exec(`INSERT INTO gotv_segments (segment_id, party_id, name, filters, created_at) VALUES
+		($1, $2, 'Lagos Youth Voters', '[{"field":"state_code","operator":"eq","value":"Lagos"},{"field":"voter_status","operator":"neq","value":"declined"}]', $3),
+		($4, $5, 'Pledged Supporters', '[{"field":"voter_status","operator":"eq","value":"pledged"}]', $6),
+		($7, $8, 'Unreached Contacts', '[{"field":"voter_status","operator":"eq","value":"unknown"}]', $9)
+		ON CONFLICT DO NOTHING`,
+		"seg-"+randID()[:8], pid, now, "seg-"+randID()[:8], pid, now, "seg-"+randID()[:8], pid, now)
+
+	// ─── V2: AI Variants ───────────────────────────────────────────────
+	db.Exec(`INSERT INTO gotv_ai_variants (variant_id, party_id, base_message, variant_text, target_state, channel, variant_index, created_at) VALUES
+		($1, $2, 'Remember to vote on election day!', 'Your vote is your voice! Make it count this Saturday at your polling unit.', 'Lagos', 'sms', 0, $3),
+		($4, $5, 'Remember to vote on election day!', 'Omo Lagos, na your future dey your hand! Go vote this Saturday!', 'Lagos', 'whatsapp', 1, $6),
+		($7, $8, 'Every vote matters in this election', 'Ka ku zo ku kadda kuri''a. Kuri''ar ku na da muhimmanci!', 'Kano', 'sms', 0, $9),
+		($10, $11, 'Get a free ride to your polling unit', 'Need a ride? Reply RIDE and we will send a driver to pick you up!', '', 'sms', 0, $12)
+		ON CONFLICT DO NOTHING`,
+		"var-"+randID()[:8], pid, now, "var-"+randID()[:8], pid, now,
+		"var-"+randID()[:8], pid, now, "var-"+randID()[:8], pid, now)
+
+	// ─── V2: Sequences ─────────────────────────────────────────────────
+	db.Exec(`INSERT INTO gotv_campaign_sequences (sequence_id, party_id, name, waves, status, created_at) VALUES
+		($1, $2, 'Lagos 3-Wave Outreach', '[{"wave_number":1,"channel":"sms","delay_hours":0,"template":"Initial reminder"},{"wave_number":2,"channel":"whatsapp","delay_hours":48,"template":"Follow-up with buttons"},{"wave_number":3,"channel":"phone","delay_hours":96,"template":"Final personal call"}]', 'active', $3)
+		ON CONFLICT DO NOTHING`,
+		"seq-"+randID()[:8], pid, now)
+
+	// ─── V2: Challenges (Gamification) ─────────────────────────────────
+	db.Exec(`INSERT INTO gotv_challenges (challenge_id, party_id, name, target_metric, target_value, reward_description, starts_at, ends_at) VALUES
+		($1, $2, 'Door-to-Door Champion', 'doors_knocked', 50, 'Custom party jersey + N5,000 airtime', $3, $4),
+		($5, $6, 'Call Center Star', 'calls_made', 100, 'N10,000 bonus + recognition at rally', $7, $8)
+		ON CONFLICT DO NOTHING`,
+		"chal-"+randID()[:8], pid, now, now.Add(7*24*time.Hour),
+		"chal-"+randID()[:8], pid, now, now.Add(7*24*time.Hour))
+
+	// ─── V2: Outreach Log (for ROI analytics) ──────────────────────────
+	channels := []string{"sms", "sms", "whatsapp", "whatsapp", "push", "email", "sms", "whatsapp"}
+	statuses := []string{"delivered", "delivered", "delivered", "failed", "delivered", "delivered", "pending", "delivered"}
+	costs := []int{400, 400, 250, 250, 50, 300, 400, 250}
+	for i, ch := range channels {
+		db.Exec(`INSERT INTO gotv_outreach_log (party_id, campaign_id, contact_id, channel, status, cost_kobo, sent_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
+			pid, campaigns[i%len(campaigns)].id, contacts[i%len(contacts)].id,
+			ch, statuses[i], costs[i], now.Add(-time.Duration(i)*time.Hour))
+	}
+
+	log.Info().Msg("GOTV demo data seeded successfully (V1 + V2)")
 }
 
 func randID() string {

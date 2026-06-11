@@ -53,6 +53,7 @@ func InitV2Tables(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS gotv_ai_variants (
 			variant_id TEXT PRIMARY KEY,
+			party_id INTEGER NOT NULL DEFAULT 0,
 			base_message TEXT NOT NULL,
 			variant_text TEXT NOT NULL,
 			target_state TEXT DEFAULT '',
@@ -70,8 +71,10 @@ func InitV2Tables(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS gotv_field_reports (
 			report_id TEXT PRIMARY KEY,
+			party_id INTEGER NOT NULL DEFAULT 0,
 			issue_type TEXT NOT NULL,
 			source TEXT DEFAULT 'unknown',
+			ward_code TEXT DEFAULT '',
 			phone TEXT DEFAULT '',
 			description TEXT DEFAULT '',
 			latitude DOUBLE PRECISION DEFAULT 0,
