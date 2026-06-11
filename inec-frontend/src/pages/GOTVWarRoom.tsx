@@ -41,7 +41,7 @@ export default function GOTVWarRoom() {
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'X-Party-ID': '1' };
+  const headers = { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1' };
 
   const loadData = () => {
     setLoading(true);

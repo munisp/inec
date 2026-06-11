@@ -17,7 +17,8 @@ from typing import Optional
 import numpy as np
 import polars as pl
 import structlog
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from scipy.spatial.distance import cdist
 from sklearn.ensemble import GradientBoostingClassifier, IsolationForest
@@ -28,11 +29,33 @@ logger = structlog.get_logger()
 DB_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
 
 
-# ─── DB helpers ─────────────────────────────────────────────────────────────
+# ─── DB helpers (connection pooling) ────────────────────────────────────────
+
+_db_pool = None
+
+
+def get_db_pool():
+    """Get or create a connection pool (min=2, max=10)."""
+    global _db_pool
+    if _db_pool is None:
+        import psycopg2.pool
+        _db_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=2, maxconn=10, dsn=DB_URL
+        )
+    return _db_pool
+
 
 def get_db_connection():
-    import psycopg2
-    return psycopg2.connect(DB_URL)
+    """Get a connection from the pool."""
+    return get_db_pool().getconn()
+
+
+def release_db_connection(conn):
+    """Return a connection to the pool."""
+    try:
+        get_db_pool().putconn(conn)
+    except Exception:
+        pass
 
 
 def query_df(sql: str, params: tuple = ()) -> pl.DataFrame:
@@ -48,7 +71,7 @@ def query_df(sql: str, params: tuple = ()) -> pl.DataFrame:
             return pl.DataFrame()
         return pl.from_dicts(rows)
     finally:
-        conn.close()
+        release_db_connection(conn)
 
 
 # ─── ML Models ──────────────────────────────────────────────────────────────
@@ -271,6 +294,27 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# CORS for cross-origin requests from frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("GOTV_CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Validate auth header on non-health endpoints (service-to-service via Dapr or Bearer token)."""
+    if request.url.path in ("/health", "/docs", "/openapi.json"):
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    dapr_token = request.headers.get("dapr-api-token", "")
+    if not auth and not dapr_token:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
 
 
 @app.get("/health")

@@ -1428,8 +1428,17 @@ func handleUpdateRideStatus(w http.ResponseWriter, r *http.Request) {
 		timeCol = ", dropped_off_at=NOW()"
 	}
 
-	svc.DB.Exec(fmt.Sprintf("UPDATE gotv_ride_requests SET status=$1%s WHERE request_id=$2 AND party_id=$3", timeCol), req.Status, id, pid)
+	res, err := svc.DB.Exec(fmt.Sprintf("UPDATE gotv_ride_requests SET status=$1%s WHERE request_id=$2 AND party_id=$3", timeCol), req.Status, id, pid)
+	if err != nil {
+		jsonErr(w, "update failed", http.StatusInternalServerError)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		jsonErr(w, "ride not found", http.StatusNotFound)
+		return
+	}
 	svc.Audit(pid, user, "update_ride_status", "ride", id)
+	publishEvent("gotv-rides", id, map[string]interface{}{"status": req.Status, "party_id": pid})
 	jsonResp(w, map[string]interface{}{"updated": true})
 }
 
@@ -1503,11 +1512,15 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var totalContacts, totalVolunteers, totalPledges, activeCampaigns, pendingRides int
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE", pid).Scan(&totalContacts)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_volunteers WHERE party_id=$1 AND is_active=TRUE", pid).Scan(&totalVolunteers)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_pledges WHERE party_id=$1", pid).Scan(&totalPledges)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_campaigns WHERE party_id=$1 AND status='active'", pid).Scan(&activeCampaigns)
-	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_ride_requests WHERE party_id=$1 AND status='pending'", pid).Scan(&pendingRides)
+	// Single aggregated query instead of 5 separate round-trips
+	svc.DB.QueryRowContext(r.Context(), `
+		SELECT
+			(SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE),
+			(SELECT COUNT(*) FROM gotv_volunteers WHERE party_id=$1 AND is_active=TRUE),
+			(SELECT COUNT(*) FROM gotv_pledges WHERE party_id=$1),
+			(SELECT COUNT(*) FROM gotv_campaigns WHERE party_id=$1 AND status='active'),
+			(SELECT COUNT(*) FROM gotv_ride_requests WHERE party_id=$1 AND status='pending')
+	`, pid).Scan(&totalContacts, &totalVolunteers, &totalPledges, &activeCampaigns, &pendingRides)
 
 	result := map[string]interface{}{
 		"party_id":          pid,

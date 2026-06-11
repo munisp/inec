@@ -894,15 +894,30 @@ func handlePlaceVoiceCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
+	if req.CampaignID == "" || req.ContactID == "" || req.Phone == "" {
+		http.Error(w, `{"error":"campaign_id, contact_id, and phone are required"}`, http.StatusBadRequest)
+		return
+	}
+	callID := "vc-" + uuid.New().String()[:8]
+	// Persist call record regardless of Voice AI availability
+	svc.DB.ExecContext(r.Context(),
+		`INSERT INTO gotv_voice_calls (call_id, party_id, campaign_id, contact_id, phone_number, status, created_at)
+		 VALUES ($1, $2, $3, $4, $5, 'initiated', NOW())`,
+		callID, partyID, req.CampaignID, req.ContactID, req.Phone)
 	if voiceAI == nil {
-		http.Error(w, `{"error":"Voice AI not configured — set VOICE_AI_API_KEY"}`, http.StatusServiceUnavailable)
+		// Queue for later — no voice AI configured
+		svc.DB.ExecContext(r.Context(), `UPDATE gotv_voice_calls SET status='queued' WHERE call_id=$1`, callID)
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"call_id": callID, "status": "queued", "note": "Voice AI not configured — call queued"})
 		return
 	}
 	if err := voiceAI.PlaceCall(r.Context(), req.CampaignID, req.ContactID, req.Phone, partyID); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		svc.DB.ExecContext(r.Context(), `UPDATE gotv_voice_calls SET status='failed', error_detail=$1 WHERE call_id=$2`, err.Error(), callID)
+		http.Error(w, fmt.Sprintf(`{"error":"%s","call_id":"%s"}`, err.Error(), callID), http.StatusInternalServerError)
 		return
 	}
-	callID := "vc-" + req.ContactID[:8] + "-" + strconv.FormatInt(time.Now().Unix(), 10)
+	svc.DB.ExecContext(r.Context(), `UPDATE gotv_voice_calls SET status='in_progress' WHERE call_id=$1`, callID)
+	publishEvent("gotv-voice-calls", callID, map[string]interface{}{"party_id": partyID, "campaign_id": req.CampaignID})
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"call_id": callID, "status": "initiated"})
 }
@@ -922,11 +937,36 @@ func handleCreateFieldReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
 		return
 	}
+	// Input validation
+	validIssueTypes := map[string]bool{
+		"voter_intimidation": true, "ballot_irregularity": true,
+		"access_blocked": true, "equipment_failure": true,
+		"violence": true, "bribery": true, "other": true,
+	}
+	if !validIssueTypes[req.IssueType] {
+		http.Error(w, `{"error":"invalid issue_type"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Description == "" || len(req.Description) < 10 {
+		http.Error(w, `{"error":"description must be at least 10 characters"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Latitude < 4.0 || req.Latitude > 14.0 || req.Longitude < 2.0 || req.Longitude > 15.0 {
+		http.Error(w, `{"error":"coordinates outside Nigeria bounds"}`, http.StatusBadRequest)
+		return
+	}
 	reportID := "report-" + uuid.New().String()[:8]
-	svc.DB.ExecContext(r.Context(),
+	_, err := svc.DB.ExecContext(r.Context(),
 		`INSERT INTO gotv_field_reports (report_id, party_id, issue_type, description, ward_code, latitude, longitude, source, resolved)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'mobile', FALSE)`,
 		reportID, partyID, req.IssueType, req.Description, req.WardCode, req.Latitude, req.Longitude)
+	if err != nil {
+		http.Error(w, `{"error":"failed to create report"}`, http.StatusInternalServerError)
+		return
+	}
+	publishEvent("gotv-field-reports", reportID, map[string]interface{}{
+		"party_id": partyID, "issue_type": req.IssueType, "ward_code": req.WardCode,
+	})
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"report_id": reportID, "status": "submitted"})
 }

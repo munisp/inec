@@ -30,7 +30,7 @@ export default function GOTVLeaderboard() {
   useEffect(() => {
     setLoading(true);
     fetch(`/gotv/leaderboard?period=${period}&limit=50`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('token')}`, 'X-Party-ID': '1' },
+      headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1' },
     })
       .then(r => r.json())
       .then(data => setEntries(data.entries || []))

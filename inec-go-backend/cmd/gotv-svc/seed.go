@@ -176,6 +176,40 @@ func seedGOTVData(db *sql.DB) {
 			ch, statuses[i], costs[i], now.Add(-time.Duration(i)*time.Hour))
 	}
 
+	// ─── V2: Territories ──────────────────────────────────────────────
+	db.Exec(`INSERT INTO gotv_territories (territory_id, party_id, volunteer_id, ward_code, contact_count, status) VALUES
+		($1, $2, $3, 'LA/IKJ/W01', 45, 'active'),
+		($4, $5, $6, 'LA/IKJ/W02', 32, 'active'),
+		($7, $8, $9, 'KN/NAS/W01', 67, 'active'),
+		($10, $11, $12, 'OY/IBN/W01', 28, 'pending'),
+		($13, $14, $15, 'FC/AMC/W01', 51, 'active')
+		ON CONFLICT DO NOTHING`,
+		"terr-"+randID()[:8], pid, volunteers[0].id,
+		"terr-"+randID()[:8], pid, volunteers[1].id,
+		"terr-"+randID()[:8], pid, volunteers[3].id,
+		"terr-"+randID()[:8], pid, volunteers[2].id,
+		"terr-"+randID()[:8], pid, volunteers[5].id)
+
+	// ─── V2: Field Reports ─────────────────────────────────────────────
+	db.Exec(`INSERT INTO gotv_field_reports (report_id, party_id, issue_type, description, ward_code, latitude, longitude, source, resolved) VALUES
+		($1, $2, 'voter_intimidation', 'Suspected thugs blocking entrance to polling unit on Adeniyi Jones Ave', 'LA/IKJ/W01', 6.601, 3.351, 'mobile', FALSE),
+		($3, $4, 'equipment_failure', 'BVAS machine not working at this unit since 9am, voters leaving', 'KN/NAS/W01', 12.002, 8.519, 'mobile', FALSE),
+		($5, $6, 'access_blocked', 'Road to polling unit flooded after overnight rain, voters cannot access', 'RI/PH/W01', 4.815, 7.033, 'web', TRUE),
+		($7, $8, 'ballot_irregularity', 'Presiding officer seen thumbprinting ballots before opening', 'KD/CHK/W01', 10.526, 7.439, 'mobile', FALSE)
+		ON CONFLICT DO NOTHING`,
+		"report-"+randID()[:8], pid, "report-"+randID()[:8], pid,
+		"report-"+randID()[:8], pid, "report-"+randID()[:8], pid)
+
+	// ─── V2: Voice Calls ───────────────────────────────────────────────
+	db.Exec(`INSERT INTO gotv_voice_calls (call_id, party_id, campaign_id, contact_id, phone_number, status, created_at) VALUES
+		($1, $2, $3, $4, '08012345001', 'completed', $5),
+		($6, $7, $8, $9, '08012345002', 'in_progress', $10),
+		($11, $12, $13, $14, '08012345003', 'failed', $15)
+		ON CONFLICT DO NOTHING`,
+		"vc-"+randID()[:8], pid, campaigns[0].id, contacts[0].id, now.Add(-2*time.Hour),
+		"vc-"+randID()[:8], pid, campaigns[0].id, contacts[1].id, now.Add(-30*time.Minute),
+		"vc-"+randID()[:8], pid, campaigns[0].id, contacts[2].id, now.Add(-1*time.Hour))
+
 	log.Info().Msg("GOTV demo data seeded successfully (V1 + V2)")
 }
 

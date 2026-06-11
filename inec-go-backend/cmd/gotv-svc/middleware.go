@@ -634,12 +634,20 @@ func wafMiddleware(next http.Handler) http.Handler {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
+		// Determine real client IP from X-Forwarded-For or X-Real-IP, fall back to RemoteAddr
+		clientIP := r.RemoteAddr
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			clientIP = strings.Split(xff, ",")[0]
+		} else if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			clientIP = xri
+		}
 		inspectPayload := map[string]interface{}{
-			"method":  r.Method,
-			"uri":     r.RequestURI,
-			"headers": r.Header,
-			"body":    string(bodyBytes),
-			"source":  r.RemoteAddr,
+			"method":    r.Method,
+			"uri":       r.RequestURI,
+			"headers":   r.Header,
+			"body":      string(bodyBytes),
+			"source":    r.RemoteAddr,
+			"client_ip": clientIP,
 		}
 		data, _ := json.Marshal(inspectPayload)
 		resp, err := mwHTTPClient.Post(openappsecURL+"/inspect", "application/json", bytes.NewReader(data))
@@ -731,7 +739,7 @@ func queryLakehouse(query string) ([]map[string]interface{}, error) {
 		return nil, fmt.Errorf("only SELECT queries allowed")
 	}
 	// Block common injection patterns
-	for _, banned := range []string{"DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "EXEC", "--", ";"} {
+	for _, banned := range []string{"DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "EXEC", "UNION", "INTO", "GRANT", "REVOKE", "--", ";"} {
 		if strings.Contains(trimmed, banned) {
 			return nil, fmt.Errorf("forbidden SQL keyword: %s", banned)
 		}

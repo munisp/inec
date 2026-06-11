@@ -53,7 +53,7 @@ export default function GOTVAnalytics() {
   const [predictions, setPredictions] = useState<TurnoutPrediction[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'roi' | 'ai' | 'turnout'>('roi');
-  const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'X-Party-ID': '1' };
+  const headers = { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1' };
 
   useEffect(() => {
     Promise.all([

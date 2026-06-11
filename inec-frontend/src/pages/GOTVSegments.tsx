@@ -43,7 +43,7 @@ export default function GOTVSegments() {
   const [newFilters, setNewFilters] = useState<SegmentFilter[]>([{ field: 'state_code', operator: 'eq', value: '' }]);
   const [evaluateResult, setEvaluateResult] = useState<Record<string, number>>({});
 
-  const headers = { Authorization: `Bearer ${localStorage.getItem('token')}`, 'X-Party-ID': '1', 'Content-Type': 'application/json' };
+  const headers = { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1', 'Content-Type': 'application/json' };
 
   useEffect(() => {
     fetch('/gotv/segments', { headers })
