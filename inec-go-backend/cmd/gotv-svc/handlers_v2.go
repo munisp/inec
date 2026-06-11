@@ -456,8 +456,8 @@ func handleHashPledge(w http.ResponseWriter, r *http.Request) {
 
 	var contactID, wardCode string
 	svc.DB.QueryRowContext(r.Context(),
-		`SELECT contact_id, COALESCE(c.ward_code,'') FROM gotv_pledges p JOIN gotv_contacts c ON c.contact_id=p.contact_id WHERE p.pledge_id=$1`,
-		pledgeID).Scan(&contactID, &wardCode)
+		`SELECT p.contact_id, COALESCE(c.ward_code,'') FROM gotv_pledges p JOIN gotv_contacts c ON c.contact_id=p.contact_id WHERE p.pledge_id=$1 AND p.party_id=$2`,
+		pledgeID, partyID).Scan(&contactID, &wardCode)
 
 	hash, err := pledgeVerifier.StorePledgeHash(r.Context(), partyID, contactID, req.ElectionID, wardCode)
 	if err != nil {
@@ -544,8 +544,9 @@ func handleSharedRides(w http.ResponseWriter, r *http.Request) {
 // ─── Field Reports ──────────────────────────────────────────────────────────
 
 func handleListFieldReports(w http.ResponseWriter, r *http.Request) {
+	partyID := getPartyID(r)
 	rows, _ := svc.DB.QueryContext(r.Context(),
-		`SELECT report_id, issue_type, source, resolved, created_at FROM gotv_field_reports ORDER BY created_at DESC LIMIT 100`)
+		`SELECT report_id, issue_type, source, resolved, created_at FROM gotv_field_reports WHERE party_id=$1 ORDER BY created_at DESC LIMIT 100`, partyID)
 	if rows == nil {
 		json.NewEncoder(w).Encode([]interface{}{})
 		return
@@ -600,6 +601,16 @@ func handleListVoiceCalls(w http.ResponseWriter, r *http.Request) {
 
 func handleWarRoomStream(w http.ResponseWriter, r *http.Request) {
 	partyID := getPartyID(r)
+	// EventSource doesn't support custom headers, so also check query param
+	if partyID == 0 {
+		if qp, err := strconv.Atoi(r.URL.Query().Get("party_id")); err == nil && qp > 0 {
+			partyID = qp
+		}
+	}
+	if partyID == 0 {
+		http.Error(w, `{"error":"party_id required"}`, http.StatusBadRequest)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

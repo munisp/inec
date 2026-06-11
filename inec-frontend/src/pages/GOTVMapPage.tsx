@@ -131,7 +131,7 @@ export default function GOTVMapPage() {
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.hostname}:8103/gotv/ws?party_id=1`;
+    const wsUrl = `${protocol}//${window.location.hostname}:8103/gotv/ws?party_id=${localStorage.getItem('gotv_party_id') || '1'}`;
     let ws: WebSocket | null = null;
 
     try {
