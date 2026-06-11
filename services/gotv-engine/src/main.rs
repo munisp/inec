@@ -3,6 +3,7 @@
 // Handles: ride matching, canvasser route optimization, polling unit proximity.
 
 mod middleware;
+mod persistence;
 
 use axum::{
     extract::{Json, Path, Query, State},
@@ -112,6 +113,7 @@ struct AppState {
     polling_units: RwLock<HashMap<String, PollingUnit>>,     // code -> PU
     ride_requests: RwLock<Vec<RideRequest>>,
     mw: middleware::Middleware,
+    persistence: persistence::PersistenceLayer,
 }
 
 impl AppState {
@@ -122,6 +124,7 @@ impl AppState {
             polling_units: RwLock::new(HashMap::new()),
             ride_requests: RwLock::new(Vec::new()),
             mw: middleware::Middleware::new(),
+            persistence: persistence::PersistenceLayer::new(),
         }
     }
 
@@ -653,6 +656,181 @@ async fn middleware_status(State(state): State<Arc<AppState>>) -> impl IntoRespo
     }))
 }
 
+// ─── V2: Territory Partitioning ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TerritoryPartitionRequest {
+    party_id: i64,
+    ward_code: String,
+    contact_locations: Vec<LatLng>,
+}
+
+async fn partition_territories(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<TerritoryPartitionRequest>,
+) -> impl IntoResponse {
+    let vols = state.volunteers.read().unwrap();
+    let party_vols = vols.get(&req.party_id);
+
+    let vol_positions: Vec<(String, f64, f64)> = party_vols
+        .map(|vs| {
+            vs.iter()
+                .filter(|v| v.is_available && v.latitude != 0.0)
+                .map(|v| (v.id.clone(), v.latitude, v.longitude))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let contact_locs: Vec<(f64, f64)> = req.contact_locations.iter().map(|c| (c.lat, c.lng)).collect();
+
+    let territories = persistence::partition_ward_territories(
+        &vol_positions,
+        &contact_locs,
+        &req.ward_code,
+    );
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "ward_code": req.ward_code,
+        "territories": territories,
+        "total_volunteers": vol_positions.len(),
+        "total_contacts": contact_locs.len(),
+    })))
+}
+
+// ─── V2: Predictive Turnout ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TurnoutPredictionRequest {
+    ward_code: String,
+    historical_turnout_pct: f64,
+    pledge_count: i32,
+    registered_voters: i32,
+    active_volunteers: i32,
+    weather_clear: Option<bool>,
+}
+
+async fn predict_turnout(
+    Json(req): Json<TurnoutPredictionRequest>,
+) -> impl IntoResponse {
+    let prediction = persistence::predict_ward_turnout(
+        req.historical_turnout_pct,
+        req.pledge_count,
+        req.registered_voters,
+        req.active_volunteers,
+        req.weather_clear.unwrap_or(true),
+        &req.ward_code,
+    );
+
+    Json(prediction)
+}
+
+// ─── V2: Isochrone Calculation ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct IsochroneRequest {
+    party_id: i64,
+    volunteer_id: String,
+    is_urban: Option<bool>,
+}
+
+async fn calculate_isochrone(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<IsochroneRequest>,
+) -> impl IntoResponse {
+    let vols = state.volunteers.read().unwrap();
+    let party_vols = vols.get(&req.party_id);
+
+    let vol = party_vols.and_then(|vs| vs.iter().find(|v| v.id == req.volunteer_id));
+
+    match vol {
+        Some(v) => {
+            let pus = state.polling_units.read().unwrap();
+            let pu_list: Vec<(String, f64, f64)> = pus
+                .values()
+                .map(|pu| (pu.code.clone(), pu.latitude, pu.longitude))
+                .collect();
+
+            let iso = persistence::calculate_isochrone(
+                v.latitude,
+                v.longitude,
+                &v.id,
+                &pu_list,
+                req.is_urban.unwrap_or(true),
+            );
+            (StatusCode::OK, Json(serde_json::json!(iso)))
+        }
+        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "volunteer not found"}))),
+    }
+}
+
+// ─── V2: Geofence Check ───────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GeofenceCheckRequest {
+    volunteer_id: String,
+    latitude: f64,
+    longitude: f64,
+    assigned_ward: String,
+}
+
+#[derive(Serialize)]
+struct GeofenceResult {
+    in_zone: bool,
+    distance_to_center_km: f64,
+    nearest_pu: String,
+    alert: Option<String>,
+}
+
+async fn check_geofence(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<GeofenceCheckRequest>,
+) -> impl IntoResponse {
+    let pus = state.polling_units.read().unwrap();
+    let ward_pus: Vec<&PollingUnit> = pus.values()
+        .filter(|pu| pu.ward_code == req.assigned_ward)
+        .collect();
+
+    if ward_pus.is_empty() {
+        return Json(GeofenceResult {
+            in_zone: true,
+            distance_to_center_km: 0.0,
+            nearest_pu: String::new(),
+            alert: None,
+        });
+    }
+
+    // Calculate centroid of ward PUs
+    let center_lat = ward_pus.iter().map(|pu| pu.latitude).sum::<f64>() / ward_pus.len() as f64;
+    let center_lng = ward_pus.iter().map(|pu| pu.longitude).sum::<f64>() / ward_pus.len() as f64;
+
+    let dist_to_center = haversine_km(req.latitude, req.longitude, center_lat, center_lng);
+
+    // Find nearest PU
+    let mut nearest_pu = String::new();
+    let mut min_dist = f64::MAX;
+    for pu in &ward_pus {
+        let d = haversine_km(req.latitude, req.longitude, pu.latitude, pu.longitude);
+        if d < min_dist {
+            min_dist = d;
+            nearest_pu = pu.code.clone();
+        }
+    }
+
+    let in_zone = dist_to_center < 5.0; // 5km ward radius threshold
+    let alert = if !in_zone {
+        Some(format!("Volunteer {} is {:.1}km outside assigned ward {}", req.volunteer_id, dist_to_center, req.assigned_ward))
+    } else {
+        None
+    };
+
+    Json(GeofenceResult {
+        in_zone,
+        distance_to_center_km: dist_to_center,
+        nearest_pu,
+        alert,
+    })
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -667,6 +845,50 @@ async fn main() {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8101".to_string());
     let state = Arc::new(AppState::new());
 
+    // Hydrate in-memory state from PostgreSQL on startup
+    if state.persistence.is_enabled() {
+        info!("Loading persisted state from PostgreSQL...");
+        let vols = state.persistence.load_volunteers().await;
+        if !vols.is_empty() {
+            let mut vol_map = state.volunteers.write().unwrap();
+            for pv in &vols {
+                let entry = vol_map.entry(pv.party_id).or_insert_with(Vec::new);
+                entry.push(Volunteer {
+                    id: pv.volunteer_id.clone(),
+                    party_id: pv.party_id,
+                    name: pv.full_name.clone(),
+                    role: pv.role.clone(),
+                    latitude: pv.latitude,
+                    longitude: pv.longitude,
+                    has_vehicle: pv.has_vehicle,
+                    vehicle_capacity: pv.vehicle_capacity,
+                    is_available: pv.is_active,
+                    assigned_rides: 0,
+                });
+            }
+            info!(count = vols.len(), "Hydrated volunteers from PostgreSQL");
+        }
+
+        let rides = state.persistence.load_pending_rides().await;
+        if !rides.is_empty() {
+            let mut rr = state.ride_requests.write().unwrap();
+            for pr in &rides {
+                rr.push(RideRequest {
+                    id: pr.request_id.clone(),
+                    party_id: pr.party_id,
+                    contact_id: pr.contact_id.clone(),
+                    pickup_lat: pr.pickup_latitude,
+                    pickup_lng: pr.pickup_longitude,
+                    polling_unit_code: pr.polling_unit_code.clone(),
+                    status: pr.status.clone(),
+                });
+            }
+            info!(count = rides.len(), "Hydrated pending rides from PostgreSQL");
+        }
+
+        state.rebuild_rtree();
+    }
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/gotv-engine/volunteers", post(register_volunteers))
@@ -677,6 +899,11 @@ async fn main() {
         .route("/gotv-engine/proximity", get(proximity_polling_units))
         .route("/gotv-engine/coverage/:party_id", get(coverage_analysis))
         .route("/gotv-engine/middleware/status", get(middleware_status))
+        // V2 endpoints
+        .route("/gotv-engine/territories/partition", post(partition_territories))
+        .route("/gotv-engine/turnout/predict", post(predict_turnout))
+        .route("/gotv-engine/isochrone", post(calculate_isochrone))
+        .route("/gotv-engine/geofence/check", post(check_geofence))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

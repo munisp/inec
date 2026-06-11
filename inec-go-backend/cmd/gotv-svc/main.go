@@ -34,12 +34,19 @@ import (
 )
 
 var (
-	svc        *gotv.Service
-	wsHub      *gotv.WSHub
-	dispatcher *gotv.DispatchEngine
-	webhooks   *gotv.WebhookManager
-	authMid    *gotv.AuthMiddleware
-	mobileAuth *gotv.MobileAuth
+	svc            *gotv.Service
+	wsHub          *gotv.WSHub
+	dispatcher     *gotv.DispatchEngine
+	webhooks       *gotv.WebhookManager
+	authMid        *gotv.AuthMiddleware
+	mobileAuth     *gotv.MobileAuth
+	kafkaDisp      *gotv.KafkaDispatcher
+	scheduler      *gotv.CampaignScheduler
+	aiOptimizer    *gotv.AIMessageOptimizer
+	ussdHandler    *gotv.USSDSessionHandler
+	pledgeVerifier *gotv.PledgeVerifier
+	allianceMgr    *gotv.AllianceManager
+	waFlows        *gotv.WhatsAppFlowSender
 )
 
 func main() {
@@ -145,6 +152,56 @@ func main() {
 	webhookCtx, webhookCancel := context.WithCancel(context.Background())
 	defer webhookCancel()
 	webhooks.StartRetryWorker(webhookCtx)
+
+	// Initialize V2 tables (campaign sequences, segments, territories, AI variants, etc.)
+	if err := gotv.InitV2Tables(context.Background(), db); err != nil {
+		log.Warn().Err(err).Msg("V2 table init had issues (non-fatal)")
+	}
+
+	// V2: Kafka-backed dispatch queue (crash-resilient)
+	kafkaDisp = gotv.NewKafkaDispatcher(os.Getenv("KAFKA_BROKERS"))
+	if kafkaBrokers := os.Getenv("KAFKA_BROKERS"); kafkaBrokers != "" {
+		consumer := gotv.NewKafkaConsumer(kafkaBrokers, "gotv-outreach-workers", dispatcher)
+		go consumer.Run(context.Background())
+	}
+
+	// V2: Campaign scheduler (Temporal-backed or in-process timer)
+	scheduler = gotv.NewCampaignScheduler(db, dispatcher, kafkaDisp, os.Getenv("TEMPORAL_URL"))
+
+	// V2: AI message optimizer
+	aiOptimizer = gotv.NewAIMessageOptimizer(db)
+
+	// V2: USSD session handler
+	ussdHandler = gotv.NewUSSDSessionHandler(db, svc, dispatcher)
+
+	// V2: Blockchain pledge verifier
+	pledgeVerifier = gotv.NewPledgeVerifier(db, os.Getenv("BLOCKCHAIN_RPC_URL"), os.Getenv("PLEDGE_CONTRACT_ADDR"))
+
+	// V2: Multi-party alliance manager
+	allianceMgr = gotv.NewAllianceManager(db, os.Getenv("PERMIFY_URL"))
+
+	// V2: WhatsApp Flows
+	if waToken := os.Getenv("WHATSAPP_TOKEN"); waToken != "" {
+		waFlows = gotv.NewWhatsAppFlowSender(
+			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID"))
+	}
+
+	// V2: Voice AI adapter
+	if voiceKey := os.Getenv("VOICE_AI_API_KEY"); voiceKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewVoiceAIAdapter(
+			os.Getenv("VOICE_AI_PROVIDER"), os.Getenv("VOICE_AI_API_URL"), voiceKey, os.Getenv("VOICE_AI_AGENT_ID"), db))
+	}
+
+	// V2: Push adapter with device token targeting (replaces topic-only push)
+	if pushKey := os.Getenv("FCM_SERVER_KEY"); pushKey != "" {
+		dispatcher.RegisterAdapter(gotv.NewPushAdapterV2(pushKey, os.Getenv("FCM_PROJECT_ID"), db))
+	}
+
+	// V2: WhatsApp adapter with 24h window enforcement
+	if waToken := os.Getenv("WHATSAPP_TOKEN"); waToken != "" {
+		dispatcher.RegisterAdapter(gotv.NewWhatsAppAdapterV2(
+			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID"), db))
+	}
 
 	// Seed demo data if tables are empty
 	seedGOTVData(db)
@@ -256,6 +313,69 @@ func main() {
 	r.HandleFunc("/gotv/mobile/knock", mauth(handleMobileDoorKnock)).Methods("POST")
 	r.HandleFunc("/gotv/mobile/sync", mauth(handleMobileSync)).Methods("POST")
 	r.HandleFunc("/gotv/mobile/dashboard", mauth(handleMobileDashboard)).Methods("GET")
+
+	// ─── V2: Enhanced Campaign Dispatch ─────────────────────────────────
+	r.HandleFunc("/gotv/campaigns/{id}/launch-v2", auth(handleLaunchCampaignV2)).Methods("POST")
+	r.HandleFunc("/gotv/campaigns/{id}/schedule", auth(handleScheduleCampaign)).Methods("POST")
+	r.HandleFunc("/gotv/campaigns/{id}/budget", auth(handleCampaignBudget)).Methods("GET")
+
+	// V2: Campaign Sequences (multi-wave)
+	r.HandleFunc("/gotv/sequences", auth(handleCreateSequence)).Methods("POST")
+	r.HandleFunc("/gotv/sequences", auth(handleListSequences)).Methods("GET")
+	r.HandleFunc("/gotv/sequences/{id}/next-wave", auth(handleNextWave)).Methods("POST")
+
+	// V2: Contact Segments
+	r.HandleFunc("/gotv/segments", auth(handleCreateSegment)).Methods("POST")
+	r.HandleFunc("/gotv/segments", auth(handleListSegments)).Methods("GET")
+	r.HandleFunc("/gotv/segments/{id}/evaluate", auth(handleEvaluateSegment)).Methods("GET")
+
+	// V2: Volunteer Leaderboard & Gamification
+	r.HandleFunc("/gotv/leaderboard", auth(handleLeaderboard)).Methods("GET")
+	r.HandleFunc("/gotv/challenges", auth(handleCreateChallenge)).Methods("POST")
+	r.HandleFunc("/gotv/challenges", auth(handleListChallenges)).Methods("GET")
+
+	// V2: Territory Assignment
+	r.HandleFunc("/gotv/territories/assign", auth(handleAssignTerritories)).Methods("POST")
+	r.HandleFunc("/gotv/territories", auth(handleListTerritories)).Methods("GET")
+
+	// V2: Channel ROI Analytics
+	r.HandleFunc("/gotv/analytics/roi", auth(handleChannelROI)).Methods("GET")
+
+	// V2: AI Message Optimization
+	r.HandleFunc("/gotv/ai/generate-variants", auth(handleAIGenerateVariants)).Methods("POST")
+
+	// V2: WhatsApp Button Reply Processing
+	r.HandleFunc("/gotv/webhooks/whatsapp/button-reply", handleWhatsAppButtonReply).Methods("POST")
+
+	// V2: WhatsApp Flows
+	r.HandleFunc("/gotv/whatsapp/send-flow", auth(handleSendWhatsAppFlow)).Methods("POST")
+
+	// V2: USSD Callback (public — AT sends here)
+	r.HandleFunc("/gotv/ussd/callback", handleUSSDCallback).Methods("POST")
+
+	// V2: Blockchain Pledge Verification
+	r.HandleFunc("/gotv/pledges/{id}/hash", auth(handleHashPledge)).Methods("POST")
+	r.HandleFunc("/gotv/pledges/verify/{election_id}", auth(handleVerifyPledges)).Methods("GET")
+
+	// V2: Multi-Party Alliance
+	r.HandleFunc("/gotv/alliances", auth(handleCreateAlliance)).Methods("POST")
+	r.HandleFunc("/gotv/alliances", auth(handleListAlliances)).Methods("GET")
+	r.HandleFunc("/gotv/alliances/rides", auth(handleSharedRides)).Methods("GET")
+
+	// V2: Field Reports
+	r.HandleFunc("/gotv/reports", auth(handleListFieldReports)).Methods("GET")
+
+	// V2: Voice AI calls
+	r.HandleFunc("/gotv/voice/calls", auth(handleListVoiceCalls)).Methods("GET")
+
+	// V2: War Room (SSE real-time stream)
+	r.HandleFunc("/gotv/warroom/stream", auth(handleWarRoomStream)).Methods("GET")
+	r.HandleFunc("/gotv/warroom/summary", auth(handleWarRoomSummary)).Methods("GET")
+
+	// V2: Mobile territory map
+	r.HandleFunc("/gotv/mobile/territory", mauth(handleMobileTerritory)).Methods("GET")
+	r.HandleFunc("/gotv/mobile/leaderboard", mauth(handleMobileLeaderboard)).Methods("GET")
+	r.HandleFunc("/gotv/mobile/map-tiles", mauth(handleMobileMapTiles)).Methods("GET")
 
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
@@ -2042,7 +2162,7 @@ func handleMobileContacts(w http.ResponseWriter, r *http.Request) {
 		}
 		name, _ := svc.Decrypt(nameEnc)
 		if name == "" {
-			name = nameEnc
+			name = "(Name unavailable)"
 		}
 		contacts = append(contacts, map[string]interface{}{
 			"contact_id":   cID,

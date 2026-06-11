@@ -14,6 +14,10 @@ import {
   Plus, Search, Filter, RefreshCw, MapPin, X,
 } from 'lucide-react';
 import GOTVMapPage from './GOTVMapPage';
+import GOTVLeaderboard from './GOTVLeaderboard';
+import GOTVSegments from './GOTVSegments';
+import GOTVWarRoom from './GOTVWarRoom';
+import GOTVAnalytics from './GOTVAnalytics';
 
 // ─── Nigerian States for dropdowns ─────────────────────────────────────────
 const NIGERIAN_STATES = [
@@ -132,7 +136,7 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides' | 'map';
+type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics';
 
 export default function GOTVPortalPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -809,6 +813,10 @@ export default function GOTVPortalPage() {
     { key: 'volunteers', label: 'Volunteers', icon: HandHeart },
     { key: 'pledges', label: 'Pledges', icon: TrendingUp },
     { key: 'rides', label: 'Rides', icon: Car },
+    { key: 'leaderboard', label: 'Leaderboard', icon: TrendingUp },
+    { key: 'segments', label: 'Segments', icon: Filter },
+    { key: 'warroom', label: 'War Room', icon: Megaphone },
+    { key: 'analytics', label: 'Analytics', icon: TrendingUp },
   ];
 
   return (
@@ -851,6 +859,10 @@ export default function GOTVPortalPage() {
           {activeTab === 'volunteers' && renderVolunteers()}
           {activeTab === 'pledges' && renderPledges()}
           {activeTab === 'rides' && renderRides()}
+          {activeTab === 'leaderboard' && <GOTVLeaderboard />}
+          {activeTab === 'segments' && <GOTVSegments />}
+          {activeTab === 'warroom' && <GOTVWarRoom />}
+          {activeTab === 'analytics' && <GOTVAnalytics />}
         </>
       )}
     </div>

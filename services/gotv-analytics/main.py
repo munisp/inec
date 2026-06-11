@@ -588,6 +588,15 @@ async def contact_heatmap(party_id: int):
     }
 
 
+# ─── V2 Router Integration ──────────────────────────────────────────────────
+try:
+    from analytics_v2 import router as v2_router
+    app.include_router(v2_router)
+    logger.info("V2 analytics router loaded (turnout prediction, ROI, war room)")
+except ImportError:
+    logger.warning("analytics_v2 module not found — V2 endpoints disabled")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8102"))
