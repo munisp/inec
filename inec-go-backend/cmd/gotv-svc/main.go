@@ -395,6 +395,9 @@ func main() {
 		handler = wafMiddleware(r)
 	}
 
+	// Default Content-Type: application/json for API responses
+	handler = defaultJSONContentType(handler)
+
 	// Apply CORS headers
 	handler = corsMiddleware(handler)
 
@@ -2114,6 +2117,17 @@ func handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+// defaultJSONContentType sets Content-Type: application/json if not already set.
+// Ensures V2 handlers that use raw json.NewEncoder still return proper headers.
+func defaultJSONContentType(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/gotv/") && r.URL.Path != "/gotv/warroom/stream" {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func jsonResp(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
