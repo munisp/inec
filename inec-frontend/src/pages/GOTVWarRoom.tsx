@@ -55,7 +55,9 @@ export default function GOTVWarRoom() {
     loadData();
     // SSE connection for real-time updates
     try {
-      const es = new EventSource(`/gotv/warroom/stream?party_id=${localStorage.getItem('gotv_party_id') || '1'}`);
+      const token = localStorage.getItem('auth_token') || '';
+      const partyId = localStorage.getItem('gotv_party_id') || '1';
+      const es = new EventSource(`/gotv/warroom/stream?party_id=${partyId}&token=${token}`);
       es.onopen = () => setConnected(true);
       es.onmessage = (e) => {
         try {

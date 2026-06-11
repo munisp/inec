@@ -81,8 +81,13 @@ func (am *AuthMiddleware) authenticate(r *http.Request) (int, string, error) {
 		return am.validateAPIKey(apiKey)
 	}
 
-	// Method 2: Bearer JWT token
+	// Method 2: Bearer JWT token (from header or query param for SSE/EventSource)
 	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		if qToken := r.URL.Query().Get("token"); qToken != "" {
+			auth = "Bearer " + qToken
+		}
+	}
 	if auth != "" && strings.HasPrefix(auth, "Bearer ") {
 		token := strings.TrimPrefix(auth, "Bearer ")
 		return am.validateJWT(r.Context(), token, r)
