@@ -33,8 +33,10 @@ function handleAuthFailure() {
 }
 
 async function request(path: string, options: RequestInit = {}, retries = 2) {
+  const storedToken = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    ...(storedToken ? { 'Authorization': `Bearer ${storedToken}` } : {}),
     ...(options.headers as Record<string, string> || {}),
   };
   // GOTV routes are served by a separate microservice and proxied via Vite/gateway.

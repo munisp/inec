@@ -117,6 +117,20 @@ func InitV2Tables(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS opted_out_at TIMESTAMPTZ DEFAULT NULL`,
 		// Add last_contacted_at
 		`ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS last_contacted_at TIMESTAMPTZ DEFAULT NULL`,
+		// Add cost_kobo to outreach_log for per-message cost tracking
+		`ALTER TABLE gotv_outreach_log ADD COLUMN IF NOT EXISTS cost_kobo INTEGER DEFAULT 0`,
+		// Dead-letter queue for permanently failed sends
+		`CREATE TABLE IF NOT EXISTS gotv_dead_letter_queue (
+			id SERIAL PRIMARY KEY,
+			party_id INTEGER NOT NULL,
+			campaign_id TEXT DEFAULT '',
+			contact_id TEXT DEFAULT '',
+			channel TEXT NOT NULL,
+			payload JSONB DEFAULT '{}',
+			error_detail TEXT DEFAULT '',
+			attempts INTEGER DEFAULT 0,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
 	}
 
 	for _, ddl := range tables {

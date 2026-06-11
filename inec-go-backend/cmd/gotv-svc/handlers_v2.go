@@ -15,10 +15,16 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// getPartyID extracts the authenticated party ID from the request header set by auth middleware.
+func getPartyID(r *http.Request) int {
+	pid, _ := strconv.Atoi(r.Header.Get("X-GOTV-Party-ID"))
+	return pid
+}
+
 // ─── Campaign Launch V2 (Kafka-backed) ─────────────────────────────────────
 
 func handleLaunchCampaignV2(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	campaignID := mux.Vars(r)["id"]
 
 	if err := dispatcher.LaunchCampaignV2(r.Context(), campaignID, partyID, kafkaDisp); err != nil {
@@ -31,7 +37,7 @@ func handleLaunchCampaignV2(w http.ResponseWriter, r *http.Request) {
 // ─── Campaign Scheduling ────────────────────────────────────────────────────
 
 func handleScheduleCampaign(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	campaignID := mux.Vars(r)["id"]
 
 	var req struct {
@@ -71,7 +77,7 @@ func handleScheduleCampaign(w http.ResponseWriter, r *http.Request) {
 // ─── Campaign Budget ────────────────────────────────────────────────────────
 
 func handleCampaignBudget(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	campaignID := mux.Vars(r)["id"]
 	_ = partyID
 
@@ -88,7 +94,7 @@ func handleCampaignBudget(w http.ResponseWriter, r *http.Request) {
 // ─── Campaign Sequences ─────────────────────────────────────────────────────
 
 func handleCreateSequence(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var seq gotv.CampaignSequence
 	if err := json.NewDecoder(r.Body).Decode(&seq); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
@@ -105,7 +111,7 @@ func handleCreateSequence(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListSequences(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, err := svc.DB.QueryContext(r.Context(),
 		`SELECT sequence_id, name, waves, status, created_at FROM gotv_campaign_sequences WHERE party_id=$1 ORDER BY created_at DESC`, partyID)
 	if err != nil {
@@ -131,7 +137,7 @@ func handleListSequences(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleNextWave(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	seqID := mux.Vars(r)["id"]
 	var req struct {
 		WaveNumber int `json:"wave_number"`
@@ -147,7 +153,7 @@ func handleNextWave(w http.ResponseWriter, r *http.Request) {
 // ─── Contact Segments ───────────────────────────────────────────────────────
 
 func handleCreateSegment(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var seg gotv.Segment
 	if err := json.NewDecoder(r.Body).Decode(&seg); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
@@ -164,7 +170,7 @@ func handleCreateSegment(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListSegments(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, err := svc.DB.QueryContext(r.Context(),
 		`SELECT segment_id, name, filters, created_at FROM gotv_segments WHERE party_id=$1 ORDER BY created_at DESC`, partyID)
 	if err != nil {
@@ -189,7 +195,7 @@ func handleListSegments(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleEvaluateSegment(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	segID := mux.Vars(r)["id"]
 
 	var filtersJSON string
@@ -219,7 +225,7 @@ func handleEvaluateSegment(w http.ResponseWriter, r *http.Request) {
 // ─── Volunteer Leaderboard ──────────────────────────────────────────────────
 
 func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	period := r.URL.Query().Get("period") // daily, weekly, monthly, all
 	limitStr := r.URL.Query().Get("limit")
 	limit := 20
@@ -239,7 +245,7 @@ func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCreateChallenge(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var req struct {
 		Name          string `json:"name"`
 		TargetMetric  string `json:"target_metric"` // doors_knocked, calls_made, rides_given
@@ -266,7 +272,7 @@ func handleCreateChallenge(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListChallenges(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, _ := svc.DB.QueryContext(r.Context(),
 		`SELECT challenge_id, name, target_metric, target_value, reward_description, starts_at, ends_at
 		 FROM gotv_challenges WHERE party_id=$1 ORDER BY starts_at DESC`, partyID)
@@ -297,7 +303,7 @@ func handleListChallenges(w http.ResponseWriter, r *http.Request) {
 // ─── Territory Assignment ───────────────────────────────────────────────────
 
 func handleAssignTerritories(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var req struct {
 		WardCode string `json:"ward_code"`
 	}
@@ -315,7 +321,7 @@ func handleAssignTerritories(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListTerritories(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, _ := svc.DB.QueryContext(r.Context(),
 		`SELECT territory_id, volunteer_id, ward_code, contact_count, status FROM gotv_territories WHERE party_id=$1`, partyID)
 	if rows == nil {
@@ -342,7 +348,7 @@ func handleListTerritories(w http.ResponseWriter, r *http.Request) {
 // ─── Channel ROI ────────────────────────────────────────────────────────────
 
 func handleChannelROI(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	roi, err := dispatcher.GetChannelROI(r.Context(), partyID)
 	if err != nil {
 		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
@@ -401,7 +407,7 @@ func handleWhatsAppButtonReply(w http.ResponseWriter, r *http.Request) {
 // ─── WhatsApp Flows ─────────────────────────────────────────────────────────
 
 func handleSendWhatsAppFlow(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	_ = partyID
 	var req struct {
 		Phone     string `json:"phone"`
@@ -441,7 +447,7 @@ func handleUSSDCallback(w http.ResponseWriter, r *http.Request) {
 // ─── Blockchain Pledge ──────────────────────────────────────────────────────
 
 func handleHashPledge(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	pledgeID := mux.Vars(r)["id"]
 	var req struct {
 		ElectionID int `json:"election_id"`
@@ -462,7 +468,7 @@ func handleHashPledge(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleVerifyPledges(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	electionID, _ := strconv.Atoi(mux.Vars(r)["election_id"])
 
 	total, verified, rate, err := pledgeVerifier.VerifyPledgeFulfillment(r.Context(), partyID, electionID)
@@ -478,7 +484,7 @@ func handleVerifyPledges(w http.ResponseWriter, r *http.Request) {
 // ─── Alliances ──────────────────────────────────────────────────────────────
 
 func handleCreateAlliance(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var grant gotv.AllianceGrant
 	json.NewDecoder(r.Body).Decode(&grant)
 	grant.GrantorParty = partyID
@@ -495,7 +501,7 @@ func handleCreateAlliance(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleListAlliances(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, _ := svc.DB.QueryContext(r.Context(),
 		`SELECT grant_id, grantor_party_id, grantee_party_id, resource_type, ward_code, expires_at
 		 FROM gotv_alliances WHERE grantor_party_id=$1 OR grantee_party_id=$1 ORDER BY created_at DESC`, partyID)
@@ -523,7 +529,7 @@ func handleListAlliances(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSharedRides(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rides, err := allianceMgr.GetSharedRides(r.Context(), partyID)
 	if err != nil {
 		http.Error(w, `{"error":"query failed"}`, http.StatusInternalServerError)
@@ -564,7 +570,7 @@ func handleListFieldReports(w http.ResponseWriter, r *http.Request) {
 // ─── Voice AI Calls ─────────────────────────────────────────────────────────
 
 func handleListVoiceCalls(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, _ := svc.DB.QueryContext(r.Context(),
 		`SELECT call_id, campaign_id, contact_id, provider, status, duration_seconds, outcome, created_at
 		 FROM gotv_voice_calls WHERE party_id=$1 ORDER BY created_at DESC LIMIT 50`, partyID)
@@ -593,7 +599,7 @@ func handleListVoiceCalls(w http.ResponseWriter, r *http.Request) {
 // ─── War Room (SSE + Summary) ───────────────────────────────────────────────
 
 func handleWarRoomStream(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -636,7 +642,7 @@ func handleWarRoomStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWarRoomSummary(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 
 	var activeCampaigns, activeVolunteers, pendingRides, dispatchesLastHour, pledgesToday int
 	svc.DB.QueryRow("SELECT COUNT(*) FROM gotv_campaigns WHERE party_id=$1 AND status='active'", partyID).Scan(&activeCampaigns)
@@ -703,7 +709,7 @@ func handleWarRoomSummary(w http.ResponseWriter, r *http.Request) {
 // ─── Mobile Territory & Map ─────────────────────────────────────────────────
 
 func handleMobileTerritory(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	volID := r.URL.Query().Get("volunteer_id")
 	if volID == "" {
 		http.Error(w, `{"error":"volunteer_id required"}`, http.StatusBadRequest)
@@ -757,7 +763,7 @@ func handleMobileTerritory(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMobileLeaderboard(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	entries, _ := dispatcher.GetLeaderboard(r.Context(), partyID, "weekly", 10)
 	if entries == nil {
 		entries = []gotv.LeaderboardEntry{}
@@ -779,7 +785,7 @@ func handleMobileMapTiles(w http.ResponseWriter, r *http.Request) {
 // ─── AI Variants List ───────────────────────────────────────────────────────
 
 func handleListAIVariants(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	rows, _ := svc.DB.QueryContext(r.Context(),
 		`SELECT variant_id, base_message, variant_text, target_state, channel, variant_index, created_at
 		 FROM gotv_ai_variants WHERE party_id=$1 ORDER BY created_at DESC LIMIT 100`, partyID)
@@ -809,7 +815,7 @@ func handleListAIVariants(w http.ResponseWriter, r *http.Request) {
 // ─── Turnout Prediction (proxy to Python analytics or local) ────────────────
 
 func handleTurnoutPredict(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 
 	var req struct {
 		WardCodes  []string `json:"ward_codes"`
@@ -878,7 +884,7 @@ func handleTurnoutPredict(w http.ResponseWriter, r *http.Request) {
 // ─── Voice AI: Place Call ───────────────────────────────────────────────────
 
 func handlePlaceVoiceCall(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var req struct {
 		CampaignID string `json:"campaign_id"`
 		ContactID  string `json:"contact_id"`
@@ -904,7 +910,7 @@ func handlePlaceVoiceCall(w http.ResponseWriter, r *http.Request) {
 // ─── Field Report Creation ──────────────────────────────────────────────────
 
 func handleCreateFieldReport(w http.ResponseWriter, r *http.Request) {
-	partyID := r.Context().Value("party_id").(int)
+	partyID := getPartyID(r)
 	var req struct {
 		IssueType   string  `json:"issue_type"`   // voter_intimidation, ballot_irregularity, access_blocked, other
 		Description string  `json:"description"`
