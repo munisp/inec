@@ -28,13 +28,20 @@ router = APIRouter(prefix="/gotv-analytics/v2", tags=["analytics_v2"])
 
 # ─── DB helpers ─────────────────────────────────────────────────────────────
 
-def get_db():
-    import psycopg2
-    return psycopg2.connect(DB_URL)
+_v2_pool = None
+
+
+def _get_pool():
+    global _v2_pool
+    if _v2_pool is None:
+        import psycopg2.pool
+        _v2_pool = psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=DB_URL)
+    return _v2_pool
 
 
 def query_rows(sql: str, params: tuple = ()) -> List[Dict]:
-    conn = get_db()
+    pool = _get_pool()
+    conn = pool.getconn()
     try:
         import psycopg2.extras
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -43,18 +50,19 @@ def query_rows(sql: str, params: tuple = ()) -> List[Dict]:
         cur.close()
         return [dict(r) for r in rows]
     finally:
-        conn.close()
+        pool.putconn(conn)
 
 
 def execute_sql(sql: str, params: tuple = ()):
-    conn = get_db()
+    pool = _get_pool()
+    conn = pool.getconn()
     try:
         cur = conn.cursor()
         cur.execute(sql, params)
         conn.commit()
         cur.close()
     finally:
-        conn.close()
+        pool.putconn(conn)
 
 
 # ─── INNOVATE #18: Predictive Voter Turnout Engine ──────────────────────────

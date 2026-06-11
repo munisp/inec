@@ -1085,7 +1085,12 @@ func handleGetContact(w http.ResponseWriter, r *http.Request) {
 	phone, _ := svc.Decrypt(phoneEnc)
 	var fullName string
 	if nameEnc.Valid {
-		fullName, _ = svc.Decrypt(nameEnc.String)
+		decrypted, err := svc.Decrypt(nameEnc.String)
+		if err != nil || decrypted == "" {
+			fullName = "(Name unavailable)"
+		} else {
+			fullName = decrypted
+		}
 	}
 
 	jsonResp(w, map[string]interface{}{
@@ -1872,7 +1877,12 @@ func handleCanvassWalklist(w http.ResponseWriter, r *http.Request) {
 		phone, _ := svc.Decrypt(phoneEnc)
 		name := ""
 		if nameEnc.Valid {
-			name, _ = svc.Decrypt(nameEnc.String)
+			decrypted, decErr := svc.Decrypt(nameEnc.String)
+			if decErr != nil || decrypted == "" {
+				name = "(Name unavailable)"
+			} else {
+				name = decrypted
+			}
 		}
 		list = append(list, walkItem{
 			ContactID: cid, Phone: maskPhone(phone), Name: name,
