@@ -454,7 +454,8 @@ func (d *DispatchEngine) isDND(phone string) bool {
 		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+dndAPIKey)
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return false
 	}

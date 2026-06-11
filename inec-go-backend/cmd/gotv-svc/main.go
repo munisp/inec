@@ -688,7 +688,7 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	if totalContacts == 0 {
 		var targetState sql.NullString
 		svc.DB.QueryRow("SELECT target_state FROM gotv_campaigns WHERE campaign_id=$1", id).Scan(&targetState)
-		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE)"
+		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE) AND consent_id IS NOT NULL"
 		var countArgs []interface{}
 		countArgs = append(countArgs, pid)
 		if targetState.Valid && targetState.String != "" {

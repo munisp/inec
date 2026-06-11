@@ -13,6 +13,8 @@ export const GOTV_ROUTES = new Set([
   'gotv-login',
   'gotv-canvasser',
   'gotv',
+  'gotv-territory',
+  'gotv-leaderboard',
 ]);
 
 // Screens that are always accessible (entry points, shared)
