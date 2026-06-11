@@ -424,13 +424,16 @@ func main() {
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Validate auth via token query param (WS can't use headers)
-	token := r.URL.Query().Get("token")
-	if token == "" && r.Header.Get("Authorization") == "" {
+	// The auth middleware now accepts ?token= query param, so we inject it
+	// into the Authorization header for proper JWT validation.
+	if token := r.URL.Query().Get("token"); token != "" && r.Header.Get("Authorization") == "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	partyID, _, err := authMid.Authenticate(r)
+	if err != nil {
 		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
 		return
 	}
-	partyIDStr := r.URL.Query().Get("party_id")
-	partyID, _ := strconv.Atoi(partyIDStr)
 	if partyID <= 0 {
 		http.Error(w, `{"error":"valid party_id required"}`, http.StatusBadRequest)
 		return

@@ -75,6 +75,12 @@ func (am *AuthMiddleware) Wrap(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// Authenticate validates the request and returns (partyID, userID, error).
+// Exported for use by WebSocket handler which can't use the Wrap middleware.
+func (am *AuthMiddleware) Authenticate(r *http.Request) (int, string, error) {
+	return am.authenticate(r)
+}
+
 func (am *AuthMiddleware) authenticate(r *http.Request) (int, string, error) {
 	// Method 1: X-API-Key header (party API key)
 	if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
