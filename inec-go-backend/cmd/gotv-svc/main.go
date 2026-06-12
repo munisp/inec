@@ -93,6 +93,7 @@ func main() {
 	wsHub = gotv.NewWSHub(10000, 5)
 	go wsHub.Run()
 	go startRealtimeTicker(db)
+	go startCPIRecomputeTicker(db) // P2: auto-recompute CPI every 6 hours
 
 	dispatcher = gotv.NewDispatchEngine(db, svc, wsHub, 10)
 	dispatcher.RegisterAdapter(&gotv.LogAdapter{}) // default; real adapters configured via env
@@ -479,11 +480,79 @@ func main() {
 	r.HandleFunc("/gotv/scoring/allocation/optimize", auth(handleScoringAllocation)).Methods("GET")
 	r.HandleFunc("/gotv/scoring/optimize/messages", auth(handleScoringMessages)).Methods("GET")
 
+	// ─── Platform Improvements (47 Recommendations) ────────────────────
+	// P1: Batch scoring persistence
+	r.HandleFunc("/gotv/scoring/batch", auth(requirePermission("scoring", handleBatchScoreContacts))).Methods("POST")
+
+	// P1: Data Export
+	r.HandleFunc("/gotv/export/contacts", auth(requirePermission("export", handleExportContacts))).Methods("GET")
+	r.HandleFunc("/gotv/export/volunteers", auth(requirePermission("export", handleExportVolunteers))).Methods("GET")
+	r.HandleFunc("/gotv/export/tasks", auth(requirePermission("export", handleExportTasks))).Methods("GET")
+
+	// P2: Campaign Preview / Dry-Run
+	r.HandleFunc("/gotv/campaigns/{id}/preview", auth(handleCampaignPreview)).Methods("GET")
+
+	// P2: Volunteer Self-Registration (public)
+	r.HandleFunc("/gotv/volunteer/register", handleVolunteerSelfRegister).Methods("POST")
+
+	// P3: WhatsApp Two-Way
+	r.HandleFunc("/gotv/webhooks/whatsapp/inbound", handleWhatsAppInbound).Methods("POST")
+
+	// P3: Dashboard Builder
+	r.HandleFunc("/gotv/dashboard/layout", auth(handleGetDashboardLayout)).Methods("GET")
+	r.HandleFunc("/gotv/dashboard/layout", auth(handleSaveDashboardLayout)).Methods("POST")
+
+	// P3: Field Reports with Media
+	r.HandleFunc("/gotv/reports/media", auth(handleFieldReportWithMedia)).Methods("POST")
+
+	// P3: Predictive Turnout
+	r.HandleFunc("/gotv/turnout/predictive", auth(handlePredictiveTurnout)).Methods("GET")
+
+	// P3: A/B Experiment Dashboard
+	r.HandleFunc("/gotv/experiments", auth(handleExperimentDashboard)).Methods("GET")
+
+	// P4: Route Optimization (TSP)
+	r.HandleFunc("/gotv/route/optimize", auth(handleOptimizeRoute)).Methods("POST")
+
+	// P4: War Room AI Agent
+	r.HandleFunc("/gotv/warroom/ai-alerts", auth(handleWarRoomAIAlerts)).Methods("GET")
+
+	// P4: Team Gamification
+	r.HandleFunc("/gotv/teams/leaderboard", auth(handleTeamLeaderboard)).Methods("GET")
+	r.HandleFunc("/gotv/volunteers/{id}/badges", auth(handleVolunteerBadges)).Methods("GET")
+
+	// P4: Digital Twin Simulation
+	r.HandleFunc("/gotv/simulation", auth(handleSimulation)).Methods("POST")
+
+	// P4: Natural Language Query
+	r.HandleFunc("/gotv/nl/query", auth(handleNLQuery)).Methods("POST")
+
+	// P4: Blockchain Pledge Verification
+	r.HandleFunc("/gotv/pledges/merkle-root", auth(handlePledgeMerkleRoot)).Methods("GET")
+
+	// P4: Crowd Estimation
+	r.HandleFunc("/gotv/crowd/estimate", auth(handleCrowdEstimate)).Methods("POST")
+
+	// P4: Social Command Center
+	r.HandleFunc("/gotv/social/inbox", auth(handleSocialInbox)).Methods("GET")
+	r.HandleFunc("/gotv/social/respond", auth(handleSocialRespond)).Methods("POST")
+
+	// P4: Federated Learning
+	r.HandleFunc("/gotv/federated/status", auth(handleFederatedStatus)).Methods("GET")
+
+	// Health Dashboard (extended)
+	r.HandleFunc("/gotv/health/dashboard", handleHealthDashboard).Methods("GET")
+
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
 	if openappsecURL != "" {
 		handler = wafMiddleware(r)
 	}
+
+	// Platform improvements middleware stack (P0)
+	handler = rateLimitMiddleware(handler)
+	handler = requestIDMiddleware(handler)
+	handler = securityHeadersMiddleware(handler)
 
 	// Default Content-Type: application/json for API responses
 	handler = defaultJSONContentType(handler)

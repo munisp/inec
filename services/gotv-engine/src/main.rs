@@ -4,6 +4,7 @@
 
 mod middleware;
 mod persistence;
+pub mod platform;
 
 use axum::{
     extract::{Json, Path, Query, State},
