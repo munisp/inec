@@ -267,6 +267,28 @@ func main() {
 	r.HandleFunc("/gotv/volunteers/{id}/checkin", auth(handleVolunteerCheckin)).Methods("POST")
 	r.HandleFunc("/gotv/volunteers/{id}/location", auth(handleVolunteerLocation)).Methods("POST")
 
+	// Volunteer Vetting Pipeline
+	r.HandleFunc("/gotv/volunteers/vetting", auth(handleListVettingPipeline)).Methods("GET")
+	r.HandleFunc("/gotv/volunteers/{id}/vetting", auth(handleGetVolunteerVetting)).Methods("GET")
+	r.HandleFunc("/gotv/volunteers/{id}/verify-nin", auth(handleVerifyNIN)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/{id}/training", auth(handleCompleteTraining)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/{id}/approve", auth(handleApproveVolunteer)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/{id}/reject", auth(handleRejectVolunteer)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/{id}/suspend", auth(handleSuspendVolunteer)).Methods("POST")
+
+	// Location Assignment
+	r.HandleFunc("/gotv/volunteers/{id}/assign-location", auth(handleAssignLocation)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/bulk-assign-locations", auth(handleBulkAssignLocations)).Methods("POST")
+	r.HandleFunc("/gotv/volunteers/auto-assign-locations", auth(handleAutoAssignLocations)).Methods("POST")
+	r.HandleFunc("/gotv/locations/capacity", auth(handleLocationCapacity)).Methods("GET")
+
+	// Tasks
+	r.HandleFunc("/gotv/tasks", auth(handleListTasks)).Methods("GET")
+	r.HandleFunc("/gotv/tasks", auth(handleCreateTask)).Methods("POST")
+	r.HandleFunc("/gotv/tasks/{id}/assign", auth(handleAssignTask)).Methods("POST")
+	r.HandleFunc("/gotv/tasks/{id}/status", auth(handleUpdateTaskStatus)).Methods("PATCH")
+	r.HandleFunc("/gotv/tasks/auto-assign", auth(handleAutoAssignTasks)).Methods("POST")
+
 	// Pledges
 	r.HandleFunc("/gotv/pledges", auth(handleListPledges)).Methods("GET")
 	r.HandleFunc("/gotv/pledges", auth(handleCreatePledge)).Methods("POST")
@@ -1287,7 +1309,8 @@ func handleOptOut(w http.ResponseWriter, r *http.Request) {
 func handleListVolunteers(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
 	rows, err := svc.DB.Query(
-		`SELECT volunteer_id, full_name, role, is_active, has_vehicle, doors_knocked, calls_made, rides_given, created_at
+		`SELECT volunteer_id, full_name, role, is_active, has_vehicle, doors_knocked, calls_made, rides_given,
+		        COALESCE(vetting_status,'approved'), COALESCE(assigned_state,''), COALESCE(assigned_lga,''), COALESCE(assigned_ward,''), created_at
 		 FROM gotv_volunteers WHERE party_id=$1 ORDER BY created_at DESC LIMIT 200`, pid)
 	if err != nil {
 		jsonErr(w, "query failed", http.StatusInternalServerError)
@@ -1297,11 +1320,12 @@ func handleListVolunteers(w http.ResponseWriter, r *http.Request) {
 
 	vols := []map[string]interface{}{}
 	for rows.Next() {
-		var vid, name, role string
+		var vid, name, role, vettingStatus, state, lga, ward string
 		var isActive, hasVehicle bool
 		var doors, calls, rides int
 		var createdAt time.Time
-		if err := rows.Scan(&vid, &name, &role, &isActive, &hasVehicle, &doors, &calls, &rides, &createdAt); err != nil {
+		if err := rows.Scan(&vid, &name, &role, &isActive, &hasVehicle, &doors, &calls, &rides,
+			&vettingStatus, &state, &lga, &ward, &createdAt); err != nil {
 			continue
 		}
 		vols = append(vols, map[string]interface{}{
@@ -1313,6 +1337,10 @@ func handleListVolunteers(w http.ResponseWriter, r *http.Request) {
 			"doors_knocked":  doors,
 			"calls_made":     calls,
 			"rides_given":    rides,
+			"vetting_status": vettingStatus,
+			"assigned_state": state,
+			"assigned_lga":   lga,
+			"assigned_ward":  ward,
 			"created_at":     createdAt,
 		})
 	}
@@ -1346,8 +1374,8 @@ func handleCreateVolunteer(w http.ResponseWriter, r *http.Request) {
 
 	vid := "gotv-vol-" + uuid.New().String()[:8]
 	_, err := svc.DB.Exec(
-		`INSERT INTO gotv_volunteers (volunteer_id, party_id, full_name, phone, role, assigned_state, assigned_lga, has_vehicle, vehicle_capacity, latitude, longitude)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		`INSERT INTO gotv_volunteers (volunteer_id, party_id, full_name, phone, role, assigned_state, assigned_lga, has_vehicle, vehicle_capacity, latitude, longitude, is_active, vetting_status)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, FALSE, 'pending')`,
 		vid, pid, req.FullName, req.Phone, req.Role, nullStr(req.State), nullStr(req.LGA),
 		req.HasVehicle, req.Capacity, req.Latitude, req.Longitude,
 	)

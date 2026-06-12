@@ -925,4 +925,42 @@ export const api = {
     request('/gotv/webhooks', { method: 'POST', body: JSON.stringify(data) }),
   deleteGOTVWebhook: (id: number) =>
     request(`/gotv/webhooks/${id}`, { method: 'DELETE' }),
+
+  // GOTV Volunteer Vetting
+  getGOTVVettingPipeline: (status?: string) =>
+    request(`/gotv/volunteers/vetting${status ? `?status=${status}` : ''}`),
+  getGOTVVolunteerVetting: (id: string) =>
+    request(`/gotv/volunteers/${id}/vetting`),
+  verifyGOTVVolunteerNIN: (id: string, nin: string, result: string) =>
+    request(`/gotv/volunteers/${id}/verify-nin`, { method: 'POST', body: JSON.stringify({ nin, result }) }),
+  completeGOTVVolunteerTraining: (id: string) =>
+    request(`/gotv/volunteers/${id}/training`, { method: 'POST', body: JSON.stringify({}) }),
+  approveGOTVVolunteer: (id: string) =>
+    request(`/gotv/volunteers/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
+  rejectGOTVVolunteer: (id: string, reason: string) =>
+    request(`/gotv/volunteers/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  suspendGOTVVolunteer: (id: string, reason: string) =>
+    request(`/gotv/volunteers/${id}/suspend`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  // GOTV Location Assignment
+  assignGOTVVolunteerLocation: (id: string, data: Record<string, unknown>) =>
+    request(`/gotv/volunteers/${id}/assign-location`, { method: 'POST', body: JSON.stringify(data) }),
+  bulkAssignGOTVLocations: (assignments: Record<string, unknown>[]) =>
+    request('/gotv/volunteers/bulk-assign-locations', { method: 'POST', body: JSON.stringify({ assignments }) }),
+  autoAssignGOTVLocations: () =>
+    request('/gotv/volunteers/auto-assign-locations', { method: 'POST', body: JSON.stringify({}) }),
+  getGOTVLocationCapacity: (state?: string) =>
+    request(`/gotv/locations/capacity${state ? `?state=${state}` : ''}`),
+
+  // GOTV Tasks
+  getGOTVTasks: (status?: string, volunteerId?: string) =>
+    request(`/gotv/tasks?${status ? `status=${status}&` : ''}${volunteerId ? `volunteer_id=${volunteerId}` : ''}`),
+  createGOTVTask: (data: Record<string, unknown>) =>
+    request('/gotv/tasks', { method: 'POST', body: JSON.stringify(data) }),
+  assignGOTVTask: (id: string, volunteerId: string) =>
+    request(`/gotv/tasks/${id}/assign`, { method: 'POST', body: JSON.stringify({ volunteer_id: volunteerId }) }),
+  updateGOTVTaskStatus: (id: string, status: string, completedCount?: number) =>
+    request(`/gotv/tasks/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, completed_count: completedCount || 0 }) }),
+  autoAssignGOTVTasks: () =>
+    request('/gotv/tasks/auto-assign', { method: 'POST', body: JSON.stringify({}) }),
 };

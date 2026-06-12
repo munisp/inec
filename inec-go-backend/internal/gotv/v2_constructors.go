@@ -119,6 +119,42 @@ func InitV2Tables(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS last_contacted_at TIMESTAMPTZ DEFAULT NULL`,
 		// Add cost_kobo to outreach_log for per-message cost tracking
 		`ALTER TABLE gotv_outreach_log ADD COLUMN IF NOT EXISTS cost_kobo INTEGER DEFAULT 0`,
+		// Volunteer vetting columns
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS vetting_status TEXT DEFAULT 'pending'`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS nin_verified BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS nin_verified_at TIMESTAMPTZ DEFAULT NULL`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS training_completed BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS training_completed_at TIMESTAMPTZ DEFAULT NULL`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS background_cleared BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS approved_by TEXT DEFAULT NULL`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ DEFAULT NULL`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS suspended_reason TEXT DEFAULT NULL`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ DEFAULT NULL`,
+		`ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS assigned_polling_unit TEXT DEFAULT NULL`,
+		// Tasks table
+		`CREATE TABLE IF NOT EXISTS gotv_tasks (
+			id SERIAL PRIMARY KEY,
+			task_id TEXT UNIQUE NOT NULL,
+			party_id INTEGER NOT NULL,
+			task_type TEXT NOT NULL CHECK(task_type IN ('door_knock','phone_call','ride_duty','event_setup','data_collection','voter_registration','materials_distribution','monitoring')),
+			title TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			volunteer_id TEXT,
+			ward_code TEXT,
+			state_code TEXT,
+			lga_code TEXT,
+			target_count INTEGER DEFAULT 1,
+			completed_count INTEGER DEFAULT 0,
+			priority INTEGER DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+			status TEXT DEFAULT 'unassigned' CHECK(status IN ('unassigned','assigned','in_progress','completed','cancelled','blocked')),
+			due_date DATE,
+			started_at TIMESTAMPTZ,
+			completed_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_gotv_tasks_party ON gotv_tasks(party_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_gotv_tasks_volunteer ON gotv_tasks(volunteer_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_gotv_tasks_status ON gotv_tasks(party_id, status)`,
 		// Dead-letter queue for permanently failed sends
 		`CREATE TABLE IF NOT EXISTS gotv_dead_letter_queue (
 			id SERIAL PRIMARY KEY,

@@ -20,6 +20,9 @@ import GOTVWarRoom from './GOTVWarRoom';
 import GOTVAnalytics from './GOTVAnalytics';
 import GOTVScoring from './GOTVScoring';
 import GOTVIndicators from './GOTVIndicators';
+import GOTVVetting from './GOTVVetting';
+import GOTVTasks from './GOTVTasks';
+import GOTVLocations from './GOTVLocations';
 
 // ─── Nigerian States for dropdowns ─────────────────────────────────────────
 const NIGERIAN_STATES = [
@@ -138,7 +141,7 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics' | 'scoring' | 'indicators';
+type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'vetting' | 'tasks' | 'locations' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics' | 'scoring' | 'indicators';
 
 export default function GOTVPortalPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -844,6 +847,9 @@ export default function GOTVPortalPage() {
     { key: 'campaigns', label: 'Campaigns', icon: Megaphone },
     { key: 'contacts', label: 'Contacts', icon: Users },
     { key: 'volunteers', label: 'Volunteers', icon: HandHeart },
+    { key: 'vetting', label: 'Vetting', icon: Users },
+    { key: 'tasks', label: 'Tasks', icon: Megaphone },
+    { key: 'locations', label: 'Locations', icon: MapPin },
     { key: 'pledges', label: 'Pledges', icon: TrendingUp },
     { key: 'rides', label: 'Rides', icon: Car },
     { key: 'leaderboard', label: 'Leaderboard', icon: TrendingUp },
@@ -892,6 +898,9 @@ export default function GOTVPortalPage() {
           {activeTab === 'campaigns' && renderCampaigns()}
           {activeTab === 'contacts' && renderContacts()}
           {activeTab === 'volunteers' && renderVolunteers()}
+          {activeTab === 'vetting' && <GOTVVetting />}
+          {activeTab === 'tasks' && <GOTVTasks />}
+          {activeTab === 'locations' && <GOTVLocations />}
           {activeTab === 'pledges' && renderPledges()}
           {activeTab === 'rides' && renderRides()}
           {activeTab === 'leaderboard' && <GOTVLeaderboard />}
