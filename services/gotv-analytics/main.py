@@ -649,6 +649,15 @@ except ImportError:
     logger.warning("scoring_engine module not found — scoring endpoints disabled")
 
 
+# ─── KOH 2027 Indicators (CPI forecasting, demographic gaps, LGA priorities) ─
+try:
+    from koh_indicators import router as koh_router
+    app.include_router(koh_router)
+    logger.info("KOH indicators module loaded (CPI forecast, demographic gaps, sentiment forecast)")
+except ImportError:
+    logger.warning("koh_indicators module not found — KOH endpoints disabled")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8102"))

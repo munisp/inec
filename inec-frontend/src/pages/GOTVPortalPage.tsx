@@ -19,6 +19,7 @@ import GOTVSegments from './GOTVSegments';
 import GOTVWarRoom from './GOTVWarRoom';
 import GOTVAnalytics from './GOTVAnalytics';
 import GOTVScoring from './GOTVScoring';
+import GOTVIndicators from './GOTVIndicators';
 
 // ─── Nigerian States for dropdowns ─────────────────────────────────────────
 const NIGERIAN_STATES = [
@@ -137,7 +138,7 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics' | 'scoring';
+type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics' | 'scoring' | 'indicators';
 
 export default function GOTVPortalPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -850,6 +851,7 @@ export default function GOTVPortalPage() {
     { key: 'warroom', label: 'War Room', icon: Megaphone },
     { key: 'analytics', label: 'Analytics', icon: TrendingUp },
     { key: 'scoring', label: 'Scoring', icon: TrendingUp },
+    { key: 'indicators', label: 'KOH Indicators', icon: TrendingUp },
   ];
 
   return (
@@ -897,6 +899,7 @@ export default function GOTVPortalPage() {
           {activeTab === 'warroom' && <GOTVWarRoom />}
           {activeTab === 'analytics' && <GOTVAnalytics />}
           {activeTab === 'scoring' && <GOTVScoring />}
+          {activeTab === 'indicators' && <GOTVIndicators />}
         </>
       )}
     </div>

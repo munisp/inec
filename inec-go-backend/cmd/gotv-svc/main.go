@@ -159,6 +159,12 @@ func main() {
 		log.Warn().Err(err).Msg("V2 table init had issues (non-fatal)")
 	}
 
+	// KOH 2027 Indicators tables
+	if err := initKOHIndicatorTables(db); err != nil {
+		log.Warn().Err(err).Msg("KOH indicator table init had issues (non-fatal)")
+	}
+	seedLGATiers(db, 1) // Seed Lagos LGA tiers
+
 	// V2: Kafka-backed dispatch queue (crash-resilient)
 	kafkaDisp = gotv.NewKafkaDispatcher(os.Getenv("KAFKA_BROKERS"))
 	if kafkaBrokers := os.Getenv("KAFKA_BROKERS"); kafkaBrokers != "" {
@@ -388,6 +394,49 @@ func main() {
 	r.HandleFunc("/gotv/mobile/territory", mauth(handleMobileTerritory)).Methods("GET")
 	r.HandleFunc("/gotv/mobile/leaderboard", mauth(handleMobileLeaderboard)).Methods("GET")
 	r.HandleFunc("/gotv/mobile/map-tiles", mauth(handleMobileMapTiles)).Methods("GET")
+
+	// ─── KOH 2027 Indicators Framework ─────────────────────────────────
+	// Module 1: Composite Popularity Index (CPI)
+	r.HandleFunc("/gotv/koh/cpi/compute", auth(handleComputeCPI)).Methods("GET")
+	r.HandleFunc("/gotv/koh/cpi/history", auth(handleCPIHistory)).Methods("GET")
+	r.HandleFunc("/gotv/koh/cpi/breakdown", auth(handleCPIBreakdown)).Methods("GET")
+
+	// Module 2: Demographic Analytics
+	r.HandleFunc("/gotv/koh/demographics", auth(handleDemographicBreakdown)).Methods("GET")
+	r.HandleFunc("/gotv/koh/demographics/{id}", auth(handleUpdateContactDemographics)).Methods("PATCH")
+	r.HandleFunc("/gotv/koh/demographics/bulk", auth(handleBulkDemographicUpdate)).Methods("POST")
+
+	// Module 3: Survey Data Pipeline
+	r.HandleFunc("/gotv/koh/surveys", auth(handleCreateSurvey)).Methods("POST")
+	r.HandleFunc("/gotv/koh/surveys", auth(handleListSurveys)).Methods("GET")
+	r.HandleFunc("/gotv/koh/surveys/{id}/responses", auth(handleBulkUploadSurveyResponses)).Methods("POST")
+	r.HandleFunc("/gotv/koh/surveys/{id}/results", auth(handleSurveyResults)).Methods("GET")
+	r.HandleFunc("/gotv/koh/surveys/trend", auth(handleSurveyTrend)).Methods("GET")
+
+	// Module 4: LGA Strategic Dashboard
+	r.HandleFunc("/gotv/koh/lga/dashboard", auth(handleLGAStrategicDashboard)).Methods("GET")
+	r.HandleFunc("/gotv/koh/lga/tiers", auth(handleLGATiers)).Methods("GET")
+
+	// Module 5: Social Listening
+	r.HandleFunc("/gotv/koh/social/ingest", auth(handleSocialIngest)).Methods("POST")
+	r.HandleFunc("/gotv/koh/social/sentiment", auth(handleSentimentSummary)).Methods("GET")
+	r.HandleFunc("/gotv/koh/social/share-of-voice", auth(handleShareOfVoice)).Methods("GET")
+
+	// Module 6: Endorsement & Coalition Tracker
+	r.HandleFunc("/gotv/koh/endorsements", auth(handleCreateEndorsement)).Methods("POST")
+	r.HandleFunc("/gotv/koh/endorsements", auth(handleListEndorsements)).Methods("GET")
+	r.HandleFunc("/gotv/koh/endorsements/score", auth(handleEndorsementScore)).Methods("GET")
+	r.HandleFunc("/gotv/koh/defections", auth(handleCreateDefection)).Methods("POST")
+	r.HandleFunc("/gotv/koh/defections", auth(handleListDefections)).Methods("GET")
+
+	// Module 7: Scheduled Reporting
+	r.HandleFunc("/gotv/koh/reports/generate/{type}", auth(handleGenerateReport)).Methods("POST")
+	r.HandleFunc("/gotv/koh/reports", auth(handleListReports)).Methods("GET")
+
+	// Module 8: Platform Analytics Ingestion
+	r.HandleFunc("/gotv/koh/analytics/ingest", auth(handleIngestPlatformAnalytics)).Methods("POST")
+	r.HandleFunc("/gotv/koh/analytics/summary", auth(handlePlatformAnalyticsSummary)).Methods("GET")
+	r.HandleFunc("/gotv/koh/analytics/trend", auth(handlePlatformAnalyticsTrend)).Methods("GET")
 
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
