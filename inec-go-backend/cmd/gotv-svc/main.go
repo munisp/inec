@@ -86,6 +86,11 @@ func main() {
 		log.Warn().Err(err).Msg("GOTV table init had issues (non-fatal if tables exist)")
 	}
 
+	// Production hardening
+	initPrometheus()
+	configureDBPool()
+	initRedisCache()
+
 	// Initialize all 13 middleware connections
 	initAllMiddleware()
 
@@ -543,6 +548,13 @@ func main() {
 	// Health Dashboard (extended)
 	r.HandleFunc("/gotv/health/dashboard", handleHealthDashboard).Methods("GET")
 
+	// ─── Production Hardening Endpoints ────────────────────────────────────
+	r.Handle("/metrics", metricsHandler()).Methods("GET")
+	r.HandleFunc("/openapi.json", handleOpenAPISpec).Methods("GET")
+	r.HandleFunc("/alerts/rules", handleAlertingRules).Methods("GET")
+	r.HandleFunc("/robots.txt", handleRobotsTxt).Methods("GET")
+	r.HandleFunc("/version", handleVersion).Methods("GET")
+
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
 	if openappsecURL != "" {
@@ -550,9 +562,12 @@ func main() {
 	}
 
 	// Platform improvements middleware stack (P0)
+	handler = prometheusMiddleware(handler)
 	handler = rateLimitMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 	handler = securityHeadersMiddleware(handler)
+	handler = tracingMiddleware(handler)
+	handler = etagMiddleware(handler)
 
 	// Default Content-Type: application/json for API responses
 	handler = defaultJSONContentType(handler)
