@@ -448,6 +448,16 @@ func registerGOTVRoutes(r *mux.Router) {
 	gotv.HandleFunc("/dashboard", gotvAuthMiddleware(handleGOTVDashboard)).Methods("GET")
 	gotv.HandleFunc("/analytics/outreach", gotvAuthMiddleware(handleGOTVOutreachAnalytics)).Methods("GET")
 	gotv.HandleFunc("/analytics/geo", gotvAuthMiddleware(handleGOTVGeoAnalytics)).Methods("GET")
+
+	// Scoring Engine (Cambridge Analytica-grade analytics)
+	gotv.HandleFunc("/scoring/voter/{contactID}", gotvAuthMiddleware(handleScoringVoter)).Methods("GET")
+	gotv.HandleFunc("/scoring/voters/batch", gotvAuthMiddleware(handleScoringBatch)).Methods("POST")
+	gotv.HandleFunc("/scoring/persuadability", gotvAuthMiddleware(handleScoringPersuadability)).Methods("POST")
+	gotv.HandleFunc("/scoring/allocation/optimize", gotvAuthMiddleware(handleScoringAllocation)).Methods("GET")
+	gotv.HandleFunc("/scoring/win-probability", gotvAuthMiddleware(handleScoringWinProbability)).Methods("GET")
+	gotv.HandleFunc("/scoring/optimize/messages", gotvAuthMiddleware(handleScoringMessageOptimize)).Methods("GET")
+	gotv.HandleFunc("/scoring/optimize/select-variant", gotvAuthMiddleware(handleScoringSelectVariant)).Methods("POST")
+	gotv.HandleFunc("/scoring/summary", gotvAuthMiddleware(handleScoringSummary)).Methods("GET")
 }
 
 // ─── Campaign Handlers ─────────────────────────────────────────────────────

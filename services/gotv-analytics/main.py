@@ -640,6 +640,14 @@ try:
 except ImportError:
     logger.warning("analytics_v2 module not found — V2 endpoints disabled")
 
+# ─── Scoring Engine (Cambridge Analytica-grade analytics) ────────────────────
+try:
+    from scoring_engine import router as scoring_router
+    app.include_router(scoring_router)
+    logger.info("Scoring engine loaded (voter scoring, persuadability, win probability, bandit)")
+except ImportError:
+    logger.warning("scoring_engine module not found — scoring endpoints disabled")
+
 
 if __name__ == "__main__":
     import uvicorn
