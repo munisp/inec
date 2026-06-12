@@ -73,7 +73,7 @@ export default defineConfig({
       '/reports': 'http://localhost:8088',
       '/voice': 'http://localhost:8088',
       '/public': 'http://localhost:8088',
-      '/gotv': 'http://localhost:8103',
+      '/gotv': { target: 'http://localhost:8103', ws: true },
     },
   },
 })

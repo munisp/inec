@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { Deck } from '@deck.gl/core';
+import { MapboxOverlay } from '@deck.gl/mapbox';
 import { ScatterplotLayer, ArcLayer } from '@deck.gl/layers';
 import { H3HexagonLayer } from '@deck.gl/geo-layers';
 import { HeatmapLayer } from '@deck.gl/aggregation-layers';
@@ -92,7 +92,7 @@ const OUTCOME_COLORS: Record<string, [number, number, number]> = {
 export default function GOTVMapPage() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const deckRef = useRef<Deck | null>(null);
+  const deckOverlayRef = useRef<MapboxOverlay | null>(null);
 
   const [volunteers, setVolunteers] = useState<GeoVolunteer[]>([]);
   const [rides, setRides] = useState<GeoRide[]>([]);
@@ -102,11 +102,13 @@ export default function GOTVMapPage() {
   const [layerVisibility, setLayerVisibility] = useState<Record<LayerKey, boolean>>({
     volunteers: true,
     rides: true,
-    coverage: false,
-    trails: false,
+    coverage: true,
+    trails: true,
     heatmap: false,
   });
   const [wsConnected, setWsConnected] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [mapLoaded, setMapLoaded] = useState(false);
 
   // ─── Data Loading ───────────────────────────────────────────────────────
 
@@ -122,6 +124,7 @@ export default function GOTVMapPage() {
       setRides(rideData.rides || []);
       setCoverage(covData.coverage || []);
       setTrails(trailData.trails || []);
+      setLastRefresh(new Date());
     } catch {
       // API not available — use empty state
     }
@@ -188,6 +191,7 @@ export default function GOTVMapPage() {
     mapRef.current = map;
 
     map.on('load', () => {
+      setMapLoaded(true);
       loadGeoData();
     });
 
@@ -299,47 +303,26 @@ export default function GOTVMapPage() {
     return result;
   }, [volunteers, rides, h3Data, trails, layerVisibility]);
 
-  // Update deck.gl overlay when layers change
+  // Update deck.gl overlay when layers change (using MapboxOverlay for proper integration)
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !mapLoaded) return;
 
-    if (deckRef.current) {
-      deckRef.current.setProps({ layers });
+    if (deckOverlayRef.current) {
+      deckOverlayRef.current.setProps({ layers });
     } else {
-      const map = mapRef.current;
-      const deck = new Deck({
-        parent: map.getCanvasContainer() as HTMLDivElement,
-        controller: false,
-        layers,
-        style: { position: 'absolute', top: '0', left: '0', pointerEvents: 'none' },
-        viewState: {
-          longitude: map.getCenter().lng,
-          latitude: map.getCenter().lat,
-          zoom: map.getZoom(),
-          pitch: map.getPitch(),
-          bearing: map.getBearing(),
-        },
-      });
-
-      const syncDeck = () => {
-        deck.setProps({
-          viewState: {
-            longitude: map.getCenter().lng,
-            latitude: map.getCenter().lat,
-            zoom: map.getZoom(),
-            pitch: map.getPitch(),
-            bearing: map.getBearing(),
-          },
-        });
-      };
-
-      map.on('move', syncDeck);
-      map.on('zoom', syncDeck);
-      map.on('pitch', syncDeck);
-      map.on('rotate', syncDeck);
-      deckRef.current = deck;
+      const overlay = new MapboxOverlay({ layers });
+      mapRef.current.addControl(overlay as unknown as maplibregl.IControl);
+      deckOverlayRef.current = overlay;
     }
-  }, [layers]);
+  }, [layers, mapLoaded]);
+
+  // ─── Real-time: periodic data refresh (simulates live updates) ─────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadGeoData();
+    }, 15000); // Refresh every 15 seconds
+    return () => clearInterval(interval);
+  }, [loadGeoData]);
 
   // ─── Layer Toggle ───────────────────────────────────────────────────────
 
@@ -365,8 +348,11 @@ export default function GOTVMapPage() {
       <div className="absolute top-4 left-4 z-10 space-y-2">
         {/* Connection status */}
         <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-sm">
-          <Radio className={`h-4 w-4 ${wsConnected ? 'text-green-500' : 'text-red-500'}`} />
-          <span className="text-xs">{wsConnected ? 'Live' : 'Offline'}</span>
+          <Radio className={`h-4 w-4 ${wsConnected || volunteers.length > 0 ? 'text-green-500' : 'text-red-500'}`} />
+          <span className="text-xs">
+            {wsConnected ? 'Live' : volunteers.length > 0 ? `Live (polling)` : 'Offline'}
+          </span>
+          {lastRefresh && <span className="text-xs text-muted-foreground ml-1">{lastRefresh.toLocaleTimeString()}</span>}
         </div>
 
         {/* Stats cards */}
