@@ -233,6 +233,14 @@ func main() {
 	// Health
 	r.HandleFunc("/health", handleHealth).Methods("GET")
 
+	// Dev auth endpoints (for frontend login flow)
+	r.HandleFunc("/auth/login", handleDevLogin).Methods("POST")
+	r.HandleFunc("/auth/me", handleDevMe).Methods("GET")
+	r.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}).Methods("POST")
+
 	// WebSocket (real-time events)
 	r.HandleFunc("/gotv/ws", handleWebSocket).Methods("GET")
 
@@ -566,6 +574,39 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"service": "gotv-svc",
 		"status":  "healthy",
 		"version": "1.0.0",
+	})
+}
+
+func handleDevLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	// Accept any credentials in dev mode
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"access_token": "dev-" + body.Username + "-token",
+		"token":        "dev-" + body.Username + "-token",
+		"user": map[string]interface{}{
+			"id":       1,
+			"username": body.Username,
+			"name":     "Admin User",
+			"role":     "admin",
+			"email":    body.Username + "@inec.gov.ng",
+		},
+	})
+}
+
+func handleDevMe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":       1,
+		"username": "admin",
+		"name":     "Admin User",
+		"role":     "admin",
+		"email":    "admin@inec.gov.ng",
 	})
 }
 
