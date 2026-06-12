@@ -200,10 +200,36 @@ export default function GOTVMapPage() {
 
   // ─── Deck.gl Layers ─────────────────────────────────────────────────────
 
-  // H3 hex coverage
+  // H3 hex coverage — build dense grid from actual GPS points (volunteers + trails)
   const h3Data = useMemo(() => {
-    // Convert coverage data to H3 hexes (resolution 5 for state/LGA overview)
-    // Since we have state/lga aggregates, place a hex at Nigeria's center for each
+    const hexMap = new Map<string, { h3Index: string; count: number; score: number }>();
+
+    // Use volunteer positions (239 points) at resolution 5 for fine-grained grid
+    volunteers.forEach(v => {
+      if (v.lat === 0 && v.lng === 0) return;
+      const h3Index = latLngToCell(v.lat, v.lng, 5);
+      const existing = hexMap.get(h3Index);
+      if (existing) {
+        existing.count += 1;
+        existing.score = Math.min(1.0, existing.score + 0.15);
+      } else {
+        hexMap.set(h3Index, { h3Index, count: 1, score: 0.3 });
+      }
+    });
+
+    // Use canvass trail positions (1200 points) for coverage density
+    trails.forEach(t => {
+      const h3Index = latLngToCell(t.lat, t.lng, 5);
+      const existing = hexMap.get(h3Index);
+      if (existing) {
+        existing.count += 1;
+        existing.score = Math.min(1.0, existing.score + 0.05);
+      } else {
+        hexMap.set(h3Index, { h3Index, count: 1, score: 0.15 });
+      }
+    });
+
+    // Also layer in state-level coverage data
     const nigeriaStates: Record<string, [number, number]> = {
       'FCT': [9.0579, 7.4951], 'LA': [6.5244, 3.3792], 'KN': [12.0022, 8.5919],
       'RV': [4.8156, 7.0498], 'OG': [7.1475, 3.3619], 'KD': [10.5105, 7.4165],
@@ -212,12 +238,19 @@ export default function GOTVMapPage() {
       'ED': [6.3350, 5.6037], 'EB': [5.9631, 8.0700], 'CR': [5.9631, 8.3300],
       'AK': [5.0353, 7.9128], 'BA': [5.0000, 8.0000], 'BE': [7.2500, 5.2000],
     };
-    return coverage.map(c => {
+    coverage.forEach(c => {
       const coords = nigeriaStates[c.state] || [NIGERIA_CENTER.latitude, NIGERIA_CENTER.longitude];
-      const h3Index = latLngToCell(coords[0], coords[1], 4);
-      return { ...c, h3Index };
+      const h3Index = latLngToCell(coords[0], coords[1], 5);
+      const existing = hexMap.get(h3Index);
+      if (existing) {
+        existing.score = Math.min(1.0, Math.max(existing.score, c.score));
+      } else {
+        hexMap.set(h3Index, { h3Index, count: c.contacts, score: c.score });
+      }
     });
-  }, [coverage]);
+
+    return Array.from(hexMap.values());
+  }, [volunteers, trails, coverage]);
 
   const layers = useMemo(() => {
     const result: (ScatterplotLayer | ArcLayer | HeatmapLayer | H3HexagonLayer)[] = [];
@@ -254,7 +287,7 @@ export default function GOTVMapPage() {
       }));
     }
 
-    // H3 hex coverage
+    // H3 hex coverage — vibrant filled hexagons with visible outlines
     if (layerVisibility.coverage && h3Data.length > 0) {
       result.push(new H3HexagonLayer({
         id: 'coverage',
@@ -262,13 +295,16 @@ export default function GOTVMapPage() {
         getHexagon: (d: typeof h3Data[0]) => d.h3Index,
         getFillColor: (d: typeof h3Data[0]) => {
           const s = d.score;
-          if (s > 0.7) return [16, 185, 129, 140];
-          if (s > 0.3) return [245, 158, 11, 140];
-          return [239, 68, 68, 140];
+          if (s > 0.7) return [0, 255, 140, 200];   // bright green — high coverage
+          if (s > 0.4) return [255, 200, 0, 200];    // bright amber — medium
+          if (s > 0.2) return [255, 100, 50, 180];   // orange-red — low
+          return [255, 50, 80, 160];                  // red — very low
         },
-        getElevation: (d: typeof h3Data[0]) => d.contacts,
-        elevationScale: 10,
-        extruded: true,
+        stroked: true,
+        getLineColor: [255, 255, 255, 220],
+        lineWidthMinPixels: 2,
+        filled: true,
+        extruded: false,
         pickable: true,
       }));
     }
