@@ -119,6 +119,14 @@ export default function RootLayout() {
         <Stack.Screen name="gotv" options={{ title: 'GOTV Portal' }} />
         <Stack.Screen name="gotv-territory" options={{ title: 'My Territory' }} />
         <Stack.Screen name="gotv-leaderboard" options={{ title: 'Leaderboard' }} />
+        <Stack.Screen name="gotv-campaigns" options={{ title: 'Campaigns' }} />
+        <Stack.Screen name="gotv-contacts" options={{ title: 'Contacts' }} />
+        <Stack.Screen name="gotv-pledges" options={{ title: 'Pledges' }} />
+        <Stack.Screen name="gotv-rides" options={{ title: 'Rides' }} />
+        <Stack.Screen name="gotv-segments" options={{ title: 'Segments' }} />
+        <Stack.Screen name="gotv-warroom" options={{ title: 'War Room' }} />
+        <Stack.Screen name="gotv-analytics" options={{ title: 'Analytics' }} />
+        <Stack.Screen name="gotv-indicators" options={{ title: 'KOH Indicators' }} />
         {/* INEC screens */}
         <Stack.Screen name="kyc" options={{ title: 'KYC Verification' }} />
         <Stack.Screen name="disputes" options={{ title: 'Disputes' }} />

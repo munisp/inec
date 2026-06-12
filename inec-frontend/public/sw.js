@@ -1,5 +1,5 @@
-// INEC Platform — Service Worker for Offline Support
-const CACHE_VERSION = 'inec-v2';
+// INEC + GOTV Platform — Service Worker for Offline Support
+const CACHE_VERSION = 'inec-v3';
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const API_CACHE = `${CACHE_VERSION}-api`;
 const OFFLINE_QUEUE_KEY = 'inec-offline-queue';
@@ -14,8 +14,16 @@ const PRECACHE_URLS = [
 
 // Critical API paths to cache aggressively for election day
 const CRITICAL_API_PATHS = [
+  // INEC
   '/elections', '/collation', '/results', '/geo/', '/dashboard',
   '/healthz', '/readiness', '/polling-units', '/bvas',
+  // GOTV
+  '/gotv/dashboard', '/gotv/campaigns', '/gotv/contacts', '/gotv/volunteers',
+  '/gotv/pledges', '/gotv/rides', '/gotv/leaderboard', '/gotv/segments',
+  '/gotv/warroom', '/gotv/roi/', '/gotv/scoring/',
+  // KOH Indicators
+  '/gotv/koh/cpi/', '/gotv/koh/surveys', '/gotv/koh/endorsements',
+  '/gotv/koh/social/', '/gotv/koh/lga/', '/gotv/koh/analytics/',
 ];
 
 // Install: precache static assets
@@ -79,7 +87,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/me') ||
     url.pathname.startsWith('/observer/') || url.pathname.startsWith('/biometric/') ||
     url.pathname.startsWith('/command-center/') || url.pathname.startsWith('/anomaly/') ||
-    url.pathname.startsWith('/blockchain/') || url.pathname.startsWith('/admin/');
+    url.pathname.startsWith('/blockchain/') || url.pathname.startsWith('/admin/') ||
+    url.pathname.startsWith('/gotv/');
   if (isApiPath) {
     event.respondWith(
       fetch(event.request)

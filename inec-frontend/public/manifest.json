@@ -1,13 +1,13 @@
 {
-  "name": "INEC Election Platform",
-  "short_name": "INEC",
-  "description": "Independent National Electoral Commission - Real-Time Election Results & Observer Monitoring",
+  "name": "INEC Election & GOTV Platform",
+  "short_name": "INEC/GOTV",
+  "description": "Independent National Electoral Commission - Election Management & Get Out The Vote (GOTV) Party Mobilization",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#15803d",
   "orientation": "any",
-  "categories": ["government", "utilities"],
+  "categories": ["government", "utilities", "politics"],
   "lang": "en-NG",
   "dir": "ltr",
   "scope": "/",
@@ -37,6 +37,30 @@
       "short_name": "Observer",
       "url": "/?page=observer-monitoring",
       "description": "Observer monitoring feed"
+    },
+    {
+      "name": "GOTV Portal",
+      "short_name": "GOTV",
+      "url": "/?page=gotv-portal",
+      "description": "Get Out The Vote — Voter Mobilization Dashboard"
+    },
+    {
+      "name": "GOTV Campaigns",
+      "short_name": "Campaigns",
+      "url": "/?page=gotv-portal&tab=campaigns",
+      "description": "Manage multi-channel outreach campaigns"
+    },
+    {
+      "name": "KOH Indicators",
+      "short_name": "KOH",
+      "url": "/?page=gotv-portal&tab=indicators",
+      "description": "Campaign Performance Index & Analytics"
+    },
+    {
+      "name": "War Room",
+      "short_name": "War Room",
+      "url": "/?page=gotv-portal&tab=warroom",
+      "description": "Election Day live operations center"
     },
     {
       "name": "Map View",

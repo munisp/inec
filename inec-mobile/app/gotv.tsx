@@ -132,15 +132,39 @@ export default function GOTVScreen() {
       { label: 'Pending Rides', value: dashboard.pending_rides, icon: 'car' as const, color: '#6366f1' },
     ];
 
+    const quickLinks = [
+      { route: '/gotv-campaigns', label: 'Campaigns', icon: 'megaphone' as const, color: '#f59e0b' },
+      { route: '/gotv-contacts', label: 'Contacts', icon: 'people' as const, color: '#3b82f6' },
+      { route: '/gotv-pledges', label: 'Pledges', icon: 'thumbs-up' as const, color: '#8b5cf6' },
+      { route: '/gotv-rides', label: 'Rides', icon: 'car' as const, color: '#6366f1' },
+      { route: '/gotv-segments', label: 'Segments', icon: 'funnel' as const, color: '#06b6d4' },
+      { route: '/gotv-warroom', label: 'War Room', icon: 'radio' as const, color: '#ef4444' },
+      { route: '/gotv-analytics', label: 'Analytics', icon: 'bar-chart' as const, color: '#22c55e' },
+      { route: '/gotv-indicators', label: 'KOH Indicators', icon: 'speedometer' as const, color: '#006b3f' },
+      { route: '/gotv-territory', label: 'Territory', icon: 'map' as const, color: '#0ea5e9' },
+      { route: '/gotv-leaderboard', label: 'Leaderboard', icon: 'trophy' as const, color: '#eab308' },
+    ];
+
     return (
-      <View style={styles.dashGrid}>
-        {stats.map(s => (
-          <View key={s.label} style={[styles.statCard, { borderLeftColor: s.color }]}>
-            <Ionicons name={s.icon} size={24} color={s.color} />
-            <Text style={styles.statValue}>{s.value.toLocaleString()}</Text>
-            <Text style={styles.statLabel}>{s.label}</Text>
-          </View>
-        ))}
+      <View>
+        <View style={styles.dashGrid}>
+          {stats.map(s => (
+            <View key={s.label} style={[styles.statCard, { borderLeftColor: s.color }]}>
+              <Ionicons name={s.icon} size={24} color={s.color} />
+              <Text style={styles.statValue}>{s.value.toLocaleString()}</Text>
+              <Text style={styles.statLabel}>{s.label}</Text>
+            </View>
+          ))}
+        </View>
+        <Text style={{ fontSize: 14, fontWeight: '600', color: '#374151', marginTop: 16, marginBottom: 8 }}>Quick Access</Text>
+        <View style={styles.dashGrid}>
+          {quickLinks.map(ql => (
+            <TouchableOpacity key={ql.route} style={styles.quickLink} onPress={() => router.push(ql.route as any)}>
+              <Ionicons name={ql.icon} size={22} color={ql.color} />
+              <Text style={styles.quickLinkText}>{ql.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </View>
     );
   };
@@ -364,4 +388,6 @@ const styles = StyleSheet.create({
   miniStat: { alignItems: 'center' },
   miniStatValue: { fontSize: 16, fontWeight: '700', color: '#111827' },
   miniStatLabel: { fontSize: 11, color: '#6b7280' },
+  quickLink: { width: '47%', backgroundColor: '#fff', borderRadius: 10, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: '#e5e7eb' },
+  quickLinkText: { fontSize: 12, fontWeight: '600', color: '#374151' },
 });
