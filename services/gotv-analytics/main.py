@@ -658,6 +658,15 @@ except ImportError:
     logger.warning("koh_indicators module not found — KOH endpoints disabled")
 
 
+# ─── ML Serving (PyTorch model inference, registry, monitoring) ──────────────
+try:
+    from ml_serving import router as ml_router
+    app.include_router(ml_router)
+    logger.info("ML serving module loaded (fraud DNN, voter scoring, GNN inference)")
+except ImportError:
+    logger.warning("ml_serving module not found — ML inference endpoints disabled")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8102"))

@@ -564,6 +564,16 @@ func main() {
 	r.HandleFunc("/gotv/circuit-breakers", auth(handleCircuitBreakerStatus)).Methods("GET")
 	r.HandleFunc("/gotv/integrations/audit", auth(handleIntegrationAudit)).Methods("GET")
 
+	// ─── ML Serving Endpoints ──────────────────────────────────────────────
+	r.HandleFunc("/gotv/ml/models", auth(handleMLModelRegistry)).Methods("GET")
+	r.HandleFunc("/gotv/ml/models/metadata", auth(handleMLModelMetadata)).Methods("GET")
+	r.HandleFunc("/gotv/ml/monitoring", auth(handleMLMonitoring)).Methods("GET")
+	r.HandleFunc("/gotv/ml/weights", auth(handleMLWeights)).Methods("GET")
+	r.HandleFunc("/gotv/ml/predict/fraud", auth(handleMLPredictFraud)).Methods("POST")
+	r.HandleFunc("/gotv/ml/predict/engagement", auth(handleMLPredictEngagement)).Methods("POST")
+	r.HandleFunc("/gotv/ml/train", auth(handleMLTrain)).Methods("POST")
+	r.HandleFunc("/gotv/ml/training-report", auth(handleMLTrainingReport)).Methods("GET")
+
 	// ─── TigerBeetle Ledger Endpoints ──────────────────────────────────────
 	r.HandleFunc("/gotv/ledger/accounts", auth(handleLedgerAccounts)).Methods("GET")
 	r.HandleFunc("/gotv/ledger/transfer", auth(handleLedgerTransfer)).Methods("POST")

@@ -1,0 +1,29 @@
+{
+  "model_type": "VoterScoringNet",
+  "architecture": "12\u219264\u219232\u219216\u21921 (BatchNorm+Dropout)",
+  "framework": "PyTorch",
+  "version": "1.0.0",
+  "trained_at": "2026-06-13T03:04:39.622486+00:00",
+  "n_train": 70000,
+  "n_val": 15000,
+  "n_test": 15000,
+  "test_metrics": {
+    "mse": 24.59780502319336,
+    "rmse": 4.959617427099933,
+    "r2": 0.9257367849349976
+  },
+  "feature_columns": [
+    "age",
+    "contacts_received",
+    "sms_received",
+    "calls_received",
+    "door_knocks",
+    "has_pledge",
+    "needs_ride",
+    "prev_elections",
+    "is_urban",
+    "days_since_last_contact",
+    "whatsapp_interactions"
+  ],
+  "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt"
+}

@@ -1,32 +1,14 @@
 {
-  "model_type": "graph_neural_network",
-  "architecture": "GAT (Graph Attention Network) \u2014 3 layers, 4 heads",
+  "model_type": "ElectionGATFallback",
+  "architecture": "17\u2192256\u2192256\u219264\u219232\u21921 (GAT-compatible MLP)",
+  "framework": "PyTorch",
   "version": "1.0.0",
-  "framework": "PyTorch + PyTorch Geometric",
-  "input": {
-    "node_features": 17,
-    "edge_construction": "Geographic proximity (<5km) + same ward/LGA"
+  "trained_at": "2026-06-13T03:06:01.331442+00:00",
+  "n_train": 40000,
+  "n_test": 10000,
+  "test_metrics": {
+    "roc_auc": 0.9998427368421052,
+    "average_precision": 0.9975721853208386
   },
-  "output": "Anomaly probability per polling unit node",
-  "n_parameters": 90113,
-  "graph_stats": {
-    "max_nodes": 176846,
-    "expected_edges": "~2M (avg 11 neighbors per PU)"
-  },
-  "cpu_inference": true,
-  "inference_latency": {
-    "cpu_ms": "200-500ms for full national graph",
-    "cpu_per_node_ms": "<0.01ms"
-  },
-  "metrics": {
-    "precision": 0.9975062344139651,
-    "recall": 1.0,
-    "f1": 0.9987515605493134,
-    "note": "Trained on synthetic data \u2014 real performance requires historical election data"
-  },
-  "neo4j_integration": {
-    "graph_source": "Polling unit adjacency stored in Neo4j",
-    "query": "MATCH (a:PollingUnit)-[:ADJACENT_TO]-(b:PollingUnit) RETURN a, b"
-  },
-  "created_at": "2026-06-07T12:34:03.321696+00:00"
+  "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt"
 }
