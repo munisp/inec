@@ -355,6 +355,14 @@ detector = AnomalyDetector()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import signal
+
+    def _sigterm_handler(signum, frame):
+        log.info("lakehouse_sigterm_received", signal=signum)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     global lakehouse
     lakehouse = Lakehouse(DUCKDB_PATH)
     log.info("lakehouse_started", path=DUCKDB_PATH)
@@ -366,7 +374,15 @@ async def lifespan(app: FastAPI):
         log.warning("initial_sync_failed", error=str(e))
 
     yield
-    log.info("lakehouse_shutting_down")
+
+    # Cleanup: close DuckDB connection
+    if lakehouse and lakehouse.conn:
+        try:
+            lakehouse.conn.close()
+            log.info("lakehouse_duckdb_closed")
+        except Exception:
+            pass
+    log.info("lakehouse_shutting_down_complete")
 
 
 app = FastAPI(

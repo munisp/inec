@@ -282,10 +282,21 @@ class VolunteerMetricsResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import signal
+
+    # Register SIGTERM handler — FastAPI/uvicorn handles SIGTERM natively, but
+    # this ensures we log the signal and can run cleanup before the process exits.
+    # K8s sends SIGTERM, then waits terminationGracePeriodSeconds before SIGKILL.
+    def _sigterm_handler(signum, frame):
+        logger.info("gotv_analytics_sigterm_received", signal=signum)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     from middleware import middleware_status
     logger.info("GOTV Analytics starting", middleware=middleware_status())
     yield
-    logger.info("GOTV Analytics shutting down")
+    logger.info("GOTV Analytics shutting down — cleanup complete")
 
 
 app = FastAPI(
@@ -302,6 +313,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def exception_recovery_middleware(request: Request, call_next):
+    """Catch unhandled exceptions in handlers — return 500 instead of crashing the worker."""
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        import traceback
+        logger.error("unhandled_exception",
+                      path=str(request.url.path),
+                      method=request.method,
+                      error=str(exc),
+                      traceback=traceback.format_exc())
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": "internal server error"})
 
 
 @app.middleware("http")

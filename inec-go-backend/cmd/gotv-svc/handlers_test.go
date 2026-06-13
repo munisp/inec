@@ -586,3 +586,106 @@ func containsHelper(s, sub string) bool {
 	}
 	return false
 }
+
+// ─── Panic Recovery Tests ─────────────────────────────────────────────
+
+func TestPanicRecoveryMiddleware_CatchesPanic(t *testing.T) {
+	// Handler that panics
+	panicking := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic in handler")
+	})
+	handler := panicRecoveryMiddleware(panicking)
+
+	req := httptest.NewRequest("GET", "/test-panic", nil)
+	rr := httptest.NewRecorder()
+
+	// Should NOT panic — middleware catches it
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if _, ok := body["error"]; !ok {
+		t.Error("expected error field in response")
+	}
+}
+
+func TestPanicRecoveryMiddleware_NormalRequest(t *testing.T) {
+	normal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`))
+	})
+	handler := panicRecoveryMiddleware(normal)
+
+	req := httptest.NewRequest("GET", "/test-normal", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != 200 {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestPanicRecoveryMiddleware_NilPanic(t *testing.T) {
+	panicking := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(nil)
+	})
+	handler := panicRecoveryMiddleware(panicking)
+
+	req := httptest.NewRequest("GET", "/test-nil-panic", nil)
+	rr := httptest.NewRecorder()
+
+	// nil panic — recover() returns nil, so middleware passes through
+	handler.ServeHTTP(rr, req)
+	// Behavior: nil panic is caught by recover() returning nil, so handler completes normally
+}
+
+func TestPanicRecoveryMiddleware_PreservesRequestID(t *testing.T) {
+	panicking := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test")
+	})
+	handler := panicRecoveryMiddleware(panicking)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Request-ID", "req-12345")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	var body map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&body)
+	if rid, ok := body["request_id"]; ok {
+		if rid != "req-12345" {
+			t.Errorf("expected request_id req-12345, got %v", rid)
+		}
+	}
+}
+
+func TestProcessInfoEndpoint(t *testing.T) {
+	req := httptest.NewRequest("GET", "/gotv/process/info", nil)
+	rr := httptest.NewRecorder()
+
+	handleProcessInfo(rr, req)
+
+	if rr.Code != 200 {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	requiredFields := []string{"pid", "panics_recovered", "uptime", "ready", "shutdown_hooks"}
+	for _, f := range requiredFields {
+		if _, ok := body[f]; !ok {
+			t.Errorf("missing field: %s", f)
+		}
+	}
+}

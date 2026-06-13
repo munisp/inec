@@ -563,6 +563,23 @@ async fn query_graph(
 
 #[tokio::main]
 async fn main() {
+    // Panic hook for structured logging on unrecoverable errors
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!("PANIC at {}: {}", location, msg);
+        default_panic(info);
+    }));
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -609,5 +626,20 @@ async fn main() {
     info!("INEC Inference Engine starting on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+
+    // Graceful shutdown on SIGTERM/SIGINT
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let ctrl_c = tokio::signal::ctrl_c();
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => info!("received SIGINT, shutting down inference engine"),
+                _ = sigterm.recv() => info!("received SIGTERM, shutting down inference engine"),
+            }
+        })
+        .await
+        .unwrap();
+
+    info!("Inference Engine shut down gracefully");
 }

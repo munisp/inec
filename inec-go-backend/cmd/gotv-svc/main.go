@@ -595,11 +595,17 @@ func main() {
 	r.HandleFunc("/robots.txt", handleRobotsTxt).Methods("GET")
 	r.HandleFunc("/version", handleVersion).Methods("GET")
 
+	// ─── Process Resilience Endpoints ──────────────────────────────────────
+	r.HandleFunc("/gotv/process/info", auth(handleProcessInfo)).Methods("GET")
+
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
 	if openappsecURL != "" {
 		handler = wafMiddleware(r)
 	}
+
+	// Panic recovery — outermost middleware catches handler panics
+	handler = panicRecoveryMiddleware(handler)
 
 	// Platform improvements middleware stack (P0)
 	handler = prometheusMiddleware(handler)
@@ -621,6 +627,10 @@ func main() {
 	addr := fmt.Sprintf(":%d", *port)
 	srv := &http.Server{Addr: addr, Handler: handler, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
 
+	// Start watchdog for process health monitoring
+	watchdogCtx, watchdogCancel := context.WithCancel(context.Background())
+	startWatchdog(watchdogCtx)
+
 	go func() {
 		log.Info().Str("addr", addr).Msg("GOTV service starting")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -630,12 +640,10 @@ func main() {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Info().Msg("GOTV service shutting down")
-	gracefulShutdownHooks()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	srv.Shutdown(ctx)
+	sig := <-quit
+	log.Info().Str("signal", sig.String()).Msg("GOTV service shutting down")
+	watchdogCancel()
+	runShutdownSequence(srv)
 }
 
 // ─── Real-Time Ticker ──────────────────────────────────────────────────────

@@ -372,6 +372,23 @@ async fn ensure_topics(fluvio: &Fluvio) -> Vec<String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Panic hook for structured error logging
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!("PANIC at {}: {}", location, msg);
+        default_panic(info);
+    }));
+
     tracing_subscriber::fmt::init();
     info!("Starting INEC Fluvio Stream Processor");
 
@@ -408,7 +425,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Fluvio Stream Processor listening on port {}", port);
 
-    HttpServer::new(move || {
+    // Actix-web handles SIGTERM/SIGINT gracefully by default — it stops accepting
+    // new connections, waits for in-flight requests to complete, then shuts down.
+    // We set shutdown_timeout to 15s to align with K8s terminationGracePeriodSeconds.
+    let state_for_shutdown = state.clone();
+    let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(state.clone()))
             .route("/health", web::get().to(health_check))
@@ -419,9 +440,21 @@ async fn main() -> anyhow::Result<()> {
             .route("/checkpoints", web::get().to(get_checkpoints))
             .route("/checkpoints/commit", web::post().to(commit_checkpoint))
     })
+    .shutdown_timeout(15)
     .bind(("0.0.0.0", port))?
-    .run()
-    .await?;
+    .run();
 
+    // Run server and flush checkpoints on shutdown
+    server.await?;
+
+    // Persist offset checkpoints before exit
+    let checkpoints = state_for_shutdown.checkpoints.read().await;
+    if let Err(e) = checkpoints.save(&state_for_shutdown.checkpoint_path) {
+        error!("Failed to save checkpoints on shutdown: {}", e);
+    } else {
+        info!("Checkpoints saved on shutdown ({} entries)", checkpoints.checkpoints.len());
+    }
+
+    info!("Fluvio Stream Processor shut down gracefully");
     Ok(())
 }
