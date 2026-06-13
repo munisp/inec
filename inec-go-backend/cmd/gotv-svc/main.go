@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -91,6 +92,14 @@ func main() {
 	configureDBPool()
 	initRedisCache()
 	initGOTVLedgerAndBlockchain()
+	initCircuitBreakers()
+	devModeEnabled = *devMode
+
+	// Start gRPC server on port+1 for inter-service calls
+	go startGRPCServer(*port + 1)
+
+	// Mark service as ready after all init
+	defer func() { atomic.StoreInt32(&serviceReady, 1) }()
 
 	// Initialize all 13 middleware connections
 	initAllMiddleware()
@@ -549,6 +558,12 @@ func main() {
 	// Health Dashboard (extended)
 	r.HandleFunc("/gotv/health/dashboard", handleHealthDashboard).Methods("GET")
 
+	// ─── Health & Operations Endpoints ─────────────────────────────────────
+	r.HandleFunc("/health", handleLiveness).Methods("GET")
+	r.HandleFunc("/ready", handleReadiness).Methods("GET")
+	r.HandleFunc("/gotv/circuit-breakers", auth(handleCircuitBreakerStatus)).Methods("GET")
+	r.HandleFunc("/gotv/integrations/audit", auth(handleIntegrationAudit)).Methods("GET")
+
 	// ─── TigerBeetle Ledger Endpoints ──────────────────────────────────────
 	r.HandleFunc("/gotv/ledger/accounts", auth(handleLedgerAccounts)).Methods("GET")
 	r.HandleFunc("/gotv/ledger/transfer", auth(handleLedgerTransfer)).Methods("POST")
@@ -607,7 +622,8 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Info().Msg("GOTV service shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	gracefulShutdownHooks()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
 }
