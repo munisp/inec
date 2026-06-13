@@ -90,6 +90,7 @@ func main() {
 	initPrometheus()
 	configureDBPool()
 	initRedisCache()
+	initGOTVLedgerAndBlockchain()
 
 	// Initialize all 13 middleware connections
 	initAllMiddleware()
@@ -547,6 +548,20 @@ func main() {
 
 	// Health Dashboard (extended)
 	r.HandleFunc("/gotv/health/dashboard", handleHealthDashboard).Methods("GET")
+
+	// ─── TigerBeetle Ledger Endpoints ──────────────────────────────────────
+	r.HandleFunc("/gotv/ledger/accounts", auth(handleLedgerAccounts)).Methods("GET")
+	r.HandleFunc("/gotv/ledger/transfer", auth(handleLedgerTransfer)).Methods("POST")
+	r.HandleFunc("/gotv/ledger/balance", auth(handleLedgerBalance)).Methods("GET")
+	r.HandleFunc("/gotv/ledger/reconcile", auth(handleLedgerReconcile)).Methods("GET")
+	r.HandleFunc("/gotv/ledger/history", auth(handleLedgerHistory)).Methods("GET")
+
+	// ─── Blockchain Endpoints ──────────────────────────────────────────────
+	r.HandleFunc("/gotv/blockchain/anchor", auth(handleBlockchainAnchor)).Methods("POST")
+	r.HandleFunc("/gotv/blockchain/verify", auth(handleBlockchainVerify)).Methods("POST")
+	r.HandleFunc("/gotv/blockchain/status", auth(handleBlockchainStatus)).Methods("GET")
+	r.HandleFunc("/gotv/blockchain/cross-verify", auth(handleBlockchainCrossVerify)).Methods("GET")
+	r.HandleFunc("/gotv/blockchain/blocks", auth(handleBlockchainBlocks)).Methods("GET")
 
 	// ─── Production Hardening Endpoints ────────────────────────────────────
 	r.Handle("/metrics", metricsHandler()).Methods("GET")

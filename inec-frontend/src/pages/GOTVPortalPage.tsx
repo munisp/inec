@@ -24,6 +24,8 @@ import GOTVVetting from './GOTVVetting';
 import GOTVTasks from './GOTVTasks';
 import GOTVLocations from './GOTVLocations';
 import GOTVPlatform from './GOTVPlatform';
+import GOTVLedger from './GOTVLedger';
+import GOTVBlockchain from './GOTVBlockchain';
 
 // ─── Nigerian States for dropdowns ─────────────────────────────────────────
 const NIGERIAN_STATES = [
@@ -142,7 +144,7 @@ const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'vetting' | 'tasks' | 'locations' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics' | 'scoring' | 'indicators' | 'platform';
+type Tab = 'dashboard' | 'campaigns' | 'contacts' | 'volunteers' | 'vetting' | 'tasks' | 'locations' | 'pledges' | 'rides' | 'map' | 'leaderboard' | 'segments' | 'warroom' | 'analytics' | 'scoring' | 'indicators' | 'platform' | 'ledger' | 'blockchain';
 
 export default function GOTVPortalPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -860,6 +862,8 @@ export default function GOTVPortalPage() {
     { key: 'scoring', label: 'Scoring', icon: TrendingUp },
     { key: 'indicators', label: 'KOH Indicators', icon: TrendingUp },
     { key: 'platform', label: 'Platform', icon: TrendingUp },
+    { key: 'ledger', label: 'Ledger', icon: TrendingUp },
+    { key: 'blockchain', label: 'Blockchain', icon: TrendingUp },
   ];
 
   return (
@@ -912,6 +916,8 @@ export default function GOTVPortalPage() {
           {activeTab === 'scoring' && <GOTVScoring />}
           {activeTab === 'indicators' && <GOTVIndicators />}
           {activeTab === 'platform' && <GOTVPlatform />}
+          {activeTab === 'ledger' && <GOTVLedger />}
+          {activeTab === 'blockchain' && <GOTVBlockchain />}
         </>
       )}
     </div>
