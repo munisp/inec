@@ -341,7 +341,7 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := dbConn.QueryContext(r.Context(), `
-		SELECT contact_id, full_name, phone_masked, COALESCE(state_code,''), COALESCE(lga_code,''),
+		SELECT contact_id, phone_encrypted, full_name_encrypted, COALESCE(state_code,''), COALESCE(lga_code,''),
 			voter_status, opted_out, created_at
 		FROM gotv_contacts WHERE party_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC`, partyID)
@@ -357,13 +357,20 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 		writer := csv.NewWriter(w)
 		writer.Write([]string{"contact_id", "full_name", "phone", "state", "lga", "status", "opted_out", "created_at"})
 		for rows.Next() {
-			var cid, name, phone, state, lga, status string
+			var cid, phoneEnc, state, lga, status string
+			var nameEnc sql.NullString
 			var optedOut bool
 			var createdAt time.Time
-			if err := rows.Scan(&cid, &name, &phone, &state, &lga, &status, &optedOut, &createdAt); err != nil {
+			if err := rows.Scan(&cid, &phoneEnc, &nameEnc, &state, &lga, &status, &optedOut, &createdAt); err != nil {
 				continue
 			}
-			writer.Write([]string{cid, name, phone, state, lga, status, strconv.FormatBool(optedOut), createdAt.Format(time.RFC3339)})
+			phone, _ := svc.Decrypt(phoneEnc)
+			masked := maskPhone(phone)
+			fullName := ""
+			if nameEnc.Valid {
+				fullName, _ = svc.Decrypt(nameEnc.String)
+			}
+			writer.Write([]string{cid, fullName, masked, state, lga, status, strconv.FormatBool(optedOut), createdAt.Format(time.RFC3339)})
 		}
 		writer.Flush()
 		return
@@ -372,14 +379,21 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 	// JSON export
 	var contacts []map[string]interface{}
 	for rows.Next() {
-		var cid, name, phone, state, lga, status string
+		var cid, phoneEnc, state, lga, status string
+		var nameEnc sql.NullString
 		var optedOut bool
 		var createdAt time.Time
-		if err := rows.Scan(&cid, &name, &phone, &state, &lga, &status, &optedOut, &createdAt); err != nil {
+		if err := rows.Scan(&cid, &phoneEnc, &nameEnc, &state, &lga, &status, &optedOut, &createdAt); err != nil {
 			continue
 		}
+		phone, _ := svc.Decrypt(phoneEnc)
+		masked := maskPhone(phone)
+		fullName := ""
+		if nameEnc.Valid {
+			fullName, _ = svc.Decrypt(nameEnc.String)
+		}
 		contacts = append(contacts, map[string]interface{}{
-			"contact_id": cid, "full_name": name, "phone": phone,
+			"contact_id": cid, "full_name": fullName, "phone": masked,
 			"state": state, "lga": lga, "status": status,
 			"opted_out": optedOut, "created_at": createdAt,
 		})
@@ -461,7 +475,7 @@ func handleCampaignPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get first 20 contacts that would receive this
-	q := `SELECT contact_id, full_name, phone_masked, COALESCE(state_code,''), voter_status
+	q := `SELECT contact_id, phone_encrypted, full_name_encrypted, COALESCE(state_code,''), voter_status
 		FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE`
 	args := []interface{}{partyID}
 	if targetState != "" {
@@ -479,14 +493,21 @@ func handleCampaignPreview(w http.ResponseWriter, r *http.Request) {
 
 	var preview []map[string]string
 	for rows.Next() {
-		var cid, name, phone, state, status string
-		if err := rows.Scan(&cid, &name, &phone, &state, &status); err != nil {
+		var cid, phoneEnc, state, status string
+		var nameEnc sql.NullString
+		if err := rows.Scan(&cid, &phoneEnc, &nameEnc, &state, &status); err != nil {
 			continue
+		}
+		phone, _ := svc.Decrypt(phoneEnc)
+		masked := maskPhone(phone)
+		name := ""
+		if nameEnc.Valid {
+			name, _ = svc.Decrypt(nameEnc.String)
 		}
 		personalized := strings.ReplaceAll(msg, "{{name}}", name)
 		personalized = strings.ReplaceAll(personalized, "{{state}}", state)
 		preview = append(preview, map[string]string{
-			"contact_id": cid, "name": name, "phone": phone,
+			"contact_id": cid, "name": name, "phone": masked,
 			"channel": ctype, "message": personalized,
 		})
 	}
@@ -695,20 +716,23 @@ func handleWhatsAppInbound(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "confirm_pledge":
+		pHash := svc.PhoneHash(msg.From)
 		dbConn.ExecContext(r.Context(), `
 			UPDATE gotv_pledges SET status='confirmed_day_of'
-			WHERE contact_id IN (SELECT contact_id FROM gotv_contacts WHERE phone_masked LIKE '%' || $1)
-			AND status='pledged'`, msg.From[len(msg.From)-4:])
+			WHERE contact_id IN (SELECT contact_id FROM gotv_contacts WHERE phone_hash=$1)
+			AND status='pledged'`, pHash)
 	case "opt_out":
+		pHash := svc.PhoneHash(msg.From)
 		dbConn.ExecContext(r.Context(), `
 			UPDATE gotv_contacts SET opted_out=TRUE
-			WHERE phone_masked LIKE '%' || $1`, msg.From[len(msg.From)-4:])
+			WHERE phone_hash=$1`, pHash)
 	case "request_ride":
 		// Auto-create ride request
 		var contactID string
+		pHash := svc.PhoneHash(msg.From)
 		err := dbConn.QueryRowContext(r.Context(), `
 			SELECT contact_id FROM gotv_contacts
-			WHERE phone_masked LIKE '%' || $1 LIMIT 1`, msg.From[len(msg.From)-4:]).Scan(&contactID)
+			WHERE phone_hash=$1 LIMIT 1`, pHash).Scan(&contactID)
 		if err == nil {
 			rideID := "ride-wa-" + genPlatformID()[:8]
 			dbConn.ExecContext(r.Context(), `

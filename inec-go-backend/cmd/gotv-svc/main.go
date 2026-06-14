@@ -3079,7 +3079,7 @@ func handleScoringWinProbability(w http.ResponseWriter, r *http.Request) {
 
 func handleScoringAllocation(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
-	rows, err := dbConn.Query(`SELECT COALESCE(t.ward_name,'Unassigned'), COUNT(c.id) FROM gotv_contacts c LEFT JOIN gotv_territories t ON t.party_id=c.party_id AND t.state_code=c.state_code WHERE c.party_id=$1 GROUP BY t.ward_name ORDER BY COUNT(c.id) DESC LIMIT 10`, pid)
+	rows, err := dbConn.Query(`SELECT COALESCE(t.ward_code,'Unassigned'), COUNT(c.id) FROM gotv_contacts c LEFT JOIN gotv_territories t ON t.party_id=c.party_id AND t.ward_code=c.ward_code WHERE c.party_id=$1 GROUP BY t.ward_code ORDER BY COUNT(c.id) DESC LIMIT 10`, pid)
 	if err != nil {
 		jsonErr(w, err.Error(), 500)
 		return
