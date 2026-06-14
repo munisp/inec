@@ -24,6 +24,9 @@ const CRITICAL_API_PATHS = [
   // KOH Indicators
   '/gotv/koh/cpi/', '/gotv/koh/surveys', '/gotv/koh/endorsements',
   '/gotv/koh/social/', '/gotv/koh/lga/', '/gotv/koh/analytics/',
+  // Party Primaries
+  '/gotv/primaries/aspirants', '/gotv/primaries/delegates',
+  '/gotv/primaries/elections/', '/gotv/primaries/remote/',
 ];
 
 // Install: precache static assets

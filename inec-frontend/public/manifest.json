@@ -1,7 +1,7 @@
 {
   "name": "INEC Election & GOTV Platform",
   "short_name": "INEC/GOTV",
-  "description": "Independent National Electoral Commission - Election Management & Get Out The Vote (GOTV) Party Mobilization",
+  "description": "Independent National Electoral Commission - Election Management & Get Out The Vote (GOTV) Party Mobilization with Party Primaries & Remote Voting",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -12,7 +12,20 @@
   "dir": "ltr",
   "scope": "/",
   "prefer_related_applications": false,
+  "id": "/",
   "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
     {
       "src": "/favicon.ico",
       "sizes": "64x64",
@@ -45,10 +58,10 @@
       "description": "Get Out The Vote — Voter Mobilization Dashboard"
     },
     {
-      "name": "GOTV Campaigns",
-      "short_name": "Campaigns",
-      "url": "/?page=gotv-portal&tab=campaigns",
-      "description": "Manage multi-channel outreach campaigns"
+      "name": "Party Primaries",
+      "short_name": "Primaries",
+      "url": "/?page=party-primaries",
+      "description": "Convention management and delegate voting"
     },
     {
       "name": "KOH Indicators",
@@ -70,5 +83,9 @@
     }
   ],
   "screenshots": [],
-  "related_applications": []
+  "related_applications": [],
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  }
 }
