@@ -598,6 +598,9 @@ func main() {
 	// ─── Process Resilience Endpoints ──────────────────────────────────────
 	r.HandleFunc("/gotv/process/info", auth(handleProcessInfo)).Methods("GET")
 
+	// ─── Party Primaries & Remote Voting ────────────────────────────────
+	registerPrimaryRoutes(r, auth)
+
 	// Apply WAF middleware if OpenAppSec is configured
 	var handler http.Handler = r
 	if openappsecURL != "" {

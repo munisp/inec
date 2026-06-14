@@ -5,6 +5,7 @@
 mod middleware;
 mod persistence;
 pub mod platform;
+pub mod voting_crypto;
 
 use axum::{
     extract::{Json, Path, Query, State},
@@ -937,6 +938,35 @@ async fn main() {
         state.rebuild_rtree();
     }
 
+    // ── Voting Crypto Handlers ────────────────────────────────────────────
+    async fn encrypt_ballot_handler(
+        Json(req): Json<voting_crypto::EncryptBallotRequest>,
+    ) -> impl IntoResponse {
+        let resp = voting_crypto::handle_encrypt_ballot(req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn shuffle_handler(
+        Json(req): Json<voting_crypto::ShuffleRequest>,
+    ) -> impl IntoResponse {
+        let resp = voting_crypto::handle_shuffle(req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn merkle_tree_handler(
+        Json(req): Json<voting_crypto::MerkleTreeRequest>,
+    ) -> impl IntoResponse {
+        let resp = voting_crypto::handle_merkle_tree(req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn verify_keys_handler(
+        Json(req): Json<voting_crypto::VerifyKeyRequest>,
+    ) -> impl IntoResponse {
+        let resp = voting_crypto::handle_verify_keys(req);
+        Json(serde_json::json!(resp))
+    }
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/gotv-engine/volunteers", post(register_volunteers))
@@ -952,6 +982,11 @@ async fn main() {
         .route("/gotv-engine/turnout/predict", post(predict_turnout))
         .route("/gotv-engine/isochrone", post(calculate_isochrone))
         .route("/gotv-engine/geofence/check", post(check_geofence))
+        // Voting crypto endpoints (Dapr service invocation targets)
+        .route("/gotv-engine/crypto/encrypt-ballot", post(encrypt_ballot_handler))
+        .route("/gotv-engine/crypto/shuffle", post(shuffle_handler))
+        .route("/gotv-engine/crypto/merkle-tree", post(merkle_tree_handler))
+        .route("/gotv-engine/verify-keys", post(verify_keys_handler))
         .layer(axum_mw::from_fn(internal_api_key_auth))
         .layer(CorsLayer::permissive())
         .with_state(state);

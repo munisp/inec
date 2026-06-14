@@ -694,6 +694,15 @@ except ImportError:
     logger.warning("ml_serving module not found — ML inference endpoints disabled")
 
 
+# ─── Voting Analytics (anomaly detection, turnout prediction, fraud scoring) ──
+try:
+    from voting_analytics import create_voting_analytics_routes
+    create_voting_analytics_routes(app)
+    logger.info("Voting analytics module loaded (anomaly detection, turnout prediction, fraud detection)")
+except ImportError:
+    logger.warning("voting_analytics module not found — voting analytics endpoints disabled")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8102"))

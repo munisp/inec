@@ -61,6 +61,7 @@ const NAV_ITEMS = [
   { label: 'Compliance Report', icon: FileCheck, path: 'compliance-report' },
   { label: 'ML Dashboard', icon: Brain, path: 'ml-dashboard' },
   { label: 'GOTV Portal', icon: Megaphone, path: 'gotv-portal', section: 'Party' },
+  { label: 'Party Primaries', icon: Vote, path: 'party-primaries', section: 'Party' },
 ];
 
 interface LayoutProps {

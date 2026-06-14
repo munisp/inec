@@ -54,6 +54,7 @@ const ComplianceReportPage = lazy(() => import('@/pages/ComplianceReportPage'));
 const IntegrityScorePage = lazy(() => import('@/pages/IntegrityScorePage'));
 const MLDashboardPage = lazy(() => import('@/pages/MLDashboardPage'));
 const GOTVPortalPage = lazy(() => import('@/pages/GOTVPortalPage'));
+const PartyPrimariesPage = lazy(() => import('@/pages/PartyPrimariesPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -73,7 +74,10 @@ function PageTransition({ page, children }: { page: string; children: React.Reac
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
-  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [currentPage, setCurrentPage] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('page') || 'dashboard';
+  });
 
   if (!isAuthenticated) return <LoginPage />;
 
@@ -122,6 +126,7 @@ function AppContent() {
     'integrity-score': <IntegrityScorePage />,
     'ml-dashboard': <MLDashboardPage />,
     'gotv-portal': <GOTVPortalPage />,
+    'party-primaries': <PartyPrimariesPage />,
   };
 
   return (
