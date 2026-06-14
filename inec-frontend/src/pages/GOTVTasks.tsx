@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import {
-  ClipboardList, Play, CheckCircle, XCircle, Zap, Plus, RefreshCw,
+  ClipboardList, Play, CheckCircle, Zap, Plus, RefreshCw,
 } from 'lucide-react';
 
 const TASK_STATUS_COLORS: Record<string, string> = {

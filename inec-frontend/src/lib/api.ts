@@ -86,6 +86,12 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
 }
 
 export const api = {
+  get: (path: string) => request(path),
+  post: (path: string, data?: unknown) =>
+    request(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  put: (path: string, data?: unknown) =>
+    request(path, { method: 'PUT', body: data ? JSON.stringify(data) : undefined }),
+  delete: (path: string) => request(path, { method: 'DELETE' }),
   login: (username: string, password: string) =>
     request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   register: (data: { username: string; password: string; full_name: string; role?: string }) =>

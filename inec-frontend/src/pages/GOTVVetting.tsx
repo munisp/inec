@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   ShieldCheck, UserCheck, GraduationCap, XCircle, AlertTriangle,
-  ChevronRight, RefreshCw,
+  RefreshCw,
 } from 'lucide-react';
 
 const VETTING_STATUS_COLORS: Record<string, string> = {
@@ -184,7 +184,7 @@ export default function GOTVVetting() {
             <CardContent className="pt-4 flex items-center gap-3">
               <step.icon className={`h-8 w-8 ${step.color}`} />
               <div>
-                <div className="text-2xl font-bold">{counts ? (counts as Record<string, number>)[step.key] || 0 : '—'}</div>
+                <div className="text-2xl font-bold">{counts ? (counts as unknown as Record<string, number>)[step.key] || 0 : '—'}</div>
                 <div className="text-sm text-muted-foreground">{step.label}</div>
               </div>
             </CardContent>

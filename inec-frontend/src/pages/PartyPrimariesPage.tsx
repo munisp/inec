@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, CartesianGrid, Legend,
+  PieChart, Pie, Cell, CartesianGrid, Legend,
 } from 'recharts';
 
 const API = import.meta.env.VITE_API_URL || '';
@@ -90,9 +90,9 @@ export default function PartyPrimariesPage() {
   const [aspirants, setAspirants] = useState<Aspirant[]>([]);
   const [delegates, setDelegates] = useState<Delegate[]>([]);
   const [rounds, setRounds] = useState<VotingRound[]>([]);
-  const [tallyResults, setTallyResults] = useState<TallyResult[]>([]);
+  const [tallyResults, _setTallyResults] = useState<TallyResult[]>([]);
   const [cryptoAudit, setCryptoAudit] = useState<CryptoAudit | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [_loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [electionId, setElectionId] = useState<string>('1');
 
@@ -472,7 +472,7 @@ function DelegatesTab({ delegates, onRefresh }: { delegates: Delegate[]; onRefre
   );
 }
 
-function VotingTab({ rounds, tallyResults, onRefresh }: {
+function VotingTab({ rounds, tallyResults: _tallyResults, onRefresh }: {
   rounds: VotingRound[];
   tallyResults: TallyResult[];
   onRefresh: () => void;
@@ -526,7 +526,7 @@ function VotingTab({ rounds, tallyResults, onRefresh }: {
 }
 
 function RemoteVotingTab() {
-  const [deviceId, setDeviceId] = useState('');
+  const [_deviceId, _setDeviceId] = useState('');
   const [verifyCode, setVerifyCode] = useState('');
   const [verifyResult, setVerifyResult] = useState<any>(null);
 

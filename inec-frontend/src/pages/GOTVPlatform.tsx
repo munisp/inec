@@ -10,18 +10,15 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, RadarChart, PolarGrid, PolarAngleAxis, Radar,
-} from 'recharts';
+
 import {
   AlertTriangle, Route, Trophy, Brain, MessageCircle,
   FlaskConical, Download, Camera, Inbox, Shield,
-  ChevronRight, TrendingUp, TrendingDown, Minus,
+  ChevronRight,
 } from 'lucide-react';
 
 const API_BASE = '/gotv';
-const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
 
 type SubTab = 'alerts' | 'route' | 'teams' | 'simulation' | 'ask' | 'experiments' | 'export' | 'crowd' | 'social' | 'federated';
 

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+
 import { Progress } from '@/components/ui/progress';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -10,12 +10,11 @@ import {
   PolarAngleAxis, PolarRadiusAxis, Legend, Area, AreaChart,
 } from 'recharts';
 import {
-  TrendingUp, TrendingDown, Target, Users, MapPin, MessageSquare,
-  Award, FileText, BarChart3, Activity, AlertTriangle, RefreshCw,
+  Target, Users, MapPin, MessageSquare,
+  Award, FileText, BarChart3, Activity, AlertTriangle,
 } from 'lucide-react';
 
 const BASE_URL = `${window.location.protocol}//${window.location.hostname}:8103`;
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
 function getAuthHeaders() {
   const token = localStorage.getItem('auth_token') || '';
@@ -561,16 +560,13 @@ function EndorsementsDashboard() {
 // ─── Reports Dashboard ──────────────────────────────────────────────────────
 function ReportsDashboard() {
   const [reports, setReports] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
 
   const loadData = useCallback(async () => {
-    setLoading(true);
     try {
       const res = await apiFetch('/gotv/koh/reports');
       setReports(res.reports || []);
     } catch (e) { console.error(e); }
-    setLoading(false);
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);

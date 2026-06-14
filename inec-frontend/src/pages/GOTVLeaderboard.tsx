@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Trophy, Medal, Star, Users } from 'lucide-react';
+import { Trophy, Medal, Star } from 'lucide-react';
 
 interface LeaderboardEntry {
   volunteer_id: string;
