@@ -1,0 +1,17 @@
+[package]
+name = "inec-field-kit"
+version = "1.0.0"
+edition = "2021"
+description = "INEC Election Field Kit — GeoLibre powered desktop app"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-fs = "2"
+tauri-plugin-http = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+[build-dependencies]
+tauri-build = "2"
