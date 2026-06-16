@@ -221,6 +221,9 @@ func main() {
 	// blockchain attestation, mesh network, H3 hex grid, offline tiles, MVT tiles
 	registerGeoAdvancedRoutes(r)
 
+	// GeoLibre GIS integration — GeoJSON endpoints, spatial queries, project export
+	registerGeoLibreRoutes(r)
+
 	// Dashboard — read auth for data, write auth for metrics
 	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")
 	r.HandleFunc("/dashboard/live-feed", readAuth(handleLiveFeed)).Methods("GET")

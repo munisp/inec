@@ -53,6 +53,7 @@ const TVDashboardPage = lazy(() => import('@/pages/TVDashboardPage'));
 const ComplianceReportPage = lazy(() => import('@/pages/ComplianceReportPage'));
 const IntegrityScorePage = lazy(() => import('@/pages/IntegrityScorePage'));
 const MLDashboardPage = lazy(() => import('@/pages/MLDashboardPage'));
+const GeoLibreMapPage = lazy(() => import('@/pages/GeoLibreMapPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -120,6 +121,7 @@ function AppContent() {
     'compliance-report': <ComplianceReportPage />,
     'integrity-score': <IntegrityScorePage />,
     'ml-dashboard': <MLDashboardPage />,
+    'geolibre-map': <GeoLibreMapPage />,
   };
 
   return (
