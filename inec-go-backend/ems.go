@@ -545,7 +545,7 @@ func handleRegistrationCenters(w http.ResponseWriter, r *http.Request) {
 		q += " AND state_code=?"
 		params = append(params, stateCode)
 	}
-	q += " ORDER BY code"
+	q += " ORDER BY code LIMIT 1000"
 	rows, _ := db.Query(q, params...)
 	writeJSON(w, 200, scanRows(rows))
 }
@@ -874,7 +874,7 @@ func handleBVASConflictResolve(w http.ResponseWriter, r *http.Request) {
 // ══════════════════════════════════════════════════════════════
 
 func handleListPortals(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT * FROM portal_connections ORDER BY portal_name")
+	rows, _ := db.Query("SELECT * FROM portal_connections ORDER BY portal_name LIMIT 100")
 	writeJSON(w, 200, scanRows(rows))
 }
 
@@ -993,7 +993,7 @@ func handleListValidationRules(w http.ResponseWriter, r *http.Request) {
 		q += " AND entity_type=?"
 		params = append(params, entityType)
 	}
-	q += " ORDER BY rule_type, rule_name"
+	q += " ORDER BY rule_type, rule_name LIMIT 500"
 	rows, _ := db.Query(q, params...)
 	writeJSON(w, 200, scanRows(rows))
 }
@@ -1241,7 +1241,7 @@ func handleListMaterials(w http.ResponseWriter, r *http.Request) {
 		q += " AND status=?"
 		params = append(params, status)
 	}
-	q += " ORDER BY material_type, destination_code"
+	q += " ORDER BY material_type, destination_code LIMIT 2000"
 	rows, _ := db.Query(q, params...)
 	writeJSON(w, 200, scanRows(rows))
 }

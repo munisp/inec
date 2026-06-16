@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,18 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+// geoHTTPClient is a timeout-configured HTTP client for external geo APIs.
+// Avoids http.DefaultClient which has no timeouts for TLS handshake/headers.
+var geoHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+		MaxIdleConns:        20,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
 
 // ═══════════════════════════════════════════════════════════
 // GEO ADVANCED — 30 enhancements for mapping & real-time tracking
@@ -605,11 +618,21 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	if body.Profile == "" {
 		body.Profile = "driving"
 	}
+	// Security: whitelist profiles to prevent SSRF via path manipulation
+	validProfiles := map[string]bool{"driving": true, "walking": true, "cycling": true}
+	if !validProfiles[body.Profile] {
+		writeJSON(w, 400, M{"error": "invalid profile, must be: driving, walking, cycling"})
+		return
+	}
 
-	// Use OSRM public API (or self-hosted)
+	// Use OSRM public API (or self-hosted) -- admin-configured via env, not user input
 	osrmURL := os.Getenv("OSRM_URL")
 	if osrmURL == "" {
 		osrmURL = "https://router.project-osrm.org"
+	}
+	if !strings.HasPrefix(osrmURL, "https://") && !strings.HasPrefix(osrmURL, "http://") {
+		writeJSON(w, 500, M{"error": "invalid OSRM URL scheme"})
+		return
 	}
 
 	url := fmt.Sprintf("%s/route/v1/%s/%.6f,%.6f;%.6f,%.6f?overview=full&geometries=geojson&steps=true",
@@ -618,13 +641,13 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil) // #nosec G704 -- URL host is admin-configured (env var)
 	if err != nil {
 		writeJSON(w, 500, M{"error": "failed to create request"})
 		return
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geoHTTPClient.Do(req) // #nosec G704 -- URL constructed from admin-configured OSRM env var
 	if err != nil {
 		// Fallback: return straight line with Haversine distance
 		dist := haversineDistance(body.OriginLat, body.OriginLng, body.DestLat, body.DestLng)
@@ -641,7 +664,7 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	var osrmResp map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&osrmResp)
+	json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&osrmResp)
 	writeJSON(w, 200, osrmResp)
 }
 
@@ -732,8 +755,8 @@ func fetchWeather(ctx context.Context, lat, lng float64) M {
 
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil) // #nosec G704 -- hardcoded host, lat/lng are float64
+	resp, err := geoHTTPClient.Do(req)                            // #nosec G704
 	if err != nil {
 		return M{"error": err.Error(), "simulated": true, "temp_c": 28, "description": "unknown"}
 	}
@@ -775,8 +798,11 @@ func handleUploadPUPhoto(w http.ResponseWriter, r *http.Request) {
 
 	// Save to uploads directory
 	uploadDir := "uploads/pu_photos"
-	os.MkdirAll(uploadDir, 0755)
-	filename := fmt.Sprintf("%s_%d%s", puCode, time.Now().UnixMilli(), filepath.Ext(handler.Filename))
+	os.MkdirAll(uploadDir, 0750)
+	// Sanitize puCode to prevent path traversal
+	safePU := filepath.Base(strings.ReplaceAll(puCode, "..", ""))
+	safeExt := filepath.Ext(filepath.Base(handler.Filename))
+	filename := fmt.Sprintf("%s_%d%s", safePU, time.Now().UnixMilli(), safeExt)
 	dst, err := os.Create(filepath.Join(uploadDir, filename))
 	if err != nil {
 		writeJSON(w, 500, M{"error": "failed to save file"})
@@ -1026,39 +1052,58 @@ func handleOfflineTile(w http.ResponseWriter, r *http.Request) {
 	z, x, yPng := parts[0], parts[1], parts[2]
 	y := strings.TrimSuffix(yPng, ".png")
 
-	// Check local cache first
+	// Security: validate z/x/y are numeric to prevent path traversal
+	for _, v := range []string{z, x, y} {
+		for _, c := range v {
+			if c < '0' || c > '9' {
+				http.Error(w, "invalid tile coordinates", 400)
+				return
+			}
+		}
+		if len(v) > 6 { // max zoom ~22, max tile index ~4M (7 digits)
+			http.Error(w, "tile coordinate out of range", 400)
+			return
+		}
+	}
+
+	// Check local cache first (defense-in-depth: verify resolved path stays under cache dir)
 	cacheDir := "cache/tiles"
-	cachePath := filepath.Join(cacheDir, z, x, y+".png")
-	if data, err := os.ReadFile(cachePath); err == nil {
+	cachePath := filepath.Clean(filepath.Join(cacheDir, z, x, y+".png"))
+	if !strings.HasPrefix(cachePath, cacheDir+string(os.PathSeparator)) && cachePath != cacheDir {
+		http.Error(w, "invalid tile path", 400)
+		return
+	}
+	if data, err := os.ReadFile(cachePath); err == nil { // #nosec G703 -- path validated above
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Write(data)
 		return
 	}
 
-	// Fetch from OSM
+	// Fetch from OSM (hardcoded origin, z/x/y validated numeric above)
 	tileURL := fmt.Sprintf("https://tile.openstreetmap.org/%s/%s/%s.png", z, x, y)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", tileURL, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", tileURL, nil) // #nosec G704 -- hardcoded host + numeric-only path params
 	req.Header.Set("User-Agent", "INEC-Election-Platform/1.0")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := geoHTTPClient.Do(req) // #nosec G704
 	if err != nil {
 		http.Error(w, "tile fetch failed", 502)
 		return
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	// Security: limit tile response to 5MB to prevent OOM
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
 		http.Error(w, "tile read failed", 502)
 		return
 	}
 
-	// Cache locally
-	os.MkdirAll(filepath.Join(cacheDir, z, x), 0755)
-	os.WriteFile(cachePath, data, 0644)
+	// Cache locally (path already validated above)
+	os.MkdirAll(filepath.Join(cacheDir, z, x), 0750) // #nosec G703 -- z/x validated numeric above
+	os.WriteFile(cachePath, data, 0600)               // #nosec G703 -- cachePath validated above
 
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")

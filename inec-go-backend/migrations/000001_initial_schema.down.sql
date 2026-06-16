@@ -1,3 +1,5 @@
+-- Rollback: Initial Schema
+
 DROP TABLE IF EXISTS bvas_devices CASCADE;
 DROP TABLE IF EXISTS incidents CASCADE;
 DROP TABLE IF EXISTS audit_trail CASCADE;

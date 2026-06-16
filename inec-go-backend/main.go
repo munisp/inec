@@ -68,6 +68,10 @@ func main() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
+		env := os.Getenv("APP_ENV")
+		if env == "production" || env == "staging" {
+			log.Fatal().Msg("DATABASE_URL must be set in production/staging with sslmode=require or sslmode=verify-full")
+		}
 		dsn = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
 	}
 
@@ -125,6 +129,10 @@ func main() {
 	initPushNotificationSchema()
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
+	initComplianceTables()
+	initGOTVTables()
+	initGOTVEncryption()
+	initMFA()
 	seedComprehensive(db)
 	seedAllTables(db)
 	runGeoMigrations()
@@ -137,6 +145,9 @@ func main() {
 	initDistributedRateLimiter()
 	detectMiddlewareModes()
 
+	// Initialize service-oriented architecture layer (circuit breakers, event bus, tracing)
+	initArchitecture()
+
 	// Seed search indices after hub is ready
 	go seedSearchIndices(db)
 	// Start background cache cleanup
@@ -147,6 +158,9 @@ func main() {
 	// Health — deep checks
 	r.HandleFunc("/healthz", handleDeepHealthCheck).Methods("GET")
 	r.HandleFunc("/readiness", handleReadinessCheck).Methods("GET")
+	// Architecture health — circuit breakers, event bus, service registry
+	r.HandleFunc("/architecture/health", adminOnly(handleArchitectureHealth)).Methods("GET")
+	r.HandleFunc("/architecture/circuit-breakers", adminOnly(handleCircuitBreakers)).Methods("GET")
 	r.HandleFunc("/db/metrics", adminOnly(handleDBMetrics)).Methods("GET")
 	r.HandleFunc("/db/pool", adminOnly(handleDBPoolStats)).Methods("GET")
 	r.HandleFunc("/scale/health", readAuth(handleScaleHealth)).Methods("GET")
@@ -162,6 +176,7 @@ func main() {
 	r.HandleFunc("/auth/sessions/revoke", writeAuth(handleRevokeSession)).Methods("POST")
 	r.HandleFunc("/auth/sessions/revoke-all", writeAuth(handleRevokeAllSessions)).Methods("POST")
 	r.HandleFunc("/auth/api-keys/rotate", adminOnly(handleRotateAPIKey)).Methods("POST")
+	r.HandleFunc("/auth/csrf-token", handleCSRFToken).Methods("GET")
 
 	// Geo-fencing
 	r.HandleFunc("/geofence/check", writeAuth(handleGeofenceCheck)).Methods("POST")
@@ -220,6 +235,8 @@ func main() {
 	// routing, weather, photos, incident hotspots, predictive crowd, drones, simulation,
 	// blockchain attestation, mesh network, H3 hex grid, offline tiles, MVT tiles
 	registerGeoAdvancedRoutes(r)
+	registerComplianceRoutes(r)
+	registerGOTVRoutes(r)
 
 	// Dashboard — read auth for data, write auth for metrics
 	r.HandleFunc("/dashboard/stats", readAuth(handleDashboardStats)).Methods("GET")
@@ -584,6 +601,7 @@ func main() {
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
 	r.HandleFunc("/middleware/health", handleMiddlewareHealth).Methods("GET")
+	r.HandleFunc("/admin/data-retention", readAuth(handleDataRetentionStatus)).Methods("GET")
 	r.HandleFunc("/middleware/kafka/topics", readAuth(handleKafkaTopics)).Methods("GET")
 	r.HandleFunc("/middleware/temporal/workflows", readAuth(handleTemporalWorkflows)).Methods("GET")
 	r.HandleFunc("/middleware/temporal/workflows/{id}", readAuth(handleTemporalWorkflowStatus)).Methods("GET")
@@ -641,16 +659,25 @@ func main() {
 	r.HandleFunc("/command-center/live", adminOnly(handleCommandCenterLive)).Methods("GET")
 	r.HandleFunc("/command-center/stream", handleCommandCenterSSE).Methods("GET")
 	r.HandleFunc("/command-center/alerts", readAuth(handleCommandCenterAlerts)).Methods("GET")
+	r.HandleFunc("/command-center/dispatch", adminOnly(handleNotificationDispatch)).Methods("POST")
 	r.HandleFunc("/escalation/config", adminOnly(handleEscalationConfig)).Methods("GET", "POST")
 	r.HandleFunc("/load-shedding", adminOnly(handleLoadShedding)).Methods("GET", "POST")
 
-	// MFA (#3) — TOTP, WebAuthn, SMS OTP
+	// MFA (#3) — TOTP, WebAuthn, SMS OTP, Backup Codes
 	r.HandleFunc("/auth/mfa/totp/setup", writeAuth(handleMFASetupTOTP)).Methods("POST")
 	r.HandleFunc("/auth/mfa/totp/verify", writeAuth(handleMFAVerifyTOTP)).Methods("POST")
 	r.HandleFunc("/auth/mfa/challenge", handleMFAChallenge).Methods("POST")
 	r.HandleFunc("/auth/mfa/sms/send", handleMFASendSMS).Methods("POST")
 	r.HandleFunc("/auth/mfa/status", readAuth(handleMFAStatus)).Methods("GET")
 	r.HandleFunc("/auth/mfa/webauthn/register", writeAuth(handleMFAWebAuthnRegister)).Methods("POST")
+	// Enhanced MFA (RFC 6238 TOTP + WebAuthn FIDO2 + backup codes)
+	r.HandleFunc("/auth/mfa/setup", writeAuth(handleMFASetup)).Methods("POST")
+	r.HandleFunc("/auth/mfa/verify-setup", writeAuth(handleMFAVerifySetup)).Methods("POST")
+	r.HandleFunc("/auth/mfa/disable", writeAuth(handleMFADisable)).Methods("POST")
+	r.HandleFunc("/auth/mfa/webauthn/begin", writeAuth(handleMFAWebAuthnBegin)).Methods("POST")
+	r.HandleFunc("/auth/mfa/webauthn/complete", writeAuth(handleMFAWebAuthnComplete)).Methods("POST")
+	r.HandleFunc("/auth/mfa/webauthn/list", readAuth(handleMFAWebAuthnList)).Methods("GET")
+	r.HandleFunc("/auth/mfa/backup-codes", writeAuth(handleMFABackupCodes)).Methods("POST")
 
 	// Citizen Portal (#6) + Cryptographic Result Chain (#4)
 	r.HandleFunc("/citizen/verify", handleCitizenVerify).Methods("GET")
@@ -727,20 +754,21 @@ func main() {
 	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
-			tracingMiddleware(
-				accessLogMiddleware(
-					inputValidationMiddleware(
-						metricsMiddleware(
-							corsProductionMiddleware(
-								jwtAuthMiddleware(
-									csrfMiddleware(
-										enhancedSecurityHeaders(
-											wafMiddleware(
-												requestSizeLimit(
-													rateLimitMiddleware(
-														loadSheddingMiddleware(
-															roleBasedRateLimit(
-																gzipMiddleware(r))))))))))))))))
+			otelTracingMiddleware(
+				tracingMiddleware(
+					accessLogMiddleware(
+						inputValidationMiddleware(
+							metricsMiddleware(
+								corsProductionMiddleware(
+									jwtAuthMiddleware(
+										csrfMiddleware(
+											enhancedSecurityHeaders(
+												wafMiddleware(
+													requestSizeLimit(
+														rateLimitMiddleware(
+															loadSheddingMiddleware(
+																roleBasedRateLimit(
+																	gzipMiddleware(r)))))))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -792,6 +820,11 @@ func main() {
 		mwHub.Shutdown()
 	}
 
+	// Shutdown architecture layer (event bus, tracing exporters)
+	if serviceRegistry != nil {
+		serviceRegistry.Shutdown()
+	}
+
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error().Err(err).Msg("Forced shutdown")
 	}
@@ -811,6 +844,12 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 }
 
 func writeError(w http.ResponseWriter, code int, detail string) {
+	// In production, suppress internal error details from 500 responses
+	if code >= 500 && os.Getenv("APP_ENV") == "production" {
+		log.Error().Int("code", code).Str("detail", detail).Msg("internal error")
+		writeJSON(w, code, M{"detail": "internal server error"})
+		return
+	}
 	writeJSON(w, code, M{"detail": detail})
 }
 func securityHeaders(next http.Handler) http.Handler {
@@ -887,22 +926,32 @@ func requestSizeLimit(next http.Handler) http.Handler {
 }
 
 func rateLimitMiddleware(next http.Handler) http.Handler {
-	limits := []struct {
+	type rateRule struct {
 		prefix string
 		limit  int
-	}{
-		{"/auth/login", 5},
-		{"/auth/register", 3},
-		{"/geo/tiles", 60},
-		{"/dashboard/metrics", 10},
-		{"/results", 20},
-		{"/geo/reports", 5},
+		window time.Duration
+	}
+	limits := []rateRule{
+		// Auth endpoints: aggressive limits (brute-force protection)
+		{"/auth/login", 5, time.Minute},           // 5 login attempts per minute per IP
+		{"/auth/register", 3, time.Minute},         // 3 registrations per minute per IP
+		{"/auth/refresh", 10, time.Minute},         // 10 token refreshes per minute
+		{"/auth/forgot-password", 2, time.Minute},  // 2 password reset requests per minute
+		{"/sms/send-otp", 2, time.Minute},          // 2 OTP sends per minute
+		{"/sms/verify-otp", 5, time.Minute},        // 5 OTP verifications per minute
+		// Data endpoints
+		{"/geo/tiles", 120, time.Minute},
+		{"/dashboard/metrics", 30, time.Minute},
+		{"/results", 60, time.Minute},
+		{"/geo/reports", 10, time.Minute},
+		{"/export/", 2, time.Minute},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := stripPort(r.RemoteAddr)
+		ip := getClientIP(r) // X-Forwarded-For aware — works behind load balancers
 		for _, l := range limits {
 			if strings.HasPrefix(r.URL.Path, l.prefix) {
-				if !rateLimiter.allow(ip+":"+l.prefix, l.limit, time.Second) {
+				if !rateLimiter.allow(ip+":"+l.prefix, l.limit, l.window) {
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", int(l.window.Seconds())))
 					writeError(w, 429, "rate_limited")
 					return
 				}
@@ -992,6 +1041,12 @@ func queryParamInt(r *http.Request, key string, def int) int {
 	}
 	var i int
 	fmt.Sscanf(v, "%d", &i)
+	if i <= 0 {
+		return def
+	}
+	if i > 10000 {
+		return 10000
+	}
 	return i
 }
 
@@ -1052,19 +1107,5 @@ func handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 
 var serverStartTime = time.Now()
 
-// panicRecoveryMiddleware catches panics in any handler and returns 500 instead of crashing the server.
-func panicRecoveryMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Error().
-					Interface("panic", rec).
-					Str("method", r.Method).
-					Str("path", r.URL.Path).
-					Msg("Recovered from panic in HTTP handler")
-				writeError(w, 500, "internal server error")
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
+
+

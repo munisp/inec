@@ -237,6 +237,24 @@ monitoring:
       - biometric-performance
       - middleware-health
 
+# KEDA (event-driven autoscaling)
+keda:
+  enabled: true
+  pollingInterval: 15
+  cooldownPeriod: 120
+  kafka:
+    enabled: true
+    bootstrapServers: "{{ .Release.Name }}-kafka:9092"
+    topic: inec.results.submitted
+    lagThreshold: "100"
+    activationLagThreshold: "10"
+  prometheus:
+    enabled: true
+    serverAddress: "http://prometheus.monitoring.svc.cluster.local:9090"
+    query: 'sum(rate(http_requests_total{job="inec-backend"}[2m]))'
+    threshold: "50"
+    activationThreshold: "10"
+
 # Network Policies
 networkPolicy:
   enabled: true

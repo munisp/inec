@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,10 +22,18 @@ type KeycloakUser struct {
 	Realm    string `json:"realm"`
 }
 
+type TokenRefreshResult struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
 type KeycloakClient interface {
 	ValidateToken(ctx context.Context, token string) (*KeycloakUser, error)
 	GetUserInfo(ctx context.Context, token string) (*KeycloakUser, error)
 	IntrospectToken(ctx context.Context, token string) (map[string]interface{}, error)
+	RefreshToken(ctx context.Context, refreshToken string) (*TokenRefreshResult, error)
 	Status() MWStatus
 	Close() error
 }
@@ -126,6 +135,30 @@ func (k *keycloakHTTPClient) Status() MWStatus {
 	return MWStatus{Name: "Keycloak", Connected: true, Mode: "external", Latency: fmtLatency(lat), Details: "realm: " + k.realm}
 }
 
+func (k *keycloakHTTPClient) RefreshToken(ctx context.Context, refreshToken string) (*TokenRefreshResult, error) {
+	url := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", k.baseURL, k.realm)
+	body := fmt.Sprintf("grant_type=refresh_token&refresh_token=%s&client_id=%s&client_secret=%s",
+		refreshToken, k.clientID, k.clientSecret)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := k.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("refresh token: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("token refresh failed: %d", resp.StatusCode)
+	}
+	var result TokenRefreshResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &result, nil
+}
+
 func (k *keycloakHTTPClient) Close() error { return nil }
 
 type embeddedKeycloak struct{}
@@ -168,6 +201,10 @@ func (k *embeddedKeycloak) Status() MWStatus {
 		Latency: "0.0ms",
 		Details: "local JWT validation (HMAC-SHA256), realm: inec-local",
 	}
+}
+
+func (k *embeddedKeycloak) RefreshToken(_ context.Context, _ string) (*TokenRefreshResult, error) {
+	return nil, fmt.Errorf("token refresh not supported in embedded mode — use external Keycloak")
 }
 
 func (k *embeddedKeycloak) Close() error { return nil }
@@ -255,6 +292,19 @@ func (g *goClockKeycloak) Status() MWStatus {
 	return MWStatus{Name: "Keycloak", Connected: true, Mode: "native gocloak", Latency: fmtLatency(lat), Details: "realm: " + g.realm + ", OIDC, token introspection"}
 }
 
+func (g *goClockKeycloak) RefreshToken(ctx context.Context, refreshToken string) (*TokenRefreshResult, error) {
+	jwt, err := g.client.RefreshToken(ctx, refreshToken, g.clientID, g.clientSecret, g.realm)
+	if err != nil {
+		return nil, fmt.Errorf("gocloak refresh: %w", err)
+	}
+	return &TokenRefreshResult{
+		AccessToken:  jwt.AccessToken,
+		RefreshToken: jwt.RefreshToken,
+		ExpiresIn:    jwt.ExpiresIn,
+		TokenType:    jwt.TokenType,
+	}, nil
+}
+
 func (g *goClockKeycloak) Close() error { return nil }
 
 // --- Init ---
@@ -291,6 +341,10 @@ func initKeycloakClient() KeycloakClient {
 		}
 		log.Warn().Str("url", kcURL).Msg("Keycloak unreachable, falling back to local JWT")
 	}
-	log.Info().Msg("Keycloak using embedded local JWT validation")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Keycloak is REQUIRED in production/staging. Set KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET")
+	}
+	log.Warn().Msg("Keycloak using embedded local JWT validation (DEV ONLY — not for production)")
 	return &embeddedKeycloak{}
 }

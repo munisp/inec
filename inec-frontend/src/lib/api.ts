@@ -1,4 +1,7 @@
 const API_URL = import.meta.env.VITE_API_URL ?? '';
+// GOTV service runs on a separate port (8103) and is proxied via Vite dev server.
+// Use relative URLs so requests go through the proxy instead of directly to API_URL.
+const GOTV_API_URL = '';
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -7,13 +10,13 @@ export class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
-  return localStorage.getItem('token') || localStorage.getItem('inec_token');
-}
+// Token is in httpOnly cookie — no localStorage access needed for auth
 
 function xhrFallback(path: string, method: string, headers: Record<string, string>, body?: string): unknown {
   const xhr = new XMLHttpRequest();
-  xhr.open(method, `${API_URL}${path}`, false);
+  const base = path.startsWith('/gotv') ? GOTV_API_URL : API_URL;
+  xhr.open(method, `${base}${path}`, false);
+  xhr.withCredentials = true;
   Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
   xhr.send(body || null);
   if (xhr.status === 0) throw new Error('XHR failed: network error');
@@ -25,23 +28,24 @@ function xhrFallback(path: string, method: string, headers: Record<string, strin
 }
 
 function handleAuthFailure() {
-  localStorage.removeItem('token');
   localStorage.removeItem('user');
-  localStorage.removeItem('inec_token');
   window.location.reload();
 }
 
 async function request(path: string, options: RequestInit = {}, retries = 2) {
-  const token = getToken();
+  const storedToken = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    ...(storedToken ? { 'Authorization': `Bearer ${storedToken}` } : {}),
     ...(options.headers as Record<string, string> || {}),
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  // GOTV routes are served by a separate microservice and proxied via Vite/gateway.
+  // Use relative URLs so requests go through the proxy instead of directly to API_URL.
+  const baseUrl = path.startsWith('/gotv') ? GOTV_API_URL : API_URL;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+      const res = await fetch(`${baseUrl}${path}`, { ...options, headers, credentials: 'include' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         if (res.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {
@@ -82,6 +86,12 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
 }
 
 export const api = {
+  get: (path: string) => request(path),
+  post: (path: string, data?: unknown) =>
+    request(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  put: (path: string, data?: unknown) =>
+    request(path, { method: 'PUT', body: data ? JSON.stringify(data) : undefined }),
+  delete: (path: string) => request(path, { method: 'DELETE' }),
   login: (username: string, password: string) =>
     request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   register: (data: { username: string; password: string; full_name: string; role?: string }) =>
@@ -849,4 +859,114 @@ export const api = {
     if (electionId) p.set('election_id', String(electionId));
     return request(`/geo/h3/grid?${p}`);
   },
+
+  // GOTV — Party voter mobilization
+  getGOTVDashboard: () => request('/gotv/dashboard'),
+  getGOTVCampaigns: (status?: string) =>
+    request(`/gotv/campaigns${status ? `?status=${status}` : ''}`),
+  getGOTVCampaign: (id: string) => request(`/gotv/campaigns/${id}`),
+  createGOTVCampaign: (data: Record<string, unknown>) =>
+    request('/gotv/campaigns', { method: 'POST', body: JSON.stringify(data) }),
+  launchGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}/launch`, { method: 'POST' }),
+  deleteGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}`, { method: 'DELETE' }),
+  pauseGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}/pause`, { method: 'POST' }),
+  resumeGOTVCampaign: (id: string) =>
+    request(`/gotv/campaigns/${id}/resume`, { method: 'POST' }),
+  getGOTVContacts: (params?: Record<string, string>) => {
+    const q = params ? `?${new URLSearchParams(params)}` : '';
+    return request(`/gotv/contacts${q}`);
+  },
+  createGOTVContact: (data: Record<string, unknown>) =>
+    request('/gotv/contacts', { method: 'POST', body: JSON.stringify(data) }),
+  importGOTVContacts: (formData: FormData) =>
+    request('/gotv/contacts/import', { method: 'POST', body: formData, headers: {} }),
+  optOutGOTVContact: (id: string) =>
+    request(`/gotv/contacts/${id}/opt-out`, { method: 'POST' }),
+  getGOTVVolunteers: () => request('/gotv/volunteers'),
+  createGOTVVolunteer: (data: Record<string, unknown>) =>
+    request('/gotv/volunteers', { method: 'POST', body: JSON.stringify(data) }),
+  checkinGOTVVolunteer: (id: string, lat: number, lng: number) =>
+    request(`/gotv/volunteers/${id}/checkin`, { method: 'POST', body: JSON.stringify({ latitude: lat, longitude: lng }) }),
+  getGOTVPledges: () => request('/gotv/pledges'),
+  createGOTVPledge: (data: Record<string, unknown>) =>
+    request('/gotv/pledges', { method: 'POST', body: JSON.stringify(data) }),
+  updateGOTVPledge: (id: string, status: string) =>
+    request(`/gotv/pledges/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  getGOTVRides: () => request('/gotv/rides'),
+  createGOTVRide: (data: Record<string, unknown>) =>
+    request('/gotv/rides', { method: 'POST', body: JSON.stringify(data) }),
+  matchGOTVRide: (id: string) =>
+    request(`/gotv/rides/${id}/match`, { method: 'POST' }),
+  updateGOTVRideStatus: (id: string, status: string) =>
+    request(`/gotv/rides/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  getGOTVTurnout: (electionId: number) => request(`/gotv/turnout/${electionId}`),
+
+  // GOTV Geo endpoints (for map visualization)
+  getGOTVGeoVolunteers: () => request('/gotv/geo/volunteers'),
+  getGOTVGeoRides: () => request('/gotv/geo/rides'),
+  getGOTVGeoCoverage: () => request('/gotv/geo/coverage'),
+  getGOTVGeoTrails: (volunteerId?: string) =>
+    request(`/gotv/geo/canvass-trails${volunteerId ? `?volunteer_id=${volunteerId}` : ''}`),
+
+  // GOTV Canvass workflow
+  getGOTVWalklist: (volunteerId: string, lat?: number, lng?: number) =>
+    request(`/gotv/canvass/walklist?volunteer_id=${volunteerId}${lat ? `&lat=${lat}&lng=${lng}` : ''}`),
+  recordGOTVDoorKnock: (data: Record<string, unknown>) =>
+    request('/gotv/canvass/knock', { method: 'POST', body: JSON.stringify(data) }),
+  startGOTVShift: (data: Record<string, unknown>) =>
+    request('/gotv/canvass/shift/start', { method: 'POST', body: JSON.stringify(data) }),
+  endGOTVShift: (data: Record<string, unknown>) =>
+    request('/gotv/canvass/shift/end', { method: 'POST', body: JSON.stringify(data) }),
+
+  // GOTV Volunteer location
+  updateGOTVVolunteerLocation: (id: string, data: Record<string, unknown>) =>
+    request(`/gotv/volunteers/${id}/location`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // GOTV Webhooks
+  getGOTVWebhooks: () => request('/gotv/webhooks'),
+  createGOTVWebhook: (data: Record<string, unknown>) =>
+    request('/gotv/webhooks', { method: 'POST', body: JSON.stringify(data) }),
+  deleteGOTVWebhook: (id: number) =>
+    request(`/gotv/webhooks/${id}`, { method: 'DELETE' }),
+
+  // GOTV Volunteer Vetting
+  getGOTVVettingPipeline: (status?: string) =>
+    request(`/gotv/volunteers/vetting${status ? `?status=${status}` : ''}`),
+  getGOTVVolunteerVetting: (id: string) =>
+    request(`/gotv/volunteers/${id}/vetting`),
+  verifyGOTVVolunteerNIN: (id: string, nin: string, result: string) =>
+    request(`/gotv/volunteers/${id}/verify-nin`, { method: 'POST', body: JSON.stringify({ nin, result }) }),
+  completeGOTVVolunteerTraining: (id: string) =>
+    request(`/gotv/volunteers/${id}/training`, { method: 'POST', body: JSON.stringify({}) }),
+  approveGOTVVolunteer: (id: string) =>
+    request(`/gotv/volunteers/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
+  rejectGOTVVolunteer: (id: string, reason: string) =>
+    request(`/gotv/volunteers/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  suspendGOTVVolunteer: (id: string, reason: string) =>
+    request(`/gotv/volunteers/${id}/suspend`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  // GOTV Location Assignment
+  assignGOTVVolunteerLocation: (id: string, data: Record<string, unknown>) =>
+    request(`/gotv/volunteers/${id}/assign-location`, { method: 'POST', body: JSON.stringify(data) }),
+  bulkAssignGOTVLocations: (assignments: Record<string, unknown>[]) =>
+    request('/gotv/volunteers/bulk-assign-locations', { method: 'POST', body: JSON.stringify({ assignments }) }),
+  autoAssignGOTVLocations: () =>
+    request('/gotv/volunteers/auto-assign-locations', { method: 'POST', body: JSON.stringify({}) }),
+  getGOTVLocationCapacity: (state?: string) =>
+    request(`/gotv/locations/capacity${state ? `?state=${state}` : ''}`),
+
+  // GOTV Tasks
+  getGOTVTasks: (status?: string, volunteerId?: string) =>
+    request(`/gotv/tasks?${status ? `status=${status}&` : ''}${volunteerId ? `volunteer_id=${volunteerId}` : ''}`),
+  createGOTVTask: (data: Record<string, unknown>) =>
+    request('/gotv/tasks', { method: 'POST', body: JSON.stringify(data) }),
+  assignGOTVTask: (id: string, volunteerId: string) =>
+    request(`/gotv/tasks/${id}/assign`, { method: 'POST', body: JSON.stringify({ volunteer_id: volunteerId }) }),
+  updateGOTVTaskStatus: (id: string, status: string, completedCount?: number) =>
+    request(`/gotv/tasks/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, completed_count: completedCount || 0 }) }),
+  autoAssignGOTVTasks: () =>
+    request('/gotv/tasks/auto-assign', { method: 'POST', body: JSON.stringify({}) }),
 };

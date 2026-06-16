@@ -1,0 +1,108 @@
+groups:
+  - name: gotv-platform-critical
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: rate(gotv_http_requests_total{status=~"5.."}[5m]) / rate(gotv_http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: gotv-svc
+        annotations:
+          summary: "Error rate exceeds 5% on {{ $labels.instance }}"
+          description: "HTTP 5xx rate is {{ $value | humanizePercentage }} over last 5 minutes"
+          runbook_url: "https://docs.gotv.ng/runbooks/high-error-rate"
+
+      - alert: HighLatencyP95
+        expr: histogram_quantile(0.95, rate(gotv_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: gotv-svc
+        annotations:
+          summary: "p95 latency exceeds 2 seconds"
+          description: "95th percentile latency is {{ $value | humanizeDuration }}"
+
+      - alert: DBConnectionPoolExhausted
+        expr: gotv_active_connections > 45
+        for: 1m
+        labels:
+          severity: critical
+          service: gotv-svc
+        annotations:
+          summary: "DB connection pool near exhaustion ({{ $value }}/50)"
+          description: "Active connections exceeded 45. Scale pool or investigate slow queries."
+
+      - alert: RateLimitExhaustion
+        expr: rate(gotv_http_requests_total{status="429"}[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: gotv-svc
+        annotations:
+          summary: "High rate of 429 responses ({{ $value }}/s)"
+          description: "Possible DDoS or misconfigured client. Check IP distribution."
+
+  - name: gotv-platform-business
+    interval: 60s
+    rules:
+      - alert: ScoringBatchSlow
+        expr: gotv_scoring_batch_duration_seconds > 120
+        for: 0s
+        labels:
+          severity: warning
+          service: gotv-scoring
+        annotations:
+          summary: "Batch scoring took {{ $value | humanizeDuration }}"
+
+      - alert: CacheMissRateHigh
+        expr: >
+          rate(gotv_cache_hit_total{result="miss"}[5m]) /
+          (rate(gotv_cache_hit_total{result="hit"}[5m]) + rate(gotv_cache_hit_total{result="miss"}[5m])) > 0.8
+        for: 10m
+        labels:
+          severity: info
+          service: gotv-cache
+        annotations:
+          summary: "Cache miss rate exceeds 80%"
+          description: "Redis cache may be cold or TTLs too short"
+
+      - alert: DispatchFailureRate
+        expr: >
+          rate(gotv_dispatch_total{status="failed"}[10m]) /
+          rate(gotv_dispatch_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: gotv-dispatch
+        annotations:
+          summary: "Message dispatch failure rate exceeds 10%"
+          description: "Channel {{ $labels.channel }} failing at {{ $value | humanizePercentage }}"
+
+      - alert: CPIDropAlert
+        expr: gotv_cpi_compute_duration_seconds > 30
+        for: 0s
+        labels:
+          severity: info
+          service: gotv-koh
+        annotations:
+          summary: "CPI computation taking long ({{ $value }}s)"
+
+      - alert: VettingBacklog
+        expr: increase(gotv_vetting_transitions_total{to_state="pending"}[1h]) > 50
+        for: 30m
+        labels:
+          severity: warning
+          service: gotv-vetting
+        annotations:
+          summary: "Large vetting backlog: {{ $value }} new pending volunteers in last hour"
+
+      - alert: RideMatchSlow
+        expr: histogram_quantile(0.95, rate(gotv_ride_match_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: gotv-rides
+        annotations:
+          summary: "Ride matching p95 latency exceeds 5 seconds"
+          description: "May need more drivers or R-tree index rebuild"

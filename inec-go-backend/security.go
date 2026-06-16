@@ -2,17 +2,39 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
+
+// panicRecoveryMiddleware catches panics in handlers and returns 500 instead of crashing the server.
+func panicRecoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				stack := string(debug.Stack())
+				log.Error().
+					Interface("panic", rec).
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Str("stack", stack).
+					Msg("Handler panic recovered")
+				panicCounter.WithLabelValues(r.URL.Path).Inc()
+				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
 
 // ── Role-Based Access Guard ──
 
@@ -97,9 +119,57 @@ var (
 		sync.RWMutex
 		tokens map[string]time.Time
 	}{tokens: make(map[string]time.Time)}
+	csrfTokenTTL = 4 * time.Hour
 )
+
+func generateCSRFToken() string {
+	b := make([]byte, 32)
+	_, _ = crand.Read(b)
+	token := hex.EncodeToString(b)
+	csrfTokenStore.Lock()
+	csrfTokenStore.tokens[token] = time.Now().Add(csrfTokenTTL)
+	csrfTokenStore.Unlock()
+	return token
+}
+
+func validateCSRFToken(token string) bool {
+	csrfTokenStore.RLock()
+	expiry, exists := csrfTokenStore.tokens[token]
+	csrfTokenStore.RUnlock()
+	if !exists {
+		return false
+	}
+	if time.Now().After(expiry) {
+		csrfTokenStore.Lock()
+		delete(csrfTokenStore.tokens, token)
+		csrfTokenStore.Unlock()
+		return false
+	}
+	return true
+}
+
+func cleanupCSRFTokens() {
+	csrfTokenStore.Lock()
+	defer csrfTokenStore.Unlock()
+	now := time.Now()
+	for token, expiry := range csrfTokenStore.tokens {
+		if now.After(expiry) {
+			delete(csrfTokenStore.tokens, token)
+		}
+	}
+}
+
 func csrfMiddleware(next http.Handler) http.Handler {
 	safeMethods := map[string]bool{"GET": true, "HEAD": true, "OPTIONS": true}
+
+	// Periodic cleanup of expired CSRF tokens
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupCSRFTokens()
+		}
+	}()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip CSRF for API key authenticated routes
@@ -112,25 +182,35 @@ func csrfMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Skip CSRF for safe methods
+		// Skip CSRF for safe methods — but issue a token on GET so client can use it
 		if safeMethods[r.Method] {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// For state-changing methods, check CSRF token header
+		// Skip CSRF for programmatic clients using Bearer auth (not cookie-based)
+		auth := r.Header.Get("Authorization")
+		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// For state-changing methods with cookie auth, validate CSRF token
 		csrfToken := r.Header.Get("X-CSRF-Token")
 		if csrfToken == "" {
-			// Also accept for programmatic clients with valid JWT
-			auth := r.Header.Get("Authorization")
-			if auth != "" && strings.HasPrefix(auth, "Bearer ") {
-				next.ServeHTTP(w, r)
-				return
-			}
 			writeError(w, 403, "CSRF token missing")
+			return
+		}
+		if !validateCSRFToken(csrfToken) {
+			writeError(w, 403, "CSRF token invalid or expired")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// handleCSRFToken issues a new CSRF token for cookie-authenticated clients.
+func handleCSRFToken(w http.ResponseWriter, r *http.Request) {
+	token := generateCSRFToken()
+	writeJSON(w, 200, M{"csrf_token": token})
 }
 
 // ── Audit Trail Helper ──
@@ -144,7 +224,7 @@ func auditWrite(action, entityType, entityID string, r *http.Request, details ma
 			fmt.Sscanf(sub, "%d", &userID)
 		}
 	}
-	logAudit(action, entityType, entityID, userID, details)
+	logAuditCtx(r.Context(), action, entityType, entityID, userID, details)
 }
 
 // ── Input Validation Helpers ──

@@ -17,11 +17,10 @@ export default function ScaleHealthPage() {
 
   const loadHealth = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token');
-      const headers = { Authorization: `Bearer ${token}` };
+      const opts = { credentials: 'include' as RequestCredentials };
       const [h, m] = await Promise.all([
-        fetch('/scale/health', { headers }).then(r => r.ok ? r.json() : null),
-        fetch('/middleware/modes', { headers }).then(r => r.ok ? r.json() : []),
+        fetch('/scale/health', opts).then(r => r.ok ? r.json() : null),
+        fetch('/middleware/modes', opts).then(r => r.ok ? r.json() : []),
       ]);
       if (h) setHealth(h);
       setModes(m);

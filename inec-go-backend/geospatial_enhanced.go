@@ -1157,7 +1157,10 @@ func handleLiveTrackingStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if origin := r.Header.Get("Origin"); origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
 
 	// Send initial snapshot of officials + crowd
 	officials, err := dbQueryCtx(r.Context(), `SELECT staff_id, role, latitude, longitude, pu_code, activity, battery_pct, updated_at

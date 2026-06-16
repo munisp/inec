@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -19,8 +20,19 @@ type PermifyCheck struct {
 	ResourceType string `json:"resource_type"`
 }
 
+type BulkPermifyCheck struct {
+	Checks []PermifyCheck `json:"checks"`
+}
+
+type BulkPermifyResult struct {
+	Results []bool `json:"results"`
+	Allowed int    `json:"allowed"`
+	Denied  int    `json:"denied"`
+}
+
 type PermifyClient interface {
 	Check(ctx context.Context, check PermifyCheck) (bool, error)
+	BulkCheck(ctx context.Context, checks []PermifyCheck) (*BulkPermifyResult, error)
 	WriteRelationship(ctx context.Context, subject, subjectType, relation, resource, resourceType string) error
 	DeleteRelationship(ctx context.Context, subject, subjectType, relation, resource, resourceType string) error
 	LookupResources(ctx context.Context, subjectType, subjectID, permission, resourceType string) ([]string, error)
@@ -133,6 +145,23 @@ func (p *permifyHTTPClient) Status() MWStatus {
 	return MWStatus{Name: "Permify", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
 }
 
+func (p *permifyHTTPClient) BulkCheck(ctx context.Context, checks []PermifyCheck) (*BulkPermifyResult, error) {
+	result := &BulkPermifyResult{Results: make([]bool, len(checks))}
+	for i, check := range checks {
+		allowed, err := p.Check(ctx, check)
+		if err != nil {
+			return nil, fmt.Errorf("bulk check item %d: %w", i, err)
+		}
+		result.Results[i] = allowed
+		if allowed {
+			result.Allowed++
+		} else {
+			result.Denied++
+		}
+	}
+	return result, nil
+}
+
 func (p *permifyHTTPClient) Close() error { return nil }
 
 var permifyRBAC = map[string]map[string]bool{
@@ -180,6 +209,20 @@ func (p *embeddedPermify) Status() MWStatus {
 	}
 }
 
+func (p *embeddedPermify) BulkCheck(ctx context.Context, checks []PermifyCheck) (*BulkPermifyResult, error) {
+	result := &BulkPermifyResult{Results: make([]bool, len(checks))}
+	for i, check := range checks {
+		allowed, _ := p.Check(ctx, check)
+		result.Results[i] = allowed
+		if allowed {
+			result.Allowed++
+		} else {
+			result.Denied++
+		}
+	}
+	return result, nil
+}
+
 func (p *embeddedPermify) Close() error { return nil }
 
 func initPermifyClient() PermifyClient {
@@ -198,6 +241,10 @@ func initPermifyClient() PermifyClient {
 		}
 		log.Warn().Str("url", permifyURL).Msg("Permify unreachable, falling back to local RBAC")
 	}
-	log.Info().Msg("Permify using embedded local RBAC")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Permify is REQUIRED in production/staging for relationship-based access control. Set PERMIFY_URL")
+	}
+	log.Warn().Msg("Permify using embedded local RBAC (DEV ONLY)")
 	return &embeddedPermify{}
 }

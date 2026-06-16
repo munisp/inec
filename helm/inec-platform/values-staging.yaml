@@ -1,0 +1,22 @@
+# Staging overrides — smaller footprint, public access for testing
+global:
+  environment: staging
+  domain: staging.inec.gov.ng
+
+backend:
+  replicaCount: 2
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+
+frontend:
+  replicaCount: 2

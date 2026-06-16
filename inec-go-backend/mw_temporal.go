@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type WorkflowInput struct {
@@ -15,6 +17,23 @@ type WorkflowInput struct {
 	WorkflowType string                 `json:"workflow_type"`
 	TaskQueue    string                 `json:"task_queue"`
 	Input        map[string]interface{} `json:"input"`
+	RetryPolicy  *RetryPolicy           `json:"retry_policy,omitempty"`
+}
+
+// RetryPolicy defines how workflow activities should be retried on failure.
+type RetryPolicy struct {
+	MaxAttempts        int           `json:"max_attempts"`
+	InitialInterval    time.Duration `json:"initial_interval"`
+	BackoffCoefficient float64       `json:"backoff_coefficient"`
+	MaxInterval        time.Duration `json:"max_interval"`
+}
+
+// DefaultRetryPolicy for election workflows — limited retries with exponential backoff.
+var DefaultRetryPolicy = &RetryPolicy{
+	MaxAttempts:        3,
+	InitialInterval:   time.Second,
+	BackoffCoefficient: 2.0,
+	MaxInterval:        30 * time.Second,
 }
 
 type WorkflowStatus struct {
@@ -30,6 +49,7 @@ type TemporalClient interface {
 	StartWorkflow(ctx context.Context, input WorkflowInput) (*WorkflowStatus, error)
 	GetWorkflowStatus(ctx context.Context, workflowID string) (*WorkflowStatus, error)
 	SignalWorkflow(ctx context.Context, workflowID, signalName string, data interface{}) error
+	CancelWorkflow(ctx context.Context, workflowID string) error
 	Status() MWStatus
 	Close() error
 }
@@ -68,6 +88,17 @@ func (t *temporalHTTPClient) GetWorkflowStatus(ctx context.Context, workflowID s
 func (t *temporalHTTPClient) SignalWorkflow(ctx context.Context, workflowID, signalName string, data interface{}) error {
 	body, _ := json.Marshal(map[string]interface{}{"signal_name": signalName, "input": data})
 	req, _ := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/api/v1/namespaces/default/workflows/"+workflowID+"/signal", jsonReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (t *temporalHTTPClient) CancelWorkflow(ctx context.Context, workflowID string) error {
+	req, _ := http.NewRequestWithContext(ctx, "POST", t.baseURL+"/api/v1/namespaces/default/workflows/"+workflowID+"/cancel", nil)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -206,6 +237,19 @@ func (t *embeddedTemporal) SignalWorkflow(_ context.Context, workflowID, signalN
 	return nil
 }
 
+func (t *embeddedTemporal) CancelWorkflow(_ context.Context, workflowID string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ws, ok := t.workflows[workflowID]; ok {
+		ws.Status = "CANCELED"
+		ws.ClosedAt = time.Now().UTC().Format(time.RFC3339)
+		ws.Result = "canceled_with_compensation"
+		log.Warn().Str("workflow_id", workflowID).Msg("temporal: workflow canceled, running compensation")
+		return nil
+	}
+	return fmt.Errorf("workflow not found: %s", workflowID)
+}
+
 func (t *embeddedTemporal) Status() MWStatus {
 	t.mu.RLock()
 	wfCount := len(t.workflows)
@@ -239,6 +283,10 @@ func initTemporalClient() TemporalClient {
 		}
 		log.Warn().Msg("Temporal unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Temporal using embedded local workflow engine")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Temporal is REQUIRED in production/staging for durable workflow orchestration. Set TEMPORAL_URL")
+	}
+	log.Warn().Msg("Temporal using embedded local workflow engine (DEV ONLY)")
 	return newEmbeddedTemporal()
 }

@@ -1,4 +1,4 @@
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import { Platform, View } from 'react-native';
@@ -7,6 +7,7 @@ import Constants from 'expo-constants';
 import type { EventSubscription } from 'expo-modules-core';
 import { getDb } from '../src/lib/offline';
 import { NetworkBanner } from '../src/components/NetworkBanner';
+import { getAuthMode, isRouteAllowed, type AuthMode } from '../lib/auth-context';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -46,9 +47,11 @@ async function registerForPushNotificationsAsync(): Promise<string | undefined> 
 
 export default function RootLayout() {
   const [expoPushToken, setExpoPushToken] = useState<string | undefined>();
+  const [authMode, setAuthMode] = useState<AuthMode>('none');
   const notificationListener = useRef<EventSubscription | null>(null);
   const responseListener = useRef<EventSubscription | null>(null);
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     getDb();
@@ -56,6 +59,9 @@ export default function RootLayout() {
     registerForPushNotificationsAsync().then(token => {
       if (token) setExpoPushToken(token);
     });
+
+    // Load auth mode on startup
+    getAuthMode().then(setAuthMode);
 
     notificationListener.current = Notifications.addNotificationReceivedListener(() => {
       // Notification received while app is in foreground
@@ -74,13 +80,32 @@ export default function RootLayout() {
     };
   }, []);
 
+  // Route guard: redirect unauthorized navigation
+  useEffect(() => {
+    if (authMode === 'none') return;
+
+    const routeName = pathname.replace(/^\//, '');
+    if (!routeName) return;
+
+    if (!isRouteAllowed(routeName, authMode)) {
+      // GOTV user trying to access INEC screen → redirect to canvasser
+      if (authMode === 'gotv') {
+        router.replace('/gotv-canvasser');
+      }
+      // INEC user trying to access GOTV screen → redirect to feed
+      if (authMode === 'inec') {
+        router.replace('/(tabs)/feed');
+      }
+    }
+  }, [pathname, authMode]);
+
   return (
     <View style={{ flex: 1 }}>
       <StatusBar style="light" />
       <NetworkBanner />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: '#166534' },
+          headerStyle: { backgroundColor: authMode === 'gotv' ? '#006b3f' : '#166534' },
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: 'bold' },
           animation: 'slide_from_right',
@@ -88,6 +113,21 @@ export default function RootLayout() {
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        {/* GOTV screens */}
+        <Stack.Screen name="gotv-login" options={{ headerShown: false }} />
+        <Stack.Screen name="gotv-canvasser" options={{ title: 'GOTV Canvasser' }} />
+        <Stack.Screen name="gotv" options={{ title: 'GOTV Portal' }} />
+        <Stack.Screen name="gotv-territory" options={{ title: 'My Territory' }} />
+        <Stack.Screen name="gotv-leaderboard" options={{ title: 'Leaderboard' }} />
+        <Stack.Screen name="gotv-campaigns" options={{ title: 'Campaigns' }} />
+        <Stack.Screen name="gotv-contacts" options={{ title: 'Contacts' }} />
+        <Stack.Screen name="gotv-pledges" options={{ title: 'Pledges' }} />
+        <Stack.Screen name="gotv-rides" options={{ title: 'Rides' }} />
+        <Stack.Screen name="gotv-segments" options={{ title: 'Segments' }} />
+        <Stack.Screen name="gotv-warroom" options={{ title: 'War Room' }} />
+        <Stack.Screen name="gotv-analytics" options={{ title: 'Analytics' }} />
+        <Stack.Screen name="gotv-indicators" options={{ title: 'KOH Indicators' }} />
+        {/* INEC screens */}
         <Stack.Screen name="kyc" options={{ title: 'KYC Verification' }} />
         <Stack.Screen name="disputes" options={{ title: 'Disputes' }} />
         <Stack.Screen name="elections" options={{ title: 'Elections' }} />

@@ -1,0 +1,93 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname", "severity", "team"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: "default"
+
+  routes:
+    # Critical alerts → PagerDuty immediately
+    - match:
+        severity: critical
+      receiver: "pagerduty-critical"
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # Election-ops alerts → dedicated Slack channel + SMS
+    - match:
+        team: election-ops
+      receiver: "election-ops"
+      group_wait: 30s
+
+    # Security alerts → security team
+    - match:
+        team: security
+      receiver: "security-team"
+
+    # SLO breaches → platform team Slack
+    - match_re:
+        slo: ".+"
+      receiver: "slo-notifications"
+
+    # DBA alerts
+    - match:
+        team: dba
+      receiver: "dba-team"
+
+receivers:
+  - name: "default"
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#inec-alerts"
+        title: "[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}"
+        text: "{{ .CommonAnnotations.summary }}\n{{ .CommonAnnotations.description }}"
+
+  - name: "pagerduty-critical"
+    pagerduty_configs:
+      - routing_key: "${PAGERDUTY_ROUTING_KEY}"
+        severity: critical
+        description: "{{ .CommonAnnotations.summary }}"
+        details:
+          alertname: "{{ .CommonLabels.alertname }}"
+          description: "{{ .CommonAnnotations.description }}"
+          runbook: "{{ .CommonAnnotations.runbook }}"
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#inec-critical"
+        title: "🚨 CRITICAL: {{ .CommonLabels.alertname }}"
+        text: "{{ .CommonAnnotations.description }}"
+
+  - name: "election-ops"
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#inec-election-ops"
+        title: "[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}"
+        text: "{{ .CommonAnnotations.summary }}\n{{ .CommonAnnotations.description }}"
+    webhook_configs:
+      - url: "${SMS_ALERT_WEBHOOK_URL}"
+
+  - name: "security-team"
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#inec-security"
+
+  - name: "slo-notifications"
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#inec-slo"
+
+  - name: "dba-team"
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#inec-database"
+
+inhibit_rules:
+  # If the backend is down, suppress all other alerts
+  - source_match:
+      alertname: INECBackendDown
+    target_match_re:
+      alertname: "INEC.*"
+    equal: ["job"]

@@ -51,13 +51,17 @@ func jwtAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Check Authorization header first, then fall back to httpOnly cookie
 		auth := r.Header.Get("Authorization")
-		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		var tokenStr string
+		if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = strings.TrimPrefix(auth, "Bearer ")
+		} else if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+			tokenStr = cookie.Value
+		} else {
 			writeJSON(w, 401, M{"error": "authentication required"})
 			return
 		}
-
-		tokenStr := strings.TrimPrefix(auth, "Bearer ")
 		claims, err := decodeToken(tokenStr)
 		if err != nil {
 			writeJSON(w, 401, M{"error": "invalid or expired token"})
@@ -93,11 +97,12 @@ func corsProductionMiddleware(next http.Handler) http.Handler {
 
 		if allowed && origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Vary", "Origin")
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-CSRF-Token")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 
 		if r.Method == "OPTIONS" {

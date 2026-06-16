@@ -26,6 +26,11 @@ const (
 )
 
 // SSE (Server-Sent Events) hub for pushing real-time result updates to connected observers
+const (
+	MaxGlobalSSEConnections = 10000 // Global limit across all users
+	MaxPerUserSSEConnections = 5    // Per-user limit to prevent abuse
+)
+
 type SSEHub struct {
 	mu          sync.RWMutex
 	subscribers map[string]*SSESubscriber
@@ -50,10 +55,44 @@ var sseHub = &SSEHub{
 	subscribers: make(map[string]*SSESubscriber),
 }
 
-func (h *SSEHub) subscribe(sub *SSESubscriber) {
+// subscribe adds a subscriber if connection limits allow. Returns false if rejected.
+func (h *SSEHub) subscribe(sub *SSESubscriber) bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Check global limit
+	if len(h.subscribers) >= MaxGlobalSSEConnections {
+		log.Warn().Int("global_count", len(h.subscribers)).Msg("SSE global connection limit reached")
+		return false
+	}
+
+	// Check per-user limit
+	userCount := 0
+	for _, s := range h.subscribers {
+		if s.UserID == sub.UserID {
+			userCount++
+		}
+	}
+	if userCount >= MaxPerUserSSEConnections {
+		log.Warn().Int("user_id", sub.UserID).Int("user_count", userCount).Msg("SSE per-user connection limit reached")
+		return false
+	}
+
 	h.subscribers[sub.ID] = sub
-	h.mu.Unlock()
+	return true
+}
+
+// connectionCount returns global and per-user counts.
+func (h *SSEHub) connectionCount(userID int) (global int, perUser int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	global = len(h.subscribers)
+	for _, s := range h.subscribers {
+		if s.UserID == userID {
+			perUser++
+		}
+	}
+	return
 }
 
 func (h *SSEHub) unsubscribe(id string) {
@@ -157,17 +196,30 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	userID, _ := strconv.Atoi(userIDStr)
 
 	subID := fmt.Sprintf("sse-%d-%d", userID, time.Now().UnixNano())
+	// Security: sanitize filter values to prevent SSE event injection
+	sanitizeSSE := func(s string) string {
+		s = strings.ReplaceAll(s, "\n", "")
+		s = strings.ReplaceAll(s, "\r", "")
+		s = strings.ReplaceAll(s, "\"", "")
+		if len(s) > 50 {
+			s = s[:50]
+		}
+		return s
+	}
 	sub := &SSESubscriber{
 		ID:        subID,
 		UserID:    userID,
-		PartyCode: r.URL.Query().Get("party"),
-		StateCode: r.URL.Query().Get("state"),
-		LGACode:   r.URL.Query().Get("lga"),
+		PartyCode: sanitizeSSE(r.URL.Query().Get("party")),
+		StateCode: sanitizeSSE(r.URL.Query().Get("state")),
+		LGACode:   sanitizeSSE(r.URL.Query().Get("lga")),
 		Channel:   make(chan SSEEvent, 100),
 		CreatedAt: time.Now(),
 	}
 
-	sseHub.subscribe(sub)
+	if !sseHub.subscribe(sub) {
+		writeError(w, 429, "SSE connection limit reached")
+		return
+	}
 	defer sseHub.unsubscribe(subID)
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -175,9 +227,16 @@ func handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Send initial connection event
-	fmt.Fprintf(w, "event: connected\ndata: {\"subscriber_id\":\"%s\",\"filters\":{\"party\":\"%s\",\"state\":\"%s\",\"lga\":\"%s\"}}\n\n",
-		subID, sub.PartyCode, sub.StateCode, sub.LGACode)
+	// Send initial connection event — sanitize user-supplied filter values
+	connData, _ := json.Marshal(map[string]interface{}{
+		"subscriber_id": subID,
+		"filters": map[string]string{
+			"party": sub.PartyCode,
+			"state": sub.StateCode,
+			"lga":   sub.LGACode,
+		},
+	})
+	fmt.Fprintf(w, "event: connected\ndata: %s\n\n", string(connData))
 	flusher.Flush()
 
 	// Keep-alive ticker
@@ -255,8 +314,10 @@ func handleObserverPhotoUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Save file to uploads directory
 	uploadDir := filepath.Join("uploads", "observer-reports")
-	os.MkdirAll(uploadDir, 0755)
-	filename := fmt.Sprintf("%d_%s_%d%s", userID, pollingUnitCode, time.Now().UnixNano(), ext)
+	os.MkdirAll(uploadDir, 0750)
+	// Sanitize filename components to prevent path traversal
+	safePU := filepath.Base(strings.ReplaceAll(pollingUnitCode, "..", ""))
+	filename := fmt.Sprintf("%d_%s_%d%s", userID, safePU, time.Now().UnixNano(), ext)
 	filePath := filepath.Join(uploadDir, filename)
 
 	dst, err := os.Create(filePath)

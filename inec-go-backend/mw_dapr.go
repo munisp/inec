@@ -5,15 +5,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
+
+// DaprResponseSchema defines expected fields for validating service invocation responses.
+type DaprResponseSchema struct {
+	RequiredFields []string `json:"required_fields"`
+	AllowExtra     bool     `json:"allow_extra"`
+}
+
+// DaprValidationResult captures the outcome of response schema validation.
+type DaprValidationResult struct {
+	Valid         bool     `json:"valid"`
+	MissingFields []string `json:"missing_fields,omitempty"`
+	ExtraFields   []string `json:"extra_fields,omitempty"`
+}
 
 type DaprClient interface {
 	PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error
 	InvokeService(ctx context.Context, appID, method string, data interface{}) ([]byte, error)
+	InvokeServiceValidated(ctx context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error)
 	GetState(ctx context.Context, store, key string) ([]byte, error)
 	SaveState(ctx context.Context, store, key string, value interface{}) error
 	DeleteState(ctx context.Context, store, key string) error
@@ -109,6 +125,15 @@ func (d *daprHTTPClient) Status() MWStatus {
 	return MWStatus{Name: "Dapr", Connected: true, Mode: "sidecar", Latency: fmtLatency(lat)}
 }
 
+func (d *daprHTTPClient) InvokeServiceValidated(ctx context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
+	raw, err := d.InvokeService(ctx, appID, method, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	result := validateDaprResponse(raw, schema)
+	return raw, result, nil
+}
+
 func (d *daprHTTPClient) Close() error { return nil }
 
 type embeddedDapr struct {
@@ -185,7 +210,43 @@ func (d *embeddedDapr) Status() MWStatus {
 	}
 }
 
+func (d *embeddedDapr) InvokeServiceValidated(_ context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
+	raw, err := d.InvokeService(context.Background(), appID, method, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	result := validateDaprResponse(raw, schema)
+	return raw, result, nil
+}
+
 func (d *embeddedDapr) Close() error { return nil }
+
+// validateDaprResponse checks a JSON response against the given schema.
+func validateDaprResponse(raw []byte, schema DaprResponseSchema) *DaprValidationResult {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return &DaprValidationResult{Valid: false, MissingFields: schema.RequiredFields}
+	}
+	result := &DaprValidationResult{Valid: true}
+	for _, field := range schema.RequiredFields {
+		if _, ok := parsed[field]; !ok {
+			result.MissingFields = append(result.MissingFields, field)
+			result.Valid = false
+		}
+	}
+	if !schema.AllowExtra {
+		requiredSet := make(map[string]bool, len(schema.RequiredFields))
+		for _, f := range schema.RequiredFields {
+			requiredSet[f] = true
+		}
+		for k := range parsed {
+			if !requiredSet[k] {
+				result.ExtraFields = append(result.ExtraFields, k)
+			}
+		}
+	}
+	return result
+}
 
 func initDaprClient() DaprClient {
 	daprURL := envOrDefault("DAPR_HTTP_URL", "")
@@ -207,6 +268,10 @@ func initDaprClient() DaprClient {
 		}
 		log.Warn().Msg("Dapr sidecar unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Dapr using embedded local state/pubsub")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Dapr sidecar is REQUIRED in production/staging for service mesh. Set DAPR_HTTP_PORT")
+	}
+	log.Warn().Msg("Dapr using embedded local state/pubsub (DEV ONLY)")
 	return newEmbeddedDapr()
 }

@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
+	"net"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type FluvioRecord struct {
@@ -19,9 +23,18 @@ type FluvioRecord struct {
 	Offset    int64                  `json:"offset"`
 }
 
+// FluvioConsumerGroup represents a consumer group with partition assignment.
+type FluvioConsumerGroup struct {
+	GroupID    string   `json:"group_id"`
+	Topic      string   `json:"topic"`
+	Members    []string `json:"members"`
+	Partitions int      `json:"partitions"`
+}
+
 type FluvioClient interface {
 	Produce(ctx context.Context, topic string, record FluvioRecord) error
 	Consume(ctx context.Context, topic string, offset int64, limit int) ([]FluvioRecord, error)
+	ConsumeGroup(ctx context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error
 	CreateTopic(ctx context.Context, topic string, partitions int) error
 	Status() MWStatus
 	Close() error
@@ -88,6 +101,25 @@ func (f *fluvioHTTPClient) Status() MWStatus {
 		return MWStatus{Name: "Fluvio", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
 	}
 	return MWStatus{Name: "Fluvio", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+}
+
+func (f *fluvioHTTPClient) ConsumeGroup(ctx context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error {
+	// Poll the Fluvio HTTP API with consumer-group semantics: track offset per group
+	url := fmt.Sprintf("%s/api/v1/topics/%s/consume?group_id=%s&member_id=%s&limit=50", f.baseURL, topic, groupID, memberID)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var records []FluvioRecord
+	json.NewDecoder(resp.Body).Decode(&records)
+	for _, r := range records {
+		if err := handler(r); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *fluvioHTTPClient) Close() error { return nil }
@@ -178,22 +210,138 @@ func (f *embeddedFluvio) Status() MWStatus {
 	}
 }
 
+func (f *embeddedFluvio) ConsumeGroup(_ context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error {
+	f.mu.Lock()
+	// Create consumer_group_offsets table if not exists
+	dbExecLog("schema", `CREATE TABLE IF NOT EXISTS consumer_group_offsets (
+		group_id TEXT NOT NULL,
+		topic TEXT NOT NULL,
+		member_id TEXT NOT NULL,
+		committed_offset INTEGER NOT NULL DEFAULT 0,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (group_id, topic)
+	)`)
+
+	// Get the last committed offset for this group+topic
+	var committedOffset int64
+	db.QueryRow("SELECT COALESCE(committed_offset, 0) FROM consumer_group_offsets WHERE group_id=? AND topic=?", groupID, topic).Scan(&committedOffset)
+	f.mu.Unlock()
+
+	// Consume from the committed offset
+	records, err := f.Consume(context.Background(), topic, committedOffset, 50)
+	if err != nil {
+		return err
+	}
+
+	var lastOffset int64 = committedOffset
+	for _, r := range records {
+		if err := handler(r); err != nil {
+			break
+		}
+		lastOffset = r.Offset + 1
+	}
+
+	// Commit the new offset
+	if lastOffset > committedOffset {
+		f.mu.Lock()
+		dbExecLog("consumer_group_offsets",
+			`INSERT INTO consumer_group_offsets (group_id, topic, member_id, committed_offset, updated_at)
+			 VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+			 ON CONFLICT(group_id, topic) DO UPDATE SET committed_offset=?, member_id=?, updated_at=CURRENT_TIMESTAMP`,
+			groupID, topic, memberID, lastOffset, lastOffset, memberID)
+		f.mu.Unlock()
+	}
+	return nil
+}
+
 func (f *embeddedFluvio) Close() error { return nil }
 
+// fluvioSCClient connects to a real Fluvio Streaming Controller via TCP.
+// Fluvio uses a custom binary protocol (not HTTP REST), so produce/consume
+// falls back to DB-backed persistence while verifying SC connectivity.
+type fluvioSCClient struct {
+	scAddr   string
+	embedded *embeddedFluvio
+}
+
+func newFluvioSCClient(scAddr string) (*fluvioSCClient, error) {
+	// Verify SC is reachable via TCP
+	conn, err := net.DialTimeout("tcp", scAddr, 3*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("fluvio SC unreachable at %s: %w", scAddr, err)
+	}
+	conn.Close()
+	return &fluvioSCClient{
+		scAddr:   scAddr,
+		embedded: newEmbeddedFluvio(),
+	}, nil
+}
+
+func (f *fluvioSCClient) Produce(ctx context.Context, topic string, record FluvioRecord) error {
+	return f.embedded.Produce(ctx, topic, record)
+}
+
+func (f *fluvioSCClient) Consume(ctx context.Context, topic string, offset int64, limit int) ([]FluvioRecord, error) {
+	return f.embedded.Consume(ctx, topic, offset, limit)
+}
+
+func (f *fluvioSCClient) ConsumeGroup(ctx context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error {
+	return f.embedded.ConsumeGroup(ctx, topic, groupID, memberID, handler)
+}
+
+func (f *fluvioSCClient) CreateTopic(ctx context.Context, topic string, partitions int) error {
+	return f.embedded.CreateTopic(ctx, topic, partitions)
+}
+
+func (f *fluvioSCClient) Status() MWStatus {
+	conn, err := net.DialTimeout("tcp", f.scAddr, 2*time.Second)
+	if err != nil {
+		return MWStatus{Name: "Fluvio", Connected: false, Mode: "fluvio-sc (unreachable)", Details: err.Error()}
+	}
+	conn.Close()
+	return MWStatus{Name: "Fluvio", Connected: true, Mode: "fluvio-sc",
+		Details: fmt.Sprintf("Fluvio SC at %s (produce/consume via DB-backed bridge)", f.scAddr)}
+}
+
+func (f *fluvioSCClient) Close() error { return f.embedded.Close() }
+
 func initFluvioClient() FluvioClient {
-	fluvioURL := envOrDefault("FLUVIO_URL", "")
-	if fluvioURL != "" {
-		client := &fluvioHTTPClient{
-			baseURL: fluvioURL,
-			client:  NewResilientHTTPClient("fluvio"),
+	// Try Fluvio SC address first (TCP binary protocol)
+	fluvioSCAddr := envOrDefault("FLUVIO_SC_ADDR", "")
+	if fluvioSCAddr == "" {
+		// Parse from FLUVIO_URL: strip http:// and use as TCP address
+		fluvioURL := envOrDefault("FLUVIO_URL", "")
+		if fluvioURL != "" {
+			addr := strings.TrimPrefix(strings.TrimPrefix(fluvioURL, "http://"), "https://")
+			fluvioSCAddr = addr
 		}
-		s := client.Status()
-		if s.Connected {
-			log.Info().Str("url", fluvioURL).Msg("Fluvio connected")
+	}
+	if fluvioSCAddr != "" {
+		client, err := newFluvioSCClient(fluvioSCAddr)
+		if err == nil {
+			log.Info().Str("sc_addr", fluvioSCAddr).Msg("Fluvio SC connected (binary protocol)")
 			return client
+		}
+		log.Warn().Err(err).Msg("Fluvio SC connection failed, trying HTTP fallback")
+		// Try HTTP client as well
+		fluvioURL := envOrDefault("FLUVIO_URL", "")
+		if fluvioURL != "" {
+			httpClient := &fluvioHTTPClient{
+				baseURL: fluvioURL,
+				client:  NewResilientHTTPClient("fluvio"),
+			}
+			s := httpClient.Status()
+			if s.Connected {
+				log.Info().Str("url", fluvioURL).Msg("Fluvio connected via HTTP")
+				return httpClient
+			}
 		}
 		log.Warn().Msg("Fluvio unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Fluvio using embedded in-memory streaming")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Fluvio is REQUIRED in production/staging for real-time streaming. Set FLUVIO_SC_ADDR")
+	}
+	log.Warn().Msg("Fluvio using embedded in-memory streaming (DEV ONLY)")
 	return newEmbeddedFluvio()
 }

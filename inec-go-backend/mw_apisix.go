@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
+	"os"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type APISIXRoute struct {
@@ -18,10 +20,20 @@ type APISIXRoute struct {
 	Upstream map[string]interface{} `json:"upstream,omitempty"`
 }
 
+// APISIXPlugin represents a plugin configuration for a route.
+type APISIXPlugin struct {
+	Name    string                 `json:"name"`
+	Config  map[string]interface{} `json:"config,omitempty"`
+	Enabled bool                   `json:"enabled"`
+}
+
 type APISIXClient interface {
 	RegisterRoute(ctx context.Context, route APISIXRoute) error
 	DeleteRoute(ctx context.Context, routeID string) error
 	GetRoutes(ctx context.Context) ([]APISIXRoute, error)
+	LoadPlugin(ctx context.Context, routeID string, plugin APISIXPlugin) error
+	EnablePlugin(ctx context.Context, routeID, pluginName string) error
+	DisablePlugin(ctx context.Context, routeID, pluginName string) error
 	GetConfig() map[string]interface{}
 	Status() MWStatus
 	Close() error
@@ -108,6 +120,61 @@ func (a *apisixHTTPClient) Status() MWStatus {
 	return MWStatus{Name: "APISIX", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
 }
 
+func (a *apisixHTTPClient) LoadPlugin(ctx context.Context, routeID string, plugin APISIXPlugin) error {
+	// Fetch the current route, merge plugin config, and PUT it back
+	routes, err := a.GetRoutes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if route.ID == routeID {
+			if route.Plugins == nil {
+				route.Plugins = make(map[string]interface{})
+			}
+			if plugin.Enabled {
+				route.Plugins[plugin.Name] = plugin.Config
+			} else {
+				delete(route.Plugins, plugin.Name)
+			}
+			return a.RegisterRoute(ctx, route)
+		}
+	}
+	return fmt.Errorf("route %s not found", routeID)
+}
+
+func (a *apisixHTTPClient) EnablePlugin(ctx context.Context, routeID, pluginName string) error {
+	routes, err := a.GetRoutes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if route.ID == routeID {
+			if route.Plugins == nil {
+				route.Plugins = make(map[string]interface{})
+			}
+			if _, ok := route.Plugins[pluginName]; !ok {
+				route.Plugins[pluginName] = map[string]interface{}{}
+			}
+			return a.RegisterRoute(ctx, route)
+		}
+	}
+	return fmt.Errorf("route %s not found", routeID)
+}
+
+func (a *apisixHTTPClient) DisablePlugin(ctx context.Context, routeID, pluginName string) error {
+	routes, err := a.GetRoutes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, route := range routes {
+		if route.ID == routeID {
+			delete(route.Plugins, pluginName)
+			return a.RegisterRoute(ctx, route)
+		}
+	}
+	return fmt.Errorf("route %s not found", routeID)
+}
+
 func (a *apisixHTTPClient) Close() error { return nil }
 
 type embeddedAPISIX struct {
@@ -170,6 +237,48 @@ func (a *embeddedAPISIX) Status() MWStatus {
 	}
 }
 
+func (a *embeddedAPISIX) LoadPlugin(_ context.Context, routeID string, plugin APISIXPlugin) error {
+	for i, r := range a.routes {
+		if r.ID == routeID {
+			if a.routes[i].Plugins == nil {
+				a.routes[i].Plugins = make(map[string]interface{})
+			}
+			if plugin.Enabled {
+				a.routes[i].Plugins[plugin.Name] = plugin.Config
+			} else {
+				delete(a.routes[i].Plugins, plugin.Name)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("route %s not found", routeID)
+}
+
+func (a *embeddedAPISIX) EnablePlugin(_ context.Context, routeID, pluginName string) error {
+	for i, r := range a.routes {
+		if r.ID == routeID {
+			if a.routes[i].Plugins == nil {
+				a.routes[i].Plugins = make(map[string]interface{})
+			}
+			if _, ok := a.routes[i].Plugins[pluginName]; !ok {
+				a.routes[i].Plugins[pluginName] = map[string]interface{}{}
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("route %s not found", routeID)
+}
+
+func (a *embeddedAPISIX) DisablePlugin(_ context.Context, routeID, pluginName string) error {
+	for i, r := range a.routes {
+		if r.ID == routeID {
+			delete(a.routes[i].Plugins, pluginName)
+			return nil
+		}
+	}
+	return fmt.Errorf("route %s not found", routeID)
+}
+
 func (a *embeddedAPISIX) Close() error { return nil }
 
 func apisixDefaultRoutes() []APISIXRoute {
@@ -203,6 +312,10 @@ func initAPISIXClient() APISIXClient {
 		}
 		log.Warn().Msg("APISIX unreachable, falling back to embedded")
 	}
-	log.Info().Msg("APISIX using embedded gateway config")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("APISIX is REQUIRED in production/staging for API gateway. Set APISIX_ADMIN_URL")
+	}
+	log.Warn().Msg("APISIX using embedded gateway config (DEV ONLY)")
 	return newEmbeddedAPISIX()
 }

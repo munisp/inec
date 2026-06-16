@@ -167,7 +167,7 @@ func (rc *ResilientHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	err := RetryWithBackoff(req.Context(), rc.Retry, func() error {
 		var e error
-		resp, e = rc.Client.Do(req)
+		resp, e = rc.Client.Do(req) // #nosec G704 -- ResilientHTTPClient wraps requests; URL origins are admin-configured
 		return e
 	})
 

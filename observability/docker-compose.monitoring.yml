@@ -1,0 +1,146 @@
+version: "3.9"
+
+# Monitoring stack for the INEC Election Platform.
+# Deploy alongside the main docker-compose.yml.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f observability/docker-compose.monitoring.yml up -d
+
+services:
+  # ── Prometheus ──
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Grafana ──
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3000}"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Alertmanager ──
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Loki (centralized logging) ──
+  loki:
+    image: grafana/loki:3.1.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Promtail (log shipper) ──
+  promtail:
+    image: grafana/promtail:3.1.0
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Tempo (distributed tracing) ──
+  tempo:
+    image: grafana/tempo:2.5.0
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "3200:3200"   # Tempo query
+    volumes:
+      - tempo-data:/var/tempo
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Node Exporter (host metrics) ──
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── PostgreSQL Exporter ──
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${PG_USER:-inec_admin}:${PG_PASSWORD}@pg-primary:5432/inec_db?sslmode=disable"
+    depends_on:
+      - pg-primary
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+  # ── Redis Exporter ──
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    networks:
+      - inec-network
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  tempo-data:
+
+networks:
+  inec-network:
+    external: true

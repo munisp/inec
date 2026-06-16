@@ -1,6 +1,13 @@
+@import 'maplibre-gl/dist/maplibre-gl.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Maplibre map must fill its container — outside @layer for specificity */
+.maplibregl-map { position: relative !important; width: 100% !important; height: 100% !important; }
+.maplibregl-canvas-container { width: 100% !important; height: 100% !important; }
+.maplibregl-canvas { position: absolute !important; top: 0; left: 0; width: 100% !important; height: 100% !important; }
+
 @layer base {
   :root {
     --radius: 0.5rem;

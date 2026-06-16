@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 // ── Robust Ingestion Engine ──
@@ -49,6 +51,10 @@ type IngestionStats struct {
 	AvgLatencyMs    float64 `json:"avg_latency_ms"`
 	Throughput      float64 `json:"throughput_per_sec"`
 }
+
+const (
+	maxIngestionQueueSize = 10000 // Backpressure limit — reject new jobs when queue is full
+)
 
 var (
 	ingestionQueue   []IngestionJob
@@ -113,9 +119,51 @@ func generateIdempotencyKey(jobType string, payload map[string]interface{}) stri
 	return hex.EncodeToString(h[:16])
 }
 
+// recoverPendingJobs loads incomplete jobs from the database on startup.
+func recoverPendingJobs() {
+	rows, err := db.Query("SELECT id, job_type, payload, idempotency_key, retries, max_retries FROM ingestion_jobs WHERE status IN ('pending','in_progress') ORDER BY created_at ASC LIMIT 1000")
+	if err != nil {
+		log.Warn().Err(err).Msg("ingestion: failed to recover pending jobs from DB")
+		return
+	}
+	defer rows.Close()
+
+	ingestionMu.Lock()
+	defer ingestionMu.Unlock()
+
+	recovered := 0
+	for rows.Next() {
+		var id, jobType, payloadStr, idemKey string
+		var retries, maxRetries int
+		if err := rows.Scan(&id, &jobType, &payloadStr, &idemKey, &retries, &maxRetries); err != nil {
+			continue
+		}
+		var payload map[string]interface{}
+		json.Unmarshal([]byte(payloadStr), &payload)
+
+		job := IngestionJob{
+			ID: id, Type: jobType, Status: "pending", Payload: payload,
+			IdempotencyKey: idemKey, Retries: retries, MaxRetries: maxRetries,
+			CreatedAt: time.Now(),
+		}
+		ingestionQueue = append(ingestionQueue, job)
+		idempotencyStore[idemKey] = id
+		recovered++
+		go processJob(id)
+	}
+	if recovered > 0 {
+		log.Info().Int("count", recovered).Msg("ingestion: recovered pending jobs from DB")
+	}
+}
+
 func enqueueJob(jobType string, payload map[string]interface{}, idempotencyKey string) (*IngestionJob, error) {
 	ingestionMu.Lock()
 	defer ingestionMu.Unlock()
+
+	// Fix #10: Backpressure — reject new jobs when queue is at capacity
+	if len(ingestionQueue) >= maxIngestionQueueSize {
+		return nil, fmt.Errorf("ingestion queue full (%d jobs pending) — try again later", maxIngestionQueueSize)
+	}
 
 	if idempotencyKey == "" {
 		idempotencyKey = generateIdempotencyKey(jobType, payload)
@@ -295,7 +343,12 @@ func handleIngestionSubmit(w http.ResponseWriter, r *http.Request) {
 
 	job, err := enqueueJob(req.Type, req.Payload, req.IdempotencyKey)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		if strings.Contains(err.Error(), "queue full") {
+			w.Header().Set("Retry-After", "30")
+			writeError(w, 503, err.Error())
+		} else {
+			writeError(w, 500, err.Error())
+		}
 		return
 	}
 	writeJSON(w, 200, M{"job_id": job.ID, "status": job.Status, "idempotency_key": job.IdempotencyKey})

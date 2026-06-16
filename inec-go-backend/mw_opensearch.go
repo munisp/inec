@@ -16,8 +16,21 @@ import (
 )
 
 // OpenSearchClient provides full-text search, log aggregation, and analytics.
+type BulkIndexItem struct {
+	IndexName string                 `json:"index_name"`
+	DocID     string                 `json:"doc_id"`
+	Body      map[string]interface{} `json:"body"`
+}
+
+type BulkIndexResult struct {
+	Succeeded int      `json:"succeeded"`
+	Failed    int      `json:"failed"`
+	Errors    []string `json:"errors,omitempty"`
+}
+
 type OpenSearchClient interface {
 	Index(ctx context.Context, indexName, docID string, body map[string]interface{}) error
+	BulkIndex(ctx context.Context, items []BulkIndexItem) (*BulkIndexResult, error)
 	Search(ctx context.Context, indexName, query string, size int) (*SearchResult, error)
 	Delete(ctx context.Context, indexName, docID string) error
 	ListIndices(ctx context.Context) ([]IndexInfo, error)
@@ -210,6 +223,59 @@ func (o *realOpenSearchClient) Status() MWStatus {
 
 type embeddedOpenSearch struct{}
 
+func (o *realOpenSearchClient) BulkIndex(ctx context.Context, items []BulkIndexItem) (*BulkIndexResult, error) {
+	if len(items) == 0 {
+		return &BulkIndexResult{}, nil
+	}
+	var buf bytes.Buffer
+	for _, item := range items {
+		meta := map[string]interface{}{
+			"index": map[string]interface{}{
+				"_index": item.IndexName,
+				"_id":    item.DocID,
+			},
+		}
+		metaLine, _ := json.Marshal(meta)
+		buf.Write(metaLine)
+		buf.WriteByte('\n')
+		dataLine, _ := json.Marshal(item.Body)
+		buf.Write(dataLine)
+		buf.WriteByte('\n')
+	}
+	resp, err := o.client.Bulk(bytes.NewReader(buf.Bytes()),
+		o.client.Bulk.WithContext(ctx),
+		o.client.Bulk.WithRefresh("true"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("opensearch bulk: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var bulkResp struct {
+		Errors bool `json:"errors"`
+		Items  []struct {
+			Index struct {
+				Status int    `json:"status"`
+				Error  *struct{ Reason string `json:"reason"` } `json:"error"`
+			} `json:"index"`
+		} `json:"items"`
+	}
+	json.NewDecoder(resp.Body).Decode(&bulkResp)
+
+	result := &BulkIndexResult{}
+	for _, item := range bulkResp.Items {
+		if item.Index.Status >= 200 && item.Index.Status < 300 {
+			result.Succeeded++
+		} else {
+			result.Failed++
+			if item.Index.Error != nil {
+				result.Errors = append(result.Errors, item.Index.Error.Reason)
+			}
+		}
+	}
+	return result, nil
+}
+
 func (o *realOpenSearchClient) Close() error { return nil }
 
 func (o *embeddedOpenSearch) Index(ctx context.Context, indexName, docID string, body map[string]interface{}) error {
@@ -288,6 +354,19 @@ func (o *embeddedOpenSearch) Status() MWStatus {
 
 // --- Init ---
 
+func (o *embeddedOpenSearch) BulkIndex(ctx context.Context, items []BulkIndexItem) (*BulkIndexResult, error) {
+	result := &BulkIndexResult{}
+	for _, item := range items {
+		if err := o.Index(ctx, item.IndexName, item.DocID, item.Body); err != nil {
+			result.Failed++
+			result.Errors = append(result.Errors, err.Error())
+		} else {
+			result.Succeeded++
+		}
+	}
+	return result, nil
+}
+
 func (o *embeddedOpenSearch) Close() error { return nil }
 
 func initOpenSearchClient() OpenSearchClient {
@@ -303,7 +382,11 @@ func initOpenSearchClient() OpenSearchClient {
 		}
 		log.Warn().Str("url", baseURL).Msg("OpenSearch unreachable, falling back to embedded")
 	}
-	log.Info().Msg("OpenSearch using embedded DB-backed implementation")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("OpenSearch is REQUIRED in production/staging for log aggregation and search. Set OPENSEARCH_URL")
+	}
+	log.Warn().Msg("OpenSearch using embedded DB-backed implementation (DEV ONLY)")
 	return &embeddedOpenSearch{}
 }
 

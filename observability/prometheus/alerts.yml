@@ -1,0 +1,166 @@
+groups:
+  - name: inec-critical
+    rules:
+      # --- Availability ---
+      - alert: INECBackendDown
+        expr: up{job="inec-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "INEC Backend is DOWN"
+          description: "The INEC backend has been unreachable for >1 minute. Election operations are halted."
+          runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/backend-down.md"
+
+      - alert: INECHighErrorRate
+        expr: |
+          sum(rate(inec_http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(inec_http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "INEC error rate >5%"
+          description: "5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+          runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/high-error-rate.md"
+
+      - alert: INECHighLatency
+        expr: |
+          histogram_quantile(0.99, sum(rate(inec_http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "INEC p99 latency >2s"
+          description: "99th percentile request latency is {{ $value }}s. Users are experiencing slow responses."
+
+      # --- Database ---
+      - alert: INECDatabaseDown
+        expr: inec_db_connections_active == 0
+        for: 30s
+        labels:
+          severity: critical
+          team: dba
+        annotations:
+          summary: "Database connections dropped to zero"
+          description: "No active DB connections. All queries will fail."
+          runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/database-down.md"
+
+      - alert: INECDatabaseConnectionsHigh
+        expr: inec_db_connections_active > 45
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "DB connections at {{ $value }}/50 (90%)"
+          description: "Database connection pool is nearly exhausted. New requests may start failing."
+
+      - alert: INECDatabaseSlowQueries
+        expr: |
+          histogram_quantile(0.95, sum(rate(inec_db_query_duration_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: dba
+        annotations:
+          summary: "DB query p95 >1s"
+          description: "Database queries are slow. Check for missing indexes or lock contention."
+
+      # --- Circuit Breakers ---
+      - alert: INECCircuitBreakerOpen
+        expr: inec_arch_circuit_breaker_state == 1
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Circuit breaker OPEN for {{ $labels.service }}"
+          description: "Service {{ $labels.service }} has tripped its circuit breaker. Requests to this service are failing fast."
+          runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/circuit-breaker-open.md"
+
+      # --- Rate Limiting ---
+      - alert: INECHighRateLimitRejections
+        expr: |
+          sum(rate(inec_http_requests_total{status="429"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "High rate limit rejections ({{ $value }}/s)"
+          description: "Potential brute-force attack or misconfigured client."
+
+      # --- Election-Specific ---
+      - alert: INECNoResultsSubmitted
+        expr: |
+          sum(rate(inec_results_submitted_total[15m])) == 0
+          and on() (hour() >= 8 and hour() <= 20)
+        for: 15m
+        labels:
+          severity: critical
+          team: election-ops
+        annotations:
+          summary: "No election results submitted in 15 minutes"
+          description: "During election hours (08:00-20:00), no results have been submitted. Possible system outage or connectivity issue."
+
+      - alert: INECBiometricFailureRateHigh
+        expr: |
+          sum(rate(inec_arch_biometric_verifications_total{result="failure"}[10m]))
+          / sum(rate(inec_arch_biometric_verifications_total[10m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          team: election-ops
+        annotations:
+          summary: "Biometric failure rate >20%"
+          description: "High biometric verification failure rate may indicate device issues or environmental factors."
+
+      - alert: INECGeofenceViolationSpike
+        expr: |
+          sum(rate(inec_arch_events_published_total{event_type="geofence.violation"}[5m])) * 60 > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "Geofence violation spike ({{ $value }}/min)"
+          description: "Multiple election officials detected outside their assigned polling unit geofences."
+
+  - name: inec-slo
+    rules:
+      # --- SLO: Availability (target: 99.95%) ---
+      - record: inec:slo:availability:ratio_5m
+        expr: |
+          1 - (
+            sum(rate(inec_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(inec_http_requests_total[5m]))
+          )
+
+      - alert: INECSLOAvailabilityBreach
+        expr: inec:slo:availability:ratio_5m < 0.9995
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          slo: availability
+        annotations:
+          summary: "SLO breach: availability {{ $value | humanizePercentage }} (target: 99.95%)"
+
+      # --- SLO: Latency (target: p99 < 500ms) ---
+      - record: inec:slo:latency:p99_5m
+        expr: |
+          histogram_quantile(0.99, sum(rate(inec_http_request_duration_seconds_bucket[5m])) by (le))
+
+      - alert: INECSLOLatencyBreach
+        expr: inec:slo:latency:p99_5m > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          slo: latency
+        annotations:
+          summary: "SLO breach: p99 latency {{ $value }}s (target: <500ms)"

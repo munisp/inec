@@ -24,21 +24,21 @@ export default function BlockchainPage() {
   const [tab, setTab] = useState('production');
 
   useEffect(() => {
-    api.getBlockchainStats().then(setStats).catch(() => {});
-    api.getBlockchainChain(50).then(setChain).catch(() => {});
-    api.getSmartContracts().then(setContracts).catch(() => {});
-    api.getBlockchainAudit(50).then(setAudit).catch(() => {});
-    api.getBlockchainProductionStats().then(setProdStats).catch(() => {});
-    api.getFabricNetwork().then(setFabricNet).catch(() => {});
-    api.getFabricBlocks(20).then(setFabricBlocks).catch(() => {});
-    api.getFabricTransactions(50).then(setFabricTxs).catch(() => {});
-    api.verifyFabricChain(100).then(setChainVerify).catch(() => {});
-    api.getIPFSStats().then(setIpfsStats).catch(() => {});
-    api.getIPFSObjects(50).then(setIpfsObjects).catch(() => {});
-    api.getLedgerStats().then(setLedgerStats).catch(() => {});
-    api.getLedgerAccounts().then(setLedgerAccounts).catch(() => {});
-    api.getLedgerTransfers('inec-operational', 50).then(setLedgerTransfers).catch(() => {});
-    api.getMerkleTrees(20).then(setMerkleTrees).catch(() => {});
+    api.getBlockchainStats().then(setStats).catch(err => console.error("API error:", err));
+    api.getBlockchainChain(50).then(setChain).catch(err => console.error("API error:", err));
+    api.getSmartContracts().then(setContracts).catch(err => console.error("API error:", err));
+    api.getBlockchainAudit(50).then(setAudit).catch(err => console.error("API error:", err));
+    api.getBlockchainProductionStats().then(setProdStats).catch(err => console.error("API error:", err));
+    api.getFabricNetwork().then(setFabricNet).catch(err => console.error("API error:", err));
+    api.getFabricBlocks(20).then(setFabricBlocks).catch(err => console.error("API error:", err));
+    api.getFabricTransactions(50).then(setFabricTxs).catch(err => console.error("API error:", err));
+    api.verifyFabricChain(100).then(setChainVerify).catch(err => console.error("API error:", err));
+    api.getIPFSStats().then(setIpfsStats).catch(err => console.error("API error:", err));
+    api.getIPFSObjects(50).then(setIpfsObjects).catch(err => console.error("API error:", err));
+    api.getLedgerStats().then(setLedgerStats).catch(err => console.error("API error:", err));
+    api.getLedgerAccounts().then(setLedgerAccounts).catch(err => console.error("API error:", err));
+    api.getLedgerTransfers('inec-operational', 50).then(setLedgerTransfers).catch(err => console.error("API error:", err));
+    api.getMerkleTrees(20).then(setMerkleTrees).catch(err => console.error("API error:", err));
   }, []);
 
   return (

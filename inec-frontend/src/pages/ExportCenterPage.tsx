@@ -53,12 +53,12 @@ export default function ExportCenterPage() {
   };
 
   const downloadCSV = (type: string) => {
-    const token = localStorage.getItem('token') || localStorage.getItem('inec_token');
+    // Cookie-based auth: browser sends httpOnly cookie automatically for same-origin
     const apiUrl = import.meta.env.VITE_API_URL ?? '';
     if (type === 'polling-units-csv') {
-      window.open(`${apiUrl}/geo/reports/polling-units.csv?token=${token}`, '_blank');
+      window.open(`${apiUrl}/geo/reports/polling-units.csv`, '_blank');
     } else if (type === 'polling-units-geojson') {
-      window.open(`${apiUrl}/geo/reports/polling-units.geojson?token=${token}`, '_blank');
+      window.open(`${apiUrl}/geo/reports/polling-units.geojson`, '_blank');
     }
   };
 

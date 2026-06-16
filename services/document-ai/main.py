@@ -30,11 +30,13 @@ app = FastAPI(
     version="1.0.0",
     description="AI-powered document analysis for election result verification",
 )
+_ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    allow_credentials=True,
 )
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/document-ai-uploads")
@@ -408,8 +410,10 @@ class DocLingEngine:
 
     def _extract_with_docling(self, file_bytes: bytes, filename: str) -> DocLingResult:
         """Real DocLing extraction."""
-        # Write to temp file for DocLing
+        # Write to temp file for DocLing — sanitize suffix to prevent path injection
         suffix = Path(filename).suffix
+        if not re.match(r'^\.[a-zA-Z0-9]{1,10}$', suffix):
+            suffix = ".bin"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
             f.write(file_bytes)
             tmp_path = f.name
@@ -494,8 +498,10 @@ class VideoAnalyzer:
         """Full video analysis with OpenCV."""
         cv2 = self._cv2
 
-        # Write to temp file
+        # Write to temp file — sanitize suffix
         suffix = Path(filename).suffix or ".mp4"
+        if not re.match(r'^\.[a-zA-Z0-9]{1,10}$', suffix):
+            suffix = ".mp4"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
             f.write(video_bytes)
             tmp_path = f.name
@@ -519,7 +525,8 @@ class VideoAnalyzer:
             frame_idx = 0
             sample_interval = max(int(fps), 1)
 
-            while True:
+            max_frames = int(fps * 3600)  # cap at 1 hour of video
+            while frame_idx < max_frames:
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -1057,8 +1064,8 @@ async def docling_extract_tables(file: UploadFile = File(...)):
 async def video_analyze(file: UploadFile = File(...)):
     """Analyze video for ballot counting events and anomalies."""
     content = await file.read()
-    if len(content) > 500_000_000:  # 500MB limit
-        raise HTTPException(status_code=413, detail="Video exceeds 500MB limit")
+    if len(content) > 100_000_000:  # 100MB limit
+        raise HTTPException(status_code=413, detail="Video exceeds 100MB limit")
     result = video_analyzer.analyze_video(content, file.filename or "video.mp4")
     return result.model_dump()
 

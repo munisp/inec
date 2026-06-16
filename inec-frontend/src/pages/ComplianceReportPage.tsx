@@ -33,7 +33,7 @@ export default function ComplianceReportPage() {
     setLoading(true);
     api.getComplianceReport(standard, 1)
       .then(setData)
-      .catch(() => {})
+      .catch(err => console.error("API error:", err))
       .finally(() => setLoading(false));
   }, [standard]);
 

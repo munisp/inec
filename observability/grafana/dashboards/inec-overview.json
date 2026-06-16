@@ -1,0 +1,157 @@
+{
+  "annotations": { "list": [] },
+  "description": "INEC Election Platform — RED Metrics Overview",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(inec_http_requests_total[5m])) by (method)",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "thresholds": { "mode": "absolute", "steps": [
+          { "color": "green", "value": null },
+          { "color": "yellow", "value": 500 },
+          { "color": "red", "value": 1000 }
+        ]}}
+      }
+    },
+    {
+      "title": "Error Rate (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(inec_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(inec_http_requests_total[5m])) * 100",
+          "legendFormat": "5xx error rate"
+        },
+        {
+          "expr": "sum(rate(inec_http_requests_total{status=~\"4..\"}[5m])) / sum(rate(inec_http_requests_total[5m])) * 100",
+          "legendFormat": "4xx error rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [
+          { "color": "green", "value": null },
+          { "color": "yellow", "value": 1 },
+          { "color": "red", "value": 5 }
+        ]}}
+      }
+    },
+    {
+      "title": "Request Latency (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(inec_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(inec_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(inec_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "Active Polling Units Reporting",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [{ "expr": "inec_arch_active_polling_units" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "red", "value": null },
+        { "color": "yellow", "value": 20000 },
+        { "color": "green", "value": 40000 }
+      ]}}}
+    },
+    {
+      "title": "Results Submitted (rate/min)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [{ "expr": "sum(rate(inec_results_submitted_total[5m])) * 60" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Biometric Verifications (rate/min)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [{ "expr": "sum(rate(inec_arch_biometric_verifications_total[5m])) * 60" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Circuit Breaker Status",
+      "type": "table",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [{ "expr": "inec_arch_circuit_breaker_state", "format": "table", "instant": true }],
+      "transformations": [{ "id": "organize", "options": { "renameByName": { "service": "Service", "Value": "State (0=closed 1=open)" }}}]
+    },
+    {
+      "title": "Service Latency by Operation",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [{ "expr": "sum(rate(inec_arch_service_request_duration_seconds_bucket[5m])) by (le, service)" }]
+    },
+    {
+      "title": "Database Query Duration (p95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(inec_db_query_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "Event Bus — Published/Consumed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "sum(rate(inec_arch_events_published_total[5m])) by (event_type)", "legendFormat": "pub: {{event_type}}" },
+        { "expr": "sum(rate(inec_arch_events_consumed_total[5m])) by (event_type)", "legendFormat": "sub: {{event_type}}" }
+      ]
+    },
+    {
+      "title": "DB Connections",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 20 },
+      "targets": [{ "expr": "inec_arch_db_connections_active" }],
+      "fieldConfig": { "defaults": { "min": 0, "max": 100, "thresholds": { "steps": [
+        { "color": "green", "value": null },
+        { "color": "yellow", "value": 40 },
+        { "color": "red", "value": 45 }
+      ]}}}
+    },
+    {
+      "title": "Rate Limiter Rejections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 20 },
+      "targets": [
+        { "expr": "sum(rate(inec_http_requests_total{status=\"429\"}[5m])) by (path)", "legendFormat": "429: {{path}}" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["inec", "election", "overview"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "INEC Platform — Overview",
+  "uid": "inec-overview"
+}

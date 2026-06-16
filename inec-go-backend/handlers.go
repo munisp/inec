@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -11,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,10 +21,19 @@ import (
 
 // ── Auth ──
 
+// verifyTOTPCode validates a TOTP code against the stored secret for a user.
+func verifyTOTPCode(secret, code string) bool {
+	if mfaService == nil {
+		return false
+	}
+	return mfaService.VerifyTOTPCode(secret, code)
+}
+
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TOTPCode string `json:"totp_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid request")
@@ -42,11 +51,62 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "Invalid credentials")
 		return
 	}
+
+	// Check if user has MFA enabled — require TOTP code if so
+	var mfaEnabled bool
+	dbQueryRowCtx(r.Context(), "SELECT EXISTS(SELECT 1 FROM mfa_totp WHERE user_id=? AND is_active=1)", id).Scan(&mfaEnabled)
+	if mfaEnabled {
+		if req.TOTPCode == "" {
+			writeJSON(w, 200, M{
+				"mfa_required": true,
+				"mfa_type":     "totp",
+				"message":      "MFA verification required. Re-submit with totp_code field.",
+				"user_id":      id,
+			})
+			return
+		}
+		var secret string
+		if err := dbQueryRowCtx(r.Context(), "SELECT secret FROM mfa_totp WHERE user_id=? AND is_active=1", id).Scan(&secret); err != nil {
+			writeError(w, 500, "MFA configuration error")
+			return
+		}
+		if !verifyTOTPCode(secret, req.TOTPCode) {
+			writeError(w, 401, "Invalid TOTP code")
+			return
+		}
+	}
+
 	claims := map[string]interface{}{
 		"sub": fmt.Sprintf("%d", id), "username": username, "role": role, "full_name": fullName,
 	}
 	token, _ := createAccessToken(claims)
 	refresh, _ := createRefreshToken(claims)
+
+	// Set httpOnly cookies for XSS-resistant auth
+	secure := os.Getenv("APP_ENV") == "production" || os.Getenv("APP_ENV") == "staging"
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteStrictMode
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "inec_token",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: sameSite,
+		MaxAge:   3600,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "inec_refresh",
+		Value:    refresh,
+		Path:     "/auth/refresh",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: sameSite,
+		MaxAge:   7 * 24 * 3600,
+	})
+
 	writeJSON(w, 200, M{
 		"access_token": token, "refresh_token": refresh, "token_type": "bearer", "expires_in": 3600,
 		"user": M{"id": id, "username": username, "full_name": fullName, "role": role, "staff_id": nullStr(staffID), "state_code": nullStr(stateCode)},
@@ -80,6 +140,25 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Password) < 8 {
 		writeError(w, 400, "password must be at least 8 characters")
+		return
+	}
+	if len(req.Password) > 128 {
+		writeError(w, 400, "password must be at most 128 characters")
+		return
+	}
+	hasUpper, hasLower, hasDigit := false, false, false
+	for _, c := range req.Password {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		writeError(w, 400, "password must contain uppercase, lowercase, and digit")
 		return
 	}
 	if len(req.FullName) < 2 {
@@ -166,6 +245,11 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	dbExecLog("active_sessions", convertPlaceholders("DELETE FROM active_sessions WHERE user_id = ?"), userID)
 
 	auditWrite("user_logout", "user", userIDStr, r, nil)
+
+	// Clear httpOnly auth cookies
+	http.SetCookie(w, &http.Cookie{Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: "inec_refresh", Value: "", Path: "/auth/refresh", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+
 	writeJSON(w, 200, M{"message": "logged out successfully"})
 }
 
@@ -176,9 +260,9 @@ func handleListElections(w http.ResponseWriter, r *http.Request) {
 	var rows *sql.Rows
 	var err error
 	if status != "" {
-		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections WHERE status=? ORDER BY election_date DESC", status)
+		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections WHERE status=? ORDER BY election_date DESC LIMIT 500", status)
 	} else {
-		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections ORDER BY election_date DESC")
+		rows, err = dbQueryCtx(r.Context(), "SELECT * FROM elections ORDER BY election_date DESC LIMIT 500")
 	}
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -293,8 +377,12 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 // ── Results ──
 
 func logAudit(action, entityType, entityID string, userID int, details map[string]interface{}) {
+	logAuditCtx(context.Background(), action, entityType, entityID, userID, details)
+}
+
+func logAuditCtx(ctx context.Context, action, entityType, entityID string, userID int, details map[string]interface{}) {
 	var prevHash sql.NullString
-	dbQueryRowCtx(context.Background(), "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
+	dbQueryRowCtx(ctx, "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
 	prev := strings.Repeat("0", 64)
 	if prevHash.Valid {
 		prev = prevHash.String
@@ -303,7 +391,7 @@ func logAudit(action, entityType, entityID string, userID int, details map[strin
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
 	detailsJSON, _ := json.Marshal(details)
-	dbExecCtx(context.Background(), "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
+	dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
 		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev)
 }
 
@@ -320,8 +408,10 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 			PartyCode string `json:"party_code"`
 			Votes     int    `json:"votes"`
 		} `json:"party_scores"`
-		AccreditedVoters int `json:"accredited_voters"`
-		RejectedVotes    int `json:"rejected_votes"`
+		AccreditedVoters int      `json:"accredited_voters"`
+		RejectedVotes    int      `json:"rejected_votes"`
+		DeviceLat        *float64 `json:"device_lat"`
+		DeviceLng        *float64 `json:"device_lng"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON body")
@@ -330,6 +420,15 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	if req.ElectionID == 0 || req.PollingUnitCode == "" || len(req.PartyScores) == 0 {
 		writeError(w, 400, "election_id, polling_unit_code, and party_scores are required")
 		return
+	}
+
+	// Geofence validation — if device location provided, enforce proximity to polling unit
+	if req.DeviceLat != nil && req.DeviceLng != nil {
+		geoResult, err := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
+		if err == nil && geoResult != nil && !geoResult.WithinGeofence {
+			writeError(w, 403, fmt.Sprintf("Geofence violation: device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
+			return
+		}
 	}
 
 	var eExists int
@@ -350,16 +449,26 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	totalValid := 0
-	for _, ps := range req.PartyScores {
+	partyEntries := make([]PartyVoteEntry, len(req.PartyScores))
+	for i, ps := range req.PartyScores {
 		totalValid += ps.Votes
+		partyEntries[i] = PartyVoteEntry{PartyCode: ps.PartyCode, Votes: ps.Votes}
 	}
 	totalCast := totalValid + req.RejectedVotes
-	if totalCast > req.AccreditedVoters {
-		writeError(w, 400, "Total votes cast exceeds accredited voters")
-		return
+
+	// Full EC8A validation — enforces all 7 INEC business rules
+	ec8aForm := &FormEC8A{
+		ElectionID:       req.ElectionID,
+		PollingUnitCode:  req.PollingUnitCode,
+		RegisteredVoters: regVoters,
+		AccreditedVoters: req.AccreditedVoters,
+		TotalVotesPolled: totalCast,
+		RejectedBallots:  req.RejectedVotes,
+		TotalValidVotes:  totalValid,
+		PartyResults:     partyEntries,
 	}
-	if req.AccreditedVoters > regVoters {
-		writeError(w, 400, "Accredited voters exceeds registered voters")
+	if violations := ValidateEC8A(ec8aForm); len(violations) > 0 {
+		writeError(w, 400, fmt.Sprintf("EC8A validation failed: %s", strings.Join(violations, "; ")))
 		return
 	}
 
@@ -460,15 +569,6 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := mux.Vars(r)["id"]
-	var status, puCode string
-	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
-		writeError(w, 404, "Result not found")
-		return
-	}
-	if !canTransition(status, "validated") {
-		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'validated'; allowed transitions: %v", status, validTransitions[status]))
-		return
-	}
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
 	userRole, _ := user["role"].(string)
@@ -477,7 +577,25 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbExecCtx(r.Context(), "UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?", id)
+	// Fix #7: Use transaction with SELECT FOR UPDATE to prevent concurrent transitions
+	tx, txErr := db.BeginTx(r.Context(), nil)
+	if txErr != nil {
+		writeError(w, 500, "database transaction error")
+		return
+	}
+	var status, puCode string
+	if err := tx.QueryRow(convertPlaceholders("SELECT status, polling_unit_code FROM results WHERE id=? FOR UPDATE"), id).Scan(&status, &puCode); err != nil {
+		tx.Rollback()
+		writeError(w, 404, "Result not found")
+		return
+	}
+	if !canTransition(status, "validated") {
+		tx.Rollback()
+		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'validated'; allowed transitions: %v", status, validTransitions[status]))
+		return
+	}
+	tx.Exec(convertPlaceholders("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?"), id)
+	tx.Commit()
 	logAudit("RESULT_VALIDATED", "result", id, uid, map[string]interface{}{"phase": "Edge Validation", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
 
@@ -914,8 +1032,8 @@ func handlePUTile(w http.ResponseWriter, r *http.Request) {
 
 	tile := encodeMVTTile(rows, z, x, y, lonMin, latMin, lonMax, latMax)
 
-	h := md5.Sum(tile)
-	etag := `W/"` + hex.EncodeToString(h[:]) + `"`
+	h := sha256.Sum256(tile)
+	etag := `W/"` + hex.EncodeToString(h[:16]) + `"`
 	if inm := r.Header.Get("If-None-Match"); inm == etag {
 		w.WriteHeader(304)
 		return
@@ -1493,11 +1611,15 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		ctx := context.Background()
-		mwHub.Kafka.Produce(ctx, KafkaMessage{
+		if err := mwHub.Kafka.Produce(ctx, KafkaMessage{
 			Topic: TopicIncidentReport,
 			Key:   fmt.Sprintf("incident-%d", lid),
 			Value: map[string]interface{}{"id": lid, "election_id": req.ElectionID, "type": req.IncidentType, "severity": req.Severity},
-		})
+		}); err != nil {
+			log.Error().Err(err).Str("topic", TopicIncidentReport).Msg("Kafka produce failed")
+		} else {
+			log.Info().Str("topic", TopicIncidentReport).Int64("id", lid).Msg("Kafka produce success")
+		}
 	}()
 
 	writeJSON(w, 200, M{"id": lid, "message": "Incident reported"})

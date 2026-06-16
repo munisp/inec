@@ -111,8 +111,7 @@ export default function CommandCenterPage() {
   useEffect(() => {
     try {
       const baseUrl = window.location.origin.replace('5175', '8088');
-      const token = localStorage.getItem('token');
-      const es = new EventSource(`${baseUrl}/command-center/stream?token=${token}`);
+      const es = new EventSource(`${baseUrl}/command-center/stream`, { withCredentials: true });
       es.onmessage = (event) => {
         try {
           const update = JSON.parse(event.data);

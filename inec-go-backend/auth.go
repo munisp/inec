@@ -23,13 +23,18 @@ var jwtSecret []byte
 func init() {
 	s := os.Getenv("JWT_SECRET")
 	if s == "" {
-		// Generate a random secret at startup if none provided (dev mode only)
-		log.Warn().Msg("JWT_SECRET not set — using random ephemeral key")
+		env := os.Getenv("APP_ENV")
+		if env == "production" || env == "staging" {
+			log.Fatal().Msg("JWT_SECRET must be set in production/staging (min 32 chars). Generate with: openssl rand -base64 48")
+		}
+		log.Warn().Msg("JWT_SECRET not set — using random ephemeral key (DEV ONLY — sessions won't survive restarts)")
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
 			log.Fatal().Err(err).Msg("failed to generate random JWT secret")
 		}
 		s = base64.RawURLEncoding.EncodeToString(b)
+	} else if len(s) < 32 {
+		log.Fatal().Msg("JWT_SECRET too short — must be at least 32 characters")
 	}
 	jwtSecret = []byte(s)
 }
@@ -122,11 +127,20 @@ func decodeToken(tokenStr string) (jwt.MapClaims, error) {
 }
 
 func getCurrentUser(r *http.Request) (jwt.MapClaims, error) {
-	auth := r.Header.Get("Authorization")
-	if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
-		return nil, fmt.Errorf("not authenticated")
+	// First check context (set by jwtAuthMiddleware for both header and cookie auth)
+	if claims, ok := getUserFromContext(r); ok {
+		return claims, nil
 	}
-	return decodeToken(strings.TrimPrefix(auth, "Bearer "))
+	// Fallback: direct header check for paths that bypass middleware
+	auth := r.Header.Get("Authorization")
+	if auth != "" && strings.HasPrefix(auth, "Bearer ") {
+		return decodeToken(strings.TrimPrefix(auth, "Bearer "))
+	}
+	// Fallback: httpOnly cookie
+	if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+		return decodeToken(cookie.Value)
+	}
+	return nil, fmt.Errorf("not authenticated")
 }
 
 func requireRole(r *http.Request, roles ...string) (jwt.MapClaims, error) {

@@ -27,7 +27,7 @@ export default function TVDashboardPage() {
   const [cycleIdx, setCycleIdx] = useState(0);
 
   useEffect(() => {
-    const load = () => api.getTVDashboard(1).then(setData).catch(() => {});
+    const load = () => api.getTVDashboard(1).then(setData).catch(err => console.error("API error:", err));
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);

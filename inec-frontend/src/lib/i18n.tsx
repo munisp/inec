@@ -153,12 +153,40 @@ interface I18nContextProps {
 
 const I18nContext = createContext<I18nContextProps | null>(null);
 
+// Language metadata for the UI selector
+const LANG_META: Record<Lang, { label: string; nativeLabel: string; flag: string }> = {
+  en: { label: 'English', nativeLabel: 'English', flag: '\u{1F1EC}\u{1F1E7}' },
+  ha: { label: 'Hausa', nativeLabel: 'Hausa', flag: '\u{1F1F3}\u{1F1EC}' },
+  yo: { label: 'Yoruba', nativeLabel: 'Yor\u00F9b\u00E1', flag: '\u{1F1F3}\u{1F1EC}' },
+  ig: { label: 'Igbo', nativeLabel: 'Igbo', flag: '\u{1F1F3}\u{1F1EC}' },
+};
+
+function detectBrowserLanguage(): Lang {
+  const browserLangs = navigator.languages ?? [navigator.language];
+  for (const bl of browserLangs) {
+    const code = bl.toLowerCase().split('-')[0];
+    if (code === 'en' || code === 'ha' || code === 'yo' || code === 'ig') {
+      return code as Lang;
+    }
+    if (code === 'hau') return 'ha';
+    if (code === 'yor') return 'yo';
+    if (code === 'ibo') return 'ig';
+  }
+  return 'en';
+}
+
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>('en');
 
   useEffect(() => {
     const saved = localStorage.getItem('lang') as Lang | null;
-    if (saved) setLangState(saved);
+    if (saved) {
+      setLangState(saved);
+    } else {
+      const detected = detectBrowserLanguage();
+      setLangState(detected);
+      try { localStorage.setItem('lang', detected); } catch {}
+    }
   }, []);
 
   const setLang = (l: Lang) => {
@@ -182,4 +210,80 @@ export function useI18n() {
   const ctx = useContext(I18nContext);
   if (!ctx) throw new Error('useI18n must be used within I18nProvider');
   return ctx;
+}
+
+export function LanguageSelector({ compact = false }: { compact?: boolean }) {
+  const { lang, setLang } = useI18n();
+  const [open, setOpen] = useState(false);
+
+  if (compact) {
+    return (
+      <div style={{ position: 'relative', display: 'inline-block' }}>
+        <button
+          onClick={() => setOpen(!open)}
+          style={{
+            background: 'transparent', border: '1px solid #ccc', borderRadius: 6,
+            padding: '4px 10px', cursor: 'pointer', fontSize: 14,
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}
+          aria-label="Select language"
+        >
+          <span>{LANG_META[lang].flag}</span>
+          <span>{lang.toUpperCase()}</span>
+          <span style={{ fontSize: 10 }}>{'\u25BC'}</span>
+        </button>
+        {open && (
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            background: '#fff', border: '1px solid #ddd', borderRadius: 8,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 1000,
+            minWidth: 160, overflow: 'hidden',
+          }}>
+            {(Object.keys(LANG_META) as Lang[]).map((l) => (
+              <button
+                key={l}
+                onClick={() => { setLang(l); setOpen(false); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                  padding: '10px 14px', border: 'none', background: lang === l ? '#e8f5e9' : '#fff',
+                  cursor: 'pointer', fontSize: 14, textAlign: 'left',
+                }}
+              >
+                <span style={{ fontSize: 18 }}>{LANG_META[l].flag}</span>
+                <span style={{ flex: 1 }}>{LANG_META[l].nativeLabel}</span>
+                {lang === l && <span style={{ color: '#2e7d32' }}>{'\u2713'}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {(Object.keys(LANG_META) as Lang[]).map((l) => (
+        <button
+          key={l}
+          onClick={() => setLang(l)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '10px 18px', border: lang === l ? '2px solid #2e7d32' : '1px solid #ccc',
+            borderRadius: 8, background: lang === l ? '#e8f5e9' : '#fff',
+            cursor: 'pointer', fontSize: 14, fontWeight: lang === l ? 600 : 400,
+            transition: 'all 0.2s',
+          }}
+          aria-pressed={lang === l}
+        >
+          <span style={{ fontSize: 20 }}>{LANG_META[l].flag}</span>
+          <div>
+            <div>{LANG_META[l].nativeLabel}</div>
+            {LANG_META[l].nativeLabel !== LANG_META[l].label && (
+              <div style={{ fontSize: 11, color: '#666' }}>{LANG_META[l].label}</div>
+            )}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
 }

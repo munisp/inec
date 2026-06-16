@@ -1,161 +1,154 @@
--- INEC 2027 Election Platform: Initial Schema Migration
--- This migration creates all core tables needed for the platform.
+-- INEC 2027 Election Platform: Initial Schema
+-- Auto-generated from actual PostgreSQL schema
 
-BEGIN;
-
--- Core identity tables
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('admin','presiding_officer','collation_officer','observer','public')),
-    staff_id TEXT UNIQUE,
-    state_code TEXT,
-    lga_code TEXT,
-    polling_unit_code TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
+    username text NOT NULL,
+    password_hash text NOT NULL,
+    full_name text NOT NULL,
+    role text NOT NULL,
+    staff_id text,
+    state_code text,
+    lga_code text,
+    polling_unit_code text,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    is_active integer DEFAULT 1,
+    kyc_status text DEFAULT 'not_started'::text,
+    CONSTRAINT users_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'presiding_officer'::text, 'collation_officer'::text, 'observer'::text, 'public'::text])))
 );
+
+CREATE INDEX IF NOT EXISTS idx_users_role ON users USING btree (role);
+CREATE INDEX IF NOT EXISTS idx_users_state ON users USING btree (state_code);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users USING btree (username);
 
 CREATE TABLE IF NOT EXISTS elections (
     id SERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    election_type TEXT NOT NULL CHECK(election_type IN ('presidential','gubernatorial','senatorial','house_of_reps','state_assembly','local_government')),
-    election_date TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming','active','completed','cancelled')),
-    description TEXT,
-    total_registered_voters INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    title text NOT NULL,
+    election_type text NOT NULL,
+    election_date text NOT NULL,
+    status text DEFAULT 'upcoming'::text NOT NULL,
+    description text,
+    total_registered_voters integer DEFAULT 0,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT elections_election_type_check CHECK ((election_type = ANY (ARRAY['presidential'::text, 'gubernatorial'::text, 'senatorial'::text, 'house_of_reps'::text, 'state_assembly'::text, 'local_government'::text]))),
+    CONSTRAINT elections_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'scheduled'::text, 'upcoming'::text, 'active'::text, 'voting'::text, 'collating'::text, 'closed'::text, 'completed'::text, 'cancelled'::text, 'disputed'::text])))
 );
+
+CREATE INDEX IF NOT EXISTS idx_elections_date ON elections USING btree (election_date);
+CREATE INDEX IF NOT EXISTS idx_elections_status ON elections USING btree (status);
 
 CREATE TABLE IF NOT EXISTS parties (
     id SERIAL PRIMARY KEY,
-    code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    abbreviation TEXT NOT NULL,
-    logo_url TEXT,
-    color TEXT,
-    is_active BOOLEAN DEFAULT TRUE
+    code text NOT NULL,
+    name text NOT NULL,
+    abbreviation text NOT NULL,
+    logo_url text,
+    color text,
+    is_active integer DEFAULT 1
 );
 
--- Geography
 CREATE TABLE IF NOT EXISTS states (
     id SERIAL PRIMARY KEY,
-    code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    geo_zone TEXT NOT NULL,
-    capital TEXT
+    code text NOT NULL,
+    name text NOT NULL,
+    geo_zone text NOT NULL,
+    capital text
 );
 
 CREATE TABLE IF NOT EXISTS lgas (
     id SERIAL PRIMARY KEY,
-    code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    state_code TEXT NOT NULL REFERENCES states(code)
+    code text NOT NULL,
+    name text NOT NULL,
+    state_code text NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_lgas_state ON lgas USING btree (state_code);
 
 CREATE TABLE IF NOT EXISTS wards (
     id SERIAL PRIMARY KEY,
-    code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    lga_code TEXT NOT NULL REFERENCES lgas(code)
+    code text NOT NULL,
+    name text NOT NULL,
+    lga_code text NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_wards_lga ON wards USING btree (lga_code);
 
 CREATE TABLE IF NOT EXISTS polling_units (
     id SERIAL PRIMARY KEY,
-    code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    ward_code TEXT NOT NULL REFERENCES wards(code),
-    state_code TEXT NOT NULL REFERENCES states(code),
-    lga_code TEXT NOT NULL REFERENCES lgas(code),
-    latitude DOUBLE PRECISION,
-    longitude DOUBLE PRECISION,
-    registered_voters INTEGER DEFAULT 0,
-    pu_type TEXT DEFAULT 'standard'
+    code text NOT NULL,
+    name text NOT NULL,
+    ward_code text NOT NULL,
+    registered_voters integer DEFAULT 0,
+    latitude real,
+    longitude real
 );
 
--- Results
+CREATE INDEX IF NOT EXISTS idx_polling_units_ward ON polling_units USING btree (ward_code);
+CREATE INDEX IF NOT EXISTS idx_pu_lonlat ON polling_units USING btree (longitude, latitude);
+
 CREATE TABLE IF NOT EXISTS results (
     id SERIAL PRIMARY KEY,
-    election_id INTEGER NOT NULL REFERENCES elections(id),
-    polling_unit_code TEXT NOT NULL REFERENCES polling_units(code),
-    party_code TEXT NOT NULL REFERENCES parties(code),
-    votes INTEGER NOT NULL DEFAULT 0,
-    is_valid BOOLEAN DEFAULT TRUE,
-    submitted_by TEXT,
-    verified_by TEXT,
-    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','verified','disputed','rejected')),
-    idempotency_key TEXT UNIQUE,
-    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    verified_at TIMESTAMP
+    election_id integer NOT NULL,
+    polling_unit_code text NOT NULL,
+    presiding_officer_id integer,
+    status text DEFAULT 'pending'::text NOT NULL,
+    total_valid_votes integer DEFAULT 0,
+    rejected_votes integer DEFAULT 0,
+    total_votes_cast integer DEFAULT 0,
+    accredited_voters integer DEFAULT 0,
+    ec8a_hash text,
+    tigerbeetle_transfer_id text,
+    hyperledger_tx_id text,
+    tigerbeetle_status text DEFAULT 'PENDING'::text,
+    hyperledger_status text DEFAULT 'PENDING'::text,
+    ipfs_cid text,
+    submitted_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    validated_at timestamp without time zone,
+    finalized_at timestamp without time zone,
+    CONSTRAINT results_hyperledger_status_check CHECK ((hyperledger_status = ANY (ARRAY['PENDING'::text, 'CONFIRMED'::text, 'FAILED'::text]))),
+    CONSTRAINT results_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'validated'::text, 'finalized'::text, 'disputed'::text, 'voided'::text]))),
+    CONSTRAINT results_tigerbeetle_status_check CHECK ((tigerbeetle_status = ANY (ARRAY['PENDING'::text, 'POSTED'::text, 'VOIDED'::text])))
 );
 
--- Audit trail
-CREATE TABLE IF NOT EXISTS audit_trail (
-    id SERIAL PRIMARY KEY,
-    action TEXT NOT NULL,
-    entity_type TEXT NOT NULL,
-    entity_id TEXT,
-    user_id TEXT,
-    details JSONB,
-    ip_address TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+CREATE INDEX IF NOT EXISTS idx_results_election ON results USING btree (election_id);
+CREATE INDEX IF NOT EXISTS idx_results_election_pu ON results USING btree (election_id, polling_unit_code);
+CREATE INDEX IF NOT EXISTS idx_results_election_status ON results USING btree (election_id, status);
+CREATE INDEX IF NOT EXISTS idx_results_pu ON results USING btree (polling_unit_code);
+CREATE INDEX IF NOT EXISTS idx_results_pu_election ON results USING btree (polling_unit_code, election_id);
+CREATE INDEX IF NOT EXISTS idx_results_status ON results USING btree (status);
+CREATE INDEX IF NOT EXISTS idx_results_submitted_at ON results USING btree (submitted_at);
 
--- Incidents
 CREATE TABLE IF NOT EXISTS incidents (
     id SERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT,
-    severity TEXT NOT NULL CHECK(severity IN ('low','medium','high','critical')),
-    status TEXT DEFAULT 'open' CHECK(status IN ('open','investigating','resolved','closed')),
-    polling_unit_code TEXT,
-    state_code TEXT,
-    reported_by TEXT,
-    assigned_to TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP
+    election_id integer NOT NULL,
+    polling_unit_code text,
+    reported_by integer,
+    incident_type text NOT NULL,
+    description text NOT NULL,
+    severity text NOT NULL,
+    status text DEFAULT 'reported'::text NOT NULL,
+    reported_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    resolved_at timestamp without time zone,
+    CONSTRAINT incidents_severity_check CHECK ((severity = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'critical'::text]))),
+    CONSTRAINT incidents_status_check CHECK ((status = ANY (ARRAY['reported'::text, 'investigating'::text, 'resolved'::text, 'dismissed'::text])))
 );
 
--- BVAS devices
 CREATE TABLE IF NOT EXISTS bvas_devices (
-    id SERIAL PRIMARY KEY,
-    device_id TEXT UNIQUE NOT NULL,
-    serial_number TEXT NOT NULL,
-    polling_unit_code TEXT,
-    state_code TEXT,
-    status TEXT DEFAULT 'active' CHECK(status IN ('active','inactive','maintenance','lost')),
-    firmware_version TEXT,
-    battery_level INTEGER DEFAULT 100,
-    last_sync TIMESTAMP,
-    accreditations INTEGER DEFAULT 0,
-    biometric_captures INTEGER DEFAULT 0,
-    match_rate DOUBLE PRECISION DEFAULT 0.0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id text NOT NULL,
+    serial_number text NOT NULL,
+    polling_unit_code text,
+    election_id integer,
+    status text DEFAULT 'registered'::text NOT NULL,
+    battery_level integer DEFAULT 100,
+    firmware_version text DEFAULT '3.2.1'::text,
+    last_sync_at timestamp without time zone,
+    latitude real,
+    longitude real,
+    assigned_officer integer,
+    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT bvas_devices_status_check CHECK ((status = ANY (ARRAY['registered'::text, 'deployed'::text, 'active'::text, 'offline'::text, 'faulty'::text, 'decommissioned'::text])))
 );
 
--- Indexes for production performance
-CREATE INDEX IF NOT EXISTS idx_results_election ON results(election_id);
-CREATE INDEX IF NOT EXISTS idx_results_pu ON results(polling_unit_code);
-CREATE INDEX IF NOT EXISTS idx_results_party ON results(party_code);
-CREATE INDEX IF NOT EXISTS idx_results_status ON results(status);
-CREATE INDEX IF NOT EXISTS idx_results_idempotency ON results(idempotency_key);
-CREATE INDEX IF NOT EXISTS idx_polling_units_state ON polling_units(state_code);
-CREATE INDEX IF NOT EXISTS idx_polling_units_lga ON polling_units(lga_code);
-CREATE INDEX IF NOT EXISTS idx_polling_units_ward ON polling_units(ward_code);
-CREATE INDEX IF NOT EXISTS idx_lgas_state ON lgas(state_code);
-CREATE INDEX IF NOT EXISTS idx_wards_lga ON wards(lga_code);
-CREATE INDEX IF NOT EXISTS idx_audit_trail_entity ON audit_trail(entity_type, entity_id);
-CREATE INDEX IF NOT EXISTS idx_audit_trail_user ON audit_trail(user_id);
-CREATE INDEX IF NOT EXISTS idx_audit_trail_created ON audit_trail(created_at);
-CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
-CREATE INDEX IF NOT EXISTS idx_incidents_severity ON incidents(severity);
-CREATE INDEX IF NOT EXISTS idx_incidents_state ON incidents(state_code);
-CREATE INDEX IF NOT EXISTS idx_bvas_polling_unit ON bvas_devices(polling_unit_code);
-CREATE INDEX IF NOT EXISTS idx_bvas_state ON bvas_devices(state_code);
-CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-CREATE INDEX IF NOT EXISTS idx_users_state ON users(state_code);
+CREATE INDEX IF NOT EXISTS idx_bvas_devices_pu ON bvas_devices USING btree (polling_unit_code);
 
-COMMIT;

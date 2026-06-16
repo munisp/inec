@@ -29,7 +29,7 @@ describe('Elections Store', () => {
       json: () => Promise.resolve(mockElections),
     });
 
-    await useElectionsStore.getState().fetchElections('test-token');
+    await useElectionsStore.getState().fetchElections();
 
     const state = useElectionsStore.getState();
     expect(state.elections).toHaveLength(2);
@@ -44,7 +44,7 @@ describe('Elections Store', () => {
       status: 401,
     });
 
-    await useElectionsStore.getState().fetchElections('bad-token');
+    await useElectionsStore.getState().fetchElections();
 
     const state = useElectionsStore.getState();
     expect(state.error).toBe('HTTP 401');
@@ -65,7 +65,7 @@ describe('Elections Store', () => {
 
     global.fetch = vi.fn().mockReturnValue(promise);
 
-    const fetchPromise = useElectionsStore.getState().fetchElections('token');
+    const fetchPromise = useElectionsStore.getState().fetchElections();
 
     // Should be loading
     expect(useElectionsStore.getState().loading).toBe(true);

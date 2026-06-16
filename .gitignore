@@ -10,9 +10,19 @@ inec-go-backend/inec-go-backend
 inec-go-backend/inec-server
 inec-go-backend/inec-backend
 inec-go-backend/server
+inec-go-backend/auth-svc
+inec-go-backend/election-svc
+inec-go-backend/biometric-svc
+inec-go-backend/geo-svc
+inec-go-backend/compliance-svc
+inec-go-backend/ingestion-svc
+inec-go-backend/bvas-svc
+inec-go-backend/gateway
+inec-go-backend/middleware-svc
 inec-backend/inec-go-backend
 inec-go-backend/coverage.out
 inec-go-backend/uploads/
+inec-go-backend/bin/
 bin/
 
 # Frontend
@@ -64,3 +74,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+inec-go-backend/inec-go-backend
