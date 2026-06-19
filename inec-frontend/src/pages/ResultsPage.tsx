@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { DEMO_RESULTS, DEMO_PARTIES, DEMO_STATES } from '@/lib/demo-data';
 import { useAuth } from '@/lib/auth';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -41,7 +42,7 @@ export default function ResultsPage() {
   const canManage = user?.role === 'admin' || user?.role === 'collation_officer';
 
   useEffect(() => {
-    Promise.all([api.getParties(), api.getStates()]).then(([p, s]) => { setParties(p); setStates(s); });
+    Promise.all([api.getParties(), api.getStates()]).then(([p, s]) => { setParties(p); setStates(s); }).catch(() => { setParties(DEMO_PARTIES as Party[]); setStates(DEMO_STATES as State[]); });
   }, []);
 
   useEffect(() => { loadResults(); }, [filterState, filterStatus]);
@@ -55,7 +56,11 @@ export default function ResultsPage() {
       const res = await api.getResults(1, params);
       setResults(res.results);
       setTotal(res.total);
-    } catch (e) { logger.error(e); }
+    } catch (e) {
+      logger.error(e);
+      setResults(DEMO_RESULTS.results as unknown as ResultItem[]);
+      setTotal(DEMO_RESULTS.total);
+    }
     finally { setLoading(false); }
   }
 

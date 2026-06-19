@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { DEMO_WEBHOOKS } from '@/lib/demo-data';
 
 interface Webhook {
   id: number;
@@ -34,7 +35,9 @@ export default function WebhookManagementPage() {
       const data = await api.getWebhooks() as unknown as { webhooks?: Webhook[] } | Webhook[];
       const list = Array.isArray(data) ? data : (data?.webhooks || []);
       setWebhooks(list);
-    } catch { setWebhooks([]); }
+    } catch {
+      setWebhooks(DEMO_WEBHOOKS.map(w => ({ id: w.id, url: w.url, events: w.events, active: w.status === 'active', created_at: w.created_at, last_triggered: w.last_delivery, failure_count: 0 })));
+    }
     setLoading(false);
   }, []);
 

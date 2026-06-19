@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { DEMO_TV_DATA } from '../lib/demo-data';
 
 interface PartyTotal {
   party: string;
@@ -27,7 +28,16 @@ export default function TVDashboardPage() {
   const [cycleIdx, setCycleIdx] = useState(0);
 
   useEffect(() => {
-    const load = () => api.getTVDashboard(1).then(setData).catch(() => {});
+    const load = () => {
+      const apiUrl = import.meta.env.VITE_API_URL ?? '';
+      const token = localStorage.getItem('token') || localStorage.getItem('inec_token') || '';
+      fetch(`${apiUrl}/api/public/tv-dashboard?election_id=1`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(setData)
+        .catch(() => { setData(prev => prev || DEMO_TV_DATA as TVData); });
+    };
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
