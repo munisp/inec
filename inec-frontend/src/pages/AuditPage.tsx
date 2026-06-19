@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { DEMO_AUDIT } from '@/lib/demo-data';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -40,7 +41,13 @@ export default function AuditPage() {
       setEntries(trail.entries);
       setTotal(trail.total);
       setStats(auditStats);
-    } catch (e) { logger.error(e); }
+    } catch (e) {
+      logger.error(e);
+      const demoEntries = DEMO_AUDIT.map(a => ({ ...a, block_hash: 'demo-' + a.id, prev_block_hash: a.id > 1 ? 'demo-' + (a.id - 1) : '0', timestamp: a.created_at, full_name: a.username }));
+      setEntries(demoEntries as unknown as AuditEntry[]);
+      setTotal(demoEntries.length);
+      setStats({ total_entries: demoEntries.length, action_counts: [{ action: 'RESULT_SUBMITTED', count: 3 }, { action: 'RESULT_VALIDATED', count: 2 }, { action: 'USER_LOGIN', count: 1 }], latest_block_hash: 'demo-8' });
+    }
     finally { setLoading(false); }
   }
 

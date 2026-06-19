@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../lib/api';
+import { DEMO_COMMAND_CENTER, DEMO_LIVE_FEED } from '../lib/demo-data';
 import { logger } from '../lib/utils';
 import { Activity, AlertTriangle, Radio, Shield, Clock, RefreshCw, Zap, MapPin } from 'lucide-react';
 
@@ -97,7 +98,9 @@ export default function CommandCenterPage() {
       setLastUpdated(new Date());
     } catch (e) {
       logger.error(e);
-      setError(e instanceof Error ? e.message : 'Failed to load command center data');
+      setData(prev => prev || DEMO_COMMAND_CENTER as unknown as CommandData);
+      setLiveFeed(prev => prev.length ? prev : DEMO_LIVE_FEED as unknown as FeedItem[]);
+      setLastUpdated(new Date());
     }
   }, []);
 

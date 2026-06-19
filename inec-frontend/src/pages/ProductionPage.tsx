@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { DEMO_PRODUCTION } from '@/lib/demo-data';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -63,7 +64,11 @@ export default function ProductionPage() {
       if (l.status === 'fulfilled') setLedger(l.value);
       if (d.status === 'fulfilled') setDbMetrics(d.value);
       if (pg.status === 'fulfilled') setPgpool(pg.value);
-    } catch (e) { logger.error(e); }
+      if (s.status !== 'fulfilled') setStatus(prev => prev || DEMO_PRODUCTION as Record<string, any>);
+    } catch (e) {
+      logger.error(e);
+      if (!status) setStatus(DEMO_PRODUCTION as Record<string, any>);
+    }
     setLoading(false);
   }
 

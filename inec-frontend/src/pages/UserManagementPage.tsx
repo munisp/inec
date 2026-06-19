@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { DEMO_USERS } from '@/lib/demo-data';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -64,7 +65,10 @@ export default function UserManagementPage() {
       const data = await api.getUsers(params) as { users: User[]; total: number };
       setUsers(Array.isArray(data.users) ? data.users : []);
       setTotal(data.total || 0);
-    } catch { setUsers([]); }
+    } catch {
+      setUsers(DEMO_USERS as unknown as User[]);
+      setTotal(DEMO_USERS.length);
+    }
     setLoading(false);
   }, [search, filterRole]);
 

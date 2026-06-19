@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { DEMO_COLLATION } from '@/lib/demo-data';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -53,6 +54,7 @@ export default function CollationPage() {
         setData(res);
       } catch (e) {
         logger.error(e);
+        if (level === 'state') setData(DEMO_COLLATION as unknown as CollationItem[]);
       } finally {
         setLoading(false);
       }

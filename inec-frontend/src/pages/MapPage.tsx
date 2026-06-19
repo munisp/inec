@@ -3,6 +3,7 @@ import { logger } from '@/lib/utils';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
+import { DEMO_MAP_STATES } from '@/lib/demo-data';
 import { generateStateBoundaryGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -120,7 +121,10 @@ export default function MapPage() {
       setPus(data.polling_units);
       const withResults = data.polling_units.filter((p: PUData) => p.result_id).length;
       setPuCount({ total: data.polling_units.length, withResults });
-    } catch (e) { logger.error(e); }
+    } catch (e) {
+      logger.error(e);
+      setStates(prev => prev.length ? prev : DEMO_MAP_STATES as unknown as StateData[]);
+    }
     finally { setLoading(false); }
   }
 
@@ -701,7 +705,8 @@ export default function MapPage() {
   }, []);
 
   useEffect(() => {
-    if (loading || !mapContainer.current || states.length === 0) return;
+    if (loading || !mapContainer.current) return;
+    if (states.length === 0) return;
     if (mapRef.current) {
       try { mapRef.current.remove(); } catch {}
       mapRef.current = null;

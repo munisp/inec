@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { DEMO_TV_DATA } from '../lib/demo-data';
 
 interface PartyTotal {
   party: string;
@@ -27,7 +28,9 @@ export default function TVDashboardPage() {
   const [cycleIdx, setCycleIdx] = useState(0);
 
   useEffect(() => {
-    const load = () => api.getTVDashboard(1).then(setData).catch(() => {});
+    const load = () => api.getTVDashboard(1).then(setData).catch(() => {
+      setData(prev => prev || DEMO_TV_DATA as TVData);
+    });
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);

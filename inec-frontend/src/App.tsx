@@ -126,7 +126,7 @@ function AppContent() {
 
   return (
     <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
-      <ErrorBoundary>
+      <ErrorBoundary key={currentPage}>
         <PageTransition page={currentPage}>
           <Suspense fallback={<DashboardSkeleton />}>
             {pages[currentPage] || (

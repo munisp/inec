@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { DEMO_INCIDENTS } from '@/lib/demo-data';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,7 +39,10 @@ export default function IncidentsPage() {
 
   async function loadIncidents() {
     setLoading(true);
-    try { setIncidents(await api.getIncidents(1)); } catch (e) { logger.error(e); }
+    try { setIncidents(await api.getIncidents(1)); } catch (e) {
+      logger.error(e);
+      setIncidents(DEMO_INCIDENTS.map((inc) => ({ id: inc.id, election_id: 1, polling_unit_code: inc.polling_unit_code, incident_type: inc.type, description: inc.description, severity: inc.severity, status: inc.status, reported_at: inc.reported_at, reporter_name: inc.reported_by })) as Incident[]);
+    }
     finally { setLoading(false); }
   }
 

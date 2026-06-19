@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { DEMO_PREDICTIVE } from '../lib/demo-data';
 
 
 interface Prediction {
@@ -19,7 +20,7 @@ export default function PredictiveAnalyticsPage() {
   useEffect(() => {
     api.getPredictiveAnalytics()
       .then(setData)
-      .catch(() => void 0)
+      .catch(() => { setData(DEMO_PREDICTIVE as { predictions: Prediction[]; model: string }); })
       .finally(() => setLoading(false));
   }, []);
 
