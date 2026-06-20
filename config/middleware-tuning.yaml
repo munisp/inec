@@ -1,0 +1,390 @@
+# INEC Middleware Tuning Configuration
+# Optimized for millions of transactions per second on election day.
+# Each component is tuned for the specific access patterns of election data:
+# - Bursty writes (peak during voting hours)
+# - Read-heavy dashboards (TV, command center)
+# - Strict durability requirements (audit trail)
+
+---
+# ═══════════════════════════════════════════════════════════════
+# 1. KAFKA — 1M+ messages/sec
+# ═══════════════════════════════════════════════════════════════
+kafka:
+  broker_config:
+    num.network.threads: 16
+    num.io.threads: 32
+    socket.send.buffer.bytes: 1048576      # 1MB send buffer
+    socket.receive.buffer.bytes: 1048576   # 1MB receive buffer
+    socket.request.max.bytes: 104857600    # 100MB max request
+    log.flush.interval.messages: 10000     # batch fsync
+    log.flush.interval.ms: 1000
+    num.partitions: 128                    # default partitions
+    default.replication.factor: 3
+    min.insync.replicas: 2
+    compression.type: lz4                  # fast compression
+    message.max.bytes: 10485760            # 10MB max message
+
+  topics:
+    inec.results.submitted:
+      partitions: 37                       # one per state
+      replication: 3
+      retention.ms: 2592000000             # 30 days
+      segment.bytes: 1073741824            # 1GB segments
+    inec.ballots.cast:
+      partitions: 128
+      replication: 3
+      retention.ms: 7776000000             # 90 days
+    inec.incidents.reported:
+      partitions: 16
+      replication: 3
+      retention.ms: 31536000000            # 1 year
+    inec.audit.log:
+      partitions: 12
+      replication: 3
+      retention.ms: 157680000000           # 5 years
+      cleanup.policy: compact
+
+  producer_config:
+    batch.size: 1048576                    # 1MB batches
+    linger.ms: 5                           # 5ms accumulation
+    buffer.memory: 536870912               # 512MB buffer
+    max.in.flight.requests.per.connection: 5
+    acks: "1"                              # leader ack (throughput)
+    compression.type: lz4
+    max.request.size: 10485760
+
+  consumer_config:
+    fetch.min.bytes: 1048576               # 1MB min fetch
+    fetch.max.bytes: 52428800              # 50MB max fetch
+    max.partition.fetch.bytes: 10485760    # 10MB per partition
+    max.poll.records: 10000
+    enable.auto.commit: true
+    auto.commit.interval.ms: 5000
+    session.timeout.ms: 45000
+    partition.assignment.strategy: "cooperative-sticky"
+
+# ═══════════════════════════════════════════════════════════════
+# 2. REDIS — 2M+ ops/sec
+# ═══════════════════════════════════════════════════════════════
+redis:
+  cluster:
+    nodes: 6                               # 3 primary + 3 replica
+    slots_per_node: 5461
+
+  server_config:
+    maxmemory: "16gb"
+    maxmemory-policy: "allkeys-lfu"        # evict least frequently used
+    hz: 100                                # higher event loop frequency
+    tcp-backlog: 65535
+    timeout: 0                             # no idle timeout
+    tcp-keepalive: 300
+    io-threads: 8                          # multi-threaded I/O
+    io-threads-do-reads: "yes"
+    lazyfree-lazy-eviction: "yes"          # async eviction
+    lazyfree-lazy-expire: "yes"
+    lazyfree-lazy-server-del: "yes"
+    save: ""                               # disable RDB for speed
+    appendonly: "no"                        # disable AOF for max speed
+    cluster-allow-reads-when-down: "yes"
+    activedefrag: "yes"
+
+  client_config:
+    pool_size: 500                         # connections per node
+    min_idle: 100
+    max_redirects: 3
+    read_timeout_ms: 2
+    write_timeout_ms: 2
+    pipeline_size: 1000                    # commands per pipeline
+
+  data_structures:
+    # Real-time counters (INCR)
+    counters_ttl: 3600
+    # Sorted sets for leaderboards (ZADD)
+    leaderboard_max_size: 1000
+    # Bloom filter for deduplication
+    bloom_error_rate: 0.001
+    bloom_capacity: 100000000              # 100M unique IDs
+    # HyperLogLog for cardinality
+    hll_precision: 14                      # ~0.81% error
+
+# ═══════════════════════════════════════════════════════════════
+# 3. TIGERBEETLE — 1M+ transfers/sec
+# ═══════════════════════════════════════════════════════════════
+tigerbeetle:
+  cluster:
+    replicas: 3
+    cluster_id: 0
+
+  performance:
+    batch_size_max: 8190                   # TB hard limit
+    io_depth: 256                          # concurrent I/O operations
+    cache_grid_size: "4GB"                 # in-memory cache
+    journal_size: "64GB"                   # write-ahead log
+
+  accounts:
+    election_ledger: 1
+    audit_ledger: 2
+    penalty_ledger: 3
+    settlement_ledger: 4
+
+  tuning:
+    # Pre-create accounts at startup (avoid runtime creation)
+    pre_create_accounts: true
+    # Use linked transfers for atomic multi-leg ops
+    linked_transfers: true
+    # Use pending transfers for 2-phase commit
+    two_phase_commit: true
+
+# ═══════════════════════════════════════════════════════════════
+# 4. POSTGRES — 500K+ queries/sec
+# ═══════════════════════════════════════════════════════════════
+postgres:
+  connection_pool:
+    max_connections: 200
+    min_connections: 50
+    max_lifetime: "30m"
+    idle_timeout: "5m"
+    statement_cache_size: 1024
+
+  server_config:
+    shared_buffers: "8GB"
+    effective_cache_size: "24GB"
+    work_mem: "256MB"
+    maintenance_work_mem: "2GB"
+    wal_buffers: "256MB"
+    max_wal_size: "16GB"
+    checkpoint_completion_target: 0.9
+    random_page_cost: 1.1                  # SSD tuning
+    effective_io_concurrency: 200
+    max_parallel_workers: 16
+    max_parallel_workers_per_gather: 8
+    max_parallel_maintenance_workers: 4
+    jit: "on"
+    huge_pages: "try"
+
+  write_optimization:
+    # COPY protocol for bulk inserts
+    use_copy: true
+    copy_batch_size: 10000
+    # Unlogged tables for temporary data
+    use_unlogged_for_staging: true
+    # Partitioning by state_code
+    partition_strategy: "list"
+    partition_key: "state_code"
+    partition_count: 37
+
+# ═══════════════════════════════════════════════════════════════
+# 5. OPENSEARCH — 500K+ docs/sec
+# ═══════════════════════════════════════════════════════════════
+opensearch:
+  cluster:
+    nodes: 6
+    data_nodes: 4
+    coordinating_nodes: 2
+
+  index_settings:
+    number_of_shards: 12
+    number_of_replicas: 1
+    refresh_interval: "30s"                # bulk-optimized
+    codec: "best_compression"
+    translog:
+      durability: "async"
+      sync_interval: "5s"
+      flush_threshold_size: "1gb"
+    merge:
+      scheduler.max_thread_count: 4
+      policy.max_merged_segment: "5gb"
+
+  bulk_config:
+    batch_size: 5000
+    flush_interval_ms: 1000
+    workers: 8
+    max_retries: 3
+    backoff_ms: 1000
+
+  ilm_policy:
+    hot_phase: "7d"
+    warm_phase: "30d"
+    cold_phase: "365d"
+    delete_phase: "1825d"                  # 5 years
+
+# ═══════════════════════════════════════════════════════════════
+# 6. TEMPORAL — 100K+ workflows/sec
+# ═══════════════════════════════════════════════════════════════
+temporal:
+  server:
+    num_history_shards: 512
+    rps_limit: 1000000
+    frontend_service_rps_limit: 500000
+
+  worker_config:
+    max_concurrent_workflow_task_pollers: 100
+    max_concurrent_activity_task_pollers: 1000
+    workflow_cache_size: 10000
+    sticky_schedule_to_start_timeout: "5s"
+    heartbeat_interval: "5s"
+    shutdown_grace_period: "30s"
+
+  task_queues:
+    inec-high-throughput:
+      partitions: 37                       # one per state
+    inec-settlement:
+      partitions: 8
+    inec-audit:
+      partitions: 4
+
+# ═══════════════════════════════════════════════════════════════
+# 7. MOJALOOP — 50K+ transfers/sec
+# ═══════════════════════════════════════════════════════════════
+mojaloop:
+  connection:
+    max_concurrent_transfers: 5000
+    timeout_ms: 2000
+    max_retries: 3
+    connection_pool_size: 200
+
+  circuit_breaker:
+    failure_threshold: 10
+    recovery_timeout_ms: 30000
+    half_open_requests: 5
+
+  settlement:
+    model: "DEFERRED_NET"
+    batch_size: 1000
+    window_seconds: 300
+
+# ═══════════════════════════════════════════════════════════════
+# 8. FLUVIO — 1M+ records/sec
+# ═══════════════════════════════════════════════════════════════
+fluvio:
+  topics:
+    inec.stream.results:
+      partitions: 37
+      replication: 3
+      retention_secs: 2592000              # 30 days
+      segment_size: 1073741824             # 1GB
+      compression: "lz4"
+    inec.stream.events:
+      partitions: 64
+      replication: 2
+      retention_secs: 604800               # 7 days
+
+  smart_modules:
+    - name: "incident-filter"
+      type: "filter"
+      config: { min_severity: "high" }
+    - name: "enrichment"
+      type: "map"
+      config: { add_geo_region: true, add_time_bucket: true }
+    - name: "dedup"
+      type: "filter"
+      config: { window_seconds: 60, key_field: "id" }
+
+  producer:
+    batch_size: 1000
+    linger_ms: 5
+    compression: "lz4"
+
+# ═══════════════════════════════════════════════════════════════
+# 9. DAPR — 1M+ events/sec
+# ═══════════════════════════════════════════════════════════════
+dapr:
+  pubsub:
+    component: "inec-pubsub"
+    type: "pubsub.kafka"
+    bulk_publish_max_entries: 1000
+    delivery_guarantee: "at_least_once"
+
+  state_store:
+    component: "inec-statestore"
+    type: "state.redis"
+    concurrency: "last-write"
+    consistency: "eventual"
+
+  configuration:
+    app_protocol: "grpc"                   # faster than HTTP
+    max_request_body_size_mb: 16
+    graceful_shutdown_seconds: 30
+    enable_metrics: true
+
+# ═══════════════════════════════════════════════════════════════
+# 10. PERMIFY — 10M+ checks/sec (with cache)
+# ═══════════════════════════════════════════════════════════════
+permify:
+  server:
+    max_concurrent_requests: 10000
+    depth_limit: 5
+
+  cache:
+    type: "lru"
+    size: 100000
+    ttl_seconds: 30
+    shards: 16                             # reduce lock contention
+    negative_cache: true                   # cache deny results
+
+  batch_check:
+    max_batch_size: 100
+    timeout_ms: 5000
+
+# ═══════════════════════════════════════════════════════════════
+# 11. APISIX — 1M+ requests/sec
+# ═══════════════════════════════════════════════════════════════
+apisix:
+  nginx_config:
+    worker_processes: "auto"
+    worker_connections: 65535
+    keepalive_timeout: 120
+    keepalive_requests: 10000
+
+  upstream:
+    keepalive: 640
+    keepalive_timeout: 120
+    keepalive_requests: 10000
+
+  plugins:
+    rate_limiting:
+      election_day:
+        count: 1000000
+        time_window: 1
+        policy: "cluster"
+      normal:
+        count: 10000
+        time_window: 1
+        policy: "local"
+
+    circuit_breaker:
+      unhealthy_threshold: 5
+      healthy_threshold: 2
+      check_interval: 1
+
+  cache:
+    # Never cache HTML/API responses
+    html: "no-cache, no-store, must-revalidate"
+    # Cache static assets forever (hashed filenames)
+    assets: "public, max-age=31536000, immutable"
+    # Short cache for config/manifests
+    config: "public, max-age=3600"
+
+# ═══════════════════════════════════════════════════════════════
+# 12. LAKEHOUSE — 100K+ analytical queries/sec
+# ═══════════════════════════════════════════════════════════════
+lakehouse:
+  duckdb:
+    threads: 16
+    memory_limit: "8GB"
+    temp_directory: "/tmp/duckdb_temp"
+    enable_progress_bar: false
+    preserve_insertion_order: false
+
+  parquet:
+    compression: "zstd"
+    row_group_size: 100000
+    partition_by: ["state_code"]
+    file_size_target: "256MB"
+
+  pipeline:
+    flush_interval_rows: 100000
+    flush_interval_seconds: 60
+    bronze_retention_days: 365
+    silver_retention_days: 1825             # 5 years
+    gold_retention_days: 3650               # 10 years

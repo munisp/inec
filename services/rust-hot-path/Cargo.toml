@@ -1,0 +1,72 @@
+[package]
+name = "inec-hot-path"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-low-latency hot path for INEC election transaction processing"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Kafka - zero-copy consumer/producer (requires librdkafka-dev at build time)
+rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
+
+# Redis - async pipelining
+redis = { version = "0.27", features = ["tokio-comp", "cluster-async"] }
+
+# HTTP client for TigerBeetle/OpenSearch
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# Serialization - zero-copy
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"  # MessagePack (smaller, faster than JSON)
+flatbuffers = "24"
+
+# Concurrency
+crossbeam = "0.8"
+dashmap = "6"
+flume = "0.11"
+
+# Hashing
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+sha2 = "0.10"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Metrics
+prometheus = "0.13"
+
+# UUID
+uuid = { version = "1", features = ["v4", "fast-rng"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# System info
+num_cpus = "1"
+
+# Web framework for health/metrics
+axum = "0.7"
+tower = "0.5"
+
+# Arrow for columnar batch processing
+arrow = { version = "53", features = ["ipc"] }
+parquet = "53"
+
+[features]
+default = []
+kafka = ["rdkafka"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
