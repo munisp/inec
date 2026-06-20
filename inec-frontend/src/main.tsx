@@ -9,9 +9,30 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 )
 
-// SW registration deferred to avoid fetch interception during dev
+// SW registration with automatic update detection and cache busting
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      // Check for updates every 60 seconds
+      setInterval(() => reg.update(), 60_000);
+
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
+            // New SW activated — reload to pick up new assets
+            window.location.reload();
+          }
+        });
+      });
+    }).catch(() => {});
+
+    // Listen for SW_UPDATED messages from the service worker
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'SW_UPDATED') {
+        window.location.reload();
+      }
+    });
   });
 }

@@ -1,9 +1,27 @@
 import path from "path"
+import fs from "fs"
 import react from "@vitejs/plugin-react"
-import { defineConfig } from "vite"
+import { defineConfig, Plugin } from "vite"
+
+// Stamp sw.js with build timestamp so each deploy gets a unique cache version
+function swVersionPlugin(): Plugin {
+  return {
+    name: 'sw-version-stamp',
+    writeBundle() {
+      const swPath = path.resolve(__dirname, 'dist/sw.js');
+      if (fs.existsSync(swPath)) {
+        const content = fs.readFileSync(swPath, 'utf-8');
+        fs.writeFileSync(
+          swPath,
+          content.replace('__BUILD_TIMESTAMP__', Date.now().toString())
+        );
+      }
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), swVersionPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

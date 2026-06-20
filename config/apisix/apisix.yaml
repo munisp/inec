@@ -115,4 +115,69 @@ routes:
       nodes:
         "go-backend:8088": 1
 
+  # ── Frontend Cache Control ──
+  # index.html: NEVER cache — always serve fresh so new deploys take effect
+  - uri: /
+    upstream:
+      type: roundrobin
+      nodes:
+        "frontend:80": 1
+    plugins:
+      response-rewrite:
+        headers:
+          set:
+            Cache-Control: "no-cache, no-store, must-revalidate"
+            Pragma: "no-cache"
+            Expires: "0"
+
+  - uri: /index.html
+    upstream:
+      type: roundrobin
+      nodes:
+        "frontend:80": 1
+    plugins:
+      response-rewrite:
+        headers:
+          set:
+            Cache-Control: "no-cache, no-store, must-revalidate"
+            Pragma: "no-cache"
+            Expires: "0"
+
+  # sw.js: NEVER cache — browser must always check for new service worker
+  - uri: /sw.js
+    upstream:
+      type: roundrobin
+      nodes:
+        "frontend:80": 1
+    plugins:
+      response-rewrite:
+        headers:
+          set:
+            Cache-Control: "no-cache, no-store, must-revalidate"
+            Service-Worker-Allowed: "/"
+
+  # Hashed JS/CSS assets: cache forever (filenames contain content hashes)
+  - uri: /assets/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "frontend:80": 1
+    plugins:
+      response-rewrite:
+        headers:
+          set:
+            Cache-Control: "public, max-age=31536000, immutable"
+
+  # manifest.json: short cache so PWA updates are picked up
+  - uri: /manifest.json
+    upstream:
+      type: roundrobin
+      nodes:
+        "frontend:80": 1
+    plugins:
+      response-rewrite:
+        headers:
+          set:
+            Cache-Control: "public, max-age=3600"
+
 #END
