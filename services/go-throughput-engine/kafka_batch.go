@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/compress"
 	"go.uber.org/zap"
 )
 
@@ -60,16 +59,16 @@ func (k *KafkaBatchProducer) getWriter(topic string) *kafka.Writer {
 		return w
 	}
 
-	var codec compress.Codec
+	var codec kafka.Compression
 	switch k.cfg.KafkaCompression {
 	case "lz4":
-		codec = &compress.Lz4Codec
+		codec = kafka.Lz4
 	case "snappy":
-		codec = &compress.SnappyCodec
+		codec = kafka.Snappy
 	case "zstd":
-		codec = &compress.ZstdCodec
+		codec = kafka.Zstd
 	default:
-		codec = &compress.Lz4Codec
+		codec = kafka.Lz4
 	}
 
 	w = &kafka.Writer{

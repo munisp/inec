@@ -8,8 +8,8 @@ description = "Ultra-low-latency hot path for INEC election transaction processi
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# Kafka - zero-copy consumer/producer
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl"] }
+# Kafka - zero-copy consumer/producer (requires librdkafka-dev at build time)
+rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
 
 # Redis - async pipelining
 redis = { version = "0.27", features = ["tokio-comp", "cluster-async"] }
@@ -59,6 +59,10 @@ tower = "0.5"
 # Arrow for columnar batch processing
 arrow = { version = "53", features = ["ipc"] }
 parquet = "53"
+
+[features]
+default = []
+kafka = ["rdkafka"]
 
 [profile.release]
 opt-level = 3
