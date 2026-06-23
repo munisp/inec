@@ -1,0 +1,444 @@
+syntax = "proto3";
+
+package inec.biometric.v1;
+
+option go_package = "github.com/munisp/inec/proto/biometricv1";
+
+// ─── Biometric Processing Service (Python) ──────────────────────
+
+service BiometricProcessor {
+  rpc ExtractFingerprint(FingerprintRequest) returns (FingerprintTemplate);
+  rpc ExtractFace(FaceRequest) returns (FaceTemplate);
+  rpc ExtractIris(IrisRequest) returns (IrisTemplate);
+  rpc MatchFingerprint(MatchFingerprintRequest) returns (MatchResult);
+  rpc MatchFace(MatchFaceRequest) returns (MatchResult);
+  rpc MatchIris(MatchIrisRequest) returns (MatchResult);
+  rpc MatchMultiModal(MultiModalMatchRequest) returns (MultiModalMatchResult);
+  rpc CheckPAD(PADRequest) returns (PADResult);
+  rpc AssessQuality(QualityRequest) returns (QualityResult);
+}
+
+// ─── Biometric Vault Service (Rust) ─────────────────────────────
+
+service BiometricVault {
+  rpc EncryptTemplate(EncryptRequest) returns (EncryptResponse);
+  rpc DecryptTemplate(DecryptRequest) returns (DecryptResponse);
+  rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse);
+  rpc RevokeKey(RevokeKeyRequest) returns (RevokeKeyResponse);
+  rpc CreateCancelableTransform(CreateTransformRequest) returns (CreateTransformResponse);
+  rpc ApplyBioHash(ApplyBioHashRequest) returns (ApplyBioHashResponse);
+  rpc RevokeCancelableTransform(RevokeTransformRequest) returns (RevokeTransformResponse);
+  rpc GetVaultStats(Empty) returns (VaultStats);
+  rpc GetAuditLog(AuditLogRequest) returns (AuditLogResponse);
+}
+
+// ─── ABIS Pipeline Service (Go) ─────────────────────────────────
+
+service ABISPipeline {
+  rpc Enroll(EnrollRequest) returns (EnrollResult);
+  rpc RegisterDevice(BVASDevice) returns (DeviceRegistration);
+  rpc DeviceHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc StartCapture(CaptureRequest) returns (CaptureSession);
+  rpc CompleteCapture(CompleteCaptureRequest) returns (CompleteCaptureResponse);
+  rpc GetGalleryStats(Empty) returns (GalleryStats);
+}
+
+// ─── Common Messages ────────────────────────────────────────────
+
+message Empty {}
+
+message ImageData {
+  bytes raw_image = 1;
+  int32 width = 2;
+  int32 height = 3;
+  int32 dpi = 4;
+  string format = 5;  // "png", "jpeg", "bmp", "raw"
+}
+
+// ─── Fingerprint Messages ───────────────────────────────────────
+
+message FingerprintRequest {
+  ImageData image = 1;
+  int32 dpi = 2;
+}
+
+message Minutia {
+  int32 x = 1;
+  int32 y = 2;
+  float angle = 3;
+  string type = 4;  // "ridge_ending", "bifurcation"
+  float quality = 5;
+}
+
+message FingerprintTemplate {
+  string template_hash = 1;
+  repeated Minutia minutiae = 2;
+  int32 minutiae_count = 3;
+  string pattern_type = 4;
+  float nfiq2_score = 5;
+  repeated Point core_points = 6;
+  repeated Point delta_points = 7;
+  int32 ridge_count = 8;
+}
+
+message Point {
+  int32 x = 1;
+  int32 y = 2;
+}
+
+// ─── Face Messages ──────────────────────────────────────────────
+
+message FaceRequest {
+  ImageData image = 1;
+}
+
+message BoundingBox {
+  int32 x1 = 1;
+  int32 y1 = 2;
+  int32 x2 = 3;
+  int32 y2 = 4;
+  float confidence = 5;
+}
+
+message Landmarks {
+  Point left_eye = 1;
+  Point right_eye = 2;
+  Point nose = 3;
+  Point left_mouth = 4;
+  Point right_mouth = 5;
+}
+
+message HeadPose {
+  float yaw = 1;
+  float pitch = 2;
+  float roll = 3;
+  bool is_frontal = 4;
+}
+
+message FaceTemplate {
+  string template_hash = 1;
+  repeated float embedding = 2;
+  int32 embedding_dim = 3;
+  BoundingBox bbox = 4;
+  Landmarks landmarks = 5;
+  HeadPose head_pose = 6;
+  FaceQuality quality = 7;
+}
+
+message FaceQuality {
+  float overall = 1;
+  bool iso_compliant = 2;
+  float brightness = 3;
+  float contrast = 4;
+  float sharpness = 5;
+  repeated string rejection_reasons = 6;
+}
+
+// ─── Iris Messages ──────────────────────────────────────────────
+
+message IrisRequest {
+  ImageData image = 1;
+}
+
+message IrisTemplate {
+  string template_hash = 1;
+  bytes iris_code = 2;
+  bytes iris_mask = 3;
+  int32 code_bits = 4;
+  float quality_score = 5;
+  float usable_bits_ratio = 6;
+  IrisBoundaries boundaries = 7;
+}
+
+message IrisBoundaries {
+  Point pupil_center = 1;
+  int32 pupil_radius = 2;
+  Point iris_center = 3;
+  int32 iris_radius = 4;
+}
+
+// ─── Match Messages ─────────────────────────────────────────────
+
+message MatchFingerprintRequest {
+  FingerprintTemplate probe = 1;
+  FingerprintTemplate gallery = 2;
+}
+
+message MatchFaceRequest {
+  FaceTemplate probe = 1;
+  FaceTemplate gallery = 2;
+}
+
+message MatchIrisRequest {
+  IrisTemplate probe = 1;
+  IrisTemplate gallery = 2;
+}
+
+message MatchResult {
+  float score = 1;
+  string decision = 2;  // "match", "no_match"
+  string algorithm = 3;
+  float threshold = 4;
+  float latency_ms = 5;
+}
+
+message MultiModalMatchRequest {
+  ImageData probe_fingerprint = 1;
+  ImageData probe_face = 2;
+  ImageData probe_iris = 3;
+  ImageData gallery_fingerprint = 4;
+  ImageData gallery_face = 5;
+  ImageData gallery_iris = 6;
+  map<string, float> fusion_weights = 7;
+}
+
+message MultiModalMatchResult {
+  float fused_score = 1;
+  string decision = 2;
+  string fusion_method = 3;
+  map<string, float> modality_scores = 4;
+  repeated string modalities_used = 5;
+  float latency_ms = 6;
+}
+
+// ─── PAD Messages ───────────────────────────────────────────────
+
+message PADRequest {
+  ImageData image = 1;
+  string modality = 2;
+  string pad_level = 3;  // "level1", "level2", "level3"
+  BoundingBox face_bbox = 4;
+}
+
+message PADResult {
+  float liveness_score = 1;
+  string decision = 2;  // "live", "spoof", "uncertain"
+  string pad_level = 3;
+  string attack_type = 4;
+  float confidence = 5;
+  bool iso_30107_compliant = 6;
+  map<string, float> scores = 7;
+  float processing_time_ms = 8;
+}
+
+// ─── Quality Messages ───────────────────────────────────────────
+
+message QualityRequest {
+  ImageData image = 1;
+  string modality = 2;
+  BoundingBox face_bbox = 3;
+}
+
+message QualityResult {
+  float overall_score = 1;
+  string level = 2;
+  bool pass_threshold = 3;
+  map<string, float> metrics = 4;
+  repeated string rejection_reasons = 5;
+  float processing_time_ms = 6;
+}
+
+// ─── Vault Messages ─────────────────────────────────────────────
+
+message EncryptRequest {
+  string voter_vin = 1;
+  string modality = 2;
+  bytes template_data = 3;
+  string actor = 4;
+}
+
+message EncryptResponse {
+  string template_id = 1;
+  string key_id = 2;
+  int32 ciphertext_len = 3;
+  string created_at = 4;
+}
+
+message DecryptRequest {
+  string template_id = 1;
+  string actor = 2;
+}
+
+message DecryptResponse {
+  bytes template_data = 1;
+  int32 size_bytes = 2;
+}
+
+message RotateKeyRequest {
+  string key_id = 1;
+  string actor = 2;
+}
+
+message RotateKeyResponse {
+  string old_key_id = 1;
+  string new_key_id = 2;
+}
+
+message RevokeKeyRequest {
+  string key_id = 1;
+  string actor = 2;
+}
+
+message RevokeKeyResponse {
+  bool success = 1;
+}
+
+message CreateTransformRequest {
+  string voter_vin = 1;
+  string modality = 2;
+  string transform_type = 3;
+}
+
+message CreateTransformResponse {
+  string transform_id = 1;
+}
+
+message ApplyBioHashRequest {
+  string transform_id = 1;
+  repeated float features = 2;
+}
+
+message ApplyBioHashResponse {
+  bytes biohash = 1;
+  int32 bits = 2;
+}
+
+message RevokeTransformRequest {
+  string transform_id = 1;
+}
+
+message RevokeTransformResponse {
+  bool success = 1;
+}
+
+message VaultStats {
+  int32 total_keys = 1;
+  int32 active_keys = 2;
+  int32 rotated_keys = 3;
+  int32 revoked_keys = 4;
+  int32 total_templates = 5;
+  int32 total_audit_entries = 6;
+  string encryption_algorithm = 7;
+  string key_derivation = 8;
+}
+
+message AuditLogRequest {
+  int32 limit = 1;
+}
+
+message AuditEntry {
+  string id = 1;
+  string operation = 2;
+  string key_id = 3;
+  string voter_vin = 4;
+  string modality = 5;
+  string actor = 6;
+  bool success = 7;
+  string error_detail = 8;
+  string timestamp = 9;
+}
+
+message AuditLogResponse {
+  repeated AuditEntry entries = 1;
+}
+
+// ─── ABIS Messages ──────────────────────────────────────────────
+
+message EnrollRequest {
+  string voter_vin = 1;
+  string modality = 2;
+  string device_id = 3;
+  bytes image_data = 4;
+}
+
+message EnrollResult {
+  string voter_vin = 1;
+  string modality = 2;
+  string stage = 3;
+  string template_hash = 4;
+  string template_id = 5;
+  float quality_score = 6;
+  bool dedup_clear = 7;
+  string error = 8;
+  StageLatency latencies = 9;
+}
+
+message StageLatency {
+  float capture_ms = 1;
+  float quality_ms = 2;
+  float extract_ms = 3;
+  float dedup_ms = 4;
+  float vault_ms = 5;
+  float total_ms = 6;
+}
+
+message BVASDevice {
+  string device_id = 1;
+  string firmware_version = 2;
+  repeated string supported_modalities = 3;
+  string fingerprint_sensor = 4;
+  string fingerprint_fap_level = 5;
+  string camera_resolution = 6;
+  string iris_sensor = 7;
+  bool nfc_capable = 8;
+  string secure_element = 9;
+  string tls_version = 10;
+  int32 max_template_size = 11;
+  float quality_threshold = 12;
+  string status = 13;
+  string assigned_polling_unit = 14;
+}
+
+message DeviceRegistration {
+  string device_id = 1;
+  string status = 2;
+}
+
+message HeartbeatRequest {
+  string device_id = 1;
+  DeviceLocation location = 2;
+}
+
+message DeviceLocation {
+  double latitude = 1;
+  double longitude = 2;
+  double accuracy_meters = 3;
+}
+
+message HeartbeatResponse {
+  string status = 1;
+  string timestamp = 2;
+}
+
+message CaptureRequest {
+  string device_id = 1;
+  string voter_vin = 2;
+  string modality = 3;
+}
+
+message CaptureSession {
+  string session_id = 1;
+  string device_id = 2;
+  string voter_vin = 3;
+  string modality = 4;
+  int32 max_attempts = 5;
+  string status = 6;
+}
+
+message CompleteCaptureRequest {
+  string session_id = 1;
+  float quality = 2;
+  int32 nfiq2_score = 3;
+  int32 width = 4;
+  int32 height = 5;
+}
+
+message CompleteCaptureResponse {
+  string status = 1;
+}
+
+message GalleryStats {
+  int32 gallery_size = 1;
+  float dedup_threshold = 2;
+  map<string, float> quality_thresholds = 3;
+}
