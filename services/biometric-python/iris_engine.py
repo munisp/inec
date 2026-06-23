@@ -27,6 +27,7 @@ class IrisBoundaries:
     pupil_radius: int
     iris_center: tuple[int, int]
     iris_radius: int
+    pupil_eccentricity: float = 0.0
     eyelid_mask: Optional[np.ndarray] = field(default=None, repr=False)
     eyelash_mask: Optional[np.ndarray] = field(default=None, repr=False)
 
@@ -101,6 +102,7 @@ class IrisEngine:
 
         pupil_center = (w // 2, h // 2)
         pupil_radius = min(w, h) // 8
+        pupil_eccentricity = 0.0
 
         if contours:
             best = max(contours, key=cv2.contourArea)
@@ -112,6 +114,14 @@ class IrisEngine:
             if circularity > 0.5 and radius > 10:
                 pupil_center = (int(cx), int(cy))
                 pupil_radius = max(int(radius), 10)
+
+            if len(best) >= 5:
+                ellipse = cv2.fitEllipse(best)
+                (_, (ma, MA), _) = ellipse
+                if MA > 0:
+                    pupil_eccentricity = math.sqrt(1 - (min(ma, MA) / max(ma, MA)) ** 2)
+            else:
+                pupil_eccentricity = 1.0 - circularity
 
         edges = cv2.Canny(blurred, 30, 100)
         circles = cv2.HoughCircles(
@@ -155,6 +165,7 @@ class IrisEngine:
             pupil_radius=pupil_radius,
             iris_center=iris_center,
             iris_radius=iris_radius,
+            pupil_eccentricity=pupil_eccentricity,
             eyelid_mask=eyelid_mask,
             eyelash_mask=eyelash_mask,
         )
@@ -303,6 +314,58 @@ class IrisEngine:
         mask_bytes = np.packbits(np.array(mask_bits_list, dtype=np.uint8))
 
         return code_bytes, mask_bytes
+
+    def _assess_quality(
+        self,
+        gray: np.ndarray,
+        boundaries: IrisBoundaries,
+        usable_ratio: float,
+    ) -> float:
+        """ISO/IEC 29794-6 iris quality assessment."""
+        scores: list[float] = []
+
+        # Usable iris area ratio (most important factor)
+        scores.append(min(usable_ratio / 0.7, 1.0))
+
+        # Iris-to-pupil radius ratio (should be ~2.5–4.0)
+        if boundaries.iris_radius > 0 and boundaries.pupil_radius > 0:
+            ratio = boundaries.iris_radius / boundaries.pupil_radius
+            if 2.0 <= ratio <= 5.0:
+                scores.append(1.0)
+            elif 1.5 <= ratio < 2.0 or 5.0 < ratio <= 6.0:
+                scores.append(0.6)
+            else:
+                scores.append(0.2)
+        else:
+            scores.append(0.1)
+
+        # Image sharpness (Laplacian variance)
+        iris_region = gray[
+            max(0, boundaries.iris_center[1] - boundaries.iris_radius):
+            min(gray.shape[0], boundaries.iris_center[1] + boundaries.iris_radius),
+            max(0, boundaries.iris_center[0] - boundaries.iris_radius):
+            min(gray.shape[1], boundaries.iris_center[0] + boundaries.iris_radius),
+        ]
+        if iris_region.size > 0:
+            laplacian_var = cv2.Laplacian(iris_region, cv2.CV_64F).var()
+            sharpness = min(laplacian_var / 500.0, 1.0)
+            scores.append(sharpness)
+        else:
+            scores.append(0.1)
+
+        # Contrast within iris annulus
+        if iris_region.size > 0:
+            contrast = float(iris_region.std()) / 128.0
+            scores.append(min(contrast, 1.0))
+        else:
+            scores.append(0.1)
+
+        # Pupil circularity (lower eccentricity is better)
+        scores.append(1.0 - boundaries.pupil_eccentricity)
+
+        weights = [0.30, 0.20, 0.20, 0.15, 0.15]
+        quality = sum(s * w for s, w in zip(scores, weights))
+        return max(0.0, min(1.0, quality))
 
 
 class IrisMatcher:
