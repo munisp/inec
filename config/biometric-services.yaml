@@ -1,0 +1,87 @@
+# INEC Biometric Services Configuration
+# Production settings for Python, Rust, and Go biometric services
+
+biometric_python:
+  host: "0.0.0.0"
+  port: 8090
+  workers: 4
+  engines:
+    fingerprint:
+      enabled: true
+      min_minutiae: 12
+      max_minutiae: 120
+      dpi: 500
+      gabor_wavelength_range: [5, 15]
+      orientation_block_size: 16
+      frequency_block_size: 32
+    facial:
+      enabled: true
+      backend: "insightface"  # insightface | opencv
+      model: "buffalo_l"
+      embedding_dim: 512
+      alignment_size: [112, 112]
+      min_face_size: 40
+    iris:
+      enabled: true
+      normalized_height: 64
+      normalized_width: 512
+      gabor_scales: 4
+      gabor_orientations: 6
+      code_bits: 2048
+    pad:
+      enabled: true
+      default_level: "level2"
+      face_live_threshold: 0.55
+      fingerprint_live_threshold: 0.55
+    quality:
+      fingerprint_enrollment_threshold: 0.50
+      face_enrollment_threshold: 0.55
+      iris_enrollment_threshold: 0.50
+
+biometric_rust:
+  host: "0.0.0.0"
+  port: 8091
+  vault:
+    encryption_algorithm: "AES-256-GCM"
+    key_derivation: "HKDF-SHA256"
+    key_rotation_interval_days: 90
+    audit_retention_days: 365
+  cancelable:
+    default_transform: "biohashing"
+    seed_length_bytes: 64
+  matching:
+    fingerprint_threshold: 0.40
+    face_threshold: 0.45
+    iris_threshold: 0.32
+    fusion_weights:
+      fingerprint: 0.40
+      face: 0.35
+      iris: 0.25
+
+biometric_go:
+  host: "0.0.0.0"
+  port: 8092
+  pipeline:
+    max_image_size_mb: 10
+    capture_max_attempts: 3
+  quality_gateway:
+    fingerprint: 0.50
+    face: 0.55
+    iris: 0.50
+  dedup:
+    threshold: 0.85
+    lsh_tables: 20
+    lsh_bits: 10
+  bvas:
+    heartbeat_timeout_seconds: 300
+    default_fap_level: "FAP30"
+    default_quality_threshold: 0.70
+  score_normalization:
+    method: "z_score"  # z_score | min_max
+    default_mean: 0.5
+    default_std_dev: 0.2
+
+service_urls:
+  python: "http://biometric-python:8090"
+  rust: "http://biometric-rust:8091"
+  go: "http://biometric-go:8092"

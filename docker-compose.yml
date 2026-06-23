@@ -334,6 +334,63 @@ services:
       - kafka
     network_mode: "service:go-backend"
 
+  # ── Biometric Python Service (Image Processing + ML) ──
+  biometric-python:
+    build:
+      context: ./services/biometric-python
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      - WORKERS=4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - inec-network
+
+  # ── Biometric Rust Service (Crypto Vault + Matching) ──
+  biometric-rust:
+    build:
+      context: ./services/biometric-rust
+      dockerfile: Dockerfile
+    ports:
+      - "8091:8091"
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - inec-network
+
+  # ── Biometric Go Service (ABIS Pipeline) ──
+  biometric-go:
+    build:
+      context: ./services/biometric-go
+      dockerfile: Dockerfile
+    ports:
+      - "8092:8092"
+    environment:
+      - BIOMETRIC_PYTHON_URL=http://biometric-python:8090
+      - BIOMETRIC_RUST_URL=http://biometric-rust:8091
+    depends_on:
+      biometric-python:
+        condition: service_healthy
+      biometric-rust:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - inec-network
+
 volumes:
   app-data:
   pg-primary-data:
