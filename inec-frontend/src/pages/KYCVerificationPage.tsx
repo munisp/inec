@@ -87,10 +87,10 @@ export default function KYCVerificationPage() {
   const statusColor = (s: string) => s === 'verified' ? 'text-green-600 bg-green-50' : s === 'pending_review' ? 'text-yellow-600 bg-yellow-50' : 'text-red-600 bg-red-50';
   const statusIcon = (s: string) => s === 'verified' ? '✓' : s === 'pending_review' ? '◔' : '✕';
 
-  if (loading) return <div className="animate-pulse space-y-4 p-6">{[1,2,3].map(i => <div key={i} className="h-24 bg-zinc-100 dark:bg-zinc-800 rounded-xl" />)}</div>;
+  if (loading) return <div role="status" aria-busy="true" aria-live="polite" className="animate-pulse space-y-4 p-6"><span className="sr-only">Loading KYC verification status</span>{[1,2,3].map(i => <div key={i} className="h-24 bg-zinc-100 dark:bg-zinc-800 rounded-xl" aria-hidden="true" />)}</div>;
 
   return (
-    <div className="space-y-6">
+    <section aria-label="KYC Verification" className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">KYC Verification</h1>
@@ -104,7 +104,7 @@ export default function KYCVerificationPage() {
       </div>
 
       {/* Step indicators */}
-      <div className="flex items-center gap-2">
+      <nav aria-label="KYC verification steps" className="flex items-center gap-2">
         {['status', 'upload', 'liveness', 'result'].map((s, i) => (
           <div key={s} className="flex items-center gap-2">
             <button
@@ -113,10 +113,10 @@ export default function KYCVerificationPage() {
                 step === s ? 'bg-green-700 text-white' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400'
               }`}
             >{i + 1}</button>
-            {i < 3 && <div className={`w-8 h-0.5 ${step === s ? 'bg-green-700' : 'bg-zinc-200 dark:bg-zinc-700'}`} />}
+            {i < 3 && <div className={`w-8 h-0.5 ${step === s ? 'bg-green-700' : 'bg-zinc-200 dark:bg-zinc-700'}`} aria-hidden="true" />}
           </div>
         ))}
-      </div>
+      </nav>
 
       {step === 'status' && kycStatus && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -248,6 +248,6 @@ export default function KYCVerificationPage() {
           <button onClick={() => setStep('status')} className="mt-4 w-full py-2 bg-zinc-100 dark:bg-zinc-800 rounded-lg text-sm font-semibold hover:bg-zinc-200 dark:hover:bg-zinc-700 transition">Back to Status</button>
         </div>
       )}
-    </div>
+    </section>
   );
 }

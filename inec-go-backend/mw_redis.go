@@ -97,80 +97,68 @@ func (r *realRedisClient) Close() error {
 	return r.client.Close()
 }
 
-// --- Embedded fallback (in-memory) ---
+// --- PostgreSQL-backed fallback (persistent) ---
 
-type embeddedRedis struct {
-	mu     sync.RWMutex
-	store  map[string]redisEntry
-	subs   map[string][]func(string)
-	subsMu sync.RWMutex
+type pgRedis struct {
+	mu   sync.RWMutex
+	subs map[string][]func(string)
 }
 
-type redisEntry struct {
-	value  string
-	expiry time.Time
-}
-
-func newEmbeddedRedis() *embeddedRedis {
-	r := &embeddedRedis{
-		store: make(map[string]redisEntry),
-		subs:  make(map[string][]func(string)),
-	}
+func newPGRedis() *pgRedis {
+	db.Exec(`CREATE TABLE IF NOT EXISTS redis_cache (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT '',
+		expiry TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_redis_cache_expiry ON redis_cache(expiry) WHERE expiry IS NOT NULL`)
+	r := &pgRedis{subs: make(map[string][]func(string))}
 	go r.cleanup()
+	log.Info().Msg("Redis fallback: PostgreSQL-backed cache initialized")
 	return r
 }
 
-func (r *embeddedRedis) cleanup() {
+func (r *pgRedis) cleanup() {
 	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
-		r.mu.Lock()
-		now := time.Now()
-		for k, v := range r.store {
-			if !v.expiry.IsZero() && now.After(v.expiry) {
-				delete(r.store, k)
-			}
-		}
-		r.mu.Unlock()
+		db.Exec(`DELETE FROM redis_cache WHERE expiry IS NOT NULL AND expiry < NOW()`)
 	}
 }
 
-func (r *embeddedRedis) Get(_ context.Context, key string) (string, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	e, ok := r.store[key]
-	if !ok {
+func (r *pgRedis) Get(_ context.Context, key string) (string, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM redis_cache WHERE key=$1 AND (expiry IS NULL OR expiry > NOW())`, key).Scan(&value)
+	if err != nil {
 		return "", fmt.Errorf("key not found")
 	}
-	if !e.expiry.IsZero() && time.Now().After(e.expiry) {
-		return "", fmt.Errorf("key expired")
-	}
-	return e.value, nil
+	return value, nil
 }
 
-func (r *embeddedRedis) Set(_ context.Context, key string, value interface{}, ttl time.Duration) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var exp time.Time
+func (r *pgRedis) Set(_ context.Context, key string, value interface{}, ttl time.Duration) error {
+	v := fmt.Sprintf("%v", value)
 	if ttl > 0 {
-		exp = time.Now().Add(ttl)
+		expiry := time.Now().Add(ttl)
+		_, err := db.Exec(`INSERT INTO redis_cache (key, value, expiry, updated_at) VALUES ($1, $2, $3, NOW())
+			ON CONFLICT (key) DO UPDATE SET value=$2, expiry=$3, updated_at=NOW()`, key, v, expiry)
+		return err
 	}
-	r.store[key] = redisEntry{value: fmt.Sprintf("%v", value), expiry: exp}
-	return nil
+	_, err := db.Exec(`INSERT INTO redis_cache (key, value, expiry, updated_at) VALUES ($1, $2, NULL, NOW())
+		ON CONFLICT (key) DO UPDATE SET value=$2, expiry=NULL, updated_at=NOW()`, key, v)
+	return err
 }
 
-func (r *embeddedRedis) Del(_ context.Context, keys ...string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *pgRedis) Del(_ context.Context, keys ...string) error {
 	for _, k := range keys {
-		delete(r.store, k)
+		db.Exec(`DELETE FROM redis_cache WHERE key=$1`, k)
 	}
 	return nil
 }
 
-func (r *embeddedRedis) Publish(_ context.Context, channel string, message interface{}) error {
-	r.subsMu.RLock()
+func (r *pgRedis) Publish(_ context.Context, channel string, message interface{}) error {
+	r.mu.RLock()
 	handlers := r.subs[channel]
-	r.subsMu.RUnlock()
+	r.mu.RUnlock()
 	v, _ := json.Marshal(message)
 	for _, h := range handlers {
 		go h(string(v))
@@ -178,39 +166,41 @@ func (r *embeddedRedis) Publish(_ context.Context, channel string, message inter
 	return nil
 }
 
-func (r *embeddedRedis) Subscribe(_ context.Context, channel string, handler func(string)) error {
-	r.subsMu.Lock()
-	defer r.subsMu.Unlock()
+func (r *pgRedis) Subscribe(_ context.Context, channel string, handler func(string)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.subs[channel] = append(r.subs[channel], handler)
 	return nil
 }
 
-func (r *embeddedRedis) Incr(_ context.Context, key string) (int64, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	e := r.store[key]
-	var n int64
-	fmt.Sscanf(e.value, "%d", &n)
-	n++
-	r.store[key] = redisEntry{value: fmt.Sprintf("%d", n), expiry: e.expiry}
-	return n, nil
-}
-
-func (r *embeddedRedis) Expire(_ context.Context, key string, ttl time.Duration) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.store[key]; ok {
-		e.expiry = time.Now().Add(ttl)
-		r.store[key] = e
+func (r *pgRedis) Incr(_ context.Context, key string) (int64, error) {
+	var newVal int64
+	err := db.QueryRow(`INSERT INTO redis_cache (key, value, updated_at) VALUES ($1, '1', NOW())
+		ON CONFLICT (key) DO UPDATE SET value = (COALESCE(redis_cache.value, '0')::bigint + 1)::text, updated_at=NOW()
+		RETURNING value::bigint`, key).Scan(&newVal)
+	if err != nil {
+		return 0, err
 	}
-	return nil
+	return newVal, nil
 }
 
-func (r *embeddedRedis) Ping() MWStatus {
-	return MWStatus{Name: "Redis", Connected: true, Mode: "embedded", Latency: "0.0ms", Details: "in-memory store with TTL"}
+func (r *pgRedis) Expire(_ context.Context, key string, ttl time.Duration) error {
+	expiry := time.Now().Add(ttl)
+	_, err := db.Exec(`UPDATE redis_cache SET expiry=$2, updated_at=NOW() WHERE key=$1`, key, expiry)
+	return err
 }
 
-func (r *embeddedRedis) Close() error { return nil }
+func (r *pgRedis) Ping() MWStatus {
+	var keyCount int
+	db.QueryRow(`SELECT COUNT(*) FROM redis_cache WHERE expiry IS NULL OR expiry > NOW()`).Scan(&keyCount)
+	return MWStatus{
+		Name: "Redis", Connected: true, Mode: "pg-backed",
+		Latency: "< 1ms",
+		Details: fmt.Sprintf("PostgreSQL-persisted cache, %d active keys", keyCount),
+	}
+}
+
+func (r *pgRedis) Close() error { return nil }
 
 // --- Init ---
 
@@ -242,6 +232,6 @@ func initRedisClient() RedisClient {
 		log.Warn().Str("addr", redisAddr).Msg("Redis unreachable, falling back to embedded")
 		client.Close()
 	}
-	log.Info().Msg("Redis using embedded in-memory store")
-	return newEmbeddedRedis()
+	log.Info().Msg("Redis using PostgreSQL-backed cache (persistent)")
+	return newPGRedis()
 }

@@ -101,6 +101,18 @@ export default function RootLayout() {
         <Stack.Screen name="integrity" options={{ title: 'Integrity Score' }} />
         <Stack.Screen name="compliance" options={{ title: 'Compliance Report' }} />
         <Stack.Screen name="tv-dashboard" options={{ title: 'Live Results' }} />
+        <Stack.Screen name="bvas-sync" options={{ title: 'BVAS Sync' }} />
+        <Stack.Screen name="blockchain" options={{ title: 'Blockchain Ledger' }} />
+        <Stack.Screen name="citizen-portal" options={{ title: 'Citizen Portal' }} />
+        <Stack.Screen name="observer-monitoring" options={{ title: 'Observer Monitoring' }} />
+        <Stack.Screen name="voter-registration" options={{ title: 'Voter Registration' }} />
+        <Stack.Screen name="sms-verification" options={{ title: 'SMS/USSD Verification' }} />
+        <Stack.Screen name="export-center" options={{ title: 'Export Center' }} />
+        <Stack.Screen name="predictive-analytics" options={{ title: 'Predictive Analytics' }} />
+        <Stack.Screen name="data-validation" options={{ title: 'Data Validation' }} />
+        <Stack.Screen name="duplicate-detection" options={{ title: 'Duplicate Detection' }} />
+        <Stack.Screen name="enrollment-kiosk" options={{ title: 'Enrollment Kiosk' }} />
+        <Stack.Screen name="hardware-biometric" options={{ title: 'Hardware Biometric' }} />
       </Stack>
     </View>
   );

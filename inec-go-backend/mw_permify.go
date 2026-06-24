@@ -135,17 +135,57 @@ func (p *permifyHTTPClient) Status() MWStatus {
 
 func (p *permifyHTTPClient) Close() error { return nil }
 
+// Zanzibar-style permission model: entity#relation@subject
+// Schema: election#admin@user:alice, polling_unit#presiding_officer@user:bob
 var permifyRBAC = map[string]map[string]bool{
-	"admin":             {"submit_result": true, "validate_result": true, "finalize_result": true, "dispute_result": true, "create_election": true, "update_election": true, "view_audit": true, "manage_incidents": true, "export_data": true, "view_dashboard": true},
-	"presiding_officer": {"submit_result": true, "view_dashboard": true},
-	"collation_officer": {"validate_result": true, "finalize_result": true, "view_dashboard": true, "view_audit": true},
-	"observer":          {"dispute_result": true, "view_audit": true, "view_dashboard": true},
-	"public":            {"view_dashboard": true},
+	"admin":             {"submit_result": true, "validate_result": true, "finalize_result": true, "dispute_result": true, "create_election": true, "update_election": true, "view_audit": true, "manage_incidents": true, "export_data": true, "view_dashboard": true, "manage_users": true, "rotate_keys": true, "manage_bvas": true, "resolve_duplicates": true, "manage_compliance": true},
+	"presiding_officer": {"submit_result": true, "view_dashboard": true, "accredit_voter": true, "manage_bvas": true, "report_incident": true},
+	"collation_officer": {"validate_result": true, "finalize_result": true, "view_dashboard": true, "view_audit": true, "collate_results": true},
+	"observer":          {"dispute_result": true, "view_audit": true, "view_dashboard": true, "observe_election": true, "report_incident": true},
+	"returning_officer": {"finalize_result": true, "declare_result": true, "view_dashboard": true, "view_audit": true, "collate_results": true},
+	"ict_officer":       {"manage_bvas": true, "view_dashboard": true, "view_audit": true, "troubleshoot_device": true},
+	"security":          {"view_dashboard": true, "view_audit": true, "manage_incidents": true, "escort_materials": true},
+	"public":            {"view_dashboard": true, "view_results": true},
 }
 
-type embeddedPermify struct{}
+type pgPermify struct{}
 
-func (p *embeddedPermify) Check(_ context.Context, check PermifyCheck) (bool, error) {
+func newPGPermify() *pgPermify {
+	db.Exec(`CREATE TABLE IF NOT EXISTS permify_relationships (
+		id SERIAL PRIMARY KEY,
+		subject TEXT NOT NULL,
+		subject_type TEXT NOT NULL,
+		relation TEXT NOT NULL,
+		resource TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(subject, subject_type, relation, resource, resource_type)
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_permify_subject ON permify_relationships(subject, subject_type)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_permify_resource ON permify_relationships(resource, resource_type)`)
+	log.Info().Int("roles", len(permifyRBAC)).Msg("Permify: PostgreSQL-backed Zanzibar model initialized")
+	return &pgPermify{}
+}
+
+func (p *pgPermify) Check(_ context.Context, check PermifyCheck) (bool, error) {
+	// Check direct relationship in PG
+	var count int
+	db.QueryRow(`SELECT COUNT(*) FROM permify_relationships 
+		WHERE subject=$1 AND subject_type=$2 AND relation=$3 AND resource=$4 AND resource_type=$5`,
+		check.Subject, check.SubjectType, check.Permission, check.Resource, check.ResourceType).Scan(&count)
+	if count > 0 {
+		return true, nil
+	}
+
+	// Check role-based wildcard relationships
+	db.QueryRow(`SELECT COUNT(*) FROM permify_relationships 
+		WHERE subject=$1 AND subject_type=$2 AND relation=$3 AND resource='*' AND resource_type=$4`,
+		check.Subject, check.SubjectType, check.Permission, check.ResourceType).Scan(&count)
+	if count > 0 {
+		return true, nil
+	}
+
+	// Fall back to static RBAC
 	if perms, ok := permifyRBAC[check.SubjectType]; ok {
 		return perms[check.Permission], nil
 	}
@@ -155,32 +195,61 @@ func (p *embeddedPermify) Check(_ context.Context, check PermifyCheck) (bool, er
 	return false, nil
 }
 
-func (p *embeddedPermify) WriteRelationship(_ context.Context, _, _, _, _, _ string) error {
-	return nil
+func (p *pgPermify) WriteRelationship(_ context.Context, subject, subjectType, relation, resource, resourceType string) error {
+	_, err := db.Exec(`INSERT INTO permify_relationships (subject, subject_type, relation, resource, resource_type)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+		subject, subjectType, relation, resource, resourceType)
+	return err
 }
 
-func (p *embeddedPermify) DeleteRelationship(_ context.Context, _, _, _, _, _ string) error {
-	return nil
+func (p *pgPermify) DeleteRelationship(_ context.Context, subject, subjectType, relation, resource, resourceType string) error {
+	_, err := db.Exec(`DELETE FROM permify_relationships 
+		WHERE subject=$1 AND subject_type=$2 AND relation=$3 AND resource=$4 AND resource_type=$5`,
+		subject, subjectType, relation, resource, resourceType)
+	return err
 }
 
-func (p *embeddedPermify) LookupResources(_ context.Context, subjectType, _, permission, _ string) ([]string, error) {
-	if perms, ok := permifyRBAC[subjectType]; ok {
-		if perms[permission] {
-			return []string{"*"}, nil
+func (p *pgPermify) LookupResources(_ context.Context, subjectType, subjectID, permission, resourceType string) ([]string, error) {
+	rows, err := db.Query(`SELECT resource FROM permify_relationships 
+		WHERE subject=$1 AND subject_type=$2 AND relation=$3 AND resource_type=$4`,
+		subjectID, subjectType, permission, resourceType)
+	if err != nil {
+		// Fall back to RBAC
+		if perms, ok := permifyRBAC[subjectType]; ok {
+			if perms[permission] {
+				return []string{"*"}, nil
+			}
+		}
+		return nil, nil
+	}
+	defer rows.Close()
+	var resources []string
+	for rows.Next() {
+		var res string
+		rows.Scan(&res)
+		resources = append(resources, res)
+	}
+	if len(resources) == 0 {
+		if perms, ok := permifyRBAC[subjectType]; ok {
+			if perms[permission] {
+				return []string{"*"}, nil
+			}
 		}
 	}
-	return nil, nil
+	return resources, nil
 }
 
-func (p *embeddedPermify) Status() MWStatus {
+func (p *pgPermify) Status() MWStatus {
+	var relCount int
+	db.QueryRow(`SELECT COUNT(*) FROM permify_relationships`).Scan(&relCount)
 	return MWStatus{
-		Name: "Permify", Connected: true, Mode: "embedded",
-		Latency: "0.0ms",
-		Details: fmt.Sprintf("local RBAC with %d roles", len(permifyRBAC)),
+		Name: "Permify", Connected: true, Mode: "pg-zanzibar",
+		Latency: "< 1ms",
+		Details: fmt.Sprintf("PostgreSQL Zanzibar model, %d roles, %d relationships", len(permifyRBAC), relCount),
 	}
 }
 
-func (p *embeddedPermify) Close() error { return nil }
+func (p *pgPermify) Close() error { return nil }
 
 func initPermifyClient() PermifyClient {
 	permifyURL := envOrDefault("PERMIFY_URL", "")
@@ -198,6 +267,6 @@ func initPermifyClient() PermifyClient {
 		}
 		log.Warn().Str("url", permifyURL).Msg("Permify unreachable, falling back to local RBAC")
 	}
-	log.Info().Msg("Permify using embedded local RBAC")
-	return &embeddedPermify{}
+	log.Info().Msg("Permify using PostgreSQL-backed Zanzibar model")
+	return newPGPermify()
 }

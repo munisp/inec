@@ -68,7 +68,12 @@ func main() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
+		if os.Getenv("INEC_ENV") == "development" || os.Getenv("INEC_ENV") == "" {
+			dsn = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
+			log.Warn().Msg("DATABASE_URL not set — using local dev default")
+		} else {
+			log.Fatal().Msg("DATABASE_URL environment variable is required in production")
+		}
 	}
 
 	db = openDatabase(dsn)
@@ -130,6 +135,11 @@ func main() {
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
 	initOpenAPIRoutes()
+
+	// Production compliance, stablecoin, and USSD engines
+	initComplianceEngine()
+	initStablecoinEngine()
+	initUSSDEngine()
 
 	mwHub = initMiddlewareHub()
 	wsHub = newWebSocketHub()
@@ -293,6 +303,21 @@ func main() {
 	r.HandleFunc("/kyb/verify", adminOnly(handleKYBVerify)).Methods("POST")
 	r.HandleFunc("/kyb/status", readAuth(handleKYBStatus)).Methods("GET")
 
+	// NIN/NIMC — national identity verification
+	r.HandleFunc("/compliance/nin/verify", adminOnly(handleNINVerify)).Methods("POST")
+	r.HandleFunc("/compliance/bvn/verify", adminOnly(handleBVNVerify)).Methods("POST")
+	r.HandleFunc("/compliance/cac/verify", adminOnly(handleCACVerify)).Methods("POST")
+	r.HandleFunc("/compliance/sanctions/screen", adminOnly(handleSanctionsScreen)).Methods("POST")
+	r.HandleFunc("/compliance/dashboard", adminOnly(handleComplianceDashboard)).Methods("GET")
+
+	// Stablecoin / CBDC / eNaira — election fund management
+	r.HandleFunc("/stablecoin/wallets", adminOnly(handleListWallets)).Methods("GET")
+	r.HandleFunc("/stablecoin/wallets/create", adminOnly(handleCreateWallet)).Methods("POST")
+	r.HandleFunc("/stablecoin/wallets/get", adminOnly(handleGetWallet)).Methods("GET")
+	r.HandleFunc("/stablecoin/transfer", adminOnly(handleTransfer)).Methods("POST")
+	r.HandleFunc("/stablecoin/transactions", adminOnly(handleWalletTransactions)).Methods("GET")
+	r.HandleFunc("/stablecoin/dashboard", adminOnly(handleStablecoinDashboard)).Methods("GET")
+
 	// Data Security — encryption status, classification, audit events
 	r.HandleFunc("/security/data-status", adminOnly(handleDataSecurityStatus)).Methods("GET")
 	r.HandleFunc("/security/data-classification", adminOnly(handleDataClassificationList)).Methods("GET")
@@ -302,6 +327,8 @@ func main() {
 	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
 	r.HandleFunc("/sms/stats", readAuth(handleSMSStats)).Methods("GET")
 	r.HandleFunc("/ussd/gateway", authRequired(handleUSSDGateway)).Methods("POST")
+	r.HandleFunc("/ussd/session", authRequired(handleUSSDSession)).Methods("POST")
+	r.HandleFunc("/ussd/dashboard", adminOnly(handleUSSDDashboard)).Methods("GET")
 
 	// AI Analytics (proxy to Python service) — auth required
 	r.HandleFunc("/ai/anomalies", readAuth(handleAIAnomalies)).Methods("GET")

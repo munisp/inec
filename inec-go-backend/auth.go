@@ -23,13 +23,19 @@ var jwtSecret []byte
 func init() {
 	s := os.Getenv("JWT_SECRET")
 	if s == "" {
-		// Generate a random secret at startup if none provided (dev mode only)
-		log.Warn().Msg("JWT_SECRET not set — using random ephemeral key")
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			log.Fatal().Err(err).Msg("failed to generate random JWT secret")
+		if os.Getenv("INEC_ENV") == "development" || os.Getenv("INEC_ENV") == "" {
+			log.Warn().Msg("JWT_SECRET not set — generating ephemeral key (dev mode only)")
+			b := make([]byte, 32)
+			if _, err := rand.Read(b); err != nil {
+				log.Fatal().Err(err).Msg("failed to generate random JWT secret")
+			}
+			s = base64.RawURLEncoding.EncodeToString(b)
+		} else {
+			log.Fatal().Msg("JWT_SECRET environment variable is required in production (set INEC_ENV=development to allow ephemeral keys)")
 		}
-		s = base64.RawURLEncoding.EncodeToString(b)
+	}
+	if len(s) < 32 {
+		log.Fatal().Msg("JWT_SECRET must be at least 32 characters")
 	}
 	jwtSecret = []byte(s)
 }

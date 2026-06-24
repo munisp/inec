@@ -75,7 +75,7 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, []);
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+  if (loading) return <div role="status" aria-busy="true" aria-live="polite" className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" aria-hidden="true" /><span className="sr-only">Loading dashboard data</span></div>;
 
   if (!data) return (
     <div className="flex flex-col items-center justify-center h-64 gap-4">
@@ -96,7 +96,7 @@ export default function DashboardPage() {
   ].filter(s => s.value > 0);
 
   return (
-    <div className="space-y-6">
+    <section aria-label="Election Dashboard" className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-zinc-900">{data.election.title}</h2>
@@ -312,6 +312,6 @@ export default function DashboardPage() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </section>
   );
 }

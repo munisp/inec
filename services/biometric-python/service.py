@@ -30,6 +30,12 @@ from quality_engine import (
     FingerprintQualityAssessor,
     IrisQualityAssessor,
 )
+from ml_inference import (
+    MLPADInference,
+    MLQualityInference,
+    generate_all_models,
+    model_status,
+)
 
 log = structlog.get_logger()
 
@@ -47,12 +53,20 @@ fingerprint_pad = FingerprintPADEngine()
 fp_quality = FingerprintQualityAssessor()
 face_quality = FaceQualityAssessor()
 iris_quality = IrisQualityAssessor()
+ml_pad = MLPADInference()
+ml_quality = MLQualityInference()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global facial_engine
     facial_engine = FacialEngine()
+    # Generate/load ML model weights
+    try:
+        results = generate_all_models()
+        log.info("ml_models_initialized", results=results)
+    except Exception as e:
+        log.warning("ml_model_init_failed", error=str(e))
     # Initialize PostgreSQL audit logging
     try:
         from pg_audit import init_pool, close_pool
@@ -449,6 +463,83 @@ async def quality_assess(req: QualityRequest):
         }
     except Exception as e:
         REQUESTS.labels(endpoint="quality_assess", status="error").inc()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── ML Models ───────────────────────────────────────────────────
+@app.get("/models/status")
+async def models_status():
+    return model_status()
+
+
+@app.post("/models/generate")
+async def models_generate(force: bool = False):
+    results = generate_all_models(force=force)
+    return {"generated": results}
+
+
+@app.post("/pad/ml-check")
+async def pad_ml_check(req: PADRequest):
+    """PAD check using ML model with handcrafted fallback."""
+    start = time.monotonic()
+    try:
+        img = decode_image(base64.b64decode(req.image))
+        level = PADLevel(req.pad_level)
+
+        ml_result = None
+        if req.modality == "fingerprint":
+            ml_result = ml_pad.predict_fingerprint_pad(img)
+        elif req.modality == "iris":
+            ml_result = ml_pad.predict_iris_pad(img)
+        else:
+            ml_result = ml_pad.predict_face_pad(img)
+
+        # Handcrafted fallback
+        if req.modality == "fingerprint":
+            hc_result = fingerprint_pad.check(img)
+        else:
+            bbox = tuple(req.face_bbox) if req.face_bbox else None
+            hc_result = face_pad.check(img, face_bbox=bbox, pad_level=level)
+
+        if ml_result is not None:
+            # Fuse ML and handcrafted: 60% ML, 40% handcrafted
+            fused_score = ml_result["liveness_score"] * 0.6 + hc_result.liveness_score * 0.4
+            method = "ml_fused"
+        else:
+            fused_score = hc_result.liveness_score
+            method = "handcrafted_only"
+
+        from pad_engine import PADDecision
+        if fused_score >= 0.55:
+            decision = "live"
+        elif fused_score <= 0.35:
+            decision = "spoof"
+        else:
+            decision = "uncertain"
+
+        REQUESTS.labels(endpoint="pad_ml_check", status="success").inc()
+        LATENCY.labels(endpoint="pad_ml_check").observe(time.monotonic() - start)
+
+        return {
+            "fused_liveness_score": round(fused_score, 4),
+            "decision": decision,
+            "method": method,
+            "ml_result": ml_result,
+            "handcrafted_result": {
+                "liveness_score": hc_result.liveness_score,
+                "texture": hc_result.texture_score,
+                "color": hc_result.color_score,
+                "moire": hc_result.moire_score,
+                "specular": hc_result.specular_score,
+                "frequency": hc_result.frequency_score,
+            },
+            "pad_level": level.value,
+            "attack_type": hc_result.attack_type.value,
+            "confidence": round(abs(fused_score - 0.5) * 2, 4),
+            "processing_time_ms": round((time.monotonic() - start) * 1000, 2),
+        }
+    except Exception as e:
+        REQUESTS.labels(endpoint="pad_ml_check", status="error").inc()
         raise HTTPException(status_code=400, detail=str(e))
 
 
