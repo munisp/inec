@@ -27,16 +27,16 @@ pip install opencv-python-headless scikit-image scipy numpy fastapi uvicorn pyya
 ```bash
 cd services/biometric-rust
 cargo test
-# Expected: 15 tests pass (5 vault + 4 cancelable + 6 matching)
-# Key assertions:
-# - encrypt_decrypt_roundtrip: ciphertext != plaintext, decrypted == original
-# - key_rotation: new_key_id != old, data still decryptable
-# - revoked_key_blocks_decrypt: Err on decrypt
-# - tampered_ciphertext_detected: XOR'd byte → auth failure
+# Expected: 12 tests total — 6 passed, 0 failed, 6 ignored
+# The 6 vault + cancelable tests require a PostgreSQL connection and are #[ignore]d
+# The 6 matching tests run without infrastructure:
 # - fingerprint_self_match: score > 0.9, decision=Match
 # - face_self_match: score ≈ 1.0 (within 1e-6)
 # - iris_self_match: score ≈ 1.0 (within 1e-6)
 # - score_fusion: weighted_sum(0.8*0.5 + 0.7*0.5) ≈ 0.75
+# - zscore_normalization: normalizes raw scores to z-scores
+# - 1n_identification: 1:N identification returns ranked candidates
+# To run vault tests (need PG): cargo test -- --ignored
 ```
 
 ### 2. Python Fingerprint Engine
