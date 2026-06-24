@@ -1,6 +1,8 @@
 // Package main implements the production ABIS (Automated Biometric Identification System)
 // enrollment pipeline for the INEC election platform.
 //
+// ALL STATE PERSISTED TO POSTGRESQL — zero in-memory storage.
+//
 // Pipeline stages:
 //  1. Capture — receive biometric image from BVAS device
 //  2. Quality Check — NFIQ2 quality assessment, reject poor samples
@@ -21,8 +23,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"sort"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -60,12 +60,12 @@ type EnrollmentResult struct {
 }
 
 type StageLatency struct {
-	CaptureMs   float64 `json:"capture_ms"`
-	QualityMs   float64 `json:"quality_ms"`
-	ExtractMs   float64 `json:"extract_ms"`
-	DedupMs     float64 `json:"dedup_ms"`
-	VaultMs     float64 `json:"vault_ms"`
-	TotalMs     float64 `json:"total_ms"`
+	CaptureMs float64 `json:"capture_ms"`
+	QualityMs float64 `json:"quality_ms"`
+	ExtractMs float64 `json:"extract_ms"`
+	DedupMs   float64 `json:"dedup_ms"`
+	VaultMs   float64 `json:"vault_ms"`
+	TotalMs   float64 `json:"total_ms"`
 }
 
 type TemplateData struct {
@@ -89,24 +89,22 @@ type MinutiaPoint struct {
 	Type  string  `json:"type"`
 }
 
-// ABISPipeline orchestrates the enrollment process.
+// ABISPipeline orchestrates enrollment — all state in PostgreSQL via PGStore.
 type ABISPipeline struct {
-	pythonURL   string // biometric-python service URL
-	rustURL     string // biometric-rust vault service URL
-	gallery     *BiometricGallery
+	pythonURL   string   // biometric-python service URL
+	rustURL     string   // biometric-rust vault service URL
+	store       *PGStore // PostgreSQL persistence
 	qualityGate *QualityGateway
 	dedupEngine *DeduplicationEngine
-	auditLog    *AuditLog
 }
 
-func NewABISPipeline(pythonURL, rustURL string) *ABISPipeline {
+func NewABISPipeline(pythonURL, rustURL string, store *PGStore) *ABISPipeline {
 	return &ABISPipeline{
 		pythonURL:   pythonURL,
 		rustURL:     rustURL,
-		gallery:     NewBiometricGallery(),
+		store:       store,
 		qualityGate: NewQualityGateway(),
-		dedupEngine: NewDeduplicationEngine(),
-		auditLog:    NewAuditLog(),
+		dedupEngine: NewDeduplicationEngine(store),
 	}
 }
 
@@ -137,14 +135,14 @@ func (p *ABISPipeline) Enroll(ctx context.Context, req EnrollmentRequest) Enroll
 	if err != nil {
 		result.Stage = StageFailed
 		result.Error = fmt.Sprintf("quality check failed: %v", err)
-		p.auditLog.Log("enrollment_failed", req.VoterVIN, req.Modality, result.Error)
+		p.store.LogAudit(ctx, "enrollment_failed", req.VoterVIN, req.Modality, result.Error)
 		return result
 	}
 	if !qr.PassThreshold {
 		result.Stage = StageFailed
 		result.QualityScore = qr.OverallScore
 		result.Error = fmt.Sprintf("quality below threshold: %.2f (reasons: %v)", qr.OverallScore, qr.RejectionReasons)
-		p.auditLog.Log("enrollment_quality_rejected", req.VoterVIN, req.Modality, result.Error)
+		p.store.LogAudit(ctx, "enrollment_quality_rejected", req.VoterVIN, req.Modality, result.Error)
 		return result
 	}
 	result.QualityScore = qr.OverallScore
@@ -156,7 +154,7 @@ func (p *ABISPipeline) Enroll(ctx context.Context, req EnrollmentRequest) Enroll
 	if err != nil {
 		result.Stage = StageFailed
 		result.Error = fmt.Sprintf("template extraction failed: %v", err)
-		p.auditLog.Log("enrollment_extract_failed", req.VoterVIN, req.Modality, result.Error)
+		p.store.LogAudit(ctx, "enrollment_extract_failed", req.VoterVIN, req.Modality, result.Error)
 		return result
 	}
 	tmpl.VoterVIN = req.VoterVIN
@@ -164,14 +162,14 @@ func (p *ABISPipeline) Enroll(ctx context.Context, req EnrollmentRequest) Enroll
 	result.TemplateHash = tmpl.TemplateHash
 	result.Latencies.ExtractMs = float64(time.Since(extractStart).Microseconds()) / 1000
 
-	// Stage 4: Deduplication check
+	// Stage 4: Deduplication check (queries PostgreSQL gallery)
 	dedupStart := time.Now()
-	dupVIN, isDup := p.dedupEngine.CheckDuplicate(tmpl, p.gallery)
+	dupVIN, isDup := p.dedupEngine.CheckDuplicate(ctx, tmpl)
 	if isDup {
 		result.Stage = StageFailed
 		result.DedupClear = false
 		result.Error = fmt.Sprintf("duplicate detected: matches voter %s", dupVIN)
-		p.auditLog.Log("enrollment_duplicate", req.VoterVIN, req.Modality,
+		p.store.LogAudit(ctx, "enrollment_duplicate", req.VoterVIN, req.Modality,
 			fmt.Sprintf("matches %s", dupVIN))
 		return result
 	}
@@ -184,17 +182,27 @@ func (p *ABISPipeline) Enroll(ctx context.Context, req EnrollmentRequest) Enroll
 	if err != nil {
 		result.Stage = StageFailed
 		result.Error = fmt.Sprintf("vault storage failed: %v", err)
-		p.auditLog.Log("enrollment_vault_failed", req.VoterVIN, req.Modality, result.Error)
+		p.store.LogAudit(ctx, "enrollment_vault_failed", req.VoterVIN, req.Modality, result.Error)
 		return result
 	}
 	result.TemplateID = templateID
 	result.Latencies.VaultMs = float64(time.Since(vaultStart).Microseconds()) / 1000
 
-	// Stage 6: Complete — add to gallery
-	p.gallery.Add(tmpl)
+	// Stage 6: Complete — persist template to PostgreSQL gallery
+	if err := p.store.AddToGallery(ctx, tmpl); err != nil {
+		log.Error().Err(err).Msg("failed to persist template to gallery")
+	}
+
+	// Index in LSH for future dedup checks
+	hash := sha256.Sum256([]byte(tmpl.TemplateHash))
+	for t := 0; t < 20; t++ { // 20 hash tables
+		h := computeLSHHash(t, hash[:], 10)
+		p.store.InsertLSH(ctx, req.VoterVIN, t, h)
+	}
+
 	result.Stage = StageComplete
 	result.Latencies.TotalMs = float64(time.Since(start).Microseconds()) / 1000
-	p.auditLog.Log("enrollment_complete", req.VoterVIN, req.Modality,
+	p.store.LogAudit(ctx, "enrollment_complete", req.VoterVIN, req.Modality,
 		fmt.Sprintf("quality=%.2f template=%s", result.QualityScore, result.TemplateID))
 
 	return result
@@ -202,11 +210,11 @@ func (p *ABISPipeline) Enroll(ctx context.Context, req EnrollmentRequest) Enroll
 
 // QualityResponse from the Python biometric service.
 type QualityResponse struct {
-	OverallScore     float64  `json:"overall_score"`
-	Level            string   `json:"level"`
-	PassThreshold    bool     `json:"pass_threshold"`
+	OverallScore     float64                `json:"overall_score"`
+	Level            string                 `json:"level"`
+	PassThreshold    bool                   `json:"pass_threshold"`
 	Metrics          map[string]interface{} `json:"metrics"`
-	RejectionReasons []string `json:"rejection_reasons"`
+	RejectionReasons []string               `json:"rejection_reasons"`
 }
 
 func (p *ABISPipeline) checkQuality(ctx context.Context, imageData []byte, modality string) (*QualityResponse, error) {
@@ -239,7 +247,6 @@ func (p *ABISPipeline) checkQuality(ctx context.Context, imageData []byte, modal
 
 func (p *ABISPipeline) extractTemplate(ctx context.Context, imageData []byte, modality string) (*TemplateData, error) {
 	endpoint := fmt.Sprintf("/%s/extract", modality)
-	// For extract endpoints, we POST multipart form data
 	payload := map[string]interface{}{
 		"image":    encodeBase64(imageData),
 		"modality": modality,
@@ -264,7 +271,6 @@ func (p *ABISPipeline) extractTemplate(ctx context.Context, imageData []byte, mo
 	if h, ok := raw["template_hash"].(string); ok {
 		tmpl.TemplateHash = h
 	} else {
-		// Compute hash from image data
 		hash := sha256.Sum256(imageData)
 		tmpl.TemplateHash = hex.EncodeToString(hash[:])
 	}
@@ -298,183 +304,56 @@ func (p *ABISPipeline) storeInVault(ctx context.Context, vin, modality string, t
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("decode vault response: %w", err)
 	}
 
-	if tid, ok := result["template_id"].(string); ok {
-		return tid, nil
-	}
-
-	if errMsg, ok := result["error"].(string); ok {
-		return "", fmt.Errorf("vault error: %s", errMsg)
+	if id, ok := result["template_id"].(string); ok {
+		return id, nil
 	}
 
 	return "", fmt.Errorf("unexpected vault response")
 }
 
-// ─── Biometric Gallery ──────────────────────────────────────────
-
-type BiometricGallery struct {
-	mu        sync.RWMutex
-	templates map[string]*TemplateData // keyed by voter_vin:modality
-	lshIndex  *LSHIndex
-}
-
-func NewBiometricGallery() *BiometricGallery {
-	return &BiometricGallery{
-		templates: make(map[string]*TemplateData),
-		lshIndex:  NewLSHIndex(20, 10), // 20 hash tables, 10 hash bits
-	}
-}
-
-func (g *BiometricGallery) Add(tmpl *TemplateData) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	key := fmt.Sprintf("%s:%s", tmpl.VoterVIN, tmpl.Modality)
-	g.templates[key] = tmpl
-
-	// Index for LSH-based dedup
-	hash := sha256.Sum256([]byte(tmpl.TemplateHash))
-	g.lshIndex.Insert(tmpl.VoterVIN, hash[:])
-}
-
-func (g *BiometricGallery) GetAll() []*TemplateData {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
-	result := make([]*TemplateData, 0, len(g.templates))
-	for _, t := range g.templates {
-		result = append(result, t)
-	}
-	return result
-}
-
-func (g *BiometricGallery) Size() int {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return len(g.templates)
-}
-
-// ─── LSH Index (Locality-Sensitive Hashing) ─────────────────────
-
-type LSHIndex struct {
-	numTables   int
-	numBits     int
-	tables      []map[uint64][]string
-	hyperplanes [][][]byte
-	mu          sync.RWMutex
-}
-
-func NewLSHIndex(numTables, numBits int) *LSHIndex {
-	tables := make([]map[uint64][]string, numTables)
-	hyperplanes := make([][][]byte, numTables)
-
-	for t := 0; t < numTables; t++ {
-		tables[t] = make(map[uint64][]string)
-		hyperplanes[t] = make([][]byte, numBits)
-		for b := 0; b < numBits; b++ {
-			hp := make([]byte, 32)
-			// Deterministic hyperplanes from table+bit index
-			h := sha256.Sum256([]byte(fmt.Sprintf("lsh_%d_%d", t, b)))
-			copy(hp, h[:])
-			hyperplanes[t][b] = hp
-		}
-	}
-
-	return &LSHIndex{
-		numTables:   numTables,
-		numBits:     numBits,
-		tables:      tables,
-		hyperplanes: hyperplanes,
-	}
-}
-
-func (idx *LSHIndex) Insert(id string, data []byte) {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	for t := 0; t < idx.numTables; t++ {
-		hash := idx.computeHash(t, data)
-		idx.tables[t][hash] = append(idx.tables[t][hash], id)
-	}
-}
-
-func (idx *LSHIndex) Query(data []byte) []string {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-
-	candidates := make(map[string]int)
-	for t := 0; t < idx.numTables; t++ {
-		hash := idx.computeHash(t, data)
-		for _, id := range idx.tables[t][hash] {
-			candidates[id]++
-		}
-	}
-
-	// Sort by number of hash table hits (more hits = more likely match)
-	type candidate struct {
-		id   string
-		hits int
-	}
-	sorted := make([]candidate, 0, len(candidates))
-	for id, hits := range candidates {
-		sorted = append(sorted, candidate{id, hits})
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].hits > sorted[j].hits
-	})
-
-	result := make([]string, 0, len(sorted))
-	for _, c := range sorted {
-		result = append(result, c.id)
-	}
-	return result
-}
-
-func (idx *LSHIndex) computeHash(table int, data []byte) uint64 {
-	var hash uint64
-	for b := 0; b < idx.numBits; b++ {
-		hp := idx.hyperplanes[table][b]
-		dotProduct := 0
-		for i := 0; i < len(data) && i < len(hp); i++ {
-			dotProduct += int(data[i]) * int(hp[i])
-		}
-		if dotProduct > 0 {
-			hash |= 1 << uint(b)
-		}
-	}
-	return hash
-}
-
-// ─── Deduplication Engine ───────────────────────────────────────
+// ─── Deduplication Engine (PostgreSQL-backed) ───────────────────
 
 type DeduplicationEngine struct {
 	threshold float64 // similarity threshold for duplicate detection
+	store     *PGStore
 }
 
-func NewDeduplicationEngine() *DeduplicationEngine {
+func NewDeduplicationEngine(store *PGStore) *DeduplicationEngine {
 	return &DeduplicationEngine{
 		threshold: 0.85,
+		store:     store,
 	}
 }
 
-func (d *DeduplicationEngine) CheckDuplicate(probe *TemplateData, gallery *BiometricGallery) (string, bool) {
-	gallery.mu.RLock()
-	defer gallery.mu.RUnlock()
-
-	// Use LSH for blocking — only compare against candidates
+func (d *DeduplicationEngine) CheckDuplicate(ctx context.Context, probe *TemplateData) (string, bool) {
+	// Use LSH for blocking — query PostgreSQL for candidate VINs
 	hash := sha256.Sum256([]byte(probe.TemplateHash))
-	candidates := gallery.lshIndex.Query(hash[:])
 
-	for _, candidateVIN := range candidates {
-		if candidateVIN == probe.VoterVIN {
+	candidateSet := make(map[string]int)
+	for t := 0; t < 20; t++ {
+		h := computeLSHHash(t, hash[:], 10)
+		vins, err := d.store.QueryLSH(ctx, t, h)
+		if err != nil {
+			continue
+		}
+		for _, vin := range vins {
+			if vin != probe.VoterVIN {
+				candidateSet[vin]++
+			}
+		}
+	}
+
+	// Check candidates with 2+ hash table hits
+	for candidateVIN, hits := range candidateSet {
+		if hits < 2 {
 			continue
 		}
 
-		key := fmt.Sprintf("%s:%s", candidateVIN, probe.Modality)
-		existing, ok := gallery.templates[key]
-		if !ok {
+		existing, err := d.store.GetTemplateByKey(ctx, candidateVIN, probe.Modality)
+		if err != nil || existing == nil {
 			continue
 		}
 
@@ -485,6 +364,23 @@ func (d *DeduplicationEngine) CheckDuplicate(probe *TemplateData, gallery *Biome
 	}
 
 	return "", false
+}
+
+// computeLSHHash computes a hash for the given table and data.
+func computeLSHHash(table int, data []byte, numBits int) uint64 {
+	var hash uint64
+	for b := 0; b < numBits; b++ {
+		// Deterministic hyperplane from table+bit index
+		hp := sha256.Sum256([]byte(fmt.Sprintf("lsh_%d_%d", table, b)))
+		dotProduct := 0
+		for i := 0; i < len(data) && i < len(hp); i++ {
+			dotProduct += int(data[i]) * int(hp[i])
+		}
+		if dotProduct > 0 {
+			hash |= 1 << uint(b)
+		}
+	}
+	return hash
 }
 
 // ─── Quality Gateway ────────────────────────────────────────────
@@ -542,7 +438,7 @@ func MinMaxNormalize(score float64, params ScoreNormParams) float64 {
 	return v
 }
 
-// ─── Audit Log ──────────────────────────────────────────────────
+// ─── Audit Log (PostgreSQL-backed) ──────────────────────────────
 
 type AuditEntry struct {
 	ID        string    `json:"id"`
@@ -551,49 +447,4 @@ type AuditEntry struct {
 	Modality  string    `json:"modality"`
 	Detail    string    `json:"detail"`
 	Timestamp time.Time `json:"timestamp"`
-}
-
-type AuditLog struct {
-	mu      sync.Mutex
-	entries []AuditEntry
-}
-
-func NewAuditLog() *AuditLog {
-	return &AuditLog{
-		entries: make([]AuditEntry, 0, 1000),
-	}
-}
-
-func (a *AuditLog) Log(operation, vin, modality, detail string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	entry := AuditEntry{
-		ID:        fmt.Sprintf("audit-%d", time.Now().UnixNano()),
-		Operation: operation,
-		VoterVIN:  vin,
-		Modality:  modality,
-		Detail:    detail,
-		Timestamp: time.Now(),
-	}
-	a.entries = append(a.entries, entry)
-
-	log.Info().
-		Str("operation", operation).
-		Str("voter_vin", vin).
-		Str("modality", modality).
-		Msg(detail)
-}
-
-func (a *AuditLog) GetRecent(limit int) []AuditEntry {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if limit > len(a.entries) {
-		limit = len(a.entries)
-	}
-	start := len(a.entries) - limit
-	result := make([]AuditEntry, limit)
-	copy(result, a.entries[start:])
-	return result
 }

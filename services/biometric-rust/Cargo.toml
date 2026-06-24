@@ -29,8 +29,8 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 hyper = "1.0"
 
-# Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "postgres"], optional = true }
+# Database (required — all state persists to PostgreSQL)
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
 
 # Metrics / logging
 tracing = "0.1"
@@ -43,12 +43,9 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 thiserror = "1.0"
 rayon = "1.8"
 crossbeam-channel = "0.5"
-dashmap = "5.5"
-parking_lot = "0.12"
 
 [features]
 default = []
-database = ["sqlx"]
 
 [profile.release]
 opt-level = 3

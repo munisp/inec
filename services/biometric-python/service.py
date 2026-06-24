@@ -53,8 +53,20 @@ iris_quality = IrisQualityAssessor()
 async def lifespan(app: FastAPI):
     global facial_engine
     facial_engine = FacialEngine()
+    # Initialize PostgreSQL audit logging
+    try:
+        from pg_audit import init_pool, close_pool
+        await init_pool()
+        log.info("pg_audit_connected")
+    except Exception as e:
+        log.warning("pg_audit_unavailable", error=str(e))
     log.info("biometric_service_started", engines=["fingerprint", "facial", "iris", "pad", "quality"])
     yield
+    try:
+        from pg_audit import close_pool
+        await close_pool()
+    except Exception:
+        pass
     log.info("biometric_service_stopped")
 
 
@@ -118,6 +130,7 @@ class QualityRequest(BaseModel):
 async def health():
     return {
         "status": "healthy",
+        "persistence": "postgresql",
         "engines": {
             "fingerprint": True,
             "facial": facial_engine is not None,
@@ -126,6 +139,12 @@ async def health():
             "quality": True,
         },
     }
+
+
+@app.get("/processing/stats")
+async def processing_stats():
+    from pg_audit import get_processing_stats
+    return await get_processing_stats()
 
 
 @app.get("/metrics")
