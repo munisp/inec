@@ -42,6 +42,33 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
       { id: 'disputes', title: 'Disputes', subtitle: 'File & track election disputes', icon: 'shield-outline', color: '#dc2626', bg: '#fef2f2', route: '/disputes' },
       { id: 'scale', title: 'System Health', subtitle: 'Platform scale & performance', icon: 'pulse-outline', color: '#059669', bg: '#d1fae5', route: '/scale-health' },
       { id: 'middleware', title: 'Middleware', subtitle: '13 enterprise integrations status', icon: 'layers-outline', color: '#6366f1', bg: '#eef2ff', route: '/middleware' },
+      { id: 'observer', title: 'Observer Monitoring', subtitle: 'Real-time observer tracking', icon: 'eye-outline', color: '#0d9488', bg: '#ccfbf1', route: '/observer-monitoring' },
+    ],
+  },
+  {
+    title: 'Registration & Biometrics',
+    items: [
+      { id: 'voter-reg', title: 'Voter Registration', subtitle: 'Register new voters with biometrics', icon: 'person-add-outline', color: '#166534', bg: '#dcfce7', route: '/voter-registration' },
+      { id: 'enrollment', title: 'Enrollment Kiosk', subtitle: 'Self-service biometric enrollment', icon: 'hand-left-outline', color: '#7c3aed', bg: '#ede9fe', route: '/enrollment-kiosk' },
+      { id: 'dedup', title: 'Duplicate Detection', subtitle: 'ABIS deduplication scans', icon: 'copy-outline', color: '#dc2626', bg: '#fef2f2', route: '/duplicate-detection' },
+      { id: 'bvas', title: 'BVAS Sync', subtitle: 'Device synchronization', icon: 'sync-outline', color: '#2563eb', bg: '#dbeafe', route: '/bvas-sync' },
+      { id: 'hw-bio', title: 'Hardware Biometric', subtitle: 'Native fingerprint/face/iris', icon: 'hardware-chip-outline', color: '#ea580c', bg: '#fff7ed', route: '/hardware-biometric' },
+    ],
+  },
+  {
+    title: 'Blockchain & Analytics',
+    items: [
+      { id: 'blockchain', title: 'Blockchain Ledger', subtitle: 'Hyperledger Fabric verification', icon: 'link-outline', color: '#0284c7', bg: '#e0f2fe', route: '/blockchain' },
+      { id: 'predictive', title: 'Predictive Analytics', subtitle: 'AI-powered turnout & fraud detection', icon: 'trending-up-outline', color: '#7c3aed', bg: '#ede9fe', route: '/predictive-analytics' },
+      { id: 'validation', title: 'Data Validation', subtitle: 'Integrity checks on election data', icon: 'checkmark-done-outline', color: '#059669', bg: '#d1fae5', route: '/data-validation' },
+      { id: 'export', title: 'Export Center', subtitle: 'CSV, PDF, Parquet exports', icon: 'download-outline', color: '#ea580c', bg: '#fff7ed', route: '/export-center' },
+    ],
+  },
+  {
+    title: 'Public Access',
+    items: [
+      { id: 'citizen', title: 'Citizen Portal', subtitle: 'Voter info search & PVC status', icon: 'globe-outline', color: '#0d9488', bg: '#ccfbf1', route: '/citizen-portal' },
+      { id: 'sms', title: 'SMS/USSD Verification', subtitle: 'Result verification via SMS', icon: 'chatbubble-outline', color: '#6366f1', bg: '#eef2ff', route: '/sms-verification' },
     ],
   },
 ];

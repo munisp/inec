@@ -253,3 +253,57 @@ func handleSMSStats(w http.ResponseWriter, r *http.Request) {
 		"by_type":    byType,
 	})
 }
+
+func initUSSDEngine() {
+	initSMSUSSDTables(db)
+}
+
+func handleUSSDSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		writeError(w, 400, "session_id is required")
+		return
+	}
+	var phone, stage, data, created, updated string
+	err := db.QueryRow(`SELECT phone, stage, data, created_at, updated_at FROM ussd_sessions WHERE id=?`, sessionID).Scan(&phone, &stage, &data, &created, &updated)
+	if err != nil {
+		writeError(w, 404, "session not found")
+		return
+	}
+	writeJSON(w, 200, M{
+		"session_id": sessionID,
+		"phone":      phone,
+		"stage":      stage,
+		"data":       data,
+		"created_at": created,
+		"updated_at": updated,
+	})
+}
+
+func handleUSSDDashboard(w http.ResponseWriter, r *http.Request) {
+	var totalSessions, activeSessions int
+	db.QueryRow(`SELECT COUNT(*) FROM ussd_sessions`).Scan(&totalSessions)
+	db.QueryRow(`SELECT COUNT(*) FROM ussd_sessions WHERE updated_at > datetime('now', '-5 minutes')`).Scan(&activeSessions)
+
+	var totalUSSD int
+	db.QueryRow(`SELECT COUNT(*) FROM sms_verifications WHERE channel='ussd'`).Scan(&totalUSSD)
+
+	rows, _ := db.Query(`SELECT stage, COUNT(*) FROM ussd_sessions GROUP BY stage`)
+	byStage := []M{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var s string
+			var c int
+			rows.Scan(&s, &c)
+			byStage = append(byStage, M{"stage": s, "count": c})
+		}
+	}
+
+	writeJSON(w, 200, M{
+		"total_sessions":  totalSessions,
+		"active_sessions": activeSessions,
+		"total_ussd_requests": totalUSSD,
+		"by_stage":        byStage,
+	})
+}

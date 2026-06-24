@@ -145,59 +145,103 @@ func (k *realKafkaClient) Close() error {
 	return nil
 }
 
-// --- Embedded fallback (in-memory) ---
+// --- PostgreSQL-backed fallback (persistent) ---
 
-type embeddedKafka struct {
+type pgKafka struct {
 	mu          sync.RWMutex
-	topics      map[string][]KafkaMessage
 	subscribers map[string][]func(KafkaMessage)
 }
 
-func newEmbeddedKafka() *embeddedKafka {
-	return &embeddedKafka{
-		topics:      make(map[string][]KafkaMessage),
-		subscribers: make(map[string][]func(KafkaMessage)),
-	}
+func newPGKafka() *pgKafka {
+	db.Exec(`CREATE TABLE IF NOT EXISTS kafka_messages (
+		id BIGSERIAL PRIMARY KEY,
+		topic TEXT NOT NULL,
+		key TEXT NOT NULL DEFAULT '',
+		value JSONB NOT NULL DEFAULT '{}',
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_kafka_messages_topic ON kafka_messages(topic, created_at DESC)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS kafka_subscriptions (
+		id SERIAL PRIMARY KEY,
+		topic TEXT NOT NULL,
+		last_processed_id BIGINT NOT NULL DEFAULT 0,
+		consumer_group TEXT NOT NULL DEFAULT 'inec-backend',
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(topic, consumer_group)
+	)`)
+	log.Info().Msg("Kafka fallback: PostgreSQL-backed event bus initialized")
+	return &pgKafka{subscribers: make(map[string][]func(KafkaMessage))}
 }
 
-func (k *embeddedKafka) Produce(_ context.Context, msg KafkaMessage) error {
+func (k *pgKafka) Produce(_ context.Context, msg KafkaMessage) error {
 	msg.Timestamp = time.Now()
-	k.mu.Lock()
-	k.topics[msg.Topic] = append(k.topics[msg.Topic], msg)
-	if len(k.topics[msg.Topic]) > 10000 {
-		k.topics[msg.Topic] = k.topics[msg.Topic][len(k.topics[msg.Topic])-5000:]
+	valueJSON, _ := json.Marshal(msg.Value)
+	_, err := db.Exec(`INSERT INTO kafka_messages (topic, key, value, created_at) VALUES ($1, $2, $3, $4)`,
+		msg.Topic, msg.Key, string(valueJSON), msg.Timestamp)
+	if err != nil {
+		return fmt.Errorf("pg kafka produce: %w", err)
 	}
+
+	// Notify in-process subscribers
+	k.mu.RLock()
 	handlers := k.subscribers[msg.Topic]
-	k.mu.Unlock()
+	k.mu.RUnlock()
 	for _, h := range handlers {
 		go h(msg)
 	}
+
+	// Trim old messages (keep last 50K per topic)
+	db.Exec(`DELETE FROM kafka_messages WHERE topic=$1 AND id NOT IN (
+		SELECT id FROM kafka_messages WHERE topic=$1 ORDER BY id DESC LIMIT 50000)`, msg.Topic)
 	return nil
 }
 
-func (k *embeddedKafka) Subscribe(topic string, handler func(KafkaMessage)) error {
+func (k *pgKafka) Subscribe(topic string, handler func(KafkaMessage)) error {
 	k.mu.Lock()
-	defer k.mu.Unlock()
 	k.subscribers[topic] = append(k.subscribers[topic], handler)
+	k.mu.Unlock()
+
+	// Replay unprocessed messages from PG
+	go func() {
+		var lastID int64
+		db.QueryRow(`SELECT COALESCE(last_processed_id, 0) FROM kafka_subscriptions 
+			WHERE topic=$1 AND consumer_group='inec-backend'`, topic).Scan(&lastID)
+
+		rows, err := db.Query(`SELECT id, topic, key, value, created_at FROM kafka_messages 
+			WHERE topic=$1 AND id > $2 ORDER BY id ASC LIMIT 1000`, topic, lastID)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var t, k, v string
+			var ts time.Time
+			rows.Scan(&id, &t, &k, &v, &ts)
+			var val map[string]interface{}
+			json.Unmarshal([]byte(v), &val)
+			handler(KafkaMessage{Topic: t, Key: k, Value: val, Timestamp: ts})
+			lastID = id
+		}
+		db.Exec(`INSERT INTO kafka_subscriptions (topic, consumer_group, last_processed_id, updated_at) 
+			VALUES ($1, 'inec-backend', $2, NOW()) 
+			ON CONFLICT (topic, consumer_group) DO UPDATE SET last_processed_id=$2, updated_at=NOW()`,
+			topic, lastID)
+	}()
 	return nil
 }
 
-func (k *embeddedKafka) Status() MWStatus {
-	k.mu.RLock()
-	topicCount := len(k.topics)
-	var msgCount int
-	for _, msgs := range k.topics {
-		msgCount += len(msgs)
-	}
-	k.mu.RUnlock()
+func (k *pgKafka) Status() MWStatus {
+	var topicCount, msgCount int
+	db.QueryRow(`SELECT COUNT(DISTINCT topic), COUNT(*) FROM kafka_messages`).Scan(&topicCount, &msgCount)
 	return MWStatus{
-		Name: "Kafka", Connected: true, Mode: "embedded",
-		Latency: "0.0ms",
-		Details: fmt.Sprintf("in-memory event bus, %d topics, %d messages", topicCount, msgCount),
+		Name: "Kafka", Connected: true, Mode: "pg-backed",
+		Latency: "< 1ms",
+		Details: fmt.Sprintf("PostgreSQL-persisted event bus, %d topics, %d messages", topicCount, msgCount),
 	}
 }
 
-func (k *embeddedKafka) Close() error { return nil }
+func (k *pgKafka) Close() error { return nil }
 
 // --- Init ---
 
@@ -222,6 +266,6 @@ func initKafkaClient() KafkaClient {
 		log.Warn().Str("brokers", brokersStr).Msg("Kafka unreachable, falling back to embedded")
 		client.Close()
 	}
-	log.Info().Msg("Kafka using embedded in-memory event bus")
-	return newEmbeddedKafka()
+	log.Info().Msg("Kafka using PostgreSQL-backed event bus (persistent)")
+	return newPGKafka()
 }

@@ -111,20 +111,40 @@ func (d *daprHTTPClient) Status() MWStatus {
 
 func (d *daprHTTPClient) Close() error { return nil }
 
-type embeddedDapr struct {
-	mu    sync.RWMutex
-	state map[string]map[string]interface{}
-	subs  map[string][]func(interface{})
+// --- PostgreSQL-backed Dapr fallback (persistent) ---
+
+type pgDapr struct {
+	mu   sync.RWMutex
+	subs map[string][]func(interface{})
 }
 
-func newEmbeddedDapr() *embeddedDapr {
-	return &embeddedDapr{
-		state: make(map[string]map[string]interface{}),
-		subs:  make(map[string][]func(interface{})),
+func newPGDapr() *pgDapr {
+	db.Exec(`CREATE TABLE IF NOT EXISTS dapr_state (
+		store_name TEXT NOT NULL,
+		key TEXT NOT NULL,
+		value JSONB NOT NULL DEFAULT '{}',
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (store_name, key)
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS dapr_events (
+		id BIGSERIAL PRIMARY KEY,
+		pubsub TEXT NOT NULL,
+		topic TEXT NOT NULL,
+		data JSONB NOT NULL DEFAULT '{}',
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_dapr_events_topic ON dapr_events(pubsub, topic, created_at DESC)`)
+	log.Info().Msg("Dapr fallback: PostgreSQL-backed state/pubsub initialized")
+	return &pgDapr{subs: make(map[string][]func(interface{}))}
+}
+
+func (d *pgDapr) PublishEvent(_ context.Context, pubsub, topic string, data interface{}) error {
+	dataJSON, _ := json.Marshal(data)
+	_, err := db.Exec(`INSERT INTO dapr_events (pubsub, topic, data) VALUES ($1, $2, $3)`,
+		pubsub, topic, string(dataJSON))
+	if err != nil {
+		return fmt.Errorf("pg dapr publish: %w", err)
 	}
-}
-
-func (d *embeddedDapr) PublishEvent(_ context.Context, pubsub, topic string, data interface{}) error {
 	d.mu.RLock()
 	key := pubsub + "/" + topic
 	handlers := d.subs[key]
@@ -135,57 +155,47 @@ func (d *embeddedDapr) PublishEvent(_ context.Context, pubsub, topic string, dat
 	return nil
 }
 
-func (d *embeddedDapr) InvokeService(_ context.Context, appID, method string, data interface{}) ([]byte, error) {
+func (d *pgDapr) InvokeService(_ context.Context, appID, method string, data interface{}) ([]byte, error) {
 	result, _ := json.Marshal(map[string]interface{}{
 		"status": "ok", "app_id": appID, "method": method,
-		"message": "handled by embedded Dapr",
+		"message": "handled by pg-backed Dapr",
 	})
 	return result, nil
 }
 
-func (d *embeddedDapr) GetState(_ context.Context, store, key string) ([]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if s, ok := d.state[store]; ok {
-		if v, ok := s[key]; ok {
-			data, _ := json.Marshal(v)
-			return data, nil
-		}
+func (d *pgDapr) GetState(_ context.Context, store, key string) ([]byte, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM dapr_state WHERE store_name=$1 AND key=$2`, store, key).Scan(&value)
+	if err != nil {
+		return nil, fmt.Errorf("key not found")
 	}
-	return nil, fmt.Errorf("key not found")
+	return []byte(value), nil
 }
 
-func (d *embeddedDapr) SaveState(_ context.Context, store, key string, value interface{}) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.state[store] == nil {
-		d.state[store] = make(map[string]interface{})
-	}
-	d.state[store][key] = value
-	return nil
+func (d *pgDapr) SaveState(_ context.Context, store, key string, value interface{}) error {
+	data, _ := json.Marshal(value)
+	_, err := db.Exec(`INSERT INTO dapr_state (store_name, key, value, updated_at) VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (store_name, key) DO UPDATE SET value=$3, updated_at=NOW()`,
+		store, key, string(data))
+	return err
 }
 
-func (d *embeddedDapr) DeleteState(_ context.Context, store, key string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if s, ok := d.state[store]; ok {
-		delete(s, key)
-	}
-	return nil
+func (d *pgDapr) DeleteState(_ context.Context, store, key string) error {
+	_, err := db.Exec(`DELETE FROM dapr_state WHERE store_name=$1 AND key=$2`, store, key)
+	return err
 }
 
-func (d *embeddedDapr) Status() MWStatus {
-	d.mu.RLock()
-	storeCount := len(d.state)
-	d.mu.RUnlock()
+func (d *pgDapr) Status() MWStatus {
+	var storeCount, keyCount int
+	db.QueryRow(`SELECT COUNT(DISTINCT store_name), COUNT(*) FROM dapr_state`).Scan(&storeCount, &keyCount)
 	return MWStatus{
-		Name: "Dapr", Connected: true, Mode: "embedded",
-		Latency: "0.0ms",
-		Details: fmt.Sprintf("local state/pubsub, %d stores", storeCount),
+		Name: "Dapr", Connected: true, Mode: "pg-backed",
+		Latency: "< 1ms",
+		Details: fmt.Sprintf("PostgreSQL-persisted state/pubsub, %d stores, %d keys", storeCount, keyCount),
 	}
 }
 
-func (d *embeddedDapr) Close() error { return nil }
+func (d *pgDapr) Close() error { return nil }
 
 func initDaprClient() DaprClient {
 	daprURL := envOrDefault("DAPR_HTTP_URL", "")
@@ -207,6 +217,6 @@ func initDaprClient() DaprClient {
 		}
 		log.Warn().Msg("Dapr sidecar unreachable, falling back to embedded")
 	}
-	log.Info().Msg("Dapr using embedded local state/pubsub")
-	return newEmbeddedDapr()
+	log.Info().Msg("Dapr using PostgreSQL-backed state/pubsub (persistent)")
+	return newPGDapr()
 }

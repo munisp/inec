@@ -88,8 +88,8 @@ export default function ResultsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <section aria-label="Election Results" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3" role="toolbar" aria-label="Result filters">
         <div className="flex items-center gap-3">
           <Select value={filterState} onValueChange={setFilterState}>
             <SelectTrigger className="w-40"><SelectValue placeholder="All States" /></SelectTrigger>
@@ -108,7 +108,7 @@ export default function ResultsPage() {
               <SelectItem value="disputed">Disputed</SelectItem>
             </SelectContent>
           </Select>
-          <Badge variant="outline">{total} results</Badge>
+          <Badge variant="outline" aria-live="polite">{total} results</Badge>
         </div>
         {canUpload && (
           <Dialog open={showUpload} onOpenChange={setShowUpload}>
@@ -260,6 +260,6 @@ export default function ResultsPage() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </section>
   );
 }

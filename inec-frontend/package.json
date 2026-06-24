@@ -39,6 +39,7 @@
     "i18next": "^26.3.1",
     "lucide-react": "^0.364.0",
     "maplibre-gl": "^5.18.0",
+    "playwright": "^1.61.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.77.0",
