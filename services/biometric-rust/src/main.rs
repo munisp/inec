@@ -1,6 +1,6 @@
 //! INEC Biometric Vault & Matching Service (Rust).
 //!
-//! Production service providing:
+//! All state persisted to PostgreSQL — zero in-memory storage.
 //! - AES-256-GCM template encryption/decryption
 //! - Cancelable biometrics (BioHashing)
 //! - High-speed 1:N parallel matching
@@ -9,6 +9,7 @@
 //! - Full audit trail
 
 mod cancelable;
+pub mod db;
 mod matching;
 mod vault;
 
@@ -44,10 +45,21 @@ async fn main() {
         .json()
         .init();
 
-    let state = Arc::new(AppState {
-        vault: BiometricVault::new(),
-        cancelable: CancelableBiometrics::new(),
-    });
+    // Connect to PostgreSQL — required, no fallback to in-memory
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgresql://ngapp:ngapp123@localhost:5432/ngapp".to_string());
+
+    let pool = db::init_pool(&database_url)
+        .await
+        .expect("failed to connect to PostgreSQL — vault requires persistent storage");
+
+    let vault = BiometricVault::new(pool.clone())
+        .await
+        .expect("failed to initialize vault");
+
+    let cancelable = CancelableBiometrics::new(pool);
+
+    let state = Arc::new(AppState { vault, cancelable });
 
     let app = Router::new()
         .route("/health", get(health))
@@ -94,7 +106,7 @@ async fn main() {
         .layer(CorsLayer::permissive());
 
     let addr = "0.0.0.0:8091";
-    tracing::info!("biometric vault service listening on {}", addr);
+    tracing::info!("biometric vault service listening on {} (PostgreSQL persistence)", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -104,6 +116,7 @@ async fn health() -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "healthy",
         "service": "inec-biometric-vault",
+        "persistence": "postgresql",
         "capabilities": ["vault", "cancelable", "matching", "fusion"],
     }))
 }
@@ -131,7 +144,10 @@ struct RotateKeyRequest {
 }
 
 async fn vault_stats(state: Arc<AppState>) -> impl IntoResponse {
-    Json(state.vault.get_stats())
+    match state.vault.get_stats().await {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 async fn vault_encrypt(
@@ -143,7 +159,7 @@ async fn vault_encrypt(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
-    match state.vault.encrypt_template(&req.voter_vin, &req.modality, &data, &req.actor) {
+    match state.vault.encrypt_template(&req.voter_vin, &req.modality, &data, &req.actor).await {
         Ok(encrypted) => Json(serde_json::json!({
             "template_id": encrypted.template_id,
             "voter_vin": encrypted.voter_vin,
@@ -160,7 +176,7 @@ async fn vault_decrypt(
     state: Arc<AppState>,
     Json(req): Json<DecryptRequest>,
 ) -> impl IntoResponse {
-    match state.vault.decrypt_template(&req.template_id, &req.actor) {
+    match state.vault.decrypt_template(&req.template_id, &req.actor).await {
         Ok(plaintext) => Json(serde_json::json!({
             "template_data": base64::engine::general_purpose::STANDARD.encode(&plaintext),
             "size_bytes": plaintext.len(),
@@ -173,7 +189,7 @@ async fn vault_rotate_key(
     state: Arc<AppState>,
     Json(req): Json<RotateKeyRequest>,
 ) -> impl IntoResponse {
-    match state.vault.rotate_key(&req.key_id, &req.actor) {
+    match state.vault.rotate_key(&req.key_id, &req.actor).await {
         Ok(new_id) => Json(serde_json::json!({
             "old_key_id": req.key_id,
             "new_key_id": new_id,
@@ -183,9 +199,10 @@ async fn vault_rotate_key(
 }
 
 async fn vault_audit(state: Arc<AppState>) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "entries": state.vault.get_audit_log(100),
-    }))
+    match state.vault.get_audit_log(100).await {
+        Ok(entries) => Json(serde_json::json!({ "entries": entries })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 // ─── Cancelable ─────────────────────────────────────────────────
@@ -225,15 +242,17 @@ async fn cancelable_create(
         _ => TransformType::BioHashing,
     };
 
-    let id = state.cancelable.create_transform(&req.voter_vin, &req.modality, tt);
-    Json(serde_json::json!({ "transform_id": id }))
+    match state.cancelable.create_transform(&req.voter_vin, &req.modality, tt).await {
+        Ok(id) => Json(serde_json::json!({ "transform_id": id })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 async fn cancelable_apply(
     state: Arc<AppState>,
     Json(req): Json<ApplyTransformRequest>,
 ) -> impl IntoResponse {
-    match state.cancelable.apply_biohash(&req.transform_id, &req.features) {
+    match state.cancelable.apply_biohash(&req.transform_id, &req.features).await {
         Ok(hash) => Json(serde_json::json!({
             "biohash": base64::engine::general_purpose::STANDARD.encode(&hash),
             "bits": hash.len() * 8,
@@ -246,7 +265,7 @@ async fn cancelable_revoke(
     state: Arc<AppState>,
     Json(req): Json<RevokeTransformRequest>,
 ) -> impl IntoResponse {
-    match state.cancelable.revoke_transform(&req.transform_id) {
+    match state.cancelable.revoke_transform(&req.transform_id).await {
         Ok(()) => Json(serde_json::json!({"status": "revoked"})).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }

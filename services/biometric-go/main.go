@@ -1,15 +1,18 @@
 // INEC ABIS Pipeline Service (Go).
 //
+// ALL STATE PERSISTED TO POSTGRESQL — zero in-memory storage.
+//
 // Production service providing:
 // - 6-stage enrollment pipeline (capture → quality → extract → dedup → vault → complete)
 // - BVAS device management and protocol
-// - LSH-based deduplication
+// - LSH-based deduplication (PostgreSQL-backed)
 // - Score normalization (Z-score, min-max)
-// - Full audit trail
+// - Full audit trail (PostgreSQL-backed)
 
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -23,8 +26,9 @@ import (
 )
 
 var (
-	pipeline     *ABISPipeline
+	pipeline       *ABISPipeline
 	deviceRegistry *BVASDeviceRegistry
+	pgStore        *PGStore
 )
 
 func encodeBase64(data []byte) string {
@@ -35,6 +39,22 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
+	// Connect to PostgreSQL — required, no fallback to in-memory
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgresql://ngapp:ngapp123@localhost:5432/ngapp"
+	}
+
+	ctx := context.Background()
+	var err error
+	pgStore, err = NewPGStore(ctx, dbURL)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to connect to PostgreSQL — ABIS requires persistent storage")
+	}
+	defer pgStore.Close()
+
+	log.Info().Msg("PostgreSQL connected — all state persisted to database")
+
 	pythonURL := os.Getenv("BIOMETRIC_PYTHON_URL")
 	if pythonURL == "" {
 		pythonURL = "http://localhost:8090"
@@ -44,8 +64,8 @@ func main() {
 		rustURL = "http://localhost:8091"
 	}
 
-	pipeline = NewABISPipeline(pythonURL, rustURL)
-	deviceRegistry = NewBVASDeviceRegistry()
+	pipeline = NewABISPipeline(pythonURL, rustURL, pgStore)
+	deviceRegistry = NewBVASDeviceRegistry(pgStore)
 
 	r := mux.NewRouter()
 
@@ -75,21 +95,23 @@ func main() {
 		addr = ":" + port
 	}
 
-	log.Info().Str("addr", addr).Str("python", pythonURL).Str("rust", rustURL).Msg("ABIS pipeline service starting")
+	log.Info().Str("addr", addr).Str("python", pythonURL).Str("rust", rustURL).Msg("ABIS pipeline service starting (PostgreSQL persistence)")
 	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatal().Err(err).Msg("server failed")
 	}
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	writeJSON(w, 200, map[string]interface{}{
-		"status":  "healthy",
-		"service": "inec-abis-pipeline",
+		"status":      "healthy",
+		"service":     "inec-abis-pipeline",
+		"persistence": "postgresql",
 		"capabilities": []string{
 			"enrollment_pipeline", "bvas_protocol", "deduplication",
 			"quality_gateway", "score_normalization", "audit",
 		},
-		"gallery_size": pipeline.gallery.Size(),
+		"gallery_size": pgStore.GallerySize(ctx),
 	})
 }
 
@@ -105,7 +127,6 @@ func handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If image_data is base64 encoded string, decode it
 	if len(req.ImageData) == 0 {
 		writeJSON(w, 400, map[string]interface{}{"error": "image_data is required"})
 		return
@@ -122,8 +143,9 @@ func handleEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGalleryStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	writeJSON(w, 200, map[string]interface{}{
-		"gallery_size":    pipeline.gallery.Size(),
+		"gallery_size":    pgStore.GallerySize(ctx),
 		"dedup_threshold": pipeline.dedupEngine.threshold,
 		"quality_thresholds": map[string]float64{
 			"fingerprint": pipeline.qualityGate.GetThreshold("fingerprint"),
@@ -140,18 +162,17 @@ func handleAudit(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	entries := pgStore.GetRecentAudit(r.Context(), limit)
 	writeJSON(w, 200, map[string]interface{}{
-		"entries": pipeline.auditLog.GetRecent(limit),
+		"entries": entries,
 	})
 }
 
 func handleListDevices(w http.ResponseWriter, r *http.Request) {
-	deviceRegistry.mu.RLock()
-	defer deviceRegistry.mu.RUnlock()
-
-	devices := make([]*BVASDevice, 0, len(deviceRegistry.devices))
-	for _, d := range deviceRegistry.devices {
-		devices = append(devices, d)
+	devices, err := pgStore.ListDevices(r.Context())
+	if err != nil {
+		writeJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
 	}
 	writeJSON(w, 200, map[string]interface{}{
 		"devices": devices,
@@ -295,5 +316,3 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }
-
-
