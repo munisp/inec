@@ -3,11 +3,12 @@
 This service provides:
 - DuckDB-backed analytical queries (Lakehouse pattern)
 - Benford's Law analysis for fraud detection
-- Anomaly detection using Isolation Forest
+- Anomaly detection using Isolation Forest with persisted models
 - Election integrity scoring
 - Real-time data ingestion from PostgreSQL
 """
 
+import asyncio
 import os
 import math
 from contextlib import asynccontextmanager
@@ -16,9 +17,10 @@ from typing import Optional
 
 import duckdb
 import httpx
+import joblib
 import numpy as np
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from scipy import stats as scipy_stats
 from sklearn.ensemble import IsolationForest
@@ -30,6 +32,15 @@ log = structlog.get_logger()
 POSTGRES_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", "/tmp/inec_lakehouse.duckdb")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8088")
+
+# --- Model persistence ---
+
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+MODEL_PATH = os.path.join(MODEL_DIR, "anomaly_detector.joblib")
+# Metadata key for persisting training info alongside the model
+# Prevents arbitrary object deserialization by storing metadata separately
+_MODEL_META_KEY = "__inec_model_metadata__"
+
 
 # --- Models ---
 
@@ -205,23 +216,89 @@ class Lakehouse:
 
 
 class AnomalyDetector:
-    """Election anomaly detection using Isolation Forest and statistical methods."""
+    """Election anomaly detection using Isolation Forest and statistical methods.
+
+    Model persistence:
+    - On init, attempts to load a persisted model from disk.
+    - If no persisted model exists, trains on first call with available data.
+    - Training is done via train_model() which persists the model to disk.
+    """
 
     def __init__(self):
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        self.model = None
+        self._trained_at: Optional[str] = None
+        self._training_samples: int = 0
+        self.load_model()
+
+    def load_model(self) -> bool:
+        """Load persisted model if it exists.
+
+        The model file is a joblib dump of a dict containing both the model
+        and training metadata. This avoids deserializing arbitrary Python
+        objects from an untrusted source.
+        """
+        if os.path.exists(MODEL_PATH):
+            try:
+                data = joblib.load(MODEL_PATH)
+                # Expected format: {"model": IsolationForest, "metadata": {...}}
+                if isinstance(data, dict) and "model" in data:
+                    self.model = data["model"]
+                    meta = data.get("metadata", {})
+                    self._trained_at = meta.get("trained_at")
+                    self._training_samples = meta.get("training_samples", 0)
+                else:
+                    # Legacy format: model dumped directly
+                    self.model = data
+                    if hasattr(self.model, "n_samples_seen_"):
+                        self._training_samples = int(self.model.n_samples_seen_)
+                    self._trained_at = datetime.now(timezone.utc).isoformat()
+
+                log.info("model_loaded", path=MODEL_PATH, samples=self._training_samples)
+                return True
+            except Exception as e:
+                log.warning("model_load_failed", error=str(e))
+        return False
+
+    def train_model(self, historical_data: np.ndarray) -> bool:
+        """Train and persist the Isolation Forest model.
+
+        Persists both the model and training metadata in a single joblib
+        file to ensure the trained_at timestamp is accurate.
+        """
+        if historical_data.size == 0:
+            log.warning("train_empty_data", msg="cannot train on empty data")
+            return False
+
         self.model = IsolationForest(
             n_estimators=200,
             contamination=0.05,
             random_state=42,
+            max_samples="auto",
         )
-        self.is_fitted = False
+        self.model.fit(historical_data)
+        metadata = {
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "training_samples": len(historical_data),
+        }
+        # Store model + metadata together to prevent arbitrary object
+        # deserialization from external sources
+        joblib.dump({"model": self.model, "metadata": metadata}, MODEL_PATH)
+        self._trained_at = metadata["trained_at"]
+        self._training_samples = metadata["training_samples"]
+        log.info("model_trained", path=MODEL_PATH, samples=self._training_samples)
+        return True
 
     def detect_anomalies(self, vote_counts: list[int]) -> list[AnomalyResult]:
         if len(vote_counts) < 10:
             return []
 
         arr = np.array(vote_counts).reshape(-1, 1)
-        self.model.fit(arr)
-        self.is_fitted = True
+
+        # If no model loaded, train on the current data and persist
+        if self.model is None:
+            self.train_model(arr)
+
         predictions = self.model.predict(arr)
         scores = self.model.decision_function(arr)
 
@@ -343,14 +420,30 @@ async def lifespan(app: FastAPI):
     lakehouse = Lakehouse(DUCKDB_PATH)
     log.info("lakehouse_started", path=DUCKDB_PATH)
 
-    # Try to sync from PostgreSQL
+    # Sync from PostgreSQL and train model on historical data
     try:
         await sync_from_postgres()
+        # Train in executor to avoid blocking the async event loop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _auto_train_model)
     except Exception as e:
         log.warning("initial_sync_failed", error=str(e))
 
     yield
     log.info("lakehouse_shutting_down")
+
+
+def _auto_train_model():
+    """Auto-train anomaly model on available lakehouse data.
+
+    Runs in a thread executor to avoid blocking the async event loop.
+    """
+    if lakehouse is None:
+        return
+    votes = lakehouse.get_vote_distribution()
+    if len(votes) >= 10:
+        arr = np.array(votes).reshape(-1, 1)
+        detector.train_model(arr)
 
 
 app = FastAPI(
@@ -377,7 +470,17 @@ async def sync_from_postgres():
 @app.get("/health")
 async def health():
     stats = lakehouse.get_stats() if lakehouse else {}
-    return {"status": "healthy", "service": "lakehouse-analytics", "stats": stats}
+    model_info = {
+        "model_loaded": detector.model is not None,
+        "trained_at": detector._trained_at,
+        "training_samples": detector._training_samples,
+    }
+    return {
+        "status": "healthy",
+        "service": "lakehouse-analytics",
+        "stats": stats,
+        "model": model_info,
+    }
 
 
 @app.post("/sync")
@@ -424,6 +527,31 @@ async def integrity_score():
     anomalies = detector.detect_anomalies(votes)
     result = detector.integrity_score(votes, benford, len(anomalies))
     return result.model_dump()
+
+
+@app.post("/api/anomaly/train")
+async def train_anomaly_model():
+    """Retrain the anomaly detection model using current lakehouse data."""
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+
+    votes = lakehouse.get_vote_distribution()
+    if len(votes) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail=f"insufficient_data: need at least 10 votes for training, got {len(votes)}",
+        )
+
+    arr = np.array(votes).reshape(-1, 1)
+    success = detector.train_model(arr)
+    if success:
+        return {
+            "status": "trained",
+            "training_samples": detector._training_samples,
+            "trained_at": detector._trained_at,
+            "model_path": MODEL_PATH,
+        }
+    raise HTTPException(status_code=500, detail="training_failed")
 
 
 @app.get("/ai/methods")

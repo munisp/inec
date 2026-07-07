@@ -1,0 +1,18 @@
+# INEC Biometric ML Inference Requirements
+numpy>=1.26.0
+opencv-python>=4.10.0
+structlog>=24.0.0
+
+# Deep Learning & ONNX
+torch>=2.2.0
+torchvision>=0.17.0
+onnx>=1.16.0
+onnxruntime>=1.17.0
+
+# Model training (train_pad_model.py)
+scikit-learn>=1.4.0
+
+# Serving (optional)
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.0.0

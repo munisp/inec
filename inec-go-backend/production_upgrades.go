@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -8,7 +9,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
@@ -17,6 +17,10 @@ import (
 	"encoding/pem"
 	"fmt"
 	"github.com/rs/zerolog/log"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"math"
 	"math/big"
@@ -733,19 +737,49 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 		}
 	}
 
-	// Fallback: Heuristic-based PAD from sample data characteristics
-	hash := sha256.Sum256(append(sampleData, []byte(voterVIN)...))
-
-	textureLBP := p.computeTextureLBP(hash[:])
-	frequencyScore := p.computeFrequencyAnalysis(hash[:])
-	gradientScore := p.computeGradientAnalysis(hash[:])
-	colorHistScore := p.computeColorHistogram(hash[:])
+	// Fallback: Heuristic-based PAD from actual image data characteristics
+	textureLBP := p.computeTextureLBP(sampleData)
+	frequencyScore := p.computeFrequencyAnalysis(sampleData)
+	gradientScore := p.computeGradientAnalysis(sampleData)
+	colorHistScore := p.computeColorHistogram(sampleData)
 	motionScore := 0.0
 	depthScore := 0.0
 
 	if modality == "facial" {
-		motionScore = p.computeMotionFlow(hash[:])
-		depthScore = p.computeDepthConsistency(hash[:])
+		motionScore = p.computeMotionFlow(sampleData)
+		depthScore = p.computeDepthConsistency(sampleData)
+	}
+
+	// If all heuristics failed, try Python PAD service as last resort
+	anyValid := false
+	if textureLBP >= 0 {
+		anyValid = true
+	}
+	if frequencyScore >= 0 && !anyValid {
+		anyValid = true
+	}
+	if gradientScore >= 0 && !anyValid {
+		anyValid = true
+	}
+	if colorHistScore >= 0 && !anyValid {
+		anyValid = true
+	}
+
+	if !anyValid {
+		log.Warn().Str("modality", modality).Str("vin", voterVIN).Msg("All heuristic PAD checks failed, falling back to Python service")
+		padResult := p.callPythonPADService(modality, voterVIN, sampleData)
+		if padResult != nil {
+			return *padResult
+		}
+		// Total failure: return conservative "spoof" to deny access
+		return PADResult{
+			LivenessScore: 0.0,
+			Decision:      "spoof",
+			PADLevel:      model.ISOLevel,
+			AttackType:    "analysis_failed",
+			Confidence:    1.0,
+			ISOCompliant:  true,
+		}
 	}
 
 	weights := map[string]float64{
@@ -766,7 +800,22 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 	if livenessScore < threshold {
 		decision = "spoof"
 		if len(model.AttackTypes) > 0 {
-			attackType = model.AttackTypes[int(hash[4])%len(model.AttackTypes)]
+			// Pick attack type based on the weakest analysis dimension
+			scores := []struct{ name string; score float64 }{
+				{"texture", textureLBP},
+				{"frequency", frequencyScore},
+				{"gradient", gradientScore},
+				{"color", colorHistScore},
+				{"motion", motionScore},
+				{"depth", depthScore},
+			}
+			weakestIdx := 0
+			for i := 1; i < len(scores); i++ {
+				if scores[i].score < scores[weakestIdx].score {
+					weakestIdx = i
+				}
+			}
+			attackType = model.AttackTypes[weakestIdx % len(model.AttackTypes)]
 		}
 	} else if livenessScore < 0.75 {
 		decision = "uncertain"
@@ -796,80 +845,791 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 	}
 }
 
-func (p *ProductionPADEngine) computeTextureLBP(data []byte) float64 {
-	h := sha256.Sum256(data)
-	var entropy float64
-	for _, b := range h {
-		prob := float64(b) / 255.0
-		if prob > 0 && prob < 1 {
-			entropy -= prob * math.Log2(prob)
+// computeTextureLBP performs real Local Binary Pattern analysis on image data.
+// Natural skin textures have moderate LBP entropy; spoofed images
+// (printed photos, screens) have either too uniform or too random patterns.
+func (p *ProductionPADEngine) computeTextureLBP(imageData []byte) float64 {
+	img, err := decodeImage(imageData)
+	if err != nil {
+		return -1.0
+	}
+
+	gray := toGrayscale(img)
+	if gray == nil {
+		return -1.0
+	}
+
+	bounds := gray.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	if h < 10 || w < 10 {
+		return -1.0
+	}
+
+	// Build LBP histogram with 256 possible patterns
+	histogram := make([]float64, 256)
+	for y := 1; y < h-1; y++ {
+		for x := 1; x < w-1; x++ {
+			center := float64(gray.At(x, y).(color.Gray).Y)
+			// 8-neighbors in clockwise order starting from top
+			neighbors := [8]float64{
+				float64(gray.At(x, y-1).(color.Gray).Y), // top
+				float64(gray.At(x+1, y-1).(color.Gray).Y), // top-right
+				float64(gray.At(x+1, y).(color.Gray).Y), // right
+				float64(gray.At(x+1, y+1).(color.Gray).Y), // bottom-right
+				float64(gray.At(x, y+1).(color.Gray).Y), // bottom
+				float64(gray.At(x-1, y+1).(color.Gray).Y), // bottom-left
+				float64(gray.At(x-1, y).(color.Gray).Y), // left
+				float64(gray.At(x-1, y-1).(color.Gray).Y), // top-left
+			}
+
+			pattern := 0
+			for i := 0; i < 8; i++ {
+				if neighbors[i] >= center {
+					pattern |= (1 << i)
+				}
+			}
+			histogram[pattern]++
 		}
 	}
-	normalized := entropy / (8 * math.Log2(256))
-	return 0.65 + normalized*0.30
+
+	// Compute Shannon entropy of LBP distribution
+	total := float64(histogram[0])
+	for i := 1; i < 256; i++ {
+		total += histogram[i]
+	}
+	if total <= 0 {
+		return -1.0
+	}
+
+	var entropy float64
+	for i := 0; i < 256; i++ {
+		if histogram[i] > 0 {
+			p := histogram[i] / total
+			entropy -= p * math.Log2(p)
+		}
+	}
+
+	// Max entropy for 256 patterns is log2(256) = 8
+	// Natural skin: moderate entropy (~5-7), spoofed: either very low (~2-3, uniform)
+	// or very high (~7.5+, random noise from screen capture)
+	maxEntropy := math.Log2(256.0)
+	normalizedEntropy := entropy / maxEntropy
+
+	// Score natural skin textures: moderate entropy is best
+	// Penalize both very low (uniform, printed) and very high (random, screen)
+	if normalizedEntropy >= 0.5 && normalizedEntropy <= 0.85 {
+		// Peak at 0.65 for moderate entropy
+		score := 0.65 + 0.30*math.Sin(math.Pi*(normalizedEntropy-0.5)/0.35)
+		return math.Min(score, 1.0)
+	}
+
+	// Gradually penalize outside the natural range
+	if normalizedEntropy < 0.5 {
+		return 0.65 * (normalizedEntropy / 0.5) * 0.3
+	}
+	// normalizedEntropy > 0.85 (too random, likely screen/camera replay)
+	return 0.65 * (1.0 - (normalizedEntropy-0.85)/0.15) * 0.3
 }
 
-func (p *ProductionPADEngine) computeFrequencyAnalysis(data []byte) float64 {
-	h := sha512.Sum512(data)
-	var energy float64
-	for i := 0; i < len(h)-1; i++ {
-		diff := float64(h[i]) - float64(h[i+1])
-		energy += diff * diff
+// computeFrequencyAnalysis performs real DCT-based frequency domain analysis.
+// Real faces have smooth low-frequency content with natural high-frequency decay.
+// Printed/screen attacks show unnatural frequency distributions (over-sharpened
+// or band-limited patterns).
+func (p *ProductionPADEngine) computeFrequencyAnalysis(imageData []byte) float64 {
+	img, err := decodeImage(imageData)
+	if err != nil {
+		return -1.0
 	}
-	normalized := 1.0 - (energy / (255.0 * 255.0 * float64(len(h))))
-	return 0.60 + normalized*0.35
+
+	gray := toGrayscale(img)
+	if gray == nil {
+		return -1.0
+	}
+
+	bounds := gray.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	if h < 16 || w < 16 {
+		return -1.0
+	}
+
+	// Apply DCT on 8x8 blocks
+	blockSize := 8
+	var lowFreqEnergy, totalEnergy float64
+	blockCount := 0
+
+	for by := 0; by+blockSize <= h; by += blockSize {
+		for bx := 0; bx+blockSize <= w; bx += blockSize {
+			// Extract block and compute simplified 2D DCT energy
+			block := make([]float64, blockSize*blockSize)
+			idx := 0
+			for dy := 0; dy < blockSize; dy++ {
+				for dx := 0; dx < blockSize; dx++ {
+					block[idx] = float64(gray.At(bx+dx, by+dy).(color.Gray).Y) / 255.0
+					idx++
+				}
+			}
+
+			// Compute simplified 2D DCT (only low-frequency coefficients)
+			var dctLow, dctTotal float64
+			for u := 0; u < 4; u++ {
+				for v := 0; v < 4; v++ {
+					sum := 0.0
+					cu := 1.0
+					if u > 0 {
+						cu = math.Sqrt(2.0)
+					}
+					cv := 1.0
+					if v > 0 {
+						cv = math.Sqrt(2.0)
+					}
+					for y2 := 0; y2 < blockSize; y2++ {
+						for x2 := 0; x2 < blockSize; x2++ {
+							val := block[y2*blockSize+x2]
+							sum += val * math.Cos(math.Pi/(float64(blockSize))*float64(u)*(float64(x2)+0.5)) *
+								math.Cos(math.Pi/(float64(blockSize))*float64(v)*(float64(y2)+0.5))
+						}
+					}
+					sum *= cu * cv / 2.0
+					energy := sum * sum
+					dctTotal += energy
+					if u < 2 && v < 2 {
+						dctLow += energy
+					}
+				}
+			}
+
+			lowFreqEnergy += dctLow
+			totalEnergy += dctTotal
+			blockCount++
+		}
+	}
+
+	if blockCount == 0 || totalEnergy == 0 {
+		return -1.0
+	}
+
+	lowFreqRatio := lowFreqEnergy / totalEnergy
+
+	// Real images: ~60-85% energy in low frequencies
+	// Screen prints: often too high (>90%, over-smooth) or too low (<45%, noisy)
+	if lowFreqRatio >= 0.45 && lowFreqRatio <= 0.90 {
+		// Peak at 0.70
+		center := 0.70
+		distance := math.Abs(lowFreqRatio - center)
+		score := 0.60 + 0.35*math.Max(0, 1.0-distance/0.25)
+		return math.Min(score, 0.95)
+	}
+
+	// Penalize outside range
+	if lowFreqRatio < 0.45 {
+		return 0.60 * (lowFreqRatio / 0.45) * 0.3
+	}
+	// > 0.90 (too smooth, likely screen/printed)
+	return 0.60 * (1.0 - (lowFreqRatio-0.90)/0.10) * 0.3
 }
 
-func (p *ProductionPADEngine) computeGradientAnalysis(data []byte) float64 {
-	h := sha256.Sum256(append(data, 0x01))
-	var gradSum float64
-	for i := 1; i < len(h); i++ {
-		grad := math.Abs(float64(h[i]) - float64(h[i-1]))
-		gradSum += grad
+// computeGradientAnalysis performs real Sobel-based edge/gradient analysis.
+// Real skin has natural micro-edges and smooth transitions.
+// Screen-printed attacks show unnatural gradient patterns with
+// inconsistent edge strength or directional bias.
+func (p *ProductionPADEngine) computeGradientAnalysis(imageData []byte) float64 {
+	img, err := decodeImage(imageData)
+	if err != nil {
+		return -1.0
 	}
-	normalized := gradSum / (255.0 * float64(len(h)-1))
-	return 0.60 + normalized*0.35
+
+	gray := toGrayscale(img)
+	if gray == nil {
+		return -1.0
+	}
+
+	bounds := gray.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	if h < 4 || w < 4 {
+		return -1.0
+	}
+
+	// Compute Sobel gradients in X and Y
+	type gradPoint struct {
+		magnitude float64
+		direction float64
+	}
+
+	gradientMap := make([][]gradPoint, h)
+	for y := range gradientMap {
+		gradientMap[y] = make([]gradPoint, w)
+	}
+
+	var totalMagnitude, totalDirectionalConsistency, edgeCount float64
+
+	for y := 1; y < h-1; y++ {
+		for x := 1; x < w-1; x++ {
+			// Sobel X kernel
+			gx := -float64(gray.At(x-1, y-1).(color.Gray).Y) + float64(gray.At(x+1, y-1).(color.Gray).Y) +
+				-2*float64(gray.At(x-1, y).(color.Gray).Y) + 2*float64(gray.At(x+1, y).(color.Gray).Y) +
+				-float64(gray.At(x-1, y+1).(color.Gray).Y) + float64(gray.At(x+1, y+1).(color.Gray).Y)
+
+			// Sobel Y kernel
+			gy := -float64(gray.At(x-1, y-1).(color.Gray).Y) - 2*float64(gray.At(x, y-1).(color.Gray).Y) - float64(gray.At(x+1, y-1).(color.Gray).Y) +
+				float64(gray.At(x-1, y+1).(color.Gray).Y) + 2*float64(gray.At(x, y+1).(color.Gray).Y) + float64(gray.At(x+1, y+1).(color.Gray).Y)
+
+			magnitude := math.Sqrt(gx*gx + gy*gy)
+			direction := math.Atan2(gy, gx)
+
+			gradientMap[y][x] = gradPoint{magnitude: magnitude, direction: direction}
+			totalMagnitude += magnitude
+
+			if magnitude > 10.0 { // edge threshold
+				edgeCount++
+				totalDirectionalConsistency += 1.0
+			}
+		}
+	}
+
+	totalPixels := float64(h * w)
+	edgeDensity := edgeCount / totalPixels
+
+	if edgeDensity < 0.001 {
+		// Too few edges - possibly blank or very uniform (spoof)
+		return -1.0
+	}
+
+	// Analyze gradient consistency across quadrants
+	quadrantCount := 4
+	quadrantEdges := make([]float64, quadrantCount)
+	qSizeX := w / 2
+	qSizeY := h / 2
+
+	for y := 1; y < h-1; y++ {
+		for x := 1; x < w-1; x++ {
+			if gradientMap[y][x].magnitude > 10.0 {
+				qx := 0
+				if x >= qSizeX {
+					qx = 1
+				}
+				qy := 0
+				if y >= qSizeY {
+					qy = 1
+				}
+				qIdx := qy*2 + qx
+				quadrantEdges[qIdx]++
+			}
+		}
+	}
+
+	// Measure variance across quadrants - real skin has relatively
+	// even edge distribution; printed attacks may have uneven patterns
+	var meanEdges, edgeVariance float64
+	for _, e := range quadrantEdges {
+		meanEdges += e
+	}
+	meanEdges /= float64(quadrantCount)
+	if meanEdges < 0.1 {
+		return -1.0
+	}
+	for _, e := range quadrantEdges {
+		diff := e - meanEdges
+		edgeVariance += diff * diff
+	}
+	edgeVariance /= float64(quadrantCount)
+	edgeCV := math.Sqrt(edgeVariance) / meanEdges // coefficient of variation
+
+	// Natural skin: moderate edge density (0.05-0.25) with low quadrant variance
+	// Spoofed: very low edge density (uniform print) or very high (screen glare)
+	// or very uneven distribution (CV > 0.8)
+	score := 0.65
+	if edgeDensity >= 0.03 && edgeDensity <= 0.35 {
+		score += 0.10 // valid edge density
+	}
+	if edgeCV <= 0.8 {
+		score += 0.15 // reasonable spatial consistency
+	}
+	if edgeDensity > 0.10 && edgeDensity < 0.25 {
+		score += 0.05 // ideal range
+	}
+
+	return math.Min(score, 1.0)
 }
 
-func (p *ProductionPADEngine) computeColorHistogram(data []byte) float64 {
-	h := sha256.Sum256(append(data, 0x02))
-	bins := make([]int, 16)
-	for _, b := range h {
-		bins[b%16]++
+// computeColorHistogram performs real YCbCr color space analysis.
+// Human skin has predictable distribution in YCbCr: Y=55-200, Cb=77-127, Cr=133-173.
+// Screens, prints, and non-skin objects show different color distributions.
+func (p *ProductionPADEngine) computeColorHistogram(imageData []byte) float64 {
+	img, err := decodeImage(imageData)
+	if err != nil {
+		return -1.0
 	}
-	var chi2 float64
-	expected := float64(len(h)) / 16.0
-	for _, count := range bins {
-		diff := float64(count) - expected
-		chi2 += (diff * diff) / expected
+
+	bounds := img.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	if h < 8 || w < 8 {
+		return -1.0
 	}
-	uniformity := 1.0 / (1.0 + chi2/100.0)
-	return 0.60 + uniformity*0.35
+
+	// Compute YCbCr histograms by sampling the image
+	// Skin-tone bins in YCbCr: Y=55-200, Cb=77-127, Cr=133-173
+	// We use 8-bit quantization per channel with 32 bins each
+	const numBins = 32
+	yHist := make([]float64, numBins)
+	cbHist := make([]float64, numBins)
+	crHist := make([]float64, numBins)
+	var totalPixels float64
+
+	for y := 0; y < h; y += 2 { // Sample every 2nd pixel for performance
+		for x := 0; x < w; x += 2 {
+			r, g, b, _ := img.At(x, y).RGBA()
+			// RGBA values are 0-65535, convert to 0-255
+			r8 := r >> 8
+			g8 := g >> 8
+			b8 := b >> 8
+
+			// RGB to YCbCr conversion (BT.601)
+			yVal := float64(r8)*0.299 + float64(g8)*0.587 + float64(b8)*0.114
+			cbVal := -0.168736*float64(r8) + -0.331264*float64(g8) + 0.5*float64(b8) + 128.0
+			crVal := 0.5*float64(r8) + -0.418688*float64(g8) + -0.081312*float64(b8) + 128.0
+
+			// Clamp to valid range
+			if yVal < 0 {
+				yVal = 0
+			} else if yVal > 255 {
+				yVal = 255
+			}
+			if cbVal < 0 {
+				cbVal = 0
+			} else if cbVal > 255 {
+				cbVal = 255
+			}
+			if crVal < 0 {
+				crVal = 0
+			} else if crVal > 255 {
+				crVal = 255
+			}
+
+			yHist[int(yVal)/8]++
+			cbHist[int(cbVal)/8]++
+			crHist[int(crVal)/8]++
+			totalPixels++
+		}
+	}
+
+	if totalPixels < 10 {
+		return -1.0
+	}
+
+	// Skin-tone region: YCbCr approximately Y=55-200, Cb=77-127, Cr=133-173
+	// Map to histogram bins: Y/8 gives bin 7-25, Cb: 10-16, Cr: 17-22
+	skinYScore := 0.0
+	for b := 7; b <= 25 && b < numBins; b++ {
+		skinYScore += yHist[b]
+	}
+	skinYRatio := skinYScore / totalPixels
+
+	skinCbScore := 0.0
+	for b := 10; b <= 16 && b < numBins; b++ {
+		skinCbScore += cbHist[b]
+	}
+	skinCbRatio := skinCbScore / totalPixels
+
+	skinCrScore := 0.0
+	for b := 17; b <= 22 && b < numBins; b++ {
+		skinCrScore += crHist[b]
+	}
+	skinCrRatio := skinCrScore / totalPixels
+
+	// Combined skin consistency: all three channels should agree
+	// Real skin: Y~0.6-0.9 in range, Cb~0.1-0.4, Cr~0.1-0.4
+	yScore := math.Min(skinYRatio/0.75, 1.0)
+	cbScore := math.Min(skinCbRatio/0.25, 1.0)
+	crScore := math.Min(skinCrRatio/0.25, 1.0)
+
+	// Geometric mean to require agreement across all channels
+	colorScore := math.Pow(yScore*cbScore*crScore, 1.0/3.0)
+
+	// Map to 0-1 score
+	if colorScore >= 0.3 {
+		return 0.60 + 0.35*math.Min(colorScore, 1.0)
+	}
+	// Very low skin-tone consistency: likely not skin or non-natural color
+	return 0.15 + 0.35*colorScore
 }
 
-func (p *ProductionPADEngine) computeMotionFlow(data []byte) float64 {
-	// Motion flow estimation from temporal frame difference (simulated from data variance)
-	h := sha256.Sum256(append(data, 0x03))
-	var variance float64
-	for i := 1; i < len(h); i++ {
-		diff := float64(h[i]) - float64(h[i-1])
-		variance += diff * diff
+// computeMotionFlow performs spatial motion-consistency analysis on a single image.
+// Divides image into regions and compares local variance patterns.
+// Real faces show micro-variations consistent with skin texture and lighting.
+// Screens/prints are either too uniform or have high-frequency noise artifacts.
+func (p *ProductionPADEngine) computeMotionFlow(imageData []byte) float64 {
+	img, err := decodeImage(imageData)
+	if err != nil {
+		return -1.0
 	}
-	normalized := variance / (255.0 * 255.0 * float64(len(h)-1))
-	return 0.70 + normalized*0.25
+
+	gray := toGrayscale(img)
+	if gray == nil {
+		return -1.0
+	}
+
+	bounds := gray.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	if h < 16 || w < 16 {
+		return -1.0
+	}
+
+	// Divide image into grid of regions and compute local variance in each
+	gridSize := 4
+	regionW := w / gridSize
+	regionH := h / gridSize
+
+	variances := make([]float64, gridSize*gridSize)
+	meanValues := make([]float64, gridSize*gridSize)
+	var totalRegions float64
+
+	for gy := 0; gy < gridSize; gy++ {
+		for gx := 0; gx < gridSize; gx++ {
+			var sum, sumSq float64
+			count := 0
+
+			yStart := gy * regionH
+			yEnd := yStart + regionH
+			xStart := gx * regionW
+			xEnd := xStart + regionW
+
+			if yEnd > h {
+				yEnd = h
+			}
+			if xEnd > w {
+				xEnd = w
+			}
+
+			for y := yStart; y < yEnd; y++ {
+				for x := xStart; x < xEnd; x++ {
+					val := float64(gray.At(x, y).(color.Gray).Y)
+					sum += val
+					sumSq += val * val
+					count++
+				}
+			}
+
+			if count == 0 {
+				continue
+			}
+
+			mean := sum / float64(count)
+			variance := sumSq/float64(count) - mean*mean
+			variances[gy*gridSize+gx] = variance
+			meanValues[gy*gridSize+gx] = mean
+			totalRegions++
+		}
+	}
+
+	if totalRegions < 4 {
+		return -1.0
+	}
+
+	// Compute variance-of-variances (measure of spatial consistency)
+	var meanVar, varVar float64
+	for _, v := range variances {
+		meanVar += v
+	}
+	meanVar /= float64(len(variances))
+
+	for _, v := range variances {
+		diff := v - meanVar
+		varVar += diff * diff
+	}
+	varVar /= float64(len(variances))
+	cvOfVariance := math.Sqrt(varVar) / (meanVar + 1e-6)
+
+	// Real faces: moderate local variance (~100-800) with moderate spatial variation (CV ~0.3-0.7)
+	// Screens: very low variance (smooth display) or very high (pixel grid noise)
+	// Prints: inconsistent variance (halftone patterns)
+	score := 0.65
+
+	if meanVar >= 50.0 && meanVar <= 1000.0 {
+		score += 0.10 // reasonable local variance
+	}
+
+	if cvOfVariance >= 0.2 && cvOfVariance <= 0.8 {
+		score += 0.15 // natural spatial variation
+	}
+
+	// Check for extreme uniformity (screen/blank) vs extreme noise
+	if meanVar > 2000.0 {
+		// Very high variance everywhere - likely digital noise/artifact
+		score -= 0.20
+	}
+
+	// Check for very low variance (too uniform)
+	if meanVar < 20.0 {
+		score -= 0.15
+	}
+
+	return math.Max(0.0, math.Min(score, 1.0))
 }
 
-func (p *ProductionPADEngine) computeDepthConsistency(data []byte) float64 {
-	// Depth map consistency from pixel gradient patterns
-	h := sha256.Sum256(append(data, 0x04))
-	var consistency float64
-	for i := 2; i < len(h); i++ {
-		// Second derivative (smooth depth maps have low second derivative)
-		secondDeriv := math.Abs(float64(h[i]) - 2*float64(h[i-1]) + float64(h[i-2]))
-		consistency += secondDeriv
+// computeDepthConsistency performs focus/blur analysis for depth estimation.
+// Uses Laplacian variance in image regions to estimate depth consistency.
+// Real faces: edges at different depths show different sharpness levels.
+// 2D prints/screens: uniform sharpness or unnatural edge distribution.
+func (p *ProductionPADEngine) computeDepthConsistency(imageData []byte) float64 {
+	img, err := decodeImage(imageData)
+	if err != nil {
+		return -1.0
 	}
-	normalized := 1.0 - (consistency / (510.0 * float64(len(h)-2)))
-	return 0.70 + normalized*0.25
+
+	gray := toGrayscale(img)
+	if gray == nil {
+		return -1.0
+	}
+
+	bounds := gray.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	if h < 16 || w < 16 {
+		return -1.0
+	}
+
+	// Compute Laplacian variance in each region as focus measure
+	// Laplacian = 2nd derivative = measures edge sharpness
+	gridSize := 4
+	regionW := w / gridSize
+	regionH := h / gridSize
+
+	sharpnessMap := make([]float64, gridSize*gridSize)
+	edgeCountMap := make([]float64, gridSize*gridSize)
+	var totalRegions float64
+
+	for gy := 0; gy < gridSize; gy++ {
+		for gx := 0; gx < gridSize; gx++ {
+			var laplacianSum, laplacianSqSum, edgeCount float64
+			count := 0
+
+			yStart := gy * regionH
+			yEnd := yStart + regionH
+			xStart := gx * regionW
+			xEnd := xStart + regionW
+
+			if yEnd > h {
+				yEnd = h
+			}
+			if xEnd > w {
+				xEnd = w
+			}
+
+			for y := yStart + 1; y < yEnd-1; y++ {
+				for x := xStart + 1; x < xEnd-1; x++ {
+					// Laplacian kernel (4-connected):
+					//  0  1  0
+					//  1 -4  1
+					//  0  1  0
+					laplacian := float64(gray.At(x, y-1).(color.Gray).Y) +
+						float64(gray.At(x-1, y).(color.Gray).Y) -
+						4.0*float64(gray.At(x, y).(color.Gray).Y) +
+						float64(gray.At(x+1, y).(color.Gray).Y) +
+						float64(gray.At(x, y+1).(color.Gray).Y)
+
+					laplacianSum += math.Abs(laplacian)
+					laplacianSqSum += laplacian * laplacian
+					count++
+
+					if math.Abs(laplacian) > 50.0 {
+						edgeCount++
+					}
+				}
+			}
+
+			if count == 0 {
+				continue
+			}
+
+			meanAbs := laplacianSum / float64(count)
+			meanSq := laplacianSqSum / float64(count)
+			lapVariance := meanSq - meanAbs*meanAbs // variance of Laplacian magnitude
+
+			sharpnessMap[gy*gridSize+gx] = lapVariance
+			edgeCountMap[gy*gridSize+gx] = edgeCount / float64(count)
+			totalRegions++
+		}
+	}
+
+	if totalRegions < 4 {
+		return -1.0
+	}
+
+	// Analyze depth consistency
+	// Real faces: edges at different depths have varying sharpness
+	// 2D prints: uniformly sharp or uniformly blurred
+	// Screens: unnatural edge patterns
+
+	// Compute mean and variance of sharpness across regions
+	var meanSharpness, varianceSharpness float64
+	for _, s := range sharpnessMap {
+		meanSharpness += s
+	}
+	meanSharpness /= float64(len(sharpnessMap))
+
+	for _, s := range sharpnessMap {
+		diff := s - meanSharpness
+		varianceSharpness += diff * diff
+	}
+	varianceSharpness /= float64(len(sharpnessMap))
+	cvSharpness := math.Sqrt(varianceSharpness) / (meanSharpness + 1e-6)
+
+	// Compute edge distribution consistency
+	var meanEdgeDensity, varianceEdgeDensity float64
+	for _, e := range edgeCountMap {
+		meanEdgeDensity += e
+	}
+	meanEdgeDensity /= float64(len(edgeCountMap))
+
+	for _, e := range edgeCountMap {
+		diff := e - meanEdgeDensity
+		varianceEdgeDensity += diff * diff
+	}
+	varianceEdgeDensity /= float64(len(edgeCountMap))
+	cvEdgeDensity := math.Sqrt(varianceEdgeDensity) / (meanEdgeDensity + 1e-6)
+
+	// Natural depth consistency: some variation in sharpness (depth) and edges
+	// But not too extreme (would indicate inconsistent capture)
+	score := 0.65
+
+	if meanSharpness >= 100.0 && meanSharpness <= 5000.0 {
+		score += 0.10 // reasonable edge sharpness
+	}
+
+	// Moderate spatial variation in sharpness indicates depth
+	if cvSharpness >= 0.15 && cvSharpness <= 1.0 {
+		score += 0.15 // natural depth variation
+	}
+
+	// Edge density should be somewhat consistent
+	if cvEdgeDensity <= 0.8 {
+		score += 0.10 // reasonable edge consistency
+	}
+
+	// Penalize very uniform sharpness (2D print) or very chaotic
+	if cvSharpness < 0.05 {
+		score -= 0.20 // too uniform - likely 2D
+	}
+	if meanEdgeDensity > 0.5 {
+		score -= 0.10 // too many edges everywhere - likely noisy/screen
+	}
+
+	return math.Max(0.0, math.Min(score, 1.0))
+}
+
+// callPythonPADService sends the sample data to the Python biometric service
+// for professional PAD analysis when local heuristic analysis fails.
+func (p *ProductionPADEngine) callPythonPADService(modality, voterVIN string, imageData []byte) *PADResult {
+	baseURL := os.Getenv("BIOMETRIC_SERVICE_URL")
+	if baseURL == "" {
+		baseURL = "http://biometric-python:8090"
+	}
+
+	// Encode image as base64 for transmission
+	encoded := base64.StdEncoding.EncodeToString(imageData)
+
+	payload := M{
+		"vin":      voterVIN,
+		"modality": modality,
+		"image":    encoded,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal PAD payload for Python service")
+		return nil
+	}
+
+	req, err := http.NewRequest("POST", baseURL+"/api/pad/check", bytes.NewReader(jsonData))
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create PAD request to Python service")
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error().Err(err).Msg("PAD Python service unavailable")
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Error().Int("status", resp.StatusCode).Msg("PAD Python service returned error")
+		return nil
+	}
+
+	var result M
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Error().Err(err).Msg("Failed to parse PAD Python service response")
+		return nil
+	}
+
+	livenessScore, _ := result["liveness_score"].(float64)
+	decision, _ := result["pad_decision"].(string)
+	attackType, _ := result["attack_type"].(string)
+	confidence, _ := result["confidence"].(float64)
+	textureScore, _ := result["texture_score"].(float64)
+	motionScore, _ := result["motion_score"].(float64)
+	depthScore, _ := result["depth_score"].(float64)
+	spectralScore, _ := result["spectral_score"].(float64)
+
+	return &PADResult{
+		LivenessScore: livenessScore,
+		TextureScore:  textureScore,
+		MotionScore:   motionScore,
+		DepthScore:    depthScore,
+		SpectralScore: spectralScore,
+		Decision:      decision,
+		AttackType:    attackType,
+		Confidence:    confidence,
+		ISOCompliant:  true,
+	}
+}
+
+// decodeImage attempts to decode image data as JPEG or PNG.
+func decodeImage(data []byte) (image.Image, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty image data")
+	}
+
+	// Try JPEG first
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err == nil {
+		return img, nil
+	}
+
+	// Try PNG
+	img, err = png.Decode(bytes.NewReader(data))
+	if err == nil {
+		return img, nil
+	}
+
+	// Try other formats via standard decoder
+	img, _, err = image.Decode(bytes.NewReader(data))
+	if err == nil {
+		return img, nil
+	}
+
+	return nil, fmt.Errorf("unsupported image format: %w", err)
+}
+
+// toGrayscale converts any image to grayscale.
+func toGrayscale(img image.Image) image.Image {
+	bounds := img.Bounds()
+	h, w := bounds.Dy(), bounds.Dx()
+	gray := image.NewGray(bounds)
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			// RGBA values are 0-65535, convert to 0-255 for luminance
+			yVal := uint8((uint32(r)*299 + uint32(g)*587 + uint32(b)*114 + 500) / 1000)
+			gray.Set(x, y, color.Gray{Y: yVal})
+		}
+	}
+
+	return gray
 }
 
 func (p *ProductionPADEngine) GetStats() M {

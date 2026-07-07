@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from typing import Optional
 from pathlib import Path
 
+NIN_API_URL = os.getenv("NIN_API_URL", "")
+NIN_API_KEY = os.getenv("NIN_API_KEY", "")
+
 import structlog
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -320,12 +323,52 @@ Respond in JSON format:
             return self._analyze_heuristic(image_bytes, document_type)
 
     def _analyze_heuristic(self, image_bytes: bytes, document_type: str) -> VLMResult:
-        """Heuristic-based analysis when VLM is unavailable."""
+        """Heuristic-based analysis when VLM is unavailable.
+        
+        Computes completeness from actual OCR field extraction results
+        rather than returning a fixed arbitrary value.
+        """
         file_size = len(image_bytes)
 
-        # Basic quality checks
-        quality = "good" if file_size > 100_000 else "fair" if file_size > 50_000 else "poor"
-        completeness = 0.5  # Cannot determine without VLM
+        # Run OCR to extract fields and compute completeness from actual extraction
+        ocr_results = ocr_engine.extract_text(image_bytes)
+        raw_text = "\n".join(r.text for r in ocr_results)
+
+        # Define expected fields for document completeness calculation
+        expected_fields = {
+            "ec8a": [
+                (r"EC8A[/\-]?\w{2,4}[/\-]?\d{4}", "serial_number"),
+                (r"(?:PU|Polling Unit)[:\s]*([A-Z0-9\-/]+)", "polling_unit_code"),
+                (r"(?:Total Valid|Valid Votes)[:\s]*(\d+)", "total_valid"),
+                (r"(?:Rejected|Void)[:\s]*(\d+)", "rejected"),
+                (r"(?:Total Votes? Cast|Total Cast)[:\s]*(\d+)", "total_cast"),
+            ],
+            "form": [
+                (r"(?:Name)[:\s]*(\S+)", "name"),
+                (r"(?:Date)[:\s]*(\d{4}[-/]\d{2})", "date"),
+                (r"(?:ID|Number)[:\s]*(\S+)", "id_number"),
+            ],
+        }
+
+        field_patterns = expected_fields.get(document_type, expected_fields["ec8a"])
+        fields_found = 0
+        fields_total = len(field_patterns)
+
+        for pattern, _ in field_patterns:
+            if re.search(pattern, raw_text, re.IGNORECASE):
+                fields_found += 1
+
+        # Completeness is based on actual field extraction rate
+        completeness = fields_found / max(fields_total, 1)
+
+        # Adjust for OCR confidence if we have results
+        if ocr_results:
+            avg_confidence = sum(r.confidence for r in ocr_results) / len(ocr_results)
+            # Blend OCR confidence with field completeness
+            completeness = completeness * 0.7 + avg_confidence * 0.3
+        else:
+            # No OCR results at all — zero completeness
+            completeness = 0.0
 
         # Check for obvious issues
         indicators = []
@@ -341,16 +384,19 @@ Respond in JSON format:
 
         if not (is_jpeg or is_png or is_pdf):
             indicators.append("Invalid image format detected")
+            completeness *= 0.5
+
+        quality = "good" if file_size > 100_000 else "fair" if file_size > 50_000 else "poor"
 
         return VLMResult(
-            is_valid_ec8a=True,  # Cannot determine without VLM
+            is_valid_ec8a=fields_found > 0 and len(indicators) == 0,
             tampering_detected=len(indicators) > 0,
             tampering_confidence=0.3 if indicators else 0.0,
             tampering_indicators=indicators,
             document_quality=quality,
             orientation_correct=True,
-            completeness_score=completeness,
-            analysis_summary=f"Heuristic analysis: {quality} quality, {len(indicators)} potential issues. VLM endpoint not configured for deep analysis.",
+            completeness_score=round(completeness, 3),
+            analysis_summary=f"Heuristic analysis: {quality} quality, {fields_found}/{fields_total} fields extracted. Completeness based on OCR field presence. VLM endpoint not configured for deep analysis.",
         )
 
 
@@ -702,11 +748,16 @@ class KYCEngine:
             if face_score < 0.7:
                 flags.append("Face match below threshold")
 
-        # Step 4: NIN database cross-reference (simulated — requires NIMC API)
+        # Step 4: NIN database cross-reference via NIMC API
         if request.id_type == "nin":
             checks.append("nin_database_lookup")
-            # In production: call NIMC verification API
-            scores["nin_lookup"] = 0.85  # Simulated
+            nin_result = await self._lookup_nin(request.id_number)
+            scores["nin_lookup"] = nin_result.get("confidence", 0.0)
+            if not nin_result.get("verified", False):
+                if "error" in nin_result:
+                    flags.append(f"NIN lookup service error: {nin_result['error']}")
+                else:
+                    flags.append("NIN database verification failed")
 
         # Step 5: Sanctions/PEP screening
         pep_clear = self._screen_sanctions(request.full_name)
@@ -993,6 +1044,59 @@ class KYCEngine:
         # For now, return True (clear) for all non-test names
         test_blocked = ["TEST SANCTIONED", "PEP FLAGGED"]
         return full_name.upper() not in test_blocked
+
+    async def _lookup_nin(self, nin_number: str) -> dict:
+        """Look up NIN against NIMC verification API.
+
+        In production, this makes a real HTTP request to the NIMC/NIN API.
+        If the API is not configured (NIN_API_URL not set), returns an error
+        indicating the service is not available rather than returning fake data.
+        """
+        if not NIN_API_URL or not NIN_API_KEY:
+            # API not configured — return error instead of fake data
+            return {
+                "verified": False,
+                "confidence": 0.0,
+                "error": "NIN_API_URL not configured — NIMC lookup service unavailable",
+            }
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{NIN_API_URL}/verify/{nin_number}",
+                    headers={"Authorization": f"Bearer {NIN_API_KEY}"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        "verified": True,
+                        "confidence": data.get("confidence", 0.95),
+                    }
+                elif resp.status_code == 404:
+                    return {
+                        "verified": False,
+                        "confidence": 0.0,
+                        "error": "NIN not found in NIMC database",
+                    }
+                else:
+                    return {
+                        "verified": False,
+                        "confidence": 0.0,
+                        "error": f"NIMC API returned HTTP {resp.status_code}",
+                    }
+        except httpx.TimeoutException:
+            return {
+                "verified": False,
+                "confidence": 0.0,
+                "error": "NIMC API request timed out",
+            }
+        except Exception as e:
+            return {
+                "verified": False,
+                "confidence": 0.0,
+                "error": str(e),
+            }
 
 
 kyc_engine = KYCEngine()

@@ -18,6 +18,231 @@ var (
 	rustInferenceURL string // Rust high-perf inference engine
 )
 
+// ─── Geographic and Statistical Helpers ──────────────────────────────────────────
+
+// firstDigit extracts the first non-zero digit of a positive integer.
+// Returns 0 if n <= 0.
+func firstDigitOfPositive(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	for n >= 10 {
+		n /= 10
+	}
+	return n
+}
+
+// computeBenfordsLaw performs a chi-square goodness-of-fit test on first-digit
+// frequencies against the expected Benford distribution.
+// Returns chi-square statistic, p-value, and whether the data passes (p > 0.05).
+func computeBenfordsLaw(values []int) (chiSquare float64, pValue float64, passes bool) {
+	digitCount := make([]int, 10) // digitCount[d] = count of values with first digit d
+	for _, v := range values {
+		if v > 0 {
+			d := firstDigitOfPositive(v)
+			if d >= 1 && d <= 9 {
+				digitCount[d]++
+			}
+		}
+	}
+
+	total := 0
+	for d := 1; d <= 9; d++ {
+		total += digitCount[d]
+	}
+
+	if total < 10 {
+		return 0, 1.0, true // insufficient data — always "pass"
+	}
+
+	// Benford's expected distribution (proportions for digits 1-9)
+	expected := [10]float64{0, 0.301, 0.176, 0.125, 0.097, 0.079, 0.067, 0.058, 0.051, 0.046}
+
+	chi2 := 0.0
+	for d := 1; d <= 9; d++ {
+		observed := float64(digitCount[d]) / float64(total)
+		expectedP := expected[d]
+		chi2 += (observed - expectedP) * (observed - expectedP) / expectedP
+	}
+
+	// Degrees of freedom = 8 (9 digits minus 1 constraint)
+	pVal := chiSquarePValue(chi2, 8)
+	passes = pVal > 0.05
+
+	return chi2, pVal, passes
+}
+
+// GNNNode represents a polling unit as a node in the geographic graph.
+type GNNNode struct {
+	Index      int
+	PUCode     string
+	Latitude   float64
+	Longitude  float64
+	Ward       string
+	LGA        string
+	VoteCount  int
+	TurnoutPct float64
+}
+
+// buildGNNNodes creates graph nodes from vote records, pulling geographic and
+// administrative data from the polling_units, wards, and lgas tables.
+func buildGNNNodes(results []VoteRecord, electionID int) ([]GNNNode, error) {
+	// Fetch PU geographic info including ward and LGA names via joins.
+	rows, err := dbQueryCtx(context.Background(), `SELECT pu.code,
+		COALESCE(pu.latitude, 0), COALESCE(pu.longitude, 0),
+		COALESCE(w.name, ''), COALESCE(l.name, '')
+		FROM results r
+		JOIN polling_units pu ON r.polling_unit_code = pu.code
+		LEFT JOIN wards w ON pu.ward_code = w.code
+		LEFT JOIN lgas l ON w.lga_code = l.code
+		WHERE r.election_id = ?`, electionID)
+	if err != nil || rows == nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type puGeo struct {
+		code string
+		lat  float64
+		lng  float64
+		ward string
+		lga  string
+	}
+
+	geoMap := make(map[string]puGeo)
+	for rows.Next() {
+		var g puGeo
+		rows.Scan(&g.code, &g.lat, &g.lng, &g.ward, &g.lga)
+		geoMap[g.code] = g
+	}
+
+	nodes := make([]GNNNode, 0, len(results))
+	for i, rec := range results {
+		g := puGeo{}
+		if v, ok := geoMap[rec.PUCode]; ok {
+			g = v
+		}
+		nodes = append(nodes, GNNNode{
+			Index:      i,
+			PUCode:     rec.PUCode,
+			Latitude:   g.lat,
+			Longitude:  g.lng,
+			Ward:       g.ward,
+			LGA:        g.lga,
+			VoteCount:  rec.ValidVotes,
+			TurnoutPct: rec.TurnoutPct,
+		})
+	}
+	return nodes, nil
+}
+
+// VoteRecord holds aggregated result data for a single polling unit.
+type VoteRecord struct {
+	PUCode     string
+	Registered int
+	ValidVotes int
+	Rejected   int
+	Accredited int
+	TurnoutPct float64
+}
+
+// buildGeographicAdjacency builds an adjacency matrix based on:
+//  1. Haversine distance (nodes within thresholdKm are connected)
+//  2. Administrative proximity (nodes in the same ward are always connected)
+func buildGeographicAdjacency(nodes []GNNNode, thresholdKm float64) [][]bool {
+	n := len(nodes)
+	adj := make([][]bool, n)
+	for i := range adj {
+		adj[i] = make([]bool, n)
+	}
+
+	// haversineDistance (from geofencing.go) returns meters; convert threshold to meters.
+	thresholdMeters := thresholdKm * 1000.0
+
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			connected := false
+
+			// Same ward => always connected (administrative proximity)
+			if nodes[i].Ward != "" && nodes[i].Ward == nodes[j].Ward {
+				connected = true
+			}
+
+			// Same LGA => also connected regardless of distance
+			if !connected && nodes[i].LGA != "" && nodes[i].LGA == nodes[j].LGA {
+				connected = true
+			}
+
+			// Geographic proximity: within threshold (haversineDistance returns meters)
+			if !connected && nodes[i].Latitude != 0 && nodes[i].Longitude != 0 &&
+				nodes[j].Latitude != 0 && nodes[j].Longitude != 0 {
+				dist := haversineDistance(nodes[i].Latitude, nodes[i].Longitude,
+					nodes[j].Latitude, nodes[j].Longitude)
+				connected = dist < thresholdMeters
+			}
+
+			if connected {
+				adj[i][j] = true
+				adj[j][i] = true
+			}
+		}
+	}
+
+	return adj
+}
+
+// computeGraphAnomalyScores performs a simple graph-based anomaly detection
+// via neighborhood z-scores. Each node's value (vote count) is compared against
+// the mean/std of its geographic neighbors.
+func computeGraphAnomalyScores(nodes []GNNNode, adj [][]bool) []float64 {
+	scores := make([]float64, len(nodes))
+	for i, node := range nodes {
+		neighborValues := make([]float64, 0)
+		for j, isConnected := range adj[i] {
+			if isConnected {
+				neighborValues = append(neighborValues, float64(nodes[j].VoteCount))
+			}
+		}
+
+		if len(neighborValues) == 0 {
+			// Isolated node — cannot compute z-score, default to 0
+			scores[i] = 0
+			continue
+		}
+
+		// Compute mean and std of neighbor vote counts
+		sum := 0.0
+		for _, v := range neighborValues {
+			sum += v
+		}
+		mean := sum / float64(len(neighborValues))
+
+		varSumSq := 0.0
+		for _, v := range neighborValues {
+			d := v - mean
+			varSumSq += d * d
+		}
+		std := math.Sqrt(varSumSq / float64(len(neighborValues)))
+
+		// Z-score for this node against its neighbors
+		if std < 1 {
+			// Near-zero variance among neighbors — treat any non-matching value as suspicious
+			if math.Abs(float64(node.VoteCount)-mean) > 100 {
+				scores[i] = 0.9
+			} else {
+				scores[i] = 0.0
+			}
+		} else {
+			z := math.Abs(float64(node.VoteCount)-mean) / std
+			// Cap score at 1.0
+			s := math.Min(z/5.0, 1.0) // scale so z=5 => score=1.0
+			scores[i] = s
+		}
+	}
+
+	return scores
+}
+
 func initAIProxy() {
 	aiServiceURL = os.Getenv("AI_SERVICE_URL")
 	if aiServiceURL == "" {
@@ -39,6 +264,7 @@ func initAIProxy() {
 }
 
 var aiProxyClient = NewResilientHTTPClient("ai-proxy")
+
 // callMLInference sends a request to the ML inference service (Python or Rust).
 // Falls back to rule-based analysis if the service is unavailable.
 func callMLInference(ctx context.Context, service, path string, payload interface{}) (M, error) {
@@ -117,18 +343,79 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 	mlAvailable := false
 
 	if len(records) > 0 {
+		// Fetch actual party-level vote counts from result_votes table.
+		// Each row in result_votes represents one party's votes for a PU.
+		// We aggregate by party_code to get per-PU party vote counts.
+		partyVotesRows, err2 := dbQueryCtx(r.Context(), `
+			SELECT r.polling_unit_code, rv.party_code, COALESCE(rv.votes, 0)
+			FROM result_votes rv
+			JOIN results r ON rv.result_id = r.id
+			WHERE r.election_id = ?
+			ORDER BY r.polling_unit_code, rv.party_code
+		`, electionID)
+		partyData := make(map[string]map[string]int) // code -> party_code -> votes
+		if err2 == nil && partyVotesRows != nil {
+			defer partyVotesRows.Close()
+			for partyVotesRows.Next() {
+				var puCode string
+				var partyCode string
+				var votes int
+				partyVotesRows.Scan(&puCode, &partyCode, &votes)
+				if partyData[puCode] == nil {
+					partyData[puCode] = make(map[string]int)
+				}
+				partyData[puCode][partyCode] = votes
+			}
+		}
+
+		// Compute real Benford deviation on all vote count values in this election.
+		allVotes := make([]int, 0, len(records))
+		for _, rec := range records {
+			allVotes = append(allVotes, rec.valid)
+			allVotes = append(allVotes, rec.rejected)
+		}
+		benfordChi2, _, _ := computeBenfordsLaw(allVotes)
+		benfordDeviation := math.Round(benfordChi2*1000) / 1000
+
 		batchPayload := make([]M, 0, len(records))
 		for _, rec := range records {
+			// Pull actual party votes if available; otherwise flag as pending
+			pd := partyData[rec.code]
+			partyAVotes := 0
+			partyBVotes := 0
+			if len(pd) > 0 {
+				// Party A = first party alphabetically, Party B = second
+				partyCodes := make([]string, 0, len(pd))
+				for pc := range pd {
+					partyCodes = append(partyCodes, pc)
+				}
+				if len(partyCodes) > 0 {
+					// Sort for deterministic ordering
+					for i := 0; i < len(partyCodes); i++ {
+						for j := i + 1; j < len(partyCodes); j++ {
+							if partyCodes[i] > partyCodes[j] {
+								partyCodes[i], partyCodes[j] = partyCodes[j], partyCodes[i]
+							}
+						}
+					}
+					partyAVotes = pd[partyCodes[0]]
+				}
+				if len(partyCodes) > 1 {
+					partyBVotes = pd[partyCodes[1]]
+				}
+			}
+
 			batchPayload = append(batchPayload, M{
 				"registered_voters":      rec.registered,
 				"accredited_voters":      rec.accred,
 				"total_valid_votes":      rec.valid,
 				"rejected_votes":         rec.rejected,
-				"party_a_votes":          rec.valid / 2,
-				"party_b_votes":          rec.valid / 3,
+				"party_a_votes":          partyAVotes,
+				"party_b_votes":          partyBVotes,
+				"party_data_status":      map[bool]string{true: "available", false: "pending_data"}[len(pd) == 0],
 				"submission_delay_hours": 3.0,
 				"regional_mean_turnout":  0.55,
-				"benford_deviation":      0.0,
+				"benford_deviation":      benfordDeviation,
 			})
 		}
 
@@ -678,7 +965,10 @@ func handleAIProxy(w http.ResponseWriter, r *http.Request) {
 
 // ─── GNN Graph Scoring ────────────────────────────────────────────────────────
 
-// handleGNNScore calls the GNN model to score all polling units in an election.
+// handleGNNScore scores all polling units using geographic adjacency graph.
+// Builds real edges from Haversine distance + administrative boundaries,
+// then either calls the Python GNN service or falls back to a Go-native
+// neighborhood z-score algorithm.
 func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 	electionID := queryParamInt(r, "election_id", 1)
 
@@ -693,67 +983,106 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var nodes [][]float64
-	var puCodes []string
+	var recs []VoteRecord
 	for rows.Next() {
-		var code string
-		var reg, accred, valid, rejected int
-		rows.Scan(&code, &reg, &accred, &valid, &rejected)
-		turnout := float64(accred) / float64(max(reg, 1))
-		features := make([]float64, 17)
-		features[0] = float64(reg)
-		features[1] = float64(accred)
-		features[2] = turnout
-		features[3] = float64(valid)
-		features[4] = float64(rejected)
-		nodes = append(nodes, features)
-		puCodes = append(puCodes, code)
+		var rec VoteRecord
+		rows.Scan(&rec.PUCode, &rec.Registered, &rec.Accredited, &rec.ValidVotes, &rec.Rejected)
+		rec.TurnoutPct = float64(rec.Accredited) / float64(max(rec.Registered, 1))
+		recs = append(recs, rec)
 	}
 
-	if len(nodes) == 0 {
+	if len(recs) == 0 {
 		writeJSON(w, 200, M{"scores": []M{}, "total_nodes": 0})
 		return
 	}
 
-	// Build simple k-NN edges (by index proximity — production uses Neo4j)
+	// Build GNN nodes with geographic + administrative data.
+	// Uses configurable threshold (default 2 km) for distance-based edges.
+	thresholdKm := 2.0
+	if env := os.Getenv("GNN_DISTANCE_THRESHOLD_KM"); env != "" {
+		if t, err := strconv.ParseFloat(env, 64); err == nil && t > 0 {
+			thresholdKm = t
+		}
+	}
+
+	nodes, err := buildGNNNodes(recs, electionID)
+	if err != nil {
+		// If geographic enrichment fails, still produce results with minimal data
+		nodes = make([]GNNNode, len(recs))
+		for i, rec := range recs {
+			nodes[i] = GNNNode{Index: i, PUCode: rec.PUCode, VoteCount: rec.ValidVotes}
+		}
+	}
+
+	// Build real geographic adjacency matrix.
+	adj := buildGeographicAdjacency(nodes, thresholdKm)
+
+	// Try Python GNN service with real geographic edges.
+	// Encode adjacency as edge list for the ML service.
 	edges := make([][]int, 0)
 	for i := 0; i < len(nodes); i++ {
-		for j := max(0, i-5); j < min(len(nodes), i+5); j++ {
-			if i != j {
+		for j := i + 1; j < len(nodes); j++ {
+			if adj[i][j] {
 				edges = append(edges, []int{i, j})
 			}
 		}
 	}
 
-	// Call Python GNN inference
 	result, err := callMLInference(r.Context(), "python", "/gnn/score", M{
-		"nodes": nodes,
-		"edges": edges,
+		"nodes":  nodesToFeatures(nodes),
+		"edges":  edges,
+		"method": "geographic_adjacency",
 	})
-	if err != nil {
+
+	if err == nil && result != nil {
+		// Python GNN service succeeded — map scores back to PU codes.
+		puCodes := make([]string, len(nodes))
+		for i, n := range nodes {
+			puCodes[i] = n.PUCode
+		}
+		scored := []M{}
+		if scores, ok := result["scores"].([]interface{}); ok {
+			for i, s := range scores {
+				if i >= len(puCodes) {
+					break
+				}
+				score, _ := s.(float64)
+				if score > 0.5 {
+					scored = append(scored, M{
+						"polling_unit_code": puCodes[i],
+						"anomaly_score":     score,
+						"flagged":           true,
+					})
+				}
+			}
+		}
+
 		writeJSON(w, 200, M{
-			"error":       "GNN service unavailable",
-			"fallback":    true,
-			"total_nodes": len(nodes),
+			"flagged_units": scored,
+			"total_nodes":   len(nodes),
+			"total_flagged": len(scored),
+			"model":         "GAT-v1.0",
+			"n_anomalies":   result["n_anomalies"],
 		})
 		return
 	}
 
-	// Map scores back to PU codes
+	// ── Go-native GNN fallback: neighborhood z-score anomaly detection ──
+	// Performs message-passing: each node aggregates neighbors' vote counts,
+	// then computes a z-score deviation from the neighborhood mean.
+	graphScores := computeGraphAnomalyScores(nodes, adj)
+
 	scored := []M{}
-	if scores, ok := result["scores"].([]interface{}); ok {
-		for i, s := range scores {
-			if i >= len(puCodes) {
-				break
-			}
-			score, _ := s.(float64)
-			if score > 0.5 {
-				scored = append(scored, M{
-					"polling_unit_code": puCodes[i],
-					"anomaly_score":     score,
-					"flagged":           true,
-				})
-			}
+	for i, score := range graphScores {
+		if score > 0.5 {
+			scored = append(scored, M{
+				"polling_unit_code": nodes[i].PUCode,
+				"anomaly_score":     math.Round(score*1000) / 1000,
+				"flagged":           true,
+				"neighbors":         countNeighbors(adj, i),
+				"ward":              nodes[i].Ward,
+				"method":            "graph_convolution_zscore",
+			})
 		}
 	}
 
@@ -761,9 +1090,42 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 		"flagged_units": scored,
 		"total_nodes":   len(nodes),
 		"total_flagged": len(scored),
-		"model":         "GAT-v1.0",
-		"n_anomalies":   result["n_anomalies"],
+		"model":         "graph-conv-zscore-fallback",
+		"n_anomalies":   len(scored),
+		"adjacency": M{
+			"type":        "geographic_administrative",
+			"distance_km": thresholdKm,
+		},
 	})
+}
+
+// nodesToFeatures converts GNNNode slice to feature matrices for the ML service.
+func nodesToFeatures(nodes []GNNNode) [][]float64 {
+	featured := make([][]float64, len(nodes))
+	for i, n := range nodes {
+		features := make([]float64, 17)
+		features[0] = float64(n.VoteCount)
+		features[1] = n.TurnoutPct
+		if n.Latitude != 0 {
+			features[2] = n.Latitude
+		}
+		if n.Longitude != 0 {
+			features[3] = n.Longitude
+		}
+		featured[i] = features
+	}
+	return featured
+}
+
+// countNeighbors returns the number of neighbors for a node in the adjacency matrix.
+func countNeighbors(adj [][]bool, idx int) int {
+	count := 0
+	for _, connected := range adj[idx] {
+		if connected {
+			count++
+		}
+	}
+	return count
 }
 
 // ── Lakehouse Pipeline Endpoints ──
@@ -792,7 +1154,7 @@ func handleLakehouseIngest(w http.ResponseWriter, r *http.Request) {
 		var eid, registered, accred, valid, rejected int
 		rows.Scan(&code, &eid, &registered, &accred, &valid, &rejected, &stateCode, &lgaCode)
 		results = append(results, M{
-			"polling_unit_code":  code,
+			"polling_unit_code": code,
 			"election_id":       eid,
 			"registered_voters": registered,
 			"accredited_voters": accred,
@@ -840,7 +1202,7 @@ func handleLakehousePipeline(w http.ResponseWriter, r *http.Request) {
 		var eid, registered, accred, valid, rejected, votes int
 		rows.Scan(&code, &eid, &registered, &accred, &valid, &rejected, &stateCode, &lgaCode, &partyCode, &votes)
 		results = append(results, M{
-			"polling_unit_code":  code,
+			"polling_unit_code": code,
 			"election_id":       eid,
 			"registered_voters": registered,
 			"accredited_voters": accred,
@@ -895,19 +1257,67 @@ func handleRayBatchPredict(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Fetch actual party-level vote counts from result_votes table.
+	partyVotesRows, err2 := dbQueryCtx(r.Context(), `
+		SELECT r.polling_unit_code, rv.party_code, COALESCE(rv.votes, 0)
+		FROM result_votes rv
+		JOIN results r ON rv.result_id = r.id
+		WHERE r.election_id = ?
+		ORDER BY r.polling_unit_code, rv.party_code
+	`, electionID)
+	partyData := make(map[string]map[string]int)
+	if err2 == nil && partyVotesRows != nil {
+		defer partyVotesRows.Close()
+		for partyVotesRows.Next() {
+			var puCode, partyCode string
+			var votes int
+			partyVotesRows.Scan(&puCode, &partyCode, &votes)
+			if partyData[puCode] == nil {
+				partyData[puCode] = make(map[string]int)
+			}
+			partyData[puCode][partyCode] = votes
+		}
+	}
+
 	var puData []M
 	for rows != nil && rows.Next() {
 		var code string
 		var registered, accred, valid, rejected int
 		rows.Scan(&code, &registered, &accred, &valid, &rejected)
+
+		// Pull actual party votes if available
+		pd := partyData[code]
+		partyAVotes, partyBVotes := 0, 0
+		if len(pd) > 0 {
+			partyCodes := make([]string, 0, len(pd))
+			for pc := range pd {
+				partyCodes = append(partyCodes, pc)
+			}
+			// Sort for deterministic ordering
+			for i := 0; i < len(partyCodes); i++ {
+				for j := i + 1; j < len(partyCodes); j++ {
+					if partyCodes[i] > partyCodes[j] {
+						partyCodes[i], partyCodes[j] = partyCodes[j], partyCodes[i]
+					}
+				}
+			}
+			if len(partyCodes) > 0 {
+				partyAVotes = pd[partyCodes[0]]
+			}
+			if len(partyCodes) > 1 {
+				partyBVotes = pd[partyCodes[1]]
+			}
+		}
+
 		puData = append(puData, M{
 			"polling_unit_code": code,
 			"registered_voters": registered,
 			"accredited_voters": accred,
 			"total_valid_votes": valid,
 			"rejected_votes":    rejected,
-			"party_a_votes":     valid / 2,
-			"party_b_votes":     valid / 3,
+			"party_a_votes":     partyAVotes,
+			"party_b_votes":     partyBVotes,
+			"party_data_status": map[bool]string{true: "available", false: "pending_data"}[len(pd) == 0],
 		})
 	}
 
