@@ -102,7 +102,6 @@ export function createPollingUnitScatterLayer(
 
 export function createPollingUnitLabelsLayer(
   data: PollingUnitCollection,
-  minZoom = 10,
 ) {
   return new TextLayer<PUFeature>({
     id: 'inec-pu-labels',
@@ -120,7 +119,6 @@ export function createPollingUnitLabelsLayer(
     outlineWidth: 2,
     outlineColor: [255, 255, 255, 200],
     visible: true,
-    minZoom,
   });
 }
 
