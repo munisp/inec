@@ -242,22 +242,30 @@ jobs:
     strategy:
       matrix:
         include:
-          - service: inec-go-backend
-            image: inec-backend
-          - service: inec-frontend
-            image: inec-frontend
-          - service: services/biometric-python
-            image: inec-biometric-python
-          - service: services/biometric-rust
-            image: inec-biometric-rust
-          - service: services/biometric-go
-            image: inec-biometric-go
-          - service: services/lakehouse-analytics
-            image: inec-analytics
+          - image: inec-backend
+            context: inec-go-backend
+            dockerfile: inec-go-backend/Dockerfile
+          - image: inec-frontend
+            context: inec-frontend
+            dockerfile: inec-frontend/Dockerfile
+          - image: inec-biometric-python
+            context: services/biometric-python
+            dockerfile: services/biometric-python/Dockerfile
+          # Built from the repo root: the Rust vault embeds the shared
+          # migrations/ SQL via include_str!, which lives outside its dir.
+          - image: inec-biometric-rust
+            context: .
+            dockerfile: services/biometric-rust/Dockerfile
+          - image: inec-biometric-go
+            context: services/biometric-go
+            dockerfile: services/biometric-go/Dockerfile
+          - image: inec-analytics
+            context: services/lakehouse-analytics
+            dockerfile: services/lakehouse-analytics/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - name: Build ${{ matrix.image }}
-        run: docker build -t ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }} ./${{ matrix.service }}
+        run: docker build -t ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }} -f ${{ matrix.dockerfile }} ${{ matrix.context }}
       - name: Push to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
