@@ -1,0 +1,79 @@
+# Gateway connection profile for the INEC org client (fabric-gateway / SDK).
+# The Go backend reads FABRIC_GATEWAY_ENDPOINT, FABRIC_MSP_ID, FABRIC_CERT_PATH,
+# FABRIC_KEY_PATH and FABRIC_TLS_CERT_PATH; this profile documents the mapping
+# and is consumed directly by node/java SDK clients.
+
+name: inec-results-network
+version: 1.0.0
+
+client:
+  organization: INEC
+  connection:
+    timeout:
+      peer:
+        endorser: "300"
+
+organizations:
+  INEC:
+    mspid: INECMSP
+    peers:
+      - peer0.inec.inec.gov.ng
+    certificateAuthorities:
+      - ca.inec
+  Observers:
+    mspid: ObserversMSP
+    peers:
+      - peer0.observers.inec.gov.ng
+    certificateAuthorities:
+      - ca.observers
+
+peers:
+  peer0.inec.inec.gov.ng:
+    url: grpcs://localhost:7051
+    tlsCACerts:
+      path: organizations/peerOrganizations/inec.inec.gov.ng/peers/peer0.inec.inec.gov.ng/tls/ca.crt
+    grpcOptions:
+      ssl-target-name-override: peer0.inec.inec.gov.ng
+      hostnameOverride: peer0.inec.inec.gov.ng
+  peer0.observers.inec.gov.ng:
+    url: grpcs://localhost:9051
+    tlsCACerts:
+      path: organizations/peerOrganizations/observers.inec.gov.ng/peers/peer0.observers.inec.gov.ng/tls/ca.crt
+    grpcOptions:
+      ssl-target-name-override: peer0.observers.inec.gov.ng
+
+orderers:
+  orderer.inec.gov.ng:
+    url: grpcs://localhost:7050
+    tlsCACerts:
+      path: organizations/ordererOrganizations/inec.gov.ng/orderers/orderer.inec.gov.ng/tls/ca.crt
+
+certificateAuthorities:
+  ca.inec:
+    url: https://localhost:7054
+    caName: ca-inec
+    httpOptions:
+      verify: false
+  ca.observers:
+    url: https://localhost:8054
+    caName: ca-observers
+    httpOptions:
+      verify: false
+
+channels:
+  inec-results:
+    orderers:
+      - orderer.inec.gov.ng
+    peers:
+      peer0.inec.inec.gov.ng:
+        endorsingPeer: true
+        chaincodeQuery: true
+        ledgerQuery: true
+        eventSource: true
+      peer0.observers.inec.gov.ng:
+        endorsingPeer: true
+        chaincodeQuery: true
+        ledgerQuery: true
+        eventSource: true
+    chaincodes:
+      - election:1.0

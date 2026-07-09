@@ -195,6 +195,7 @@ type ProductionHSM struct {
 	mu        sync.RWMutex
 	masterKey []byte
 	ecdsaKey  *ecdsa.PrivateKey
+	pkcs11    *PKCS11Signer // non-nil when a real PKCS#11 token is configured
 	keyCache  map[string][]byte
 	opsCount  int64
 	mode      string
@@ -218,9 +219,6 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 	ecKey, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 
 	mode := "software"
-	if os.Getenv("HSM_PKCS11_LIB") != "" {
-		mode = "pkcs11"
-	}
 	if os.Getenv("HSM_CLOUD_KMS") != "" {
 		mode = "cloud-kms"
 	}
@@ -233,7 +231,18 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 		mode:      mode,
 	}
 
-	log.Info().Str("mode", mode).Msg("Production HSM initialized")
+	// Real HSM: when a PKCS#11 module is configured, ECDSA signing is performed
+	// on the token (SoftHSM/CloudHSM/Luna). Falls back to software on failure.
+	if os.Getenv("HSM_PKCS11_LIB") != "" {
+		if signer, err := NewPKCS11Signer(); err != nil {
+			log.Warn().Err(err).Msg("PKCS#11 HSM init failed; using software signing")
+		} else {
+			hsm.pkcs11 = signer
+			hsm.mode = "pkcs11"
+		}
+	}
+
+	log.Info().Str("mode", hsm.mode).Msg("Production HSM initialized")
 	return hsm
 }
 
@@ -335,6 +344,13 @@ func (h *ProductionHSM) Decrypt(keyID string, ciphertext, nonce []byte) ([]byte,
 
 func (h *ProductionHSM) SignECDSA(data []byte) (string, error) {
 	hash := sha256.Sum256(data)
+	if h.pkcs11 != nil {
+		sig, err := h.pkcs11.Sign(hash[:])
+		if err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(sig), nil
+	}
 	r, s, err := ecdsa.Sign(rand.Reader, h.ecdsaKey, hash[:])
 	if err != nil {
 		return "", err
@@ -349,12 +365,19 @@ func (h *ProductionHSM) VerifyECDSA(data []byte, sigHex string) bool {
 	if err != nil || len(sigBytes) < 64 {
 		return false
 	}
+	if h.pkcs11 != nil {
+		return h.pkcs11.Verify(hash[:], sigBytes)
+	}
 	r := new(big.Int).SetBytes(sigBytes[:len(sigBytes)/2])
 	s := new(big.Int).SetBytes(sigBytes[len(sigBytes)/2:])
 	return ecdsa.Verify(&h.ecdsaKey.PublicKey, hash[:], r, s)
 }
 func (h *ProductionHSM) GetPublicKeyPEM() string {
-	pubBytes, _ := x509.MarshalPKIXPublicKey(&h.ecdsaKey.PublicKey)
+	pub := &h.ecdsaKey.PublicKey
+	if h.pkcs11 != nil && h.pkcs11.PublicKey() != nil {
+		pub = h.pkcs11.PublicKey()
+	}
+	pubBytes, _ := x509.MarshalPKIXPublicKey(pub)
 	block := &pem.Block{Type: "EC PUBLIC KEY", Bytes: pubBytes}
 	return string(pem.EncodeToMemory(block))
 }

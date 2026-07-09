@@ -75,8 +75,12 @@ type CaptureSession struct {
 
 // BVASDeviceRegistry — all state in PostgreSQL via PGStore.
 type BVASDeviceRegistry struct {
-	store *PGStore
+	store  *PGStore
+	driver CaptureDriver
 }
+
+// SetDriver attaches a capture device driver used by CaptureFromDevice.
+func (r *BVASDeviceRegistry) SetDriver(d CaptureDriver) { r.driver = d }
 
 func NewBVASDeviceRegistry(store *PGStore) *BVASDeviceRegistry {
 	return &BVASDeviceRegistry{store: store}

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -347,6 +349,7 @@ type HyperledgerFabricNetwork struct {
 	db       *sql.DB
 	mu       sync.Mutex
 	ecdsaKey *ecdsa.PrivateKey
+	gateway  *FabricGatewayClient // non-nil when a live Fabric network is configured
 }
 
 func NewHyperledgerFabricNetwork(database *sql.DB) *HyperledgerFabricNetwork {
@@ -356,6 +359,12 @@ func NewHyperledgerFabricNetwork(database *sql.DB) *HyperledgerFabricNetwork {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
 	f := &HyperledgerFabricNetwork{db: database}
+	// Real Fabric: connect to the live network gateway when configured.
+	if gw, gerr := NewFabricGatewayClient(); gerr != nil {
+		log.Warn().Err(gerr).Msg("Fabric Gateway unavailable; using PG-backed ledger")
+	} else if gw != nil {
+		f.gateway = gw
+	}
 	// Load existing key from DB for persistence across restarts
 	var keyPEM string
 	err := database.QueryRow(`SELECT private_key_pem FROM fabric_signing_keys WHERE key_id='primary' LIMIT 1`).Scan(&keyPEM)
@@ -394,6 +403,23 @@ func (f *HyperledgerFabricNetwork) GetPublicKeyPEM() string {
 func (f *HyperledgerFabricNetwork) SubmitTransaction(channelID, chaincodeID, function string, args []string, creatorMSP string) (string, int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	// When a live Fabric network is connected, submit there and mirror the
+	// committed tx into the local ledger tables for querying/audit.
+	if f.gateway != nil {
+		if realTxID, gerr := f.gateway.Submit(channelID, chaincodeID, function, args); gerr == nil {
+			var blockNum int64
+			f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0) FROM fabric_blocks`).Scan(&blockNum)
+			blockNum++
+			argsJSON, _ := json.Marshal(args)
+			dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+				realTxID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
+				"[]", "MAJORITY Endorsement", "fabric-gateway", "VALID")
+			return realTxID, blockNum, nil
+		} else {
+			log.Warn().Err(gerr).Msg("Fabric Gateway submit failed; falling back to PG ledger")
+		}
+	}
 
 	txData := fmt.Sprintf("%s:%s:%s:%s:%d", channelID, chaincodeID, function, strings.Join(args, ","), time.Now().UnixNano())
 	txHash := sha256.Sum256([]byte(txData))

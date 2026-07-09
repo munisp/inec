@@ -110,7 +110,7 @@ func seedAllTables(database *sql.DB) {
 			deviceID := fmt.Sprintf("BVAS-%s-%03d", stCode, i+1)
 			puCode := fmt.Sprintf("%s-001-W001-PU%03d", stCode, (i%3)+1)
 			dbExecLog("seed_bvas",
-				`INSERT INTO bvas_devices (device_id, serial_number, firmware_version, assigned_pu, status, battery_level, last_sync, sim_provider, imei) VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8) ON CONFLICT DO NOTHING`,
+				`INSERT INTO bvas_devices (id, serial_number, firmware_version, polling_unit_code, status, battery_level, last_sync_at, sim_provider, imei) VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8) ON CONFLICT DO NOTHING`,
 				deviceID, fmt.Sprintf("SN%012d", 100000+i), "v4.2.1", puCode,
 				[]string{"active", "active", "active", "syncing", "offline"}[i%5],
 				50+rand.Intn(50),

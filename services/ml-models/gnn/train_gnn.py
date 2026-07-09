@@ -57,13 +57,18 @@ class ElectionNode:
     
     @property
     def features(self) -> np.ndarray:
-        """Extract node features for GNN input."""
+        """Extract node features for GNN input.
+
+        All features are scaled to a comparable ~[0, 2] range so no single
+        feature (e.g. raw turnout %) dominates the un-batch-normalized GAT.
+        """
+        ratio = self.vote_count / max(self.accredited_voters, 1) if self.accredited_voters > 0 else 0.0
         return np.array([
-            self.turnout_percentage,
-            self.vote_count / max(self.accredited_voters, 1) if self.accredited_voters > 0 else 0.0,
-            self.latitude / 10.0,  # Normalize
-            self.longitude / 10.0,  # Normalize
-        ])
+            self.turnout_percentage / 100.0,
+            ratio,
+            (self.latitude - 9.0) / 1.0,   # centered on Abuja region
+            (self.longitude - 7.5) / 1.0,
+        ], dtype=np.float32)
 
 
 class ElectionGraphBuilder:
@@ -245,11 +250,17 @@ class EnhancedGNNAnomalyDetection(nn.Module):
             hidden_channels,
             hidden_channels // 2,
             heads=num_heads,
+            concat=False,
             dropout=0.3,
         )
         
+        # Jumping-knowledge style skip: concatenate the raw node features with
+        # the graph-context embedding. Election anomalies (over/under-voting)
+        # are node-LOCAL signals that 3 layers of attention smoothing would
+        # otherwise dilute; the skip keeps the per-PU signal intact while the
+        # GAT stack contributes neighbourhood context.
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_channels // 2, 32),
+            nn.Linear(hidden_channels // 2 + num_features, 32),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(32, num_classes),
@@ -258,7 +269,8 @@ class EnhancedGNNAnomalyDetection(nn.Module):
     def forward(self, data) -> torch.Tensor:
         """Forward pass with GAT attention."""
         x, edge_index = data.x, data.edge_index
-        
+        x_in = x
+
         x = self.gat1(x, edge_index)
         x = torch.relu(x)
         x = F.dropout(x, p=0.3, training=self.training)
@@ -269,7 +281,8 @@ class EnhancedGNNAnomalyDetection(nn.Module):
         
         x = self.gat3(x, edge_index)
         x = torch.relu(x)
-        
+
+        x = torch.cat([x, x_in], dim=1)
         x = self.classifier(x)
         
         return x
@@ -300,13 +313,17 @@ def train_gnn_model(
         
         for data in train_loader:
             data = data.to(device)
-            
+
             optimizer.zero_grad()
             outputs = model(data).squeeze()
-            loss = criterion(outputs, data.y)
+            mask = data.train_mask if hasattr(data, 'train_mask') and data.train_mask is not None else None
+            if mask is not None:
+                loss = criterion(outputs[mask], data.y[mask])
+            else:
+                loss = criterion(outputs, data.y)
             loss.backward()
             optimizer.step()
-            
+
             train_loss += loss.item()
         
         # Validation phase
@@ -318,13 +335,18 @@ def train_gnn_model(
             for data in val_loader:
                 data = data.to(device)
                 outputs = model(data).squeeze()
-                loss = criterion(outputs, data.y)
-                
+                mask = data.val_mask if hasattr(data, 'val_mask') and data.val_mask is not None else None
+                if mask is not None:
+                    out_sel, y_sel = outputs[mask], data.y[mask]
+                else:
+                    out_sel, y_sel = outputs, data.y
+                loss = criterion(out_sel, y_sel)
+
                 val_loss += loss.item()
-                
-                probs = torch.sigmoid(outputs)
+
+                probs = torch.sigmoid(out_sel)
                 all_preds.extend(probs.cpu().numpy())
-                all_labels.extend(data.y.cpu().numpy())
+                all_labels.extend(y_sel.cpu().numpy())
         
         # Calculate AUC
         from sklearn.metrics import roc_auc_score
@@ -507,28 +529,24 @@ def main():
         print("Error: Could not build graph")
         return
     
-    # Split data (train/val/test)
+    # Transductive node classification: keep the FULL graph (all nodes + edges)
+    # and select train/val nodes with boolean masks. Subsetting x while keeping
+    # the full edge_index (the previous approach) produced out-of-range indices.
     num_nodes = len(nodes)
-    indices = torch.randperm(num_nodes)
-    
-    train_mask = indices[:int(0.8 * num_nodes)]
-    val_mask = indices[int(0.8 * num_nodes):int(0.9 * num_nodes)]
-    test_mask = indices[int(0.9 * num_nodes):]
-    
-    # Create separate graphs for each split (simplified)
-    train_data = Data(
-        x=graph.x[train_mask],
-        edge_index=graph.edge_index,
-        y=graph.y[train_mask],
-    )
-    val_data = Data(
-        x=graph.x[val_mask],
-        edge_index=graph.edge_index,
-        y=graph.y[val_mask],
-    )
-    
-    train_loader = DataLoader([train_data], batch_size=1, shuffle=False)
-    val_loader = DataLoader([val_data], batch_size=1, shuffle=False)
+    perm = torch.randperm(num_nodes)
+    train_idx = perm[:int(0.8 * num_nodes)]
+    val_idx = perm[int(0.8 * num_nodes):int(0.9 * num_nodes)]
+
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    train_mask[train_idx] = True
+    val_mask[val_idx] = True
+
+    graph.train_mask = train_mask
+    graph.val_mask = val_mask
+
+    train_loader = DataLoader([graph], batch_size=1, shuffle=False)
+    val_loader = DataLoader([graph], batch_size=1, shuffle=False)
     
     # Initialize model
     if args.model_type == 'gat':

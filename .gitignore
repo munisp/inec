@@ -35,6 +35,8 @@ ml/data/processed/
 *.onnx
 !ml/models/*.json
 !ml/models/.gitkeep
+# Trained model weights are shipped via Git LFS (see .gitattributes)
+!services/ml-models/**/*.onnx
 
 # Python
 __pycache__/
