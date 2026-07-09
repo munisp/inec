@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -151,6 +152,12 @@ type spoolMeta struct {
 func (d *SpoolDriver) Capture(req CaptureRequest) (*CaptureResult, error) {
 	if req.SessionID == "" {
 		return nil, fmt.Errorf("session_id required")
+	}
+	// Guard against path traversal: the session ID becomes a filename in the
+	// spool dir, so it must be a single path segment with no separators.
+	if req.SessionID != filepath.Base(req.SessionID) ||
+		strings.ContainsAny(req.SessionID, `/\`) || strings.Contains(req.SessionID, "..") {
+		return nil, fmt.Errorf("invalid session_id %q", req.SessionID)
 	}
 	timeout := time.Duration(req.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {

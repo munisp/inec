@@ -12,7 +12,6 @@ Real face detection and embedding extraction:
 from __future__ import annotations
 
 import hashlib
-import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,7 @@ import cv2
 import numpy as np
 
 try:
-    import onnxruntime as ort
+    import onnxruntime as ort  # noqa: F401  # availability probe
     HAS_ONNX = True
 except ImportError:
     HAS_ONNX = False
@@ -307,8 +306,6 @@ class FacialEngine:
 
                 x0 = int(np.floor(dx))
                 y0 = int(np.floor(dy))
-                fx = dx - x0
-                fy = dy - y0
 
                 h, w = resized.shape
                 shifted = np.zeros_like(resized, dtype=np.float32)
@@ -324,8 +321,10 @@ class FacialEngine:
                 actual_h = min(src_y_end - src_y_start, dst_y_end - dst_y_start)
                 actual_w = min(src_x_end - src_x_start, dst_x_end - dst_x_start)
                 if actual_h > 0 and actual_w > 0:
-                    shifted[dst_y_start:dst_y_start + actual_h, dst_x_start:dst_x_start + actual_w] = \
-                        resized[src_y_start:src_y_start + actual_h, src_x_start:src_x_start + actual_w].astype(np.float32)
+                    src = resized[src_y_start:src_y_start + actual_h,
+                                  src_x_start:src_x_start + actual_w].astype(np.float32)
+                    shifted[dst_y_start:dst_y_start + actual_h,
+                            dst_x_start:dst_x_start + actual_w] = src
 
                 lbp += (shifted >= resized.astype(np.float32)).astype(np.float32) * (2 ** i)
 

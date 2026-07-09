@@ -15,19 +15,17 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import duckdb
-import orjson
 import structlog
 from fastapi import FastAPI
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
-from lakehouse_pipeline import LakehousePipeline
-from permify_optimizer import PermifyBatchOptimizer
 from dapr_bulk_processor import DaprBulkProcessor
 from kafka_arrow_consumer import KafkaArrowConsumer
-from redis_batch_processor import RedisBatchProcessor
-from pg_copy_writer import PGCopyWriter
+from lakehouse_pipeline import LakehousePipeline
 from opensearch_parallel import OpenSearchParallelIndexer
+from permify_optimizer import PermifyBatchOptimizer
+from pg_copy_writer import PGCopyWriter
+from redis_batch_processor import RedisBatchProcessor
 
 log = structlog.get_logger()
 

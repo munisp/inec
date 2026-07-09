@@ -8,8 +8,6 @@ Key optimizations:
 - Bloom filter for quick "definitely not allowed" rejection
 """
 
-import asyncio
-import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass

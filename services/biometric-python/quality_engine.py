@@ -12,7 +12,6 @@ from enum import Enum
 
 import cv2
 import numpy as np
-from scipy import ndimage
 
 
 class QualityLevel(str, Enum):

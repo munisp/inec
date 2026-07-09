@@ -7,9 +7,7 @@ No in-memory state is retained between requests — the service is stateless.
 from __future__ import annotations
 
 import os
-import time
 import uuid
-from contextlib import asynccontextmanager
 from typing import Optional
 
 import asyncpg

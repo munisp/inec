@@ -8,7 +8,6 @@ Key optimizations:
 - orjson serialization (3x faster than json)
 """
 
-import asyncio
 import time
 from typing import Optional
 

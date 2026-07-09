@@ -216,7 +216,9 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 		copy(mk, h[:])
 	}
 
-	ecKey, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	// P-256 to match the PKCS#11 token curve so signatures verify across the
+	// hardware and software-fallback paths interchangeably.
+	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 
 	mode := "software"
 	if os.Getenv("HSM_CLOUD_KMS") != "" {
@@ -423,7 +425,7 @@ func (h *ProductionHSM) GetStats() M {
 
 	return M{
 		"mode":             h.mode,
-		"algorithm":        "AES-256-GCM + P-384 ECDSA",
+		"algorithm":        "AES-256-GCM + P-256 ECDSA",
 		"total_keys":       totalKeys,
 		"active_keys":      activeKeys,
 		"rotated_keys":     rotatedKeys,
@@ -431,7 +433,7 @@ func (h *ProductionHSM) GetStats() M {
 		"operations":       ops,
 		"total_ops_logged": totalOps,
 		"key_wrapping":     "AES-256-GCM (master key wrapped)",
-		"signing":          "ECDSA P-384 with SHA-256",
+		"signing":          "ECDSA P-256 with SHA-256",
 		"kdf":              "HMAC-SHA-512 key derivation",
 		"compliance":       []string{"FIPS 140-2 Level 1", "PKCS#11 compatible", "ISO 19795"},
 		"production":       true,
@@ -2053,7 +2055,7 @@ func handleProductionHSMSign(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, M{"signature": sig, "algorithm": "ECDSA-P384-SHA256", "public_key": prodHSM.GetPublicKeyPEM()})
+	writeJSON(w, 200, M{"signature": sig, "algorithm": "ECDSA-P256-SHA256", "public_key": prodHSM.GetPublicKeyPEM()})
 }
 
 func handleProductionHSMVerify(w http.ResponseWriter, r *http.Request) {
@@ -2070,7 +2072,7 @@ func handleProductionHSMVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	valid := prodHSM.VerifyECDSA([]byte(req.Data), req.Signature)
-	writeJSON(w, 200, M{"valid": valid, "algorithm": "ECDSA-P384-SHA256"})
+	writeJSON(w, 200, M{"valid": valid, "algorithm": "ECDSA-P256-SHA256"})
 }
 
 func handleProductionHSMRotate(w http.ResponseWriter, r *http.Request) {
@@ -2364,7 +2366,7 @@ func handleProductionUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 			"hsm": M{
 				"status":     "active",
 				"mode":       prodHSM.mode,
-				"algorithm":  "AES-256-GCM + P-384 ECDSA",
+				"algorithm":  "AES-256-GCM + P-256 ECDSA",
 				"compliance": "FIPS 140-2 Level 1",
 			},
 			"sms_gateway": M{

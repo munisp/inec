@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Source-able helper that exports the peer CLI environment for a given org.
-# Usage: ./scripts/set-peer-env.sh <inec|observers>
+# Must be sourced so the exports reach the caller: `source ./scripts/set-peer-env.sh <inec|observers>`
 set -euo pipefail
 ORG="${1:?usage: set-peer-env.sh <inec|observers>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

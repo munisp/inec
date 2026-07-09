@@ -86,6 +86,13 @@ func (c *ElectionContract) SupersedeResult(ctx contractapi.TransactionContextInt
 	if err := json.Unmarshal([]byte(resultJSON), &r); err != nil {
 		return "", fmt.Errorf("invalid result payload: %w", err)
 	}
+	if r.PollingUnitCode == "" || r.ElectionID == "" {
+		return "", fmt.Errorf("pollingUnitCode and electionId are required")
+	}
+	if r.TotalVotes > r.AccreditedVoters {
+		return "", fmt.Errorf("total votes (%d) exceed accredited voters (%d): overvoting rejected",
+			r.TotalVotes, r.AccreditedVoters)
+	}
 	key := resultKey(r.ElectionID, r.PollingUnitCode)
 	existing, err := ctx.GetStub().GetState(key)
 	if err != nil {

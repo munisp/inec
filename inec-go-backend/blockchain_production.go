@@ -411,7 +411,20 @@ func (f *HyperledgerFabricNetwork) SubmitTransaction(channelID, chaincodeID, fun
 			var blockNum int64
 			f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0) FROM fabric_blocks`).Scan(&blockNum)
 			blockNum++
+
+			var prevHash string
+			f.db.QueryRow(`SELECT block_hash FROM fabric_blocks WHERE block_number=?`, blockNum-1).Scan(&prevHash)
+			if prevHash == "" {
+				prevHash = strings.Repeat("0", 64)
+			}
 			argsJSON, _ := json.Marshal(args)
+			dataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(realTxID+string(argsJSON))))
+			blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d-%s-%s", blockNum, prevHash, dataHash))))
+
+			// The block row must exist before the tx row: fabric_transactions
+			// has a FK on fabric_blocks(block_number), and GetBlock relies on it.
+			dbExecLog("fabric_block", `INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
+				blockNum, channelID, prevHash, dataHash, blockHash, 1)
 			dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 				realTxID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
 				"[]", "MAJORITY Endorsement", "fabric-gateway", "VALID")

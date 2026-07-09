@@ -44,7 +44,7 @@ osnadmin channel join --channelID ${CHANNEL} \
   --client-key "$(pwd)/organizations/ordererOrganizations/inec.gov.ng/orderers/orderer.inec.gov.ng/tls/server.key"
 
 for ORG in inec observers; do
-  ./scripts/set-peer-env.sh "$ORG"
+  source ./scripts/set-peer-env.sh "$ORG"
   peer channel join -b ./channel-artifacts/${CHANNEL}.block
 done
 
@@ -53,13 +53,13 @@ pushd "${CC_SRC}" >/dev/null && GO111MODULE=on go mod vendor && popd >/dev/null
 peer lifecycle chaincode package ${CC_NAME}.tar.gz --path ${CC_SRC} --lang golang --label ${CC_NAME}_${CC_VERSION}
 
 for ORG in inec observers; do
-  ./scripts/set-peer-env.sh "$ORG"
+  source ./scripts/set-peer-env.sh "$ORG"
   peer lifecycle chaincode install ${CC_NAME}.tar.gz
 done
 
 PKG_ID=$(peer lifecycle chaincode queryinstalled | sed -n "s/^Package ID: \(${CC_NAME}_${CC_VERSION}:[a-f0-9]*\).*/\1/p" | head -1)
 for ORG in inec observers; do
-  ./scripts/set-peer-env.sh "$ORG"
+  source ./scripts/set-peer-env.sh "$ORG"
   peer lifecycle chaincode approveformyorg -o localhost:7050 --channelID ${CHANNEL} \
     --name ${CC_NAME} --version ${CC_VERSION} --package-id "${PKG_ID}" --sequence ${CC_SEQUENCE} --tls \
     --cafile "$(pwd)/organizations/ordererOrganizations/inec.gov.ng/orderers/orderer.inec.gov.ng/tls/ca.crt"

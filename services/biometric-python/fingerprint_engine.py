@@ -20,7 +20,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from scipy import ndimage, signal
+from scipy import ndimage
 from skimage.morphology import skeletonize
 
 
@@ -89,8 +89,6 @@ class FingerprintEngine:
     }
 
     def extract_template(self, image: np.ndarray, dpi: int = 500) -> FingerprintTemplate:
-        start = time.monotonic()
-
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
@@ -208,7 +206,6 @@ class FingerprintEngine:
                 block = image[y0:y1, x0:x1].astype(np.float64)
                 angle = orientation[i, j]
 
-                cos_a, sin_a = np.cos(angle), np.sin(angle)
                 rotated = ndimage.rotate(block, np.degrees(angle), reshape=False, mode="nearest")
 
                 projection = np.mean(rotated, axis=0)
