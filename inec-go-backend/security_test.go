@@ -17,6 +17,7 @@ import (
 func TestMain(m *testing.M) {
 	initValidator()
 	initMetrics()
+	initBiometricBenchmarks()
 	// Set up PostgreSQL test database
 	testDSN := os.Getenv("TEST_DATABASE_URL")
 	if testDSN == "" {

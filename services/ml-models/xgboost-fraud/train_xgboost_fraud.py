@@ -68,9 +68,13 @@ class ElectionFraudFeatures:
         df['first_digit'] = df['votes_cast'].apply(first_digit)
         df['benford_deviation'] = abs(df['first_digit'] - 1)  # Simplified
         
-        # Temporal features
-        df['submission_hour'] = pd.to_datetime(df['submitted_at']).dt.hour
-        df['submission_minute'] = pd.to_datetime(df['submitted_at']).dt.minute
+        # Temporal features (submitted_at may be absent if records were pre-featurized)
+        if 'submitted_at' in df.columns:
+            df['submission_hour'] = pd.to_datetime(df['submitted_at']).dt.hour
+            df['submission_minute'] = pd.to_datetime(df['submitted_at']).dt.minute
+        else:
+            df['submission_hour'] = df.get('submission_hour', 0)
+            df['submission_minute'] = df.get('submission_minute', 0)
         
         # Geographic features
         df['latitude_deviation'] = df['latitude'] - df['latitude'].mean()
@@ -258,7 +262,12 @@ class FraudPredictor:
     def __init__(self, model_path: str = None):
         if model_path is None:
             model_path = str(FRAUD_MODEL_PATH)
-        
+
+        if not os.path.exists(model_path):
+            self.detector = None
+            self.ready = False
+            return
+
         self.detector = XGBoostFraudDetector.load_model(model_path)
         self.ready = True
     
@@ -362,9 +371,13 @@ def create_synthetic_fraud_data(
     df['party_a_votes'] = df['party_a_votes'].clip(0, df['votes_cast'])
     df['party_b_votes'] = (df['votes_cast'] - df['party_a_votes']).clip(0)
     
+    # Derive numeric temporal features (raw Timestamp is not a valid model input)
+    df['submission_hour'] = pd.to_datetime(df['submitted_at']).dt.hour
+    df['submission_minute'] = pd.to_datetime(df['submitted_at']).dt.minute
+
     # Split features and labels
     feature_cols = ['accredited_voters', 'votes_cast', 'party_a_votes', 'party_b_votes',
-                   'latitude', 'longitude', 'submitted_at']
+                   'latitude', 'longitude', 'submission_hour', 'submission_minute']
     
     X = df[feature_cols]
     y = df['is_anomalous']

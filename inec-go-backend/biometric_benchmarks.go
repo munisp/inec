@@ -149,6 +149,9 @@ func embeddedNISTDefaults() *BiometricBenchmarkConfig {
 func GetBenchmarkCohort(modality string) *NormCohortData {
 	benchmarkConfigMu.RLock()
 	defer benchmarkConfigMu.RUnlock()
+	if benchmarkConfig == nil {
+		return nil
+	}
 	return benchmarkConfig.ScoreNormalizationCohorts[modality]
 }
 
@@ -156,6 +159,9 @@ func GetBenchmarkCohort(modality string) *NormCohortData {
 func GetEERRange(modality string, qualityLevel string) *EERRange {
 	benchmarkConfigMu.RLock()
 	defer benchmarkConfigMu.RUnlock()
+	if benchmarkConfig == nil {
+		return nil
+	}
 	if qualityMap, ok := benchmarkConfig.EERByModalityQuality[modality]; ok {
 		return qualityMap[qualityLevel]
 	}
@@ -166,6 +172,9 @@ func GetEERRange(modality string, qualityLevel string) *EERRange {
 func GetPADBaselineAccuracy(modality string) float64 {
 	benchmarkConfigMu.RLock()
 	defer benchmarkConfigMu.RUnlock()
+	if benchmarkConfig == nil {
+		return 0.95 // Default fallback
+	}
 	if baseline, ok := benchmarkConfig.PADModelBaselineAccuracy[modality]; ok {
 		return baseline.BaseAccuracy
 	}
