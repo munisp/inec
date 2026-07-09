@@ -6,7 +6,7 @@ FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 COPY migrations/ migrations/
-COPY services/biometric-rust/Cargo.toml services/biometric-rust/Cargo.lock services/biometric-rust/
+COPY services/biometric-rust/Cargo.toml services/biometric-rust/
 COPY services/biometric-rust/src/ services/biometric-rust/src/
 
 WORKDIR /build/services/biometric-rust
