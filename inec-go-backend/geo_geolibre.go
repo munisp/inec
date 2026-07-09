@@ -330,12 +330,12 @@ func handleGeoLibreBVAS(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 
 	query := `
-		SELECT d.device_id, d.polling_unit_code, d.status,
+		SELECT d.id, d.polling_unit_code, d.status,
 			d.battery_level, d.accreditation_count,
 			p.latitude, p.longitude,
 			d.last_sync_at, d.firmware_version
 		FROM bvas_devices d
-		JOIN polling_units p ON p.polling_unit_code = d.polling_unit_code
+		JOIN polling_units p ON p.code = d.polling_unit_code
 		WHERE p.latitude IS NOT NULL AND p.longitude IS NOT NULL
 	`
 	args := []any{}

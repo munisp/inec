@@ -10,7 +10,6 @@ Key optimizations:
 
 import asyncio
 import time
-from typing import Optional
 
 import httpx
 import orjson

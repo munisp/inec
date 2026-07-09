@@ -7,19 +7,17 @@ These tests verify that the Isolation Forest model:
 4. Handles edge cases properly
 """
 
-import json
 import os
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from main import AnomalyDetector, MODEL_DIR, MODEL_PATH
+from main import AnomalyDetector, MODEL_PATH
 
 
 class TestModelPersistence:

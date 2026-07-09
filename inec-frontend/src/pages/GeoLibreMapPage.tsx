@@ -27,7 +27,7 @@ import {
   MapPin, Layers, Eye, EyeOff, Flame, Hexagon, Radio, Shield,
   AlertTriangle, Download, Satellite, Globe, BarChart3, Search,
   RefreshCw, Box, Users, Cpu, Database, Activity, Navigation,
-  ArrowLeft, Map as MapIcon, Cloud, Battery, Mic, Route, Building2,
+  ArrowLeft, Cloud, Battery, Mic, Building2,
   ExternalLink,
 } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
@@ -37,7 +37,6 @@ import { useGeoLibreStore } from '@/lib/geolibre/store';
 import { api } from '@/lib/api';
 import {
   fetchPollingUnitsGeoJSON,
-  fetchStatesGeoJSON,
   fetchIncidentsGeoJSON,
   fetchBVASGeoJSON,
   fetchOfficialsGeoJSON,
@@ -95,7 +94,6 @@ const STATUS_COLORS: Record<string, string> = {
   disputed: '#dc2626', no_result: '#9ca3af',
 };
 
-function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
 
 interface OfficialData {
   staff_id: string; role: string; latitude: number; longitude: number;
@@ -202,7 +200,7 @@ function LiveMapTab() {
   const [compareMode, setCompareMode] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [selectionBox, setSelectionBox] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
-  const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  const [selectedCodes] = useState<string[]>([]);
 
   // Time slider
   const [timeTs, setTimeTs] = useState<number | null>(null);
@@ -306,7 +304,7 @@ function LiveMapTab() {
     if (store.visibleLayers.has('polling-units')) {
       layers.push(createPollingUnitScatterLayer(
         store.pollingUnits, store.colorMode,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) ?? null),
       ));
     }
     if (store.visibleLayers.has('heatmap')) {
@@ -315,26 +313,26 @@ function LiveMapTab() {
     if (store.visibleLayers.has('incidents')) {
       layers.push(createIncidentLayer(
         store.incidents,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) ?? null),
       ));
     }
     if (store.visibleLayers.has('bvas-devices')) {
       layers.push(createBVASLayer(
         store.bvasDevices,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) ?? null),
       ));
     }
     if (store.visibleLayers.has('official-tracking')) {
       layers.push(createOfficialTrackingLayer(
         store.officials,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) ?? null),
       ));
     }
     if (store.analysisResult) {
       layers.push(createAnalysisResultLayer(store.analysisResult));
     }
 
-    deckOverlay.current.setProps({ layers });
+    deckOverlay.current.setProps({ layers: layers as never });
   }, [mapReady, store.visibleLayers, store.pollingUnits, store.incidents,
     store.bvasDevices, store.officials, store.colorMode, store.heatmapMetric,
     store.analysisResult]);

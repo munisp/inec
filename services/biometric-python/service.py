@@ -24,17 +24,17 @@ from starlette.responses import Response
 from facial_engine import FacialEngine, FacialMatcher
 from fingerprint_engine import FingerprintEngine, FingerprintMatcher
 from iris_engine import IrisEngine, IrisMatcher
-from pad_engine import FacePADEngine, FingerprintPADEngine, PADLevel
-from quality_engine import (
-    FaceQualityAssessor,
-    FingerprintQualityAssessor,
-    IrisQualityAssessor,
-)
 from ml_inference import (
     MLPADInference,
     MLQualityInference,
     generate_all_models,
     model_status,
+)
+from pad_engine import FacePADEngine, FingerprintPADEngine, PADLevel
+from quality_engine import (
+    FaceQualityAssessor,
+    FingerprintQualityAssessor,
+    IrisQualityAssessor,
 )
 
 log = structlog.get_logger()
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
         log.warning("ml_model_init_failed", error=str(e))
     # Initialize PostgreSQL audit logging
     try:
-        from pg_audit import init_pool, close_pool
+        from pg_audit import close_pool, init_pool
         await init_pool()
         log.info("pg_audit_connected")
     except Exception as e:
@@ -509,7 +509,6 @@ async def pad_ml_check(req: PADRequest):
             fused_score = hc_result.liveness_score
             method = "handcrafted_only"
 
-        from pad_engine import PADDecision
         if fused_score >= 0.55:
             decision = "live"
         elif fused_score <= 0.35:

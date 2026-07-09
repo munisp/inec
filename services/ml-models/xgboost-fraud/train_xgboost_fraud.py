@@ -468,18 +468,18 @@ def main():
         X, y, test_size=0.3, random_state=42, stratify=y
     )
     X_val, X_test, y_val, y_test = train_test_split(
-        y_temp, y_temp, test_size=0.5, random_state=42  # Simplified
+        X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
     )
     
     # Extract features
     X_train_features = ElectionFraudFeatures.extract_features(
-        pd.concat([X_train, pd.DataFrame({'is_anomalous': y_train.values})], axis=1).to_dict('records')
+        X_train.assign(is_anomalous=y_train.values).to_dict('records')
     )
     X_val_features = ElectionFraudFeatures.extract_features(
-        pd.concat([X_val, pd.DataFrame({'is_anomalous': y_val.values})], axis=1).to_dict('records')
+        X_val.assign(is_anomalous=y_val.values).to_dict('records')
     )
     X_test_features = ElectionFraudFeatures.extract_features(
-        pd.concat([X_test, pd.DataFrame({'is_anomalous': y_test.values})], axis=1).to_dict('records')
+        X_test.assign(is_anomalous=y_test.values).to_dict('records')
     )
     
     feature_columns = ElectionFraudFeatures.get_feature_columns(X_train_features)

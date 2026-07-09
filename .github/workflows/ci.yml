@@ -2,9 +2,11 @@ name: INEC Platform CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'devin/**']
   pull_request:
-    branches: [main]
+    # Run on PRs into any branch so checks gate every merge, not just main.
+    branches: ['**']
+  workflow_dispatch:
 
 jobs:
   backend-lint-build:
@@ -30,6 +32,16 @@ jobs:
         with:
           go-version: '1.26'
           cache-dependency-path: inec-go-backend/go.sum
+      - name: Install HSM toolchain (SoftHSM/PKCS#11)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y softhsm2 libltdl7
+      - name: Initialise SoftHSM token
+        run: |
+          export SOFTHSM2_CONF=$HOME/softhsm2.conf
+          mkdir -p $HOME/softhsm2-tokens
+          printf 'directories.tokendir = %s/softhsm2-tokens\nobjectstore.backend = file\nlog.level = ERROR\n' "$HOME" > $SOFTHSM2_CONF
+          softhsm2-util --init-token --slot 0 --label INEC_CI --so-pin 3737 --pin 1234
       - name: Vet
         working-directory: inec-go-backend
         run: go vet ./...
@@ -40,7 +52,11 @@ jobs:
         working-directory: inec-go-backend
         env:
           DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
-        run: go test -v -race -coverprofile=coverage.out ./...
+          SOFTHSM2_CONF: /home/runner/softhsm2.conf
+          HSM_PKCS11_LIB: /usr/lib/softhsm/libsofthsm2.so
+          HSM_PKCS11_PIN: '1234'
+          HSM_PKCS11_TOKEN_LABEL: INEC_CI
+        run: CGO_ENABLED=1 go test -v -race -coverprofile=coverage.out ./...
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
@@ -226,22 +242,30 @@ jobs:
     strategy:
       matrix:
         include:
-          - service: inec-go-backend
-            image: inec-backend
-          - service: inec-frontend
-            image: inec-frontend
-          - service: services/biometric-python
-            image: inec-biometric-python
-          - service: services/biometric-rust
-            image: inec-biometric-rust
-          - service: services/biometric-go
-            image: inec-biometric-go
-          - service: services/lakehouse-analytics
-            image: inec-analytics
+          - image: inec-backend
+            context: inec-go-backend
+            dockerfile: inec-go-backend/Dockerfile
+          - image: inec-frontend
+            context: inec-frontend
+            dockerfile: inec-frontend/Dockerfile
+          - image: inec-biometric-python
+            context: services/biometric-python
+            dockerfile: services/biometric-python/Dockerfile
+          # Built from the repo root: the Rust vault embeds the shared
+          # migrations/ SQL via include_str!, which lives outside its dir.
+          - image: inec-biometric-rust
+            context: .
+            dockerfile: services/biometric-rust/Dockerfile
+          - image: inec-biometric-go
+            context: services/biometric-go
+            dockerfile: services/biometric-go/Dockerfile
+          - image: inec-analytics
+            context: services/lakehouse-analytics
+            dockerfile: services/lakehouse-analytics/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - name: Build ${{ matrix.image }}
-        run: docker build -t ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }} ./${{ matrix.service }}
+        run: docker build -t ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }} -f ${{ matrix.dockerfile }} ${{ matrix.context }}
       - name: Push to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |

@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inec-model-serving
+  namespace: inec
+  labels:
+    app: inec-model-serving
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inec-model-serving
+  template:
+    metadata:
+      labels:
+        app: inec-model-serving
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8501"
+        prometheus.io/path: "/healthz"
+    spec:
+      containers:
+        - name: model-serving
+          image: ghcr.io/munisp/inec-model-serving:latest
+          ports:
+            - containerPort: 8501
+          env:
+            - name: MODEL_DIR
+              value: /models
+            - name: MODEL_CACHE_SIZE
+              value: "20000"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        # Model artifacts are delivered via a read-only PVC populated from the
+        # model registry / object store (or an initContainer that pulls them).
+        - name: models
+          persistentVolumeClaim:
+            claimName: inec-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inec-model-serving
+  namespace: inec
+  labels:
+    app: inec-model-serving
+spec:
+  selector:
+    app: inec-model-serving
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8501
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inec-model-serving
+  namespace: inec
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inec-model-serving
+  minReplicas: 2
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

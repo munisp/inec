@@ -195,6 +195,7 @@ type ProductionHSM struct {
 	mu        sync.RWMutex
 	masterKey []byte
 	ecdsaKey  *ecdsa.PrivateKey
+	pkcs11    *PKCS11Signer // non-nil when a real PKCS#11 token is configured
 	keyCache  map[string][]byte
 	opsCount  int64
 	mode      string
@@ -215,12 +216,11 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 		copy(mk, h[:])
 	}
 
-	ecKey, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	// P-256 to match the PKCS#11 token curve so signatures verify across the
+	// hardware and software-fallback paths interchangeably.
+	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 
 	mode := "software"
-	if os.Getenv("HSM_PKCS11_LIB") != "" {
-		mode = "pkcs11"
-	}
 	if os.Getenv("HSM_CLOUD_KMS") != "" {
 		mode = "cloud-kms"
 	}
@@ -233,7 +233,18 @@ func NewProductionHSM(database *sql.DB) *ProductionHSM {
 		mode:      mode,
 	}
 
-	log.Info().Str("mode", mode).Msg("Production HSM initialized")
+	// Real HSM: when a PKCS#11 module is configured, ECDSA signing is performed
+	// on the token (SoftHSM/CloudHSM/Luna). Falls back to software on failure.
+	if os.Getenv("HSM_PKCS11_LIB") != "" {
+		if signer, err := NewPKCS11Signer(); err != nil {
+			log.Warn().Err(err).Msg("PKCS#11 HSM init failed; using software signing")
+		} else {
+			hsm.pkcs11 = signer
+			hsm.mode = "pkcs11"
+		}
+	}
+
+	log.Info().Str("mode", hsm.mode).Msg("Production HSM initialized")
 	return hsm
 }
 
@@ -335,6 +346,13 @@ func (h *ProductionHSM) Decrypt(keyID string, ciphertext, nonce []byte) ([]byte,
 
 func (h *ProductionHSM) SignECDSA(data []byte) (string, error) {
 	hash := sha256.Sum256(data)
+	if h.pkcs11 != nil {
+		sig, err := h.pkcs11.Sign(hash[:])
+		if err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(sig), nil
+	}
 	r, s, err := ecdsa.Sign(rand.Reader, h.ecdsaKey, hash[:])
 	if err != nil {
 		return "", err
@@ -349,12 +367,19 @@ func (h *ProductionHSM) VerifyECDSA(data []byte, sigHex string) bool {
 	if err != nil || len(sigBytes) < 64 {
 		return false
 	}
+	if h.pkcs11 != nil {
+		return h.pkcs11.Verify(hash[:], sigBytes)
+	}
 	r := new(big.Int).SetBytes(sigBytes[:len(sigBytes)/2])
 	s := new(big.Int).SetBytes(sigBytes[len(sigBytes)/2:])
 	return ecdsa.Verify(&h.ecdsaKey.PublicKey, hash[:], r, s)
 }
 func (h *ProductionHSM) GetPublicKeyPEM() string {
-	pubBytes, _ := x509.MarshalPKIXPublicKey(&h.ecdsaKey.PublicKey)
+	pub := &h.ecdsaKey.PublicKey
+	if h.pkcs11 != nil && h.pkcs11.PublicKey() != nil {
+		pub = h.pkcs11.PublicKey()
+	}
+	pubBytes, _ := x509.MarshalPKIXPublicKey(pub)
 	block := &pem.Block{Type: "EC PUBLIC KEY", Bytes: pubBytes}
 	return string(pem.EncodeToMemory(block))
 }
@@ -400,7 +425,7 @@ func (h *ProductionHSM) GetStats() M {
 
 	return M{
 		"mode":             h.mode,
-		"algorithm":        "AES-256-GCM + P-384 ECDSA",
+		"algorithm":        "AES-256-GCM + P-256 ECDSA",
 		"total_keys":       totalKeys,
 		"active_keys":      activeKeys,
 		"rotated_keys":     rotatedKeys,
@@ -408,7 +433,7 @@ func (h *ProductionHSM) GetStats() M {
 		"operations":       ops,
 		"total_ops_logged": totalOps,
 		"key_wrapping":     "AES-256-GCM (master key wrapped)",
-		"signing":          "ECDSA P-384 with SHA-256",
+		"signing":          "ECDSA P-256 with SHA-256",
 		"kdf":              "HMAC-SHA-512 key derivation",
 		"compliance":       []string{"FIPS 140-2 Level 1", "PKCS#11 compatible", "ISO 19795"},
 		"production":       true,
@@ -2030,7 +2055,7 @@ func handleProductionHSMSign(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, M{"signature": sig, "algorithm": "ECDSA-P384-SHA256", "public_key": prodHSM.GetPublicKeyPEM()})
+	writeJSON(w, 200, M{"signature": sig, "algorithm": "ECDSA-P256-SHA256", "public_key": prodHSM.GetPublicKeyPEM()})
 }
 
 func handleProductionHSMVerify(w http.ResponseWriter, r *http.Request) {
@@ -2047,7 +2072,7 @@ func handleProductionHSMVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	valid := prodHSM.VerifyECDSA([]byte(req.Data), req.Signature)
-	writeJSON(w, 200, M{"valid": valid, "algorithm": "ECDSA-P384-SHA256"})
+	writeJSON(w, 200, M{"valid": valid, "algorithm": "ECDSA-P256-SHA256"})
 }
 
 func handleProductionHSMRotate(w http.ResponseWriter, r *http.Request) {
@@ -2341,7 +2366,7 @@ func handleProductionUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 			"hsm": M{
 				"status":     "active",
 				"mode":       prodHSM.mode,
-				"algorithm":  "AES-256-GCM + P-384 ECDSA",
+				"algorithm":  "AES-256-GCM + P-256 ECDSA",
 				"compliance": "FIPS 140-2 Level 1",
 			},
 			"sms_gateway": M{

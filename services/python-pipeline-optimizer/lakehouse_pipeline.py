@@ -9,7 +9,6 @@ Key optimizations:
 - Polars for DataFrame operations (Rust-backed, 10x faster than pandas)
 """
 
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,8 +17,6 @@ from typing import Optional
 import duckdb
 import numpy as np
 import pyarrow as pa
-import pyarrow.parquet as pq
-import polars as pl
 import structlog
 
 log = structlog.get_logger()
@@ -99,8 +96,9 @@ class LakehousePipeline:
         if not batch or not self.conn:
             return
         
-        # Convert to Arrow table (columnar format)
-        arrow_table = self._to_arrow(batch)
+        # Convert to Arrow table (columnar format). DuckDB's replacement scan
+        # resolves `arrow_table` by name from the local scope in the SQL below.
+        arrow_table = self._to_arrow(batch)  # noqa: F841
         
         # DuckDB can directly ingest Arrow tables without copying data
         self.conn.execute("""

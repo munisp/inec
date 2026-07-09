@@ -1,0 +1,2 @@
+# Project line length matches the wider convention used across the codebase.
+line-length = 120

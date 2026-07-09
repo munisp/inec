@@ -52,14 +52,20 @@ func initBVASTables(database *sql.DB) {
 		id TEXT PRIMARY KEY,
 		serial_number TEXT UNIQUE NOT NULL,
 		polling_unit_code TEXT,
+		state_code TEXT,
 		election_id INTEGER,
-		status TEXT NOT NULL DEFAULT 'registered' CHECK(status IN ('registered','deployed','active','offline','faulty','decommissioned')),
+		assigned_election_id INTEGER,
+		status TEXT NOT NULL DEFAULT 'registered' CHECK(status IN ('registered','deployed','active','offline','faulty','decommissioned','syncing','inactive','maintenance','lost')),
 		battery_level INTEGER DEFAULT 100,
 		firmware_version TEXT DEFAULT '3.2.1',
 		last_sync_at TIMESTAMP,
 		latitude REAL,
 		longitude REAL,
 		assigned_officer INTEGER,
+		sim_provider TEXT,
+		imei TEXT,
+		sync_token TEXT,
+		accreditation_count INTEGER DEFAULT 0,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (polling_unit_code) REFERENCES polling_units(code),
 		FOREIGN KEY (election_id) REFERENCES elections(id)
@@ -84,6 +90,18 @@ func initBVASTables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_bvas_devices_pu ON bvas_devices(polling_unit_code);
 	`
 	execMulti(database, schema)
+	// Migrations: ensure superset columns exist on pre-existing bvas_devices tables
+	// so every code path (seed_all_tables, mw_workflows, geo_geolibre) resolves.
+	for _, col := range []string{
+		"state_code TEXT",
+		"assigned_election_id INTEGER",
+		"sim_provider TEXT",
+		"imei TEXT",
+		"sync_token TEXT",
+		"accreditation_count INTEGER DEFAULT 0",
+	} {
+		database.Exec("ALTER TABLE bvas_devices ADD COLUMN IF NOT EXISTS " + col)
+	}
 }
 
 func seedBVASDevices(database *sql.DB) {
@@ -117,7 +135,10 @@ func seedBVASDevices(database *sql.DB) {
 
 	rng := NewSecureRng()
 
-	tx, _ := database.Begin()
+	tx, err := database.Begin()
+	if err != nil || tx == nil {
+		return
+	}
 	for i, pu := range pus {
 		devID := fmt.Sprintf("BVAS-%05d", i+1)
 		serial := fmt.Sprintf("INEC-BVAS-2027-%06d", i+1)
