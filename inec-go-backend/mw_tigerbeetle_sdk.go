@@ -80,6 +80,11 @@ func (t *tbSDKClient) ensureAccount(key string, ledger uint32, code uint16) erro
 }
 
 func (t *tbSDKClient) CreateTransfer(_ context.Context, transfer TBTransfer) (*TBTransfer, error) {
+	// Reject non-positive amounts: casting a negative int64 to uint64 would wrap
+	// to a near-MaxUint64 value and post an astronomical transfer to the ledger.
+	if transfer.Amount <= 0 {
+		return nil, fmt.Errorf("invalid transfer amount %d: must be positive", transfer.Amount)
+	}
 	if transfer.ID == "" {
 		buf := make([]byte, 16)
 		rand.Read(buf)

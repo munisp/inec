@@ -194,6 +194,9 @@ func newEmbeddedTigerBeetle() *embeddedTigerBeetle {
 }
 
 func (t *embeddedTigerBeetle) CreateTransfer(_ context.Context, transfer TBTransfer) (*TBTransfer, error) {
+	if transfer.Amount <= 0 {
+		return nil, fmt.Errorf("invalid transfer amount %d: must be positive", transfer.Amount)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if transfer.ID == "" {
