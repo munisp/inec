@@ -1061,6 +1061,7 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		persistAnomalyScores(electionID, scored)
 		writeJSON(w, 200, M{
 			"flagged_units": scored,
 			"total_nodes":   len(nodes),
@@ -1090,6 +1091,7 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	persistAnomalyScores(electionID, scored)
 	writeJSON(w, 200, M{
 		"flagged_units": scored,
 		"total_nodes":   len(nodes),

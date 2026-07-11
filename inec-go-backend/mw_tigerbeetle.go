@@ -357,8 +357,53 @@ func newDBBackedTigerBeetle() *dbBackedTigerBeetle {
 	// Seed default accounts
 	dbExecLog("tb_accounts", "INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-operational', 1, 1)")
 	dbExecLog("tb_accounts", "INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES ('inec-official', 2, 1)")
+	// Hydrate the in-memory working set from PostgreSQL so reads and balances
+	// survive process restarts (previously reads came only from volatile maps).
+	tb.hydrate()
 	log.Info().Msg("TigerBeetle using DB-backed persistent ledger")
 	return tb
+}
+
+// hydrate loads persisted accounts and transfers from PostgreSQL into the
+// in-memory working set at startup.
+func (t *dbBackedTigerBeetle) hydrate() {
+	t.embedded.mu.Lock()
+	defer t.embedded.mu.Unlock()
+	if rows, err := db.Query(`SELECT id, ledger, code, credits_posted, debits_posted, credits_pending, debits_pending FROM tb_accounts`); err == nil && rows != nil {
+		for rows.Next() {
+			var a TBAccount
+			if err := rows.Scan(&a.ID, &a.Ledger, &a.Code, &a.CreditsPosted, &a.DebitsPosted, &a.CreditsPending, &a.DebitsPending); err == nil {
+				acct := a
+				t.embedded.accounts[a.ID] = &acct
+			}
+		}
+		rows.Close()
+	}
+	if rows, err := db.Query(`SELECT id, debit_account_id, credit_account_id, amount, ledger, code, status, COALESCE(user_data,'') FROM tb_transfers`); err == nil && rows != nil {
+		for rows.Next() {
+			var tr TBTransfer
+			if err := rows.Scan(&tr.ID, &tr.DebitAccountID, &tr.CreditAccountID, &tr.Amount, &tr.Ledger, &tr.Code, &tr.Status, &tr.UserData); err == nil {
+				transfer := tr
+				t.embedded.transfers[tr.ID] = &transfer
+			}
+		}
+		rows.Close()
+	}
+}
+
+// persistAccounts writes the current balances of the given accounts to PostgreSQL.
+func (t *dbBackedTigerBeetle) persistAccounts(ids ...string) {
+	t.embedded.mu.RLock()
+	defer t.embedded.mu.RUnlock()
+	for _, id := range ids {
+		a, ok := t.embedded.accounts[id]
+		if !ok {
+			continue
+		}
+		dbExecLog("tb_accounts", convertPlaceholders(
+			"UPDATE tb_accounts SET credits_posted=?, debits_posted=?, credits_pending=?, debits_pending=? WHERE id=?"),
+			a.CreditsPosted, a.DebitsPosted, a.CreditsPending, a.DebitsPending, id)
+	}
 }
 
 func (t *dbBackedTigerBeetle) CreateTransfer(ctx context.Context, transfer TBTransfer) (*TBTransfer, error) {
@@ -370,6 +415,7 @@ func (t *dbBackedTigerBeetle) CreateTransfer(ctx context.Context, transfer TBTra
 	dbExecLog("db_op", convertPlaceholders(
 		"INSERT OR IGNORE INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)"),
 		result.ID, result.DebitAccountID, result.CreditAccountID, result.Amount, result.Ledger, result.Code, result.Status, result.UserData)
+	t.persistAccounts(result.DebitAccountID, result.CreditAccountID)
 	return result, nil
 }
 
@@ -382,6 +428,9 @@ func (t *dbBackedTigerBeetle) VoidTransfer(ctx context.Context, transferID strin
 		return err
 	}
 	dbExecLog("tb_transfers", convertPlaceholders("UPDATE tb_transfers SET status = 'VOIDED' WHERE id = ?"), transferID)
+	if tr, err := t.embedded.GetTransfer(ctx, transferID); err == nil {
+		t.persistAccounts(tr.DebitAccountID, tr.CreditAccountID)
+	}
 	return nil
 }
 
@@ -390,6 +439,9 @@ func (t *dbBackedTigerBeetle) PostTransfer(ctx context.Context, transferID strin
 		return err
 	}
 	dbExecLog("tb_transfers", convertPlaceholders("UPDATE tb_transfers SET status = 'POSTED', posted_at = CURRENT_TIMESTAMP WHERE id = ?"), transferID)
+	if tr, err := t.embedded.GetTransfer(ctx, transferID); err == nil {
+		t.persistAccounts(tr.DebitAccountID, tr.CreditAccountID)
+	}
 	return nil
 }
 
@@ -413,18 +465,21 @@ func (t *dbBackedTigerBeetle) LookupTransfers(ctx context.Context, accountID str
 func (t *dbBackedTigerBeetle) Status() MWStatus {
 	s := t.embedded.Status()
 	s.Mode = "db-backed"
-	s.Details = "persistent ledger (DB-backed; production: use tigerbeetle-go SDK with binary protocol)"
+	s.Details = "persistent ledger (DB-backed, hydrated on restart; set TIGERBEETLE_ADDRESSES for the binary-protocol SDK)"
 	return s
 }
 
 func (t *dbBackedTigerBeetle) Close() error { return nil }
 
 func initTigerBeetleClient() TigerBeetleClient {
+	// Prefer the real binary-protocol Go SDK when TIGERBEETLE_ADDRESSES is set.
+	if sdk := initTBSDKClient(); sdk != nil {
+		return sdk
+	}
 	tbURL := envOrDefault("TIGERBEETLE_URL", "")
 	if tbURL != "" {
-		// NOTE: Real TigerBeetle uses a custom binary protocol on port 3000.
-		// The HTTP client here is for TigerBeetle's optional HTTP gateway (if deployed).
-		// For production, use github.com/tigerbeetle/tigerbeetle-go SDK directly.
+		// Optional HTTP gateway (if deployed in front of TigerBeetle). The
+		// canonical integration is the binary SDK above (TIGERBEETLE_ADDRESSES).
 		client := &tbHTTPClient{
 			baseURL: tbURL,
 			client:  NewResilientHTTPClient("tigerbeetle"),
