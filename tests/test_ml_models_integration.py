@@ -29,6 +29,7 @@ from typing import Dict, List, Any
 from datetime import datetime
 
 import numpy as np
+import pandas as pd
 import pytest
 
 # Add services to path
@@ -42,6 +43,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "ml-models" /
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "model-serving"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "services" / "datasets"))
 
+try:
+    import torch  # noqa: F401
+    import torch_geometric  # noqa: F401
+    TORCH_GEOMETRIC_AVAILABLE = True
+except ImportError:
+    TORCH_GEOMETRIC_AVAILABLE = False
+
+try:
+    import torch  # noqa: F401
+    import ultralytics  # noqa: F401
+    ULTRALYTICS_AVAILABLE = True
+except ImportError:
+    ULTRALYTICS_AVAILABLE = False
+
 
 # ============================================================================
 # Biometric PAD Tests
@@ -53,7 +68,7 @@ class TestBiometricPAD:
     def test_cdcn_block_creation(self):
         """Test CDCNBlock module creation."""
         try:
-            from ml_models.cdc_pad.train_cdcn import CDCNBlock
+            from train_cdcn import CDCNBlock
             
             block = CDCNBlock(in_channels=32, out_channels=64, dropout=0.3)
             assert block is not None
@@ -66,7 +81,7 @@ class TestBiometricPAD:
     def test_cdcn_model_creation(self):
         """Test CDCN model initialization."""
         try:
-            from ml_models.cdc_pad.train_cdcn import CDCN
+            from train_cdcn import CDCN
             
             model = CDCN(num_classes=1, input_size=128)
             assert model is not None
@@ -79,7 +94,7 @@ class TestBiometricPAD:
     def test_cdcn_forward_pass(self):
         """Test CDCN model forward pass."""
         try:
-            from ml_models.cdc_pad.train_cdcn import CDCN
+            from train_cdcn import CDCN
             
             model = CDCN(num_classes=1, input_size=128)
             model.eval()
@@ -96,7 +111,7 @@ class TestBiometricPAD:
     def test_cdcn_predictor_initialization(self):
         """Test CDCN predictor initialization."""
         try:
-            from ml_models.cdc_pad.train_cdcn import CDCNPredictor, CDCN_MODEL_PATH
+            from train_cdcn import CDCNPredictor, CDCN_MODEL_PATH
             
             # Predictor should initialize even without model file
             predictor = CDCNPredictor()
@@ -108,7 +123,7 @@ class TestBiometricPAD:
     def test_pad_dataset_loading(self):
         """Test PAD dataset loading."""
         try:
-            from ml_models.cdc_pad.train_cdcn import PADDataset, MODEL_DIR
+            from train_cdcn import PADDataset, MODEL_DIR
             
             # Create synthetic dataset
             os.makedirs(MODEL_DIR / "datasets" / "oulu-npu" / "real" / "video1", exist_ok=True)
@@ -138,7 +153,7 @@ class TestArcFace:
     def test_arc_margin_product(self):
         """Test ArcMarginProduct module."""
         try:
-            from ml_models.arcface.train_arcface import ArcMarginProduct
+            from train_arcface import ArcMarginProduct
             
             margin = ArcMarginProduct(in_features=512, out_features=100, s=64.0, m=0.5)
             assert margin is not None
@@ -149,7 +164,7 @@ class TestArcFace:
     def test_insight_face_resnet(self):
         """Test InsightFaceResNet backbone."""
         try:
-            from ml_models.arcface.train_arcface import InsightFaceResNet
+            from train_arcface import InsightFaceResNet
             
             model = InsightFaceResNet(embedding_size=512)
             assert model is not None
@@ -161,7 +176,7 @@ class TestArcFace:
     def test_arcface_forward_pass(self):
         """Test ArcFace forward pass."""
         try:
-            from ml_models.arcface.train_arcface import InsightFaceResNet
+            from train_arcface import InsightFaceResNet
             
             model = InsightFaceResNet(embedding_size=512)
             model.eval()
@@ -178,7 +193,7 @@ class TestArcFace:
     def test_arcface_predictor(self):
         """Test ArcFace predictor."""
         try:
-            from ml_models.arcface.train_arcface import ARCFACE_MODEL_PATH, ArcFacePredictor
+            from train_arcface import ARCFACE_MODEL_PATH, ArcFacePredictor
             
             # Predictor should handle missing model gracefully
             predictor = ArcFacePredictor()
@@ -191,12 +206,13 @@ class TestArcFace:
 # GNN Election Validation Tests
 # ============================================================================
 
+@pytest.mark.skipif(not TORCH_GEOMETRIC_AVAILABLE, reason="PyTorch Geometric not available")
 class TestGNN:
     """Test GNN for election validation."""
     
     def test_election_node_creation(self):
         """Test ElectionNode creation."""
-        from ml_models.gnn.train_gnn import ElectionNode
+        from train_gnn import ElectionNode
         
         node = ElectionNode(
             pu_code="PU-001",
@@ -214,7 +230,7 @@ class TestGNN:
     
     def test_gnn_graph_builder(self):
         """Test election graph building."""
-        from ml_models.gnn.train_gnn import ElectionGraphBuilder, ElectionNode
+        from train_gnn import ElectionGraphBuilder, ElectionNode
         
         builder = ElectionGraphBuilder(distance_threshold_km=2.0)
         
@@ -231,7 +247,7 @@ class TestGNN:
     def test_gnn_model_creation(self):
         """Test GNN model creation."""
         try:
-            from ml_models.gnn.train_gnn import GNNAnomalyDetection, EnhancedGNNAnomalyDetection
+            from train_gnn import GNNAnomalyDetection, EnhancedGNNAnomalyDetection
             
             model_gcn = GNNAnomalyDetection(num_features=4, hidden_channels=64)
             assert model_gcn is not None
@@ -248,7 +264,7 @@ class TestGNN:
     def test_gnn_predictor(self):
         """Test GNN predictor."""
         try:
-            from ml_models.gnn.train_gnn import GNNPredictor, GNN_MODEL_PATH
+            from train_gnn import GNNPredictor, GNN_MODEL_PATH
             
             # Predictor handles missing model gracefully
             predictor = GNNPredictor()
@@ -258,7 +274,7 @@ class TestGNN:
     
     def test_synthetic_election_data(self):
         """Test synthetic election data generation."""
-        from ml_models.gnn.train_gnn import create_synthetic_election_data
+        from train_gnn import create_synthetic_election_data
         
         nodes, builder = create_synthetic_election_data(num_nodes=100, anomaly_rate=0.05)
         
@@ -276,7 +292,7 @@ class TestXGBoostFraud:
     
     def test_election_fraud_features(self):
         """Test feature engineering."""
-        from ml_models.xgboost_fraud.train_xgboost_fraud import ElectionFraudFeatures
+        from train_xgboost_fraud import ElectionFraudFeatures
         
         records = [
             {
@@ -298,7 +314,7 @@ class TestXGBoostFraud:
     
     def test_xgboost_fraud_detector(self):
         """Test XGBoost fraud detector initialization."""
-        from ml_models.xgboost_fraud.train_xgboost_fraud import XGBoostFraudDetector
+        from train_xgboost_fraud import XGBoostFraudDetector
         
         detector = XGBoostFraudDetector(
             max_depth=4,
@@ -310,7 +326,7 @@ class TestXGBoostFraud:
     
     def test_synthetic_fraud_data(self):
         """Test synthetic fraud data generation."""
-        from ml_models.xgboost_fraud.train_xgboost_fraud import create_synthetic_fraud_data
+        from train_xgboost_fraud import create_synthetic_fraud_data
         
         X, y = create_synthetic_fraud_data(num_samples=1000, fraud_rate=0.1)
         
@@ -320,7 +336,7 @@ class TestXGBoostFraud:
     
     def test_xgboost_predictor(self):
         """Test fraud predictor."""
-        from ml_models.xgboost_fraud.train_xgboost_fraud import FraudPredictor, FRAUD_MODEL_PATH
+        from train_xgboost_fraud import FraudPredictor, FRAUD_MODEL_PATH
         
         # Predictor handles missing model gracefully
         predictor = FraudPredictor()
@@ -328,7 +344,7 @@ class TestXGBoostFraud:
     
     def test_hyperparameter_tuning(self):
         """Test hyperparameter tuning."""
-        from ml_models.xgboost_fraud.train_xgboost_fraud import (
+        from train_xgboost_fraud import (
             XGBoostFraudDetector,
             create_synthetic_fraud_data,
             ElectionFraudFeatures,
@@ -352,19 +368,20 @@ class TestXGBoostFraud:
 # YOLO Ballot Counting Tests
 # ============================================================================
 
+@pytest.mark.skipif(not ULTRALYTICS_AVAILABLE, reason="Ultralytics/YOLO not available")
 class TestYOLOBallot:
     """Test YOLO ballot counting pipeline."""
     
     def test_ballot_counting_dataset(self):
         """Test dataset preparation."""
-        from ml_models.yolo_ballot.train_yolo_ballot import BallotCountingDataset
+        from train_yolo_ballot import BallotCountingDataset
         
         dataset = BallotCountingDataset()
         assert dataset is not None
     
     def test_frame_extraction(self):
         """Test video frame extraction."""
-        from ml_models.yolo_ballot.train_yolo_ballot import BallotCountingDataset
+        from train_yolo_ballot import BallotCountingDataset
         
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create synthetic video
@@ -389,7 +406,7 @@ class TestYOLOBallot:
     
     def test_synthetic_training_data(self):
         """Test synthetic training data generation."""
-        from ml_models.yolo_ballot.train_yolo_ballot import create_synthetic_training_data
+        from train_yolo_ballot import create_synthetic_training_data
         
         yaml_path = create_synthetic_training_data(num_images=10)
         
@@ -398,7 +415,7 @@ class TestYOLOBallot:
     
     def test_ballot_counting_trainer(self):
         """Test trainer initialization."""
-        from ml_models.yolo_ballot.train_yolo_ballot import BallotCountingTrainer
+        from train_yolo_ballot import BallotCountingTrainer
         
         trainer = BallotCountingTrainer(
             model_name='yolov8n.pt',
@@ -427,44 +444,32 @@ class TestNeo4jIntegration:
         assert graph is not None
         assert graph.uri == "bolt://localhost:7687"
     
-    def test_account_types(self):
-        """Test account type enumeration."""
-        from neo4j_integration import AccountType
-        
-        assert AccountType.ELECTION_FUND.value == "election_fund"
-        assert AccountType.CAMPAIGN_FUND.value == "campaign_fund"
-        assert AccountType.AUDIT_HOLDING.value == "audit_holding"
-    
-    def test_transaction_types(self):
-        """Test transaction type enumeration."""
-        from neo4j_integration import TransactionType
-        
-        assert TransactionType.DEPOSIT.value == "deposit"
-        assert TransactionType.TRANSFER.value == "transfer"
-        assert TransactionType.AUDIT_HOLD.value == "audit_hold"
-    
-    def test_data_models(self):
-        """Test data model classes."""
-        from neo4j_integration import Account, Transaction, Balance
-        
-        account = Account(
-            account_id=1,
-            code="TEST_001",
-            name="Test Account",
-            account_type=None,  # Type doesn't matter for test
-        )
-        assert account.account_id == 1
-        
-        transaction = Transaction(
-            transaction_id=1,
-            user_data_1=1,
-            user_data_2=2,
-            amount=1000,
-        )
-        assert transaction.amount == 1000
-        
-        balance = Balance(account_id=1, credits=10000, debits=5000)
-        assert balance.available_balance == 50.0  # Naira
+    def test_default_connection_params(self):
+        """Test Neo4j client default connection parameters."""
+        from neo4j_integration import Neo4jElectionGraph
+
+        graph = Neo4jElectionGraph()
+        assert graph.uri == "bolt://localhost:7687"
+        assert graph.user == "neo4j"
+        assert graph.database == "neo4j"
+        assert graph.connected is False
+        assert graph.driver is None
+
+    def test_query_requires_connection(self):
+        """Test that querying without a connection raises an error."""
+        from neo4j_integration import Neo4jElectionGraph
+
+        graph = Neo4jElectionGraph()
+        with pytest.raises(ConnectionError):
+            graph.execute_query("MATCH (n) RETURN n")
+
+    def test_graph_analyzer_wraps_graph(self):
+        """Test ElectionGraphAnalyzer holds a reference to the graph."""
+        from neo4j_integration import Neo4jElectionGraph, ElectionGraphAnalyzer
+
+        graph = Neo4jElectionGraph()
+        analyzer = ElectionGraphAnalyzer(graph)
+        assert analyzer.graph is graph
 
 
 # ============================================================================
@@ -563,7 +568,7 @@ class TestModelServing:
             cache_size=1000,
         )
         assert server is not None
-        assert server.cache_size == 1000
+        assert server.model_cache.max_size == 1000
     
     def test_model_registry(self):
         """Test ModelRegistry."""
@@ -602,8 +607,8 @@ class TestModelServing:
         assert result is not None
         assert result["prediction"] == 0.95
         
-        # Test hit rate
-        assert cache.hit_rate == 1.0
+        # One miss (initial get) + one hit (after put) => hit_rate = 0.5
+        assert cache.hit_rate == 0.5
     
     def test_onnx_model_wrapper(self):
         """Test ONNX model wrapper."""
@@ -928,7 +933,7 @@ class TestEndToEnd:
     
     def test_fraud_detection_pipeline(self):
         """Test complete fraud detection pipeline."""
-        from ml_models.xgboost_fraud.train_xgboost_fraud import (
+        from train_xgboost_fraud import (
             XGBoostFraudDetector,
             create_synthetic_fraud_data,
             ElectionFraudFeatures,

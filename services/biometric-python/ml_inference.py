@@ -413,7 +413,6 @@ def generate_model_weights(model_type: ModelType, force: bool = False) -> Path:
 
     try:
         import torch
-        import torch.nn as nn
     except ImportError:
         log.warning("pytorch_unavailable", msg="cannot generate model weights without PyTorch")
         return _generate_onnx_directly(model_type)
@@ -469,7 +468,7 @@ def _build_face_pad_model():
     fine-tuning on PAD datasets (OULU-NPU, SiW, LivDet).
     """
     import torch.nn as nn
-    from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+    from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
 
     base = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
     base.classifier = nn.Sequential(
@@ -487,7 +486,7 @@ def _build_fingerprint_pad_model():
     for single-channel (grayscale) input.
     """
     import torch.nn as nn
-    from torchvision.models import resnet18, ResNet18_Weights
+    from torchvision.models import ResNet18_Weights, resnet18
 
     base = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
     # Modify first conv for single-channel input
@@ -540,7 +539,7 @@ def _generate_onnx_directly(model_type: ModelType) -> Path:
 
     try:
         import onnx
-        from onnx import helper, TensorProto, numpy_helper
+        from onnx import TensorProto, helper, numpy_helper
 
         info = MODEL_REGISTRY[model_type]
         in_shape = list(info.input_shape)

@@ -18,6 +18,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import onnx
 import onnxruntime as ort
+from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -99,7 +100,7 @@ class InsightFaceResNet(nn.Module):
         super().__init__()
         
         # Initial conv layers
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -162,10 +163,10 @@ class BasicBlock(nn.Module):
             )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
-        out = self.relu(out)
+        out = F.relu(out)
         return out
 
 
@@ -212,11 +213,11 @@ class FaceRecognitionDataset(Dataset):
     
     def __getitem__(self, idx):
         img_path, label = self.samples[idx]
-        image = np.array(Image.open(img_path).convert('RGB'))
-        
+        image = Image.open(img_path).convert('RGB')
+
         if self.transform:
             image = self.transform(image)
-        
+
         return image, torch.tensor(label, dtype=torch.long)
 
 
@@ -470,19 +471,42 @@ def main():
     else:
         print(f"⚠ Dataset not found at {dataset_path}")
         print("Generating synthetic dataset...")
-        from PIL import Image
-        
-        os.makedirs(str(dataset_path / "class_0001"), exist_ok=True)
-        os.makedirs(str(dataset_path / "class_0002"), exist_ok=True)
-        
-        # Generate synthetic face images
-        for i in range(50):
-            img = Image.fromarray(np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8))
-            img.save(str(dataset_path / "class_0001" / f"face_{i:03d}.jpg"))
-            
-            img = Image.fromarray(np.random.randint(50, 200, (112, 112, 3), dtype=np.uint8))
-            img.save(str(dataset_path / "class_0002" / f"face_{i:03d}.jpg"))
-        
+        # Metric learning needs multiple identities, each with a CONSISTENT
+        # facial structure across its images (so the model learns to cluster an
+        # identity), plus per-image variation (lighting/pose/noise). Pure noise
+        # gives no identity signal. We synthesize distinct low-frequency face
+        # templates per identity and add realistic capture variation.
+        # NOTE: production must fine-tune on a real face corpus (e.g. INEC voter
+        # enrolment photos); drop it at datasets/<name> to override.
+        num_identities = 16
+        imgs_per_identity = 16
+        yy, xx = np.mgrid[0:112, 0:112].astype(np.float32)
+        rng = np.random.default_rng(42)
+
+        def identity_template(seed):
+            r = np.random.default_rng(seed)
+            tmpl = np.zeros((112, 112, 3), dtype=np.float32)
+            # A few smooth Gaussian blobs per channel = a stable, distinct face.
+            for _ in range(6):
+                cx, cy = r.uniform(20, 92, 2)
+                sx, sy = r.uniform(12, 34, 2)
+                amp = r.uniform(40, 110)
+                ch = r.integers(0, 3)
+                tmpl[:, :, ch] += amp * np.exp(-(((xx - cx) ** 2) / (2 * sx ** 2) + ((yy - cy) ** 2) / (2 * sy ** 2)))
+            return tmpl + r.uniform(40, 90)
+
+        for k in range(num_identities):
+            cdir = dataset_path / f"class_{k+1:04d}"
+            os.makedirs(str(cdir), exist_ok=True)
+            tmpl = identity_template(1000 + k)
+            for i in range(imgs_per_identity):
+                brightness = rng.uniform(0.85, 1.15)
+                shift = rng.integers(-4, 5, size=2)
+                var = np.roll(tmpl * brightness, shift, axis=(0, 1))
+                var = var + rng.normal(0, 8, (112, 112, 3))
+                Image.fromarray(np.clip(var, 0, 255).astype(np.uint8)).save(
+                    str(cdir / f"face_{i:03d}.jpg"))
+
         train_dataset = FaceRecognitionDataset(str(dataset_path), transform=train_transform)
         val_dataset = FaceRecognitionDataset(str(dataset_path), transform=val_transform)
     

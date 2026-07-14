@@ -13,16 +13,11 @@ Datasets:
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import time
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 try:
@@ -128,7 +123,8 @@ class PADTrainer:
 
         return result
 
-    def train(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 50, save_path: Optional[str] = None):
+    def train(self, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 50,
+              save_path: Optional[str] = None):
         """Full training loop with validation."""
         for epoch in range(1, epochs + 1):
             train_loss = self.train_epoch(train_loader)
@@ -159,7 +155,7 @@ class PADTrainer:
 
 def build_mobilenetv2_pad(pretrained: bool = True) -> nn.Module:
     """MobileNetV2-based PAD model with ImageNet pre-trained backbone."""
-    from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+    from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
 
     weights = MobileNet_V2_Weights.IMAGENET1K_V1 if pretrained else None
     base = mobilenet_v2(weights=weights)
@@ -261,7 +257,7 @@ def main():
 
     # Final evaluation
     final_metrics = trainer.evaluate(val_loader)
-    print(f"\nFinal validation metrics:")
+    print("\nFinal validation metrics:")
     print(f"  Accuracy: {final_metrics['accuracy']:.4f}")
     if "auc" in final_metrics:
         print(f"  AUC:      {final_metrics['auc']:.4f}")

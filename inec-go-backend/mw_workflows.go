@@ -51,7 +51,7 @@ func runActivationInline(ctx context.Context, electionID int, actor string) erro
 	}
 
 	// Step 2: Generate BVAS sync tokens
-	dbExecLog("bvas_prep", "UPDATE bvas_devices SET sync_token=hex(randomblob(16)) WHERE assigned_election_id=?", electionID)
+	dbExecLog("bvas_prep", "UPDATE bvas_devices SET sync_token=md5(random()::text || clock_timestamp()::text) WHERE assigned_election_id=?", electionID)
 
 	// Step 3: Notify observers
 	if mwHub != nil && mwHub.Kafka != nil {

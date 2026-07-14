@@ -67,6 +67,13 @@ func main() {
 	pipeline = NewABISPipeline(pythonURL, rustURL, pgStore)
 	deviceRegistry = NewBVASDeviceRegistry(pgStore)
 
+	if driver, derr := NewCaptureDriver(); derr != nil {
+		log.Printf("capture driver disabled: %v", derr)
+	} else if driver != nil {
+		deviceRegistry.SetDriver(driver)
+		log.Printf("capture driver enabled: %s", driver.Name())
+	}
+
 	r := mux.NewRouter()
 
 	// Health

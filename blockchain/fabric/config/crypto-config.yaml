@@ -1,0 +1,23 @@
+# cryptogen topology for the INEC Fabric network.
+OrdererOrgs:
+  - Name: Orderer
+    Domain: inec.gov.ng
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer
+
+PeerOrgs:
+  - Name: INEC
+    Domain: inec.inec.gov.ng
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1
+  - Name: Observers
+    Domain: observers.inec.gov.ng
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1

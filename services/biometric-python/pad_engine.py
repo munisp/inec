@@ -18,7 +18,6 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from scipy import fft as scipy_fft
 
 
 class PADDecision(str, Enum):
@@ -182,8 +181,6 @@ class FacePADEngine:
                     resized[src_y.start:src_y.start + actual_h, src_x.start:src_x.start + actual_w].astype(np.float64)
 
             lbp += (shifted >= resized.astype(np.float64)).astype(np.float64) * (2 ** i)
-
-        lbp_var = np.var(lbp)
 
         hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
         hist = hist.astype(np.float64)

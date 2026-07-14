@@ -659,6 +659,10 @@ func firstDigitOf(n int) int {
 
 // chiSquarePValue approximates the p-value for a chi-square statistic.
 func chiSquarePValue(x float64, df int) float64 {
+	// A chi-square statistic of 0 (or below) is a perfect fit: p-value is 1.
+	if x <= 0 {
+		return 1.0
+	}
 	// Wilson-Hilferty approximation
 	k := float64(df)
 	z := math.Pow(x/k, 1.0/3.0) - (1.0 - 2.0/(9.0*k))
@@ -1057,6 +1061,7 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		persistAnomalyScores(electionID, scored)
 		writeJSON(w, 200, M{
 			"flagged_units": scored,
 			"total_nodes":   len(nodes),
@@ -1086,6 +1091,7 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	persistAnomalyScores(electionID, scored)
 	writeJSON(w, 200, M{
 		"flagged_units": scored,
 		"total_nodes":   len(nodes),

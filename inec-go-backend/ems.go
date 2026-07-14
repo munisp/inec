@@ -23,6 +23,7 @@ func initEMSTables(database *sql.DB) {
 	CREATE TABLE IF NOT EXISTS voters (
 		id SERIAL PRIMARY KEY,
 		vin TEXT UNIQUE NOT NULL,
+		nin TEXT UNIQUE,
 		first_name TEXT NOT NULL,
 		last_name TEXT NOT NULL,
 		middle_name TEXT,
@@ -238,6 +239,9 @@ func initEMSTables(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_materials_election ON election_materials(election_id);
 	`
 	execMulti(database, schema)
+	// Migration: ensure nin column exists on pre-existing voters tables.
+	database.Exec(`ALTER TABLE voters ADD COLUMN IF NOT EXISTS nin TEXT`)
+	database.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_voters_nin ON voters(nin)`)
 }
 
 func seedEMSData(database *sql.DB) {
@@ -282,14 +286,15 @@ func seedEMSData(database *sql.DB) {
 			}
 			bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("bio-%s-%d", vin, voterID))))
 			pvcNum := fmt.Sprintf("PVC-%s-%06d", pu.stateCode, voterID)
+			nin := fmt.Sprintf("%011d", 10000000000+int64(voterID))
 			statuses := []string{"active", "active", "active", "active", "active", "verified", "registered"}
 			status := statuses[rng.Intn(len(statuses))]
 			collected := 0
 			if status == "active" && rng.Float64() < 0.85 {
 				collected = 1
 			}
-			tx.Exec(`INSERT INTO voters (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				vin, fn, ln, dob, gender, pu.stateCode, pu.lgaCode, pu.wardCode, pu.puCode, bioHash[:32], pvcNum, collected, status)
+			tx.Exec(`INSERT INTO voters (vin, nin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				vin, nin, fn, ln, dob, gender, pu.stateCode, pu.lgaCode, pu.wardCode, pu.puCode, bioHash[:32], pvcNum, collected, status)
 		}
 	}
 
@@ -468,6 +473,7 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 		WardCode        string `json:"ward_code"`
 		PollingUnitCode string `json:"polling_unit_code"`
 		BiometricData   string `json:"biometric_data"`
+		NIN             string `json:"nin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -490,9 +496,13 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pvcNum := fmt.Sprintf("PVC-%s-%06d", req.StateCode, time.Now().UnixNano()%999999)
-	_, err := db.Exec(`INSERT INTO voters (vin, first_name, last_name, middle_name, date_of_birth, gender, phone, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'registered')`,
-		vin, req.FirstName, req.LastName, req.MiddleName, req.DateOfBirth, req.Gender, req.Phone,
+	var ninVal interface{}
+	if req.NIN != "" {
+		ninVal = req.NIN
+	}
+	_, err := db.Exec(`INSERT INTO voters (vin, nin, first_name, last_name, middle_name, date_of_birth, gender, phone, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, status)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'registered')`,
+		vin, ninVal, req.FirstName, req.LastName, req.MiddleName, req.DateOfBirth, req.Gender, req.Phone,
 		req.StateCode, req.LGACode, req.WardCode, req.PollingUnitCode, bioHash[:32], pvcNum)
 	if err != nil {
 		writeError(w, 500, "Registration failed: "+err.Error())

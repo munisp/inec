@@ -8,10 +8,6 @@ Key optimizations:
 - Prepared statements for read queries
 """
 
-import asyncio
-import io
-import time
-from typing import Optional
 
 import orjson
 import structlog

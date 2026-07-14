@@ -10,7 +10,6 @@ Key optimizations:
 
 import asyncio
 import time
-from typing import Optional
 
 import orjson
 import structlog
@@ -42,7 +41,7 @@ class KafkaArrowConsumer:
         - partition.assignment.strategy = cooperative-sticky
         """
         # Consumer configuration for maximum throughput
-        consumer_config = {
+        self.consumer_config = {
             "bootstrap.servers": self.brokers,
             "group.id": self.group_id,
             "auto.offset.reset": "latest",
@@ -58,7 +57,7 @@ class KafkaArrowConsumer:
         
         # In production:
         # from confluent_kafka import Consumer
-        # consumer = Consumer(consumer_config)
+        # consumer = Consumer(self.consumer_config)
         # consumer.subscribe(["inec.results.submitted", "inec.ballots.cast", ...])
         
         log.info("kafka consumer started", brokers=self.brokers, group=self.group_id)
