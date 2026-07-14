@@ -187,12 +187,12 @@ func handleDeleteElection(w http.ResponseWriter, r *http.Request) {
 
 func handleCreateStakeholder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		OrgName  string `json:"org_name"`
-		Type     string `json:"type"`
-		Contact  string `json:"contact_person"`
-		Email    string `json:"email"`
-		Phone    string `json:"phone"`
-		State    string `json:"state_code"`
+		OrgName string `json:"org_name"`
+		Type    string `json:"type"`
+		Contact string `json:"contact_person"`
+		Email   string `json:"email"`
+		Phone   string `json:"phone"`
+		State   string `json:"state_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -245,8 +245,13 @@ func handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 	if req.Active != nil {
-		sets = append(sets, "active=$"+strconv.Itoa(argIdx))
-		args = append(args, *req.Active)
+		// is_active is an INTEGER column (1/0), not boolean.
+		active := 0
+		if *req.Active {
+			active = 1
+		}
+		sets = append(sets, "is_active=$"+strconv.Itoa(argIdx))
+		args = append(args, active)
 		argIdx++
 	}
 	if len(sets) == 0 {
@@ -254,8 +259,11 @@ func handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args = append(args, id)
-	query := "UPDATE webhooks SET " + strings.Join(sets, ", ") + " WHERE id=$" + strconv.Itoa(argIdx)
-	dbExecCtx(r.Context(), query, args...)
+	query := "UPDATE webhook_subscriptions SET " + strings.Join(sets, ", ") + " WHERE id=$" + strconv.Itoa(argIdx)
+	if _, err := dbExecCtx(r.Context(), query, args...); err != nil {
+		writeError(w, 500, "failed to update webhook")
+		return
+	}
 	writeJSON(w, 200, M{"message": "Webhook updated"})
 }
 

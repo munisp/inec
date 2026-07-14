@@ -134,6 +134,7 @@ func main() {
 	seedAllTables(db)
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
+	initSchemaCompatibility(db)
 	initOpenAPIRoutes()
 
 	// Production compliance, stablecoin, and USSD engines

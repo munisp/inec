@@ -226,6 +226,10 @@ func (t *embeddedTemporal) Status() MWStatus {
 func (t *embeddedTemporal) Close() error { return nil }
 
 func initTemporalClient() TemporalClient {
+	// Prefer the real gRPC SDK client (+ in-process worker) when configured.
+	if sdk := initTemporalSDKClient(); sdk != nil {
+		return sdk
+	}
 	temporalURL := envOrDefault("TEMPORAL_URL", "")
 	if temporalURL != "" {
 		client := &temporalHTTPClient{
