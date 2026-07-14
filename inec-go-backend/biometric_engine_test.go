@@ -284,7 +284,7 @@ func SkipTestBiometricPerformPADCheckDifferentInputs(t *testing.T) {
 // This test documents the expected behavior: master key should be configurable.
 func SkipTestMasterKeyFromEnv(t *testing.T) {
 	// Set a test master key via environment variable.
-	os.Setenv("BIOMETRIC_MASTER_KEY", "test-key-for-unit-testing-12345678")
+	t.Setenv("BIOMETRIC_MASTER_KEY", "test-key-for-unit-testing-12345678")
 	defer os.Unsetenv("BIOMETRIC_MASTER_KEY")
 
 	// Verify the env var is set as expected.

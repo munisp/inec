@@ -90,7 +90,7 @@ class ModelCache:
     
     def get(self, model_id: str, input_data: Any) -> Optional[Any]:
         """Get cached prediction."""
-        input_hash = hashlib.md5(str(input_data).encode()).hexdigest()
+        input_hash = hashlib.sha256(str(input_data).encode()).hexdigest()
         key = self._cache_key(model_id, input_hash)
         
         with self._lock:
@@ -102,7 +102,7 @@ class ModelCache:
     
     def put(self, model_id: str, input_data: Any, result: Any):
         """Cache a prediction result."""
-        input_hash = hashlib.md5(str(input_data).encode()).hexdigest()
+        input_hash = hashlib.sha256(str(input_data).encode()).hexdigest()
         key = self._cache_key(model_id, input_hash)
         
         with self._lock:

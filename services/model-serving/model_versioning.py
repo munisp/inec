@@ -71,7 +71,7 @@ class ModelVersion:
         """Calculate hash of model file."""
         if Path(self.model_path).exists():
             with open(self.model_path, 'rb') as f:
-                return hashlib.md5(f.read()).hexdigest()
+                return hashlib.sha256(f.read()).hexdigest()
         return "unknown"
     
     @property

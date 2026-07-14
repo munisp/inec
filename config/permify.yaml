@@ -3,7 +3,7 @@ entity user {}
 entity organization {
     relation admin @user
     relation member @user
-    action view = admin or member
+    action view = admin
     action edit = admin
 }
 

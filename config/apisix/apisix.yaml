@@ -13,6 +13,10 @@ routes:
   uri: /auth/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 10
       key: remote_addr
@@ -25,6 +29,10 @@ routes:
   uri: /elections/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 10
       key: remote_addr
@@ -37,6 +45,10 @@ routes:
   uri: /results/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 60
       key: remote_addr
@@ -51,6 +63,10 @@ routes:
   uri: /geo/tiles/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 30
       key: remote_addr
@@ -63,6 +79,10 @@ routes:
   uri: /geo/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 15
       key: remote_addr
@@ -75,6 +95,10 @@ routes:
   uri: /dashboard/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 10
       key: remote_addr
@@ -87,6 +111,10 @@ routes:
   uri: /audit/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 5
       key: remote_addr
@@ -99,6 +127,10 @@ routes:
   uri: /incidents/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
   upstream:
     nodes:
       go-backend:8088: 1
@@ -106,6 +138,10 @@ routes:
   uri: /middleware/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
   upstream:
     nodes:
       go-backend:8088: 1
@@ -120,6 +156,10 @@ routes:
   uri: /healthz
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     response-rewrite:
       headers:
         set:
@@ -133,6 +173,10 @@ routes:
   uri: /
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     response-rewrite:
       headers:
         set:
@@ -146,6 +190,10 @@ routes:
   uri: /index.html
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     response-rewrite:
       headers:
         set:
@@ -158,6 +206,10 @@ routes:
   uri: /sw.js
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     response-rewrite:
       headers:
         set:
@@ -169,6 +221,10 @@ routes:
   uri: /assets/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     response-rewrite:
       headers:
         set:
@@ -180,6 +236,10 @@ routes:
   uri: /manifest.json
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 5
       key: remote_addr
@@ -192,6 +252,10 @@ routes:
   uri: /biometric/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 10
       key: remote_addr
@@ -204,6 +268,10 @@ routes:
   uri: /workflows/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 2
       key: remote_addr
@@ -216,6 +284,10 @@ routes:
   uri: /lakehouse/*
 - plugins:
     cors: {}
+    jwt-auth:
+      cookie: jwt
+      header: Authorization
+      query: jwt
     limit-req:
       burst: 50
       key: remote_addr

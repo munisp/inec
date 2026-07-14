@@ -1,408 +1,379 @@
-version: "3.9"
-
+networks:
+  inec-network:
+    driver: bridge
 services:
-  # ── PostgreSQL Primary ──
-  pg-primary:
-    image: postgres:16-alpine
-    ports:
-      - "5433:5432"
-    environment:
-      POSTGRES_USER: ${PG_USER:-inec_admin}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: ${PG_DB:-inec_db}
-      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
-    volumes:
-      - pg-primary-data:/var/lib/postgresql/data
-      - ./config/postgres/primary-init.sh:/docker-entrypoint-initdb.d/01-replication.sh
-    command: postgres -c wal_level=replica -c max_wal_senders=5 -c max_replication_slots=5 -c hot_standby=on -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=8MB -c log_min_duration_statement=100
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U inec_admin -d inec_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - inec-network
-
-  # ── PostgreSQL Replica (Streaming Replication) ──
-  pg-replica:
-    image: postgres:16-alpine
-    ports:
-      - "5434:5432"
-    environment:
-      POSTGRES_USER: ${PG_USER:-inec_admin}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: ${PG_DB:-inec_db}
-      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
-      PGDATA: /var/lib/postgresql/data
-    volumes:
-      - pg-replica-data:/var/lib/postgresql/data
-      - ./config/postgres/replica-entrypoint.sh:/replica-entrypoint.sh
-    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
-    depends_on:
-      pg-primary:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U inec_admin -d inec_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
-    networks:
-      - inec-network
-
-  # ── Pgpool-II (Connection Pooling + Load Balancing + HA Failover) ──
-  pgpool:
-    image: pgpool/pgpool-ii:4.5
-    ports:
-      - "5432:5432"
-      - "9898:9898"
-    environment:
-      PGPOOL_BACKEND_NODES: 0:pg-primary:5432,1:pg-replica:5432
-      PGPOOL_SR_CHECK_USER: replicator
-      PGPOOL_SR_CHECK_PASSWORD: ${REPLICATOR_PASSWORD}
-      PGPOOL_POSTGRES_USERNAME: ${PG_USER:-inec_admin}
-      PGPOOL_POSTGRES_PASSWORD: ${PG_PASSWORD}
-      PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USER:-pgpool_admin}
-      PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD}
-      PGPOOL_ENABLE_LOAD_BALANCING: "yes"
-      PGPOOL_ENABLE_STATEMENT_LOAD_BALANCING: "yes"
-      PGPOOL_NUM_INIT_CHILDREN: "64"
-      PGPOOL_MAX_POOL: "4"
-      PGPOOL_CHILD_LIFE_TIME: "300"
-      PGPOOL_CLIENT_IDLE_LIMIT: "300"
-      PGPOOL_ENABLE_POOL_HBA: "yes"
-      PGPOOL_AUTO_FAILBACK: "yes"
-    volumes:
-      - ./config/pgpool/pgpool.conf:/etc/pgpool-II/pgpool.conf
-      - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
-      - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
-    depends_on:
-      pg-primary:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U inec_admin"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - inec-network
-
-  # ── Core Application ──
-  go-backend:
-    build:
-      context: ./inec-go-backend
-      dockerfile: Dockerfile
-    ports:
-      - "8088:8088"
-    environment:
-      - PORT=8088
-      - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
-      - DATABASE_REPLICA_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pg-replica:5432/${PG_DB:-inec_db}?sslmode=disable
-      - PGPOOL_HOST=pgpool
-      - PGPOOL_PORT=5432
-      - PGPOOL_PCP_HOST=pgpool
-      - PGPOOL_PCP_PORT=9898
-      - REDIS_URL=http://redis:6379
-      - KAFKA_REST_URL=http://kafka-rest:8082
-      - TEMPORAL_URL=http://temporal:7233
-      - DAPR_HTTP_PORT=3500
-      - KEYCLOAK_URL=http://keycloak:8080
-      - KEYCLOAK_REALM=inec
-      - KEYCLOAK_CLIENT_ID=inec-backend
-      - PERMIFY_URL=http://permify:3476
-      - PERMIFY_TENANT_ID=inec
-      - FLUVIO_URL=http://fluvio:9003
-      - TIGERBEETLE_URL=http://tigerbeetle-http:3000
-      - APISIX_ADMIN_URL=http://apisix:9180
-      - APISIX_API_KEY=edd1c9f034335f136f87ad84b625c8f1
-      - LAKEHOUSE_URL=http://lakehouse:8090
-    volumes:
-      - app-data:/data
-    depends_on:
-      pgpool:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      kafka:
-        condition: service_started
-      temporal:
-        condition: service_started
-      keycloak:
-        condition: service_started
-      permify:
-        condition: service_started
-      apisix:
-        condition: service_started
-      lakehouse:
-        condition: service_started
-    networks:
-      - inec-network
-
-  python-proxy:
-    build:
-      context: ./inec-backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      - DB_PATH=/data/app.db
-    volumes:
-      - app-data:/data
-    depends_on:
-      - go-backend
-    networks:
-      - inec-network
-
-  frontend:
-    build:
-      context: ./inec-frontend
-      dockerfile: Dockerfile
-    ports:
-      - "3000:80"
-    depends_on:
-      - python-proxy
-    networks:
-      - inec-network
-
-  # ── Redis ──
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis-data:/data
-    networks:
-      - inec-network
-
-  # ── Kafka (KRaft mode, no Zookeeper) ──
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,HOST://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_LOG_RETENTION_HOURS: 168
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    volumes:
-      - kafka-data:/var/lib/kafka/data
-    networks:
-      - inec-network
-
-  kafka-rest:
-    image: confluentinc/cp-kafka-rest:7.5.0
-    ports:
-      - "8082:8082"
-    environment:
-      KAFKA_REST_BOOTSTRAP_SERVERS: kafka:29092
-      KAFKA_REST_LISTENERS: http://0.0.0.0:8082
-    depends_on:
-      - kafka
-    networks:
-      - inec-network
-
-  # ── Temporal ──
-  temporal:
-    image: temporalio/auto-setup:1.22
-    ports:
-      - "7233:7233"
-    environment:
-      - DB=sqlite
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
-    volumes:
-      - temporal-data:/tmp/temporal
-    networks:
-      - inec-network
-
-  temporal-ui:
-    image: temporalio/ui:2.21.0
-    ports:
-      - "8233:8080"
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
-    depends_on:
-      - temporal
-    networks:
-      - inec-network
-
-  # ── Keycloak ──
-  keycloak:
-    image: quay.io/keycloak/keycloak:23.0
-    ports:
-      - "8180:8080"
-    environment:
-      - KEYCLOAK_ADMIN=admin
-      - KEYCLOAK_ADMIN_PASSWORD=admin
-      - KC_DB=dev-mem
-    command: start-dev --import-realm
-    volumes:
-      - ./config/keycloak:/opt/keycloak/data/import
-    networks:
-      - inec-network
-
-  # ── Permify ──
-  permify:
-    image: ghcr.io/permify/permify:latest
-    ports:
-      - "3476:3476"
-      - "3478:3478"
-    command: serve
-    volumes:
-      - permify-data:/tmp/permify
-    networks:
-      - inec-network
-
-  # ── APISIX ──
   apisix:
+    depends_on:
+    - go-backend
     image: apache/apisix:3.7.0-debian
+    networks:
+    - inec-network
     ports:
-      - "9080:9080"
-      - "9443:9443"
-      - "9180:9180"
+    - 9080:9080
+    - 9443:9443
+    - 9180:9180
     volumes:
-      - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml
-      - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml
-    depends_on:
-      - go-backend
-    networks:
-      - inec-network
-
-  # ── TigerBeetle ──
-  tigerbeetle:
-    image: ghcr.io/tigerbeetle/tigerbeetle:0.15.3
-    ports:
-      - "3001:3001"
-    command: start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
-    volumes:
-      - tigerbeetle-data:/data
-    networks:
-      - inec-network
-
-  # ── Fluvio (SC + SPU) ──
-  fluvio-sc:
-    image: infinyon/fluvio:0.11.0
-    ports:
-      - "9003:9003"
-    command: run sc --local /fluvio/metadata
-    volumes:
-      - fluvio-data:/fluvio
-    networks:
-      - inec-network
-
-  # ── Lakehouse (Python DuckDB Analytics) ──
-  lakehouse:
-    build:
-      context: ./inec-analytics
-      dockerfile: Dockerfile
-    ports:
-      - "8090:8090"
-    environment:
-      - DB_PATH=/data/app.db
-      - PORT=8090
-    volumes:
-      - app-data:/data
-      - lakehouse-data:/lakehouse
-    networks:
-      - inec-network
-
-  # ── Dapr Sidecar ──
-  dapr-sidecar:
-    image: daprio/dapr:1.12.0
-    command:
-      - ./daprd
-      - --app-id=inec-backend
-      - --app-port=8088
-      - --dapr-http-port=3500
-      - --dapr-grpc-port=50001
-      - --components-path=/components
-    volumes:
-      - ./config/dapr/components:/components
-    depends_on:
-      - go-backend
-      - redis
-      - kafka
-    network_mode: "service:go-backend"
-
-  # ── Biometric Python Service (Image Processing + ML) ──
-  biometric-python:
-    build:
-      context: ./services/biometric-python
-      dockerfile: Dockerfile
-    ports:
-      - "8090:8090"
-    environment:
-      - WORKERS=4
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - inec-network
-
-  # ── Biometric Rust Service (Crypto Vault + Matching) ──
-  biometric-rust:
-    build:
-      context: ./services/biometric-rust
-      dockerfile: Dockerfile
-    ports:
-      - "8091:8091"
-    environment:
-      - RUST_LOG=info
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - inec-network
-
-  # ── Biometric Go Service (ABIS Pipeline) ──
+    - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml
+    - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml
   biometric-go:
     build:
       context: ./services/biometric-go
       dockerfile: Dockerfile
-    ports:
-      - "8092:8092"
-    environment:
-      - BIOMETRIC_PYTHON_URL=http://biometric-python:8090
-      - BIOMETRIC_RUST_URL=http://biometric-rust:8091
     depends_on:
       biometric-python:
         condition: service_healthy
       biometric-rust:
         condition: service_healthy
+    environment:
+    - BIOMETRIC_PYTHON_URL=http://biometric-python:8090
+    - BIOMETRIC_RUST_URL=http://biometric-rust:8091
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
       interval: 10s
-      timeout: 5s
       retries: 3
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8092/health
+      timeout: 5s
     networks:
-      - inec-network
-
+    - inec-network
+    ports:
+    - 8092:8092
+  biometric-python:
+    build:
+      context: ./services/biometric-python
+      dockerfile: Dockerfile
+    environment:
+    - WORKERS=4
+    healthcheck:
+      interval: 10s
+      retries: 3
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8090/health
+      timeout: 5s
+    networks:
+    - inec-network
+    ports:
+    - 8090:8090
+  biometric-rust:
+    build:
+      context: ./services/biometric-rust
+      dockerfile: Dockerfile
+    environment:
+    - RUST_LOG=info
+    healthcheck:
+      interval: 10s
+      retries: 3
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8091/health
+      timeout: 5s
+    networks:
+    - inec-network
+    ports:
+    - 8091:8091
+  dapr-sidecar:
+    command:
+    - ./daprd
+    - --app-id=inec-backend
+    - --app-port=8088
+    - --dapr-http-port=3500
+    - --dapr-grpc-port=50001
+    - --components-path=/components
+    depends_on:
+    - go-backend
+    - redis
+    - kafka
+    image: daprio/dapr:1.12.0
+    network_mode: service:go-backend
+    volumes:
+    - ./config/dapr/components:/components
+  fluvio-sc:
+    command: run sc --local /fluvio/metadata
+    image: infinyon/fluvio:0.11.0
+    networks:
+    - inec-network
+    ports:
+    - 9003:9003
+    volumes:
+    - fluvio-data:/fluvio
+  frontend:
+    build:
+      context: ./inec-frontend
+      dockerfile: Dockerfile
+    depends_on:
+    - python-proxy
+    networks:
+    - inec-network
+    ports:
+    - 3000:80
+  go-backend:
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile
+    depends_on:
+      apisix:
+        condition: service_started
+      kafka:
+        condition: service_started
+      keycloak:
+        condition: service_started
+      lakehouse:
+        condition: service_started
+      permify:
+        condition: service_started
+      pgpool:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      temporal:
+        condition: service_started
+    environment:
+    - PORT=8088
+    - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
+    - DATABASE_REPLICA_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pg-replica:5432/${PG_DB:-inec_db}?sslmode=disable
+    - PGPOOL_HOST=pgpool
+    - PGPOOL_PORT=5432
+    - PGPOOL_PCP_HOST=pgpool
+    - PGPOOL_PCP_PORT=9898
+    - REDIS_URL=http://redis:6379
+    - KAFKA_REST_URL=http://kafka-rest:8082
+    - TEMPORAL_URL=http://temporal:7233
+    - DAPR_HTTP_PORT=3500
+    - KEYCLOAK_URL=http://keycloak:8080
+    - KEYCLOAK_REALM=inec
+    - KEYCLOAK_CLIENT_ID=inec-backend
+    - PERMIFY_URL=http://permify:3476
+    - PERMIFY_TENANT_ID=inec
+    - FLUVIO_URL=http://fluvio:9003
+    - TIGERBEETLE_URL=http://tigerbeetle-http:3000
+    - APISIX_ADMIN_URL=http://apisix:9180
+    - APISIX_API_KEY=edd1c9f034335f136f87ad84b625c8f1
+    - LAKEHOUSE_URL=http://lakehouse:8090
+    networks:
+    - inec-network
+    ports:
+    - 8088:8088
+    volumes:
+    - app-data:/data
+  kafka:
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,HOST://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_NODE_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    image: confluentinc/cp-kafka:7.5.0
+    networks:
+    - inec-network
+    ports:
+    - 9092:9092
+    - 29092:29092
+    volumes:
+    - kafka-data:/var/lib/kafka/data
+  kafka-rest:
+    depends_on:
+    - kafka
+    environment:
+      KAFKA_REST_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_REST_LISTENERS: http://0.0.0.0:8082
+    image: confluentinc/cp-kafka-rest:7.5.0
+    networks:
+    - inec-network
+    ports:
+    - 8082:8082
+  keycloak:
+    command: start-dev --import-realm
+    environment:
+    - KEYCLOAK_ADMIN=admin
+    - KEYCLOAK_ADMIN_PASSWORD=admin
+    - KC_DB=dev-mem
+    image: quay.io/keycloak/keycloak:23.0
+    networks:
+    - inec-network
+    ports:
+    - 8180:8080
+    volumes:
+    - ./config/keycloak:/opt/keycloak/data/import
+  lakehouse:
+    build:
+      context: ./inec-analytics
+      dockerfile: Dockerfile
+    environment:
+    - DB_PATH=/data/app.db
+    - PORT=8090
+    networks:
+    - inec-network
+    ports:
+    - 8090:8090
+    volumes:
+    - app-data:/data
+    - lakehouse-data:/lakehouse
+  permify:
+    command: serve
+    image: ghcr.io/permify/permify:latest
+    networks:
+    - inec-network
+    ports:
+    - 3476:3476
+    - 3478:3478
+    volumes:
+    - permify-data:/tmp/permify
+  pg-primary:
+    command: postgres -c wal_level=replica -c max_wal_senders=5 -c max_replication_slots=5
+      -c hot_standby=on -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=8MB
+      -c log_min_duration_statement=100
+    environment:
+      POSTGRES_DB: ${PG_DB:-inec_db}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_USER: ${PG_USER:-inec_admin}
+      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
+    healthcheck:
+      interval: 5s
+      retries: 10
+      start_period: 30s
+      test:
+      - CMD-SHELL
+      - pg_isready -U inec_admin -d inec_db
+      timeout: 5s
+    image: postgres:16-alpine
+    networks:
+    - inec-network
+    volumes:
+    - pg-primary-data:/var/lib/postgresql/data
+    - ./config/postgres/primary-init.sh:/docker-entrypoint-initdb.d/01-replication.sh
+  pg-replica:
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    entrypoint:
+    - /bin/bash
+    - /replica-entrypoint.sh
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_DB: ${PG_DB:-inec_db}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_USER: ${PG_USER:-inec_admin}
+      REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
+    healthcheck:
+      interval: 5s
+      retries: 10
+      start_period: 60s
+      test:
+      - CMD-SHELL
+      - pg_isready -U inec_admin -d inec_db
+      timeout: 5s
+    image: postgres:16-alpine
+    networks:
+    - inec-network
+    volumes:
+    - pg-replica-data:/var/lib/postgresql/data
+    - ./config/postgres/replica-entrypoint.sh:/replica-entrypoint.sh
+  pgpool:
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    environment:
+      PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD}
+      PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USER:-pgpool_admin}
+      PGPOOL_AUTO_FAILBACK: 'yes'
+      PGPOOL_BACKEND_NODES: 0:pg-primary:5432,1:pg-replica:5432
+      PGPOOL_CHILD_LIFE_TIME: '300'
+      PGPOOL_CLIENT_IDLE_LIMIT: '300'
+      PGPOOL_ENABLE_LOAD_BALANCING: 'yes'
+      PGPOOL_ENABLE_POOL_HBA: 'yes'
+      PGPOOL_ENABLE_STATEMENT_LOAD_BALANCING: 'yes'
+      PGPOOL_MAX_POOL: '4'
+      PGPOOL_NUM_INIT_CHILDREN: '64'
+      PGPOOL_POSTGRES_PASSWORD: ${PG_PASSWORD}
+      PGPOOL_POSTGRES_USERNAME: ${PG_USER:-inec_admin}
+      PGPOOL_SR_CHECK_PASSWORD: ${REPLICATOR_PASSWORD}
+      PGPOOL_SR_CHECK_USER: replicator
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      test:
+      - CMD-SHELL
+      - pg_isready -h localhost -p 5432 -U inec_admin
+      timeout: 5s
+    image: pgpool/pgpool-ii:4.5
+    networks:
+    - inec-network
+    volumes:
+    - ./config/pgpool/pgpool.conf:/etc/pgpool-II/pgpool.conf
+    - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
+    - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
+  python-proxy:
+    build:
+      context: ./inec-backend
+      dockerfile: Dockerfile
+    depends_on:
+    - go-backend
+    environment:
+    - DB_PATH=/data/app.db
+    networks:
+    - inec-network
+    ports:
+    - 8000:8000
+    volumes:
+    - app-data:/data
+  redis:
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    image: redis:7-alpine
+    networks:
+    - inec-network
+    volumes:
+    - redis-data:/data
+  temporal:
+    environment:
+    - DB=sqlite
+    - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    image: temporalio/auto-setup:1.22
+    networks:
+    - inec-network
+    ports:
+    - 7233:7233
+    volumes:
+    - temporal-data:/tmp/temporal
+  temporal-ui:
+    depends_on:
+    - temporal
+    environment:
+    - TEMPORAL_ADDRESS=temporal:7233
+    image: temporalio/ui:2.21.0
+    networks:
+    - inec-network
+    ports:
+    - 8233:8080
+  tigerbeetle:
+    command: start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
+    image: ghcr.io/tigerbeetle/tigerbeetle:0.15.3
+    networks:
+    - inec-network
+    volumes:
+    - tigerbeetle-data:/data
+version: '3.9'
 volumes:
-  app-data:
-  pg-primary-data:
-  pg-replica-data:
-  redis-data:
-  kafka-data:
-  temporal-data:
-  permify-data:
-  tigerbeetle-data:
-  fluvio-data:
-  lakehouse-data:
-
-networks:
-  inec-network:
-    driver: bridge
+  app-data: null
+  fluvio-data: null
+  kafka-data: null
+  lakehouse-data: null
+  permify-data: null
+  pg-primary-data: null
+  pg-replica-data: null
+  redis-data: null
+  temporal-data: null
+  tigerbeetle-data: null

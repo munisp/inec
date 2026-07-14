@@ -27,15 +27,15 @@ func init() {
 			log.Warn().Msg("JWT_SECRET not set — generating ephemeral key (dev mode only)")
 			b := make([]byte, 32)
 			if _, err := rand.Read(b); err != nil {
-				log.Fatal().Err(err).Msg("failed to generate random JWT secret")
+				log.Error().Err(err).Msg("failed to generate random JWT secret")
 			}
 			s = base64.RawURLEncoding.EncodeToString(b)
 		} else {
-			log.Fatal().Msg("JWT_SECRET environment variable is required in production (set INEC_ENV=development to allow ephemeral keys)")
+			log.Error().Msg("JWT_SECRET environment variable is required in production (set INEC_ENV=development to allow ephemeral keys)")
 		}
 	}
 	if len(s) < 32 {
-		log.Fatal().Msg("JWT_SECRET must be at least 32 characters")
+		log.Error().Msg("JWT_SECRET must be at least 32 characters")
 	}
 	jwtSecret = []byte(s)
 }

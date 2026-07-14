@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -914,7 +913,7 @@ func handlePUTile(w http.ResponseWriter, r *http.Request) {
 
 	tile := encodeMVTTile(rows, z, x, y, lonMin, latMin, lonMax, latMax)
 
-	h := md5.Sum(tile)
+	h := sha256.Sum256(tile)
 	etag := `W/"` + hex.EncodeToString(h[:]) + `"`
 	if inm := r.Header.Get("If-None-Match"); inm == etag {
 		w.WriteHeader(304)

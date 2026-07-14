@@ -246,7 +246,7 @@ class ModelMonitor:
         """Record a prediction for monitoring."""
         import hashlib
         
-        input_hash = hashlib.md5(str(input_data).encode()).hexdigest()
+        input_hash = hashlib.sha256(str(input_data).encode()).hexdigest()
         
         record = PredictionRecord(
             model_id=model_id,

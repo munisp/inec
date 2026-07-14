@@ -203,7 +203,7 @@ impl TigerBeetleDirectClient {
 #[inline]
 fn deterministic_id(input: &str) -> u128 {
     let hash = Sha256::digest(input.as_bytes());
-    u128::from_le_bytes(hash[..16].try_into().unwrap())
+    u128::from_le_bytes(hash[..16].try_into().expect("failed to unwrap safely"))
 }
 
 fn ledger_for_type(tx_type: &str) -> u32 {

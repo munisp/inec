@@ -10,7 +10,7 @@ import (
 )
 
 // SecureRng is a cryptographically-seeded deterministic PRNG using HMAC-SHA256
-// in counter mode. It replaces math/rand in security-sensitive biometric code.
+// in counter mode. It replaces crypto/rand in security-sensitive biometric code.
 // For deterministic use (same input → same output), seed from a hash of the input.
 // For random use, seed from crypto/rand.
 type SecureRng struct {

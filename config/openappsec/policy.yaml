@@ -1,27 +1,35 @@
 policies:
-  - name: inec-waf-policy
-    mode: prevent
-    triggers:
-      - log
-      - block
-    rules:
-      - name: block-sql-injection
-        type: sqli
-        action: block
-      - name: block-xss
-        type: xss
-        action: block
-      - name: rate-limit-login
-        type: rate-limit
-        uri: "/auth/login"
-        limit: 5
-        window: 60
-        action: challenge
-      - name: block-malicious-bots
-        type: bot-protection
-        action: block
-        confidence: high
-      - name: geo-block-non-ng
-        type: geo
-        allowed_countries: ["NG"]
-        action: block
+- mode: prevent
+  name: inec-waf-policy
+  rules:
+  - action: block
+    name: block-sql-injection
+    type: sqli
+  - action: block
+    name: block-xss
+    type: xss
+  - action: challenge
+    limit: 5
+    name: rate-limit-login
+    type: rate-limit
+    uri: /auth/login
+    window: 60
+  - action: block
+    confidence: high
+    name: block-malicious-bots
+    type: bot-protection
+  - action: block
+    allowed_countries:
+    - NG
+    name: geo-block-non-ng
+    type: geo
+  - action: Redirect
+    name: Enforce HTTPS
+    type: https-enforcement
+  - action: Block
+    log: true
+    name: CSRF Protection
+    type: csrf
+  triggers:
+  - log
+  - block

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
@@ -1301,7 +1300,7 @@ func validateTOTP(secret, code string) bool {
 func genTOTP(key []byte, counter int64) string {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, uint64(counter))
-	mac := hmac.New(sha1.New, key)
+	mac := hmac.New(sha256.New, key)
 	mac.Write(buf)
 	sum := mac.Sum(nil)
 	off := sum[len(sum)-1] & 0x0f

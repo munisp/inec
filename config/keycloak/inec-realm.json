@@ -1,7 +1,7 @@
 {
   "realm": "inec",
   "enabled": true,
-  "sslRequired": "none",
+  "sslRequired": "external",
   "roles": {
     "realm": [
       {
@@ -169,5 +169,11 @@
       "name": "Observers",
       "path": "/Observers"
     }
-  ]
+  ],
+  "passwordPolicy": "length(12) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1)",
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "accessTokenLifespan": 900
 }

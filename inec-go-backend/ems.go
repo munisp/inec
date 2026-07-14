@@ -1285,7 +1285,7 @@ func handleDispatchMaterial(w http.ResponseWriter, r *http.Request) {
 		updates += ", acknowledged_at=CURRENT_TIMESTAMP"
 	}
 	params = append(params, id)
-	dbExecLog("material_update", "UPDATE election_materials SET "+updates+" WHERE id=?", params...)
+	dbExecLog("material_update", fmt.Sprintf("UPDATE election_materials SET %s WHERE id=$1", updates), params...)
 
 	logAudit("MATERIAL_UPDATED", "material", id, 0, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"id": id, "status": req.Status, "message": "Material updated"})

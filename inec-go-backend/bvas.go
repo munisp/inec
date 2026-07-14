@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/lib/pq"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -100,7 +101,7 @@ func initBVASTables(database *sql.DB) {
 		"sync_token TEXT",
 		"accreditation_count INTEGER DEFAULT 0",
 	} {
-		database.Exec("ALTER TABLE bvas_devices ADD COLUMN IF NOT EXISTS " + col)
+		database.Exec(fmt.Sprintf("ALTER TABLE bvas_devices ADD COLUMN IF NOT EXISTS %s", pq.QuoteIdentifier(col)))
 	}
 }
 

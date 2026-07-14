@@ -809,7 +809,7 @@ func handleGetPUPhotos(w http.ResponseWriter, r *http.Request) {
 	paramIdx := 1
 
 	if puCode != "" {
-		query += fmt.Sprintf(` WHERE pu_code = $%d`, paramIdx)
+		query += " WHERE pu_code = $" + strconv.Itoa(paramIdx)
 		params = append(params, puCode)
 		paramIdx++
 	}

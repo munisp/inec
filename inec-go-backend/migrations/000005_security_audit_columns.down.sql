@@ -1,0 +1,1 @@
+-- Revert security columns
