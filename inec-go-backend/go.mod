@@ -12,7 +12,7 @@ require (
 	github.com/lib/pq v1.11.2
 	github.com/opensearch-project/opensearch-go/v2 v2.3.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/go-redis/v9 v9.20.0
+	github.com/redis/go-redis/v9 v9.21.0
 	github.com/rs/zerolog v1.35.1
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/tigerbeetle/tigerbeetle-go v0.17.9
