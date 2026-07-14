@@ -148,13 +148,17 @@ var wardNames = []string{"Ward I", "Ward II", "Ward III", "Ward IV", "Ward V", "
 
 func seedDatabase(db *sql.DB) {
 	var count int
-	db.QueryRow("SELECT COUNT(*) FROM states").Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM states").Scan(&count)
+	if err != nil { return }
+
 	if count > 0 {
 		return
 	}
 
 	rand := NewSecureRng()
-	tx, _ := db.Begin()
+	tx, err := db.Begin()
+	if err != nil { return }
+
 
 	for _, s := range nigeriaStates {
 		tx.Exec("INSERT INTO states (code, name, geo_zone, capital) VALUES (?,?,?,?)", s.Code, s.Name, s.GeoZone, s.Capital)

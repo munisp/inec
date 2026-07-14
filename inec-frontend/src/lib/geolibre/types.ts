@@ -33,6 +33,7 @@ export interface PartyScore {
   abbreviation: string;
   color: string;
   votes: number;
+  total_votes?: number;
 }
 
 export interface StateProperties {

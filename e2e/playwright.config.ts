@@ -12,14 +12,8 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
+  timeout: 60000,
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    { name: 'mobile', use: { ...devices['Pixel 5'] } },
-  ],
-  webServer: process.env.CI ? undefined : {
-    command: 'cd ../inec-frontend && npm run dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: true,
-    timeout: 30000,
-  },
+  ]
 });

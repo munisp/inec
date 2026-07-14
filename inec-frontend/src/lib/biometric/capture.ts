@@ -206,7 +206,7 @@ export class CameraCapture {
   }
 
   private getRegionStats(
-    data: Uint8ClampedArray, w: number, h: number,
+    data: Uint8ClampedArray, w: number, _h: number,
     x1: number, y1: number, x2: number, y2: number,
   ): { mean: number; variance: number } {
     let sum = 0, count = 0;

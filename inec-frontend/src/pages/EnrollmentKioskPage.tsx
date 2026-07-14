@@ -2,7 +2,6 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   CameraCapture,
   FingerprintScanner,
-  WebAuthnBiometric,
   BiometricAPIClient,
 } from '../lib/biometric/capture';
 import type { CaptureResult, QualityFeedback } from '../lib/biometric/capture';
@@ -43,7 +42,7 @@ const STEPS: { key: KioskStep; label: string }[] = [
 
 const api = new BiometricAPIClient();
 const camera = new CameraCapture();
-const webauthn = new WebAuthnBiometric();
+// const _webauthn = new WebAuthnBiometric();
 
 export default function EnrollmentKioskPage() {
   const [step, setStep] = useState<KioskStep>('welcome');

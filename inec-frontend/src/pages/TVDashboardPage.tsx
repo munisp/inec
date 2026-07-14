@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { api } from '../lib/api';
 import { DEMO_TV_DATA } from '../lib/demo-data';
 
 interface PartyTotal {

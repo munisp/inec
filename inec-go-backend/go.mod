@@ -15,6 +15,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/rs/zerolog v1.35.1
 	github.com/segmentio/kafka-go v0.4.51
+	github.com/tigerbeetle/tigerbeetle-go v0.17.9
 	golang.org/x/crypto v0.52.0
 	google.golang.org/grpc v1.81.1
 )
@@ -41,7 +42,6 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/segmentio/ksuid v1.0.4 // indirect
-	github.com/tigerbeetle/tigerbeetle-go v0.17.9 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/net v0.54.0 // indirect

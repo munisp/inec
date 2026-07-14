@@ -27,7 +27,7 @@ import {
   MapPin, Layers, Eye, EyeOff, Flame, Hexagon, Radio, Shield,
   AlertTriangle, Download, Satellite, Globe, BarChart3, Search,
   RefreshCw, Box, Users, Cpu, Database, Activity, Navigation,
-  ArrowLeft, Map as MapIcon, Cloud, Battery, Mic, Route, Building2,
+  ArrowLeft, Cloud, Battery, Mic, Building2,
   ExternalLink,
 } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
@@ -37,7 +37,7 @@ import { useGeoLibreStore } from '@/lib/geolibre/store';
 import { api } from '@/lib/api';
 import {
   fetchPollingUnitsGeoJSON,
-  fetchStatesGeoJSON,
+  // fetchStatesGeoJSON,
   fetchIncidentsGeoJSON,
   fetchBVASGeoJSON,
   fetchOfficialsGeoJSON,
@@ -52,6 +52,7 @@ import {
   createAnalysisResultLayer,
 } from '@/lib/geolibre/deck-layers';
 import type { INECLayerType } from '@/lib/geolibre/types';
+import type { Layer } from '@deck.gl/core';
 import { NIGERIA_CENTER } from '@/lib/geolibre/types';
 
 type TabId = 'live-map' | 'spatial' | 'geolibre' | 'field-kit';
@@ -95,7 +96,7 @@ const STATUS_COLORS: Record<string, string> = {
   disputed: '#dc2626', no_result: '#9ca3af',
 };
 
-function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
+// formatNumber removed
 
 interface OfficialData {
   staff_id: string; role: string; latitude: number; longitude: number;
@@ -202,7 +203,7 @@ function LiveMapTab() {
   const [compareMode, setCompareMode] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [selectionBox, setSelectionBox] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
-  const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  const [selectedCodes, _setSelectedCodes] = useState<string[]>([]);
 
   // Time slider
   const [timeTs, setTimeTs] = useState<number | null>(null);
@@ -301,12 +302,12 @@ function LiveMapTab() {
   useEffect(() => {
     if (!deckOverlay.current || !mapReady) return;
 
-    const layers: unknown[] = [];
+    const layers: (Layer | null | undefined)[] = [];
 
     if (store.visibleLayers.has('polling-units')) {
       layers.push(createPollingUnitScatterLayer(
         store.pollingUnits, store.colorMode,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) || null),
       ));
     }
     if (store.visibleLayers.has('heatmap')) {
@@ -315,19 +316,19 @@ function LiveMapTab() {
     if (store.visibleLayers.has('incidents')) {
       layers.push(createIncidentLayer(
         store.incidents,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) || null),
       ));
     }
     if (store.visibleLayers.has('bvas-devices')) {
       layers.push(createBVASLayer(
         store.bvasDevices,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) || null),
       ));
     }
     if (store.visibleLayers.has('official-tracking')) {
       layers.push(createOfficialTrackingLayer(
         store.officials,
-        (info) => setSelectedFeature(info.object?.properties || null),
+        (info) => setSelectedFeature((info.object?.properties as unknown as Record<string, unknown>) || null),
       ));
     }
     if (store.analysisResult) {

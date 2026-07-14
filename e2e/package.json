@@ -7,6 +7,6 @@
     "test:api": "playwright test --project=chromium tests/auth.spec.ts tests/elections.spec.ts tests/observer.spec.ts"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0"
+    "@playwright/test": "^1.61.1"
   }
 }

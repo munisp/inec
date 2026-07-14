@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/inec-frontend"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/inec-go-backend"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

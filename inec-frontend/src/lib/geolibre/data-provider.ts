@@ -118,7 +118,7 @@ export async function fetchStatesGeoJSON(electionId: number): Promise<StateColle
           const coords = NIGERIA_STATE_COORDS[s.code];
           const scores = s.party_scores || [];
           const leading = scores.length > 0
-            ? scores.reduce((a, b) => a.total_votes > b.total_votes ? a : b) : null;
+            ? scores.reduce((a, b) => (a.total_votes ?? a.votes ?? 0) > (b.total_votes ?? b.votes ?? 0) ? a : b) : null;
           const d = 0.5; // approximate polygon size
 
           return {

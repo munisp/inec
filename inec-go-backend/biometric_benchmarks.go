@@ -149,6 +149,7 @@ func embeddedNISTDefaults() *BiometricBenchmarkConfig {
 func GetBenchmarkCohort(modality string) *NormCohortData {
 	benchmarkConfigMu.RLock()
 	defer benchmarkConfigMu.RUnlock()
+	if benchmarkConfig == nil { return nil }
 	return benchmarkConfig.ScoreNormalizationCohorts[modality]
 }
 
