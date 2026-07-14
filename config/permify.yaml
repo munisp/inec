@@ -1,0 +1,31 @@
+entity user {}
+
+entity organization {
+    relation admin @user
+    relation member @user
+    
+    action view = admin or member
+    action edit = admin
+}
+
+entity election {
+    relation org @organization
+    relation admin @user
+    relation observer @user
+    relation presiding_officer @user
+    relation collation_officer @user
+    
+    action view = admin or observer or presiding_officer or collation_officer or org.admin
+    action edit = admin or org.admin
+    action delete = admin or org.admin
+    action submit_results = presiding_officer
+    action collate_results = collation_officer
+}
+
+entity result {
+    relation election @election
+    relation submitter @user
+    
+    action view = election.view
+    action edit = submitter or election.admin
+}

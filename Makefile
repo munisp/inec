@@ -1,38 +1,15 @@
-.PHONY: build run test lint clean frontend backend dev
+.PHONY: all build test clean run
 
-# Backend
+all: build
+
 build:
-	cd inec-go-backend && go build -o ../bin/inec-backend .
-
-run: build
-	./bin/inec-backend
+cd inec-go-backend && go build -o inec-backend
 
 test:
-	cd inec-go-backend && go test -v -count=1 ./...
-
-lint:
-	cd inec-go-backend && go vet ./...
-
-backend-dev:
-	cd inec-go-backend && go run .
-
-# Frontend
-frontend-install:
-	cd inec-frontend && npm install
-
-frontend-build:
-	cd inec-frontend && npm run build
-
-frontend-dev:
-	cd inec-frontend && npm run dev
-
-# Full stack
-dev:
-	@echo "Starting backend..."
-	cd inec-go-backend && go run . &
-	@echo "Starting frontend..."
-	cd inec-frontend && npm run dev
+cd inec-go-backend && go test ./...
 
 clean:
-	rm -rf bin/ inec-frontend/dist/
-	rm -f inec-go-backend/inec.db
+rm -f inec-go-backend/inec-backend
+
+run: build
+cd inec-go-backend && ./inec-backend

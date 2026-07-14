@@ -46,6 +46,23 @@ func seedComprehensive(db *sql.DB) {
 			rand.Intn(3)+1, incidentTypes[i%len(incidentTypes)], desc, sev, lat, lng, puCode, incidentStatuses[i%len(incidentStatuses)])
 	}
 
+	// ── Staff Assignments ──
+dbExecLog("seed_staff1", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (1, 1, 'admin', 'FC')`)
+dbExecLog("seed_staff2", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (2, 1, 'observer', 'FC')`)
+dbExecLog("seed_staff3", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (3, 1, 'presiding_officer', 'FC')`)
+
+// ── Voter Registrations ──
+dbExecLog("seed_voter1", `INSERT INTO voter_registrations (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code) VALUES ('VIN123456789', 'John', 'Doe', '1990-01-01', 'M', 'FC', 'FC-001', 'FC-001-W001', 'FC-001-W001-PU001')`)
+dbExecLog("seed_voter2", `INSERT INTO voter_registrations (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code) VALUES ('VIN987654321', 'Jane', 'Smith', '1985-05-15', 'F', 'FC', 'FC-001', 'FC-001-W001', 'FC-001-W001-PU001')`)
+
+// ── Workflow Instances ──
+dbExecLog("seed_wf1", `INSERT INTO workflow_instances (workflow_id, workflow_type, status, entity_type, entity_id) VALUES ('wf-elec-1', 'ElectionActivation', 'completed', 'election', '1')`)
+dbExecLog("seed_wf2", `INSERT INTO workflow_instances (workflow_id, workflow_type, status, entity_type, entity_id) VALUES ('wf-col-1', 'ResultCollation', 'running', 'ward', 'FC-001-W001')`)
+
+// ── Compliance Records ──
+dbExecLog("seed_comp1", `INSERT INTO compliance_records (election_id, polling_unit_code, check_type, status, details) VALUES (1, 'FC-001-W001-PU001', 'bvas_match_rate', 'pass', '{"rate": 98.5}')`)
+dbExecLog("seed_comp2", `INSERT INTO compliance_records (election_id, polling_unit_code, check_type, status, details) VALUES (1, 'FC-001-W001-PU002', 'overvoting', 'warning', '{"margin": 2}')`)
+
 	// ── Disputes (DisputeResolutionPage) ──
 	// Schema: election_id, polling_unit_code, filed_by TEXT, party, category, description, evidence, status, priority
 	disputeData := []struct{ desc, status, category, party string }{

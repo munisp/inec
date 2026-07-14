@@ -1,0 +1,16 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: fluvio-binding
+spec:
+  type: bindings.kafka
+  version: v1
+  metadata:
+  - name: brokers
+    value: "kafka:29092"
+  - name: topics
+    value: "inec-events"
+  - name: consumerGroup
+    value: "dapr-fluvio-bridge"
+  - name: publishTopic
+    value: "inec-events"

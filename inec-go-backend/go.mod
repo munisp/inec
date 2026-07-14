@@ -41,6 +41,7 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/segmentio/ksuid v1.0.4 // indirect
+	github.com/tigerbeetle/tigerbeetle-go v0.17.9 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/net v0.54.0 // indirect
