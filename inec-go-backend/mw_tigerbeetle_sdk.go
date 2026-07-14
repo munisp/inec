@@ -1,6 +1,8 @@
 package main
 
 import (
+	tb_types "github.com/tigerbeetle/tigerbeetle-go"
+
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -24,7 +26,7 @@ import (
 // so string keys are mapped deterministically to Uint128 via SHA-256, letting
 // lookups re-derive the same ID without a separate mapping table.
 type tbSDKClient struct {
-	client    tb.Client
+	client    tb_types.Client
 	addresses string
 	clusterID uint64
 }

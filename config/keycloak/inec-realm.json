@@ -4,11 +4,50 @@
   "sslRequired": "none",
   "roles": {
     "realm": [
-      { "name": "admin", "description": "Full system administrator" },
-      { "name": "presiding_officer", "description": "Polling unit presiding officer" },
-      { "name": "collation_officer", "description": "Collation center officer" },
-      { "name": "observer", "description": "Election observer" },
-      { "name": "public", "description": "Public viewer" }
+      {
+        "name": "admin",
+        "description": "Full system administrator"
+      },
+      {
+        "name": "presiding_officer",
+        "description": "Polling unit presiding officer"
+      },
+      {
+        "name": "collation_officer",
+        "description": "Collation center officer"
+      },
+      {
+        "name": "observer",
+        "description": "Election observer"
+      },
+      {
+        "name": "public",
+        "description": "Public viewer"
+      },
+      {
+        "name": "returning_officer",
+        "description": "INEC Returning Officer"
+      },
+      {
+        "name": "ward_collation_officer",
+        "description": "INEC Ward Collation Officer"
+      },
+      {
+        "name": "lga_collation_officer",
+        "description": "INEC Lga Collation Officer"
+      },
+      {
+        "name": "state_collation_officer",
+        "description": "INEC State Collation Officer"
+      },
+      {
+        "name": "national_collation_officer",
+        "description": "INEC National Collation Officer"
+      },
+      {
+        "name": "system_service",
+        "description": "INEC System Service"
+      }
     ]
   },
   "clients": [
@@ -20,9 +59,18 @@
       "directAccessGrantsEnabled": true,
       "standardFlowEnabled": true,
       "serviceAccountsEnabled": true,
-      "redirectUris": ["*"],
-      "webOrigins": ["*"],
-      "defaultClientScopes": ["openid", "profile", "email", "roles"]
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "roles"
+      ]
     },
     {
       "clientId": "inec-frontend",
@@ -30,9 +78,28 @@
       "publicClient": true,
       "directAccessGrantsEnabled": true,
       "standardFlowEnabled": true,
-      "redirectUris": ["*"],
-      "webOrigins": ["*"],
-      "defaultClientScopes": ["openid", "profile", "email", "roles"]
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "roles"
+      ]
+    },
+    {
+      "clientId": "inec-service-account",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "super-secret-service-token-do-not-use-in-prod",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocol": "openid-connect"
     }
   ],
   "users": [
@@ -42,8 +109,15 @@
       "email": "admin@inec.gov.ng",
       "firstName": "System",
       "lastName": "Administrator",
-      "credentials": [{ "type": "password", "value": "${ADMIN_PASSWORD}" }],
-      "realmRoles": ["admin"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${ADMIN_PASSWORD}"
+        }
+      ],
+      "realmRoles": [
+        "admin"
+      ]
     },
     {
       "username": "officer1",
@@ -51,8 +125,15 @@
       "email": "officer1@inec.gov.ng",
       "firstName": "Presiding",
       "lastName": "Officer",
-      "credentials": [{ "type": "password", "value": "${OFFICER_PASSWORD}" }],
-      "realmRoles": ["presiding_officer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${OFFICER_PASSWORD}"
+        }
+      ],
+      "realmRoles": [
+        "presiding_officer"
+      ]
     },
     {
       "username": "observer",
@@ -60,8 +141,33 @@
       "email": "observer@inec.gov.ng",
       "firstName": "Election",
       "lastName": "Observer",
-      "credentials": [{ "type": "password", "value": "${OBSERVER_PASSWORD}" }],
-      "realmRoles": ["observer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${OBSERVER_PASSWORD}"
+        }
+      ],
+      "realmRoles": [
+        "observer"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "name": "HQ_Staff",
+      "path": "/HQ_Staff"
+    },
+    {
+      "name": "State_Staff",
+      "path": "/State_Staff"
+    },
+    {
+      "name": "Adhoc_Staff",
+      "path": "/Adhoc_Staff"
+    },
+    {
+      "name": "Observers",
+      "path": "/Observers"
     }
   ]
 }

@@ -3,9 +3,41 @@ entity user {}
 entity organization {
     relation admin @user
     relation member @user
-    
     action view = admin or member
     action edit = admin
+}
+
+entity state {
+    relation org @organization
+    relation admin @user
+    relation collation_officer @user
+    action view = admin or collation_officer or org.admin
+    action collate = collation_officer
+}
+
+entity lga {
+    relation state @state
+    relation admin @user
+    relation collation_officer @user
+    action view = admin or collation_officer or state.view
+    action collate = collation_officer
+}
+
+entity ward {
+    relation lga @lga
+    relation admin @user
+    relation collation_officer @user
+    action view = admin or collation_officer or lga.view
+    action collate = collation_officer
+}
+
+entity polling_unit {
+    relation ward @ward
+    relation presiding_officer @user
+    relation observer @user
+    action view = presiding_officer or observer or ward.view
+    action submit_results = presiding_officer
+    action report_incident = observer or presiding_officer
 }
 
 entity election {
@@ -14,18 +46,28 @@ entity election {
     relation observer @user
     relation presiding_officer @user
     relation collation_officer @user
-    
-    action view = admin or observer or presiding_officer or collation_officer or org.admin
+    relation returning_officer @user
+    action view = admin or observer or presiding_officer or collation_officer or returning_officer or org.admin
     action edit = admin or org.admin
     action delete = admin or org.admin
     action submit_results = presiding_officer
     action collate_results = collation_officer
+    action finalize_results = returning_officer
 }
 
 entity result {
     relation election @election
+    relation polling_unit @polling_unit
     relation submitter @user
-    
     action view = election.view
     action edit = submitter or election.admin
+}
+
+entity incident {
+    relation election @election
+    relation polling_unit @polling_unit
+    relation reporter @user
+    action view = election.view
+    action edit = reporter or election.admin
+    action resolve = election.admin
 }

@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS accreditation_records;
+DROP TABLE IF EXISTS candidate_registrations;
+DROP TABLE IF EXISTS election_collation_sheets;
+DROP TABLE IF EXISTS redis_cache_invalidation_log;
+DROP TABLE IF EXISTS dapr_state_snapshots;
+DROP TABLE IF EXISTS openappsec_threat_intelligence;
+DROP TABLE IF EXISTS apisix_route_audit;
+DROP TABLE IF EXISTS permify_policy_versions;
+DROP TABLE IF EXISTS tigerbeetle_account_registry;
+DROP TABLE IF EXISTS fluvio_stream_offsets;
+DROP TABLE IF EXISTS temporal_workflow_history;
+DROP TABLE IF EXISTS keycloak_sessions;

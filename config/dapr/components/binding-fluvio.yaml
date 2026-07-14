@@ -7,10 +7,10 @@ spec:
   version: v1
   metadata:
   - name: brokers
-    value: "kafka:29092"
+    value: "fluvio-sc:9003"
   - name: topics
-    value: "inec-events"
+    value: "inec.results.submitted,inec.incidents.reported,inec.audit.log"
   - name: consumerGroup
-    value: "dapr-fluvio-bridge"
+    value: "dapr-consumer"
   - name: publishTopic
-    value: "inec-events"
+    value: "inec.results.submitted"

@@ -16,7 +16,7 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .await?;
 
     // Run migrations
-    sqlx::query(include_str!("../../../migrations/001_biometric_tables.sql"))
+    sqlx::query(include_str!("../migrations/001_biometric_tables.sql"))
         .execute(&pool)
         .await
         .ok(); // Ignore if tables already exist

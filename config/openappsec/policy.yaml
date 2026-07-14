@@ -1,23 +1,27 @@
-apiVersion: openappsec.io/v1beta1
-kind: Policy
-metadata:
-  name: inec-waf-policy
-spec:
-  defaultMode: Prevent
-  threatPrevention:
-    mode: Prevent
-    practice: WebApp
-  practices:
-    - name: WebApp
-      webAttacks:
-        mode: Prevent
-        override:
-          - action: Prevent
-            attackType: SQL Injection
-          - action: Prevent
-            attackType: Cross Site Scripting
-          - action: Prevent
-            attackType: Command Injection
-      antiBot:
-        mode: Prevent
-        injectedScriptMode: Monitor
+policies:
+  - name: inec-waf-policy
+    mode: prevent
+    triggers:
+      - log
+      - block
+    rules:
+      - name: block-sql-injection
+        type: sqli
+        action: block
+      - name: block-xss
+        type: xss
+        action: block
+      - name: rate-limit-login
+        type: rate-limit
+        uri: "/auth/login"
+        limit: 5
+        window: 60
+        action: challenge
+      - name: block-malicious-bots
+        type: bot-protection
+        action: block
+        confidence: high
+      - name: geo-block-non-ng
+        type: geo
+        allowed_countries: ["NG"]
+        action: block

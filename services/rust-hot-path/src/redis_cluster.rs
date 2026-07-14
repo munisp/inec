@@ -45,18 +45,18 @@ impl RedisClusterPipeline {
     pub async fn pipeline_batch(&self, batch: Arc<Vec<Transaction>>) -> Result<()> {
         // In production, uses redis::aio::MultiplexedConnection with pipeline
         //
-        // let mut pipe = redis::pipe();
-        // pipe.atomic(); // all-or-nothing
+        let mut pipe = redis::pipe();
+        pipe.atomic(); // all-or-nothing
         //
-        // for tx in batch.iter() {
-        //     let value = rmp_serde::to_vec(tx)?; // MessagePack encoding
-        //     pipe.set_ex(format!("tx:{}", tx.id), value, 10);
-        //     pipe.incr(format!("counter:state:{}:{}", tx.state_code, tx.tx_type), 1i64);
-        //     pipe.incr(format!("counter:total:{}", tx.tx_type), 1i64);
-        //     pipe.publish(format!("events:{}", tx.tx_type), &tx.id);
-        // }
+        for tx in batch.iter() {
+            let value = rmp_serde::to_vec(tx)?; // MessagePack encoding
+            pipe.set_ex(format!("tx:{}", tx.id), value, 10);
+            pipe.incr(format!("counter:state:{}:{}", tx.state_code, tx.tx_type), 1i64);
+            pipe.incr(format!("counter:total:{}", tx.tx_type), 1i64);
+            pipe.publish(format!("events:{}", tx.tx_type), &tx.id);
+        }
         //
-        // pipe.query_async(&mut conn).await?;
+        pipe.query_async(&mut conn).await?;
 
         self.commands_executed.fetch_add(batch.len() as u64 * 4, Ordering::Relaxed);
         self.pipeline_flushes.fetch_add(1, Ordering::Relaxed);

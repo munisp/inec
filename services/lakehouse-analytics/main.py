@@ -97,7 +97,18 @@ class Lakehouse:
 
     def _init_tables(self):
         self.conn.execute("""
+            
+        self.conn.execute('''
             CREATE TABLE IF NOT EXISTS election_results (
+                id VARCHAR,
+                election_id VARCHAR,
+                polling_unit_code VARCHAR,
+                party_code VARCHAR,
+                votes INTEGER,
+                submitted_at TIMESTAMP
+            )
+        ''')
+
                 id INTEGER,
                 election_id INTEGER,
                 polling_unit_code VARCHAR,

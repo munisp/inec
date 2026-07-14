@@ -1,6 +1,8 @@
 package main
 
 import (
+	tb_types "github.com/tigerbeetle/tigerbeetle-go"
+
 "context"
 "fmt"
 "math/big"
@@ -9,7 +11,7 @@ tb "github.com/tigerbeetle/tigerbeetle-go"
 )
 
 type tbNativeClient struct {
-client tb.Client
+client tb_types.Client
 }
 
 func newTBNativeClient(address string) (TigerBeetleClient, error) {

@@ -130,6 +130,24 @@ export const api = {
 
   getParties: () => request('/parties'),
 
+
+  // Middleware Integration Bindings
+  getMiddlewareStatus: () => request('/middleware/status'),
+  
+  // Lakehouse Analytics Bindings
+  getLakehouseAnomalies: (electionId: number) => request(`/lakehouse/anomalies?election_id=${electionId}`),
+  getLakehouseTrends: (electionId: number) => request(`/lakehouse/trends?election_id=${electionId}`),
+  
+  // Workflow (Temporal) Bindings
+  startWorkflow: (workflowName: string, payload: any) => request(`/workflows/start`, { method: 'POST', body: JSON.stringify({ workflow: workflowName, payload }) }),
+  getWorkflowStatus: (workflowId: string) => request(`/workflows/${workflowId}/status`),
+  
+  // Permify Authorization Bindings
+  checkPermission: (entity: string, entityId: string, action: string) => request(`/permify/check`, { method: 'POST', body: JSON.stringify({ entity, entityId, action }) }),
+  
+  // Biometric Integration Bindings
+  verifyBiometric: (vin: string, payload: string) => request(`/biometric/verify`, { method: 'POST', body: JSON.stringify({ vin, payload }) }),
+
   getAuditTrail: (params?: Record<string, string>) => {
     const q = new URLSearchParams(params);
     return request(`/audit/trail?${q}`);
@@ -149,7 +167,6 @@ export const api = {
   getMapData: (electionId: number, stateCode?: string) =>
     request(`/geo/map-data?election_id=${electionId}${stateCode ? `&state_code=${stateCode}` : ''}`),
 
-  getMiddlewareStatus: () => request('/middleware/status'),
   getMiddlewareHealth: () => request('/middleware/health'),
   getKafkaTopics: () => request('/middleware/kafka/topics'),
   getTemporalWorkflows: () => request('/middleware/temporal/workflows'),

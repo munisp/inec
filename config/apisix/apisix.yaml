@@ -1,183 +1,228 @@
 routes:
-  - uri: /auth/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 10
-        burst: 5
-        key_type: var
-        key: remote_addr
-
-  - uri: /elections/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 30
-        burst: 10
-        key_type: var
-        key: remote_addr
-
-  - uri: /results/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 20
-        burst: 10
-        key_type: var
-        key: remote_addr
-
-  - uri: /geo/tiles/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      proxy-cache:
-        cache_ttl: 300
-      limit-req:
-        rate: 120
-        burst: 60
-        key_type: var
-        key: remote_addr
-
-  - uri: /geo/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 60
-        burst: 30
-        key_type: var
-        key: remote_addr
-
-  - uri: /dashboard/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 30
-        burst: 15
-        key_type: var
-        key: remote_addr
-
-  - uri: /audit/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 20
-        burst: 10
-        key_type: var
-        key: remote_addr
-
-  - uri: /incidents/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-    plugins:
-      limit-req:
-        rate: 15
-        burst: 5
-        key_type: var
-        key: remote_addr
-
-  - uri: /middleware/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-
-  - uri: /parties
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-
-  - uri: /healthz
-    upstream:
-      type: roundrobin
-      nodes:
-        "go-backend:8088": 1
-
-  # ── Frontend Cache Control ──
-  # index.html: NEVER cache — always serve fresh so new deploys take effect
-  - uri: /
-    upstream:
-      type: roundrobin
-      nodes:
-        "frontend:80": 1
-    plugins:
-      response-rewrite:
-        headers:
-          set:
-            Cache-Control: "no-cache, no-store, must-revalidate"
-            Pragma: "no-cache"
-            Expires: "0"
-
-  - uri: /index.html
-    upstream:
-      type: roundrobin
-      nodes:
-        "frontend:80": 1
-    plugins:
-      response-rewrite:
-        headers:
-          set:
-            Cache-Control: "no-cache, no-store, must-revalidate"
-            Pragma: "no-cache"
-            Expires: "0"
-
-  # sw.js: NEVER cache — browser must always check for new service worker
-  - uri: /sw.js
-    upstream:
-      type: roundrobin
-      nodes:
-        "frontend:80": 1
-    plugins:
-      response-rewrite:
-        headers:
-          set:
-            Cache-Control: "no-cache, no-store, must-revalidate"
-            Service-Worker-Allowed: "/"
-
-  # Hashed JS/CSS assets: cache forever (filenames contain content hashes)
-  - uri: /assets/*
-    upstream:
-      type: roundrobin
-      nodes:
-        "frontend:80": 1
-    plugins:
-      response-rewrite:
-        headers:
-          set:
-            Cache-Control: "public, max-age=31536000, immutable"
-
-  # manifest.json: short cache so PWA updates are picked up
-  - uri: /manifest.json
-    upstream:
-      type: roundrobin
-      nodes:
-        "frontend:80": 1
-    plugins:
-      response-rewrite:
-        headers:
-          set:
-            Cache-Control: "public, max-age=3600"
-
-#END
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 5
+      key: remote_addr
+      key_type: var
+      rate: 10
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /auth/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 10
+      key: remote_addr
+      key_type: var
+      rate: 30
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /elections/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 10
+      key: remote_addr
+      key_type: var
+      rate: 20
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /results/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 60
+      key: remote_addr
+      key_type: var
+      rate: 120
+    proxy-cache:
+      cache_ttl: 300
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /geo/tiles/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 30
+      key: remote_addr
+      key_type: var
+      rate: 60
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /geo/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 15
+      key: remote_addr
+      key_type: var
+      rate: 30
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /dashboard/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 10
+      key: remote_addr
+      key_type: var
+      rate: 20
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /audit/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 5
+      key: remote_addr
+      key_type: var
+      rate: 15
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /incidents/*
+- plugins:
+    cors: {}
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /middleware/*
+- plugins:
+    cors: {}
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /parties
+- plugins:
+    cors: {}
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /healthz
+- plugins:
+    cors: {}
+    response-rewrite:
+      headers:
+        set:
+          Cache-Control: no-cache, no-store, must-revalidate
+          Expires: '0'
+          Pragma: no-cache
+  upstream:
+    nodes:
+      frontend:80: 1
+    type: roundrobin
+  uri: /
+- plugins:
+    cors: {}
+    response-rewrite:
+      headers:
+        set:
+          Cache-Control: no-cache, no-store, must-revalidate
+          Expires: '0'
+          Pragma: no-cache
+  upstream:
+    nodes:
+      frontend:80: 1
+    type: roundrobin
+  uri: /index.html
+- plugins:
+    cors: {}
+    response-rewrite:
+      headers:
+        set:
+          Cache-Control: no-cache, no-store, must-revalidate
+          Service-Worker-Allowed: /
+  upstream:
+    nodes:
+      frontend:80: 1
+    type: roundrobin
+  uri: /sw.js
+- plugins:
+    cors: {}
+    response-rewrite:
+      headers:
+        set:
+          Cache-Control: public, max-age=31536000, immutable
+  upstream:
+    nodes:
+      frontend:80: 1
+    type: roundrobin
+  uri: /assets/*
+- plugins:
+    cors: {}
+    response-rewrite:
+      headers:
+        set:
+          Cache-Control: public, max-age=3600
+  upstream:
+    nodes:
+      frontend:80: 1
+    type: roundrobin
+  uri: /manifest.json
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 5
+      key: remote_addr
+      key_type: var
+      rate: 10
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /biometric/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 10
+      key: remote_addr
+      key_type: var
+      rate: 20
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /workflows/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 2
+      key: remote_addr
+      key_type: var
+      rate: 5
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /lakehouse/*
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 50
+      key: remote_addr
+      key_type: var
+      rate: 100
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /fluvio/*
