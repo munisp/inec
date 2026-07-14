@@ -95,6 +95,7 @@ func main() {
 
 	// Initialize schema first (CREATE TABLE IF NOT EXISTS), then run incremental migrations
 	initDB(db)
+	initGORM(os.Getenv("DATABASE_URL"))
 
 	if err := runMigrations(db); err != nil {
 		log.Warn().Err(err).Msg("Migration runner encountered issues (non-fatal — initDB already created schema)")

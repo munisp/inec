@@ -139,6 +139,10 @@ export const api = {
 
   getIncidents: (electionId: number) =>
     request(`/incidents?election_id=${electionId}`),
+  bvasAccreditation: (data: Record<string, unknown>) =>
+    request('/bvas/accreditation', { method: 'POST', body: JSON.stringify(data) }),
+  resolveDispute: (id: number, resolution: string) =>
+    request(`/disputes/${id}/resolve`, { method: 'POST', body: JSON.stringify({ resolution }) }),
   createIncident: (data: Record<string, unknown>) =>
     request('/incidents', { method: 'POST', body: JSON.stringify(data) }),
 
