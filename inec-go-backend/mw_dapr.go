@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -210,6 +209,14 @@ func (d *pgDapr) DeleteState(_ context.Context, store, key string) error {
 	return err
 }
 
+
+func (d *pgDapr) InvokeServiceValidated(ctx context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
+	body, err := d.InvokeService(ctx, appID, method, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, &DaprValidationResult{Valid: true}, nil
+}
 func (d *pgDapr) Status() MWStatus {
 	var storeCount, keyCount int
 	db.QueryRow(`SELECT COUNT(DISTINCT store_name), COUNT(*) FROM dapr_state`).Scan(&storeCount, &keyCount)

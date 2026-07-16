@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -268,6 +267,18 @@ func (p *pgPermify) LookupResources(_ context.Context, subjectType, subjectID, p
 	return resources, nil
 }
 
+
+func (p *pgPermify) BulkCheck(ctx context.Context, checks []PermifyCheck) (*BulkPermifyResult, error) {
+	results := make([]bool, len(checks))
+	for i, c := range checks {
+		ok, err := p.Check(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		results[i] = ok
+	}
+	return &BulkPermifyResult{Results: results}, nil
+}
 func (p *pgPermify) Status() MWStatus {
 	var relCount int
 	db.QueryRow(`SELECT COUNT(*) FROM permify_relationships`).Scan(&relCount)

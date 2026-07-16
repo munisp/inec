@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -280,6 +279,10 @@ func (k *pgKafka) Subscribe(topic string, handler func(KafkaMessage)) error {
 	return nil
 }
 
+
+func (k *pgKafka) SubscribeGroup(topic, groupID string, handler func(KafkaMessage)) error {
+	return k.Subscribe(topic, handler)
+}
 func (k *pgKafka) Status() MWStatus {
 	var topicCount, msgCount int
 	db.QueryRow(`SELECT COUNT(DISTINCT topic), COUNT(*) FROM kafka_messages`).Scan(&topicCount, &msgCount)

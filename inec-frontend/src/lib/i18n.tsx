@@ -11,27 +11,7 @@ interface I18nContextProps {
 
 const I18nContext = createContext<I18nContextProps | null>(null);
 
-// Language metadata for the UI selector
-const LANG_META: Record<Lang, { label: string; nativeLabel: string; flag: string }> = {
-  en: { label: 'English', nativeLabel: 'English', flag: '\u{1F1EC}\u{1F1E7}' },
-  ha: { label: 'Hausa', nativeLabel: 'Hausa', flag: '\u{1F1F3}\u{1F1EC}' },
-  yo: { label: 'Yoruba', nativeLabel: 'Yor\u00F9b\u00E1', flag: '\u{1F1F3}\u{1F1EC}' },
-  ig: { label: 'Igbo', nativeLabel: 'Igbo', flag: '\u{1F1F3}\u{1F1EC}' },
-};
 
-function detectBrowserLanguage(): Lang {
-  const browserLangs = navigator.languages ?? [navigator.language];
-  for (const bl of browserLangs) {
-    const code = bl.toLowerCase().split('-')[0];
-    if (code === 'en' || code === 'ha' || code === 'yo' || code === 'ig') {
-      return code as Lang;
-    }
-    if (code === 'hau') return 'ha';
-    if (code === 'yor') return 'yo';
-    if (code === 'ibo') return 'ig';
-  }
-  return 'en';
-}
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>('en');

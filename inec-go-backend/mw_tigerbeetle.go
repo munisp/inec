@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	tbClient "github.com/tigerbeetle/tigerbeetle-go"
-	tbTypes "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
 )
 
 type TBTransfer struct {
@@ -504,168 +502,6 @@ func (t *dbBackedTigerBeetle) Status() MWStatus {
 func (t *dbBackedTigerBeetle) Close() error { return nil }
 
 func initTigerBeetleClient() TigerBeetleClient {
-	// Prefer the real binary-protocol Go SDK when TIGERBEETLE_ADDRESSES is set.
-	if sdk := initTBSDKClient(); sdk != nil {
-		return sdk
-	}
-	tbURL := envOrDefault("TIGERBEETLE_URL", "")
-	if tbURL != "" {
-		// Optional HTTP gateway (if deployed in front of TigerBeetle). The
-		// canonical integration is the binary SDK above (TIGERBEETLE_ADDRESSES).
-		client := &tbHTTPClient{
-			baseURL: tbURL,
-			client:  NewResilientHTTPClient("tigerbeetle"),
-		}
-	}
-	transfer.Status = "PENDING"
-	transfer.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	t.mu.Lock()
-	t.transfers[transfer.ID] = &transfer
-	t.mu.Unlock()
-	return &transfer, nil
-}
-
-func (t *tbSDKClient) GetTransfer(_ context.Context, transferID string) (*TBTransfer, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	tr, ok := t.transfers[transferID]
-	if !ok {
-		return nil, fmt.Errorf("transfer not found: %s", transferID)
-	}
-	return tr, nil
-}
-
-func (t *tbSDKClient) VoidTransfer(_ context.Context, transferID string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	tr, ok := t.transfers[transferID]
-	if !ok {
-		return fmt.Errorf("transfer not found: %s", transferID)
-	}
-	voidTransfer := tbTypes.Transfer{
-		ID:        stringToUint128(transferID + "-void"),
-		PendingID: stringToUint128(transferID),
-		Flags:     tbTypes.TransferFlags{VoidPendingTransfer: true}.ToUint16(),
-	}
-	_, err := t.client.CreateTransfers([]tbTypes.Transfer{voidTransfer})
-	if err != nil {
-		return fmt.Errorf("void transfer: %w", err)
-	}
-	tr.Status = "VOIDED"
-	return nil
-}
-
-func (t *tbSDKClient) PostTransfer(_ context.Context, transferID string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	tr, ok := t.transfers[transferID]
-	if !ok {
-		return fmt.Errorf("transfer not found: %s", transferID)
-	}
-	postTransfer := tbTypes.Transfer{
-		ID:        stringToUint128(transferID + "-post"),
-		PendingID: stringToUint128(transferID),
-		Flags:     tbTypes.TransferFlags{PostPendingTransfer: true}.ToUint16(),
-	}
-	_, err := t.client.CreateTransfers([]tbTypes.Transfer{postTransfer})
-	if err != nil {
-		return fmt.Errorf("post transfer: %w", err)
-	}
-	tr.Status = "POSTED"
-	return nil
-}
-
-func (t *tbSDKClient) CreateAccount(_ context.Context, account TBAccount) error {
-	if account.Ledger < 0 || account.Ledger > 0xFFFFFFFF {
-		return fmt.Errorf("ledger out of uint32 range: %d", account.Ledger)
-	}
-	if account.Code < 0 || account.Code > 0xFFFF {
-		return fmt.Errorf("code out of uint16 range: %d", account.Code)
-	}
-	tbAcct := tbTypes.Account{
-		ID:     stringToUint128(account.ID),
-		Ledger: uint32(account.Ledger), // #nosec G115 -- validated in range above
-		Code:   uint16(account.Code),   // #nosec G115 -- validated in range above
-	}
-	_, err := t.client.CreateAccounts([]tbTypes.Account{tbAcct})
-	if err != nil {
-		return fmt.Errorf("create account: %w", err)
-	}
-	t.mu.Lock()
-	t.accounts[account.ID] = &account
-	t.mu.Unlock()
-	return nil
-}
-
-func (t *tbSDKClient) GetAccount(_ context.Context, accountID string) (*TBAccount, error) {
-	results, err := t.client.LookupAccounts([]tbTypes.Uint128{stringToUint128(accountID)})
-	if err != nil {
-		return nil, fmt.Errorf("lookup account: %w", err)
-	}
-	if len(results) == 0 {
-		t.mu.RLock()
-		a, ok := t.accounts[accountID]
-		t.mu.RUnlock()
-		if ok {
-			return a, nil
-		}
-		return nil, fmt.Errorf("account not found: %s", accountID)
-	}
-	a := results[0]
-	cp := a.CreditsPosted.BigInt()
-	dp := a.DebitsPosted.BigInt()
-	cpn := a.CreditsPending.BigInt()
-	dpn := a.DebitsPending.BigInt()
-	return &TBAccount{
-		ID:             accountID,
-		Ledger:         int(a.Ledger),
-		Code:           int(a.Code),
-		CreditsPosted:  cp.Int64(),
-		DebitsPosted:   dp.Int64(),
-		CreditsPending: cpn.Int64(),
-		DebitsPending:  dpn.Int64(),
-	}, nil
-}
-
-func (t *tbSDKClient) LookupTransfers(_ context.Context, accountID string, limit int) ([]TBTransfer, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	var result []TBTransfer
-	for _, tr := range t.transfers {
-		if tr.DebitAccountID == accountID || tr.CreditAccountID == accountID {
-			result = append(result, *tr)
-			if len(result) >= limit {
-				break
-			}
-		}
-	}
-	return result, nil
-}
-
-func (t *tbSDKClient) Status() MWStatus {
-	lat, err := measureLatency(func() error {
-		return t.client.Nop()
-	})
-	if err != nil {
-		return MWStatus{Name: "TigerBeetle", Connected: false, Mode: "native tigerbeetle-go (unreachable)", Details: err.Error()}
-	}
-	t.mu.RLock()
-	trCount := len(t.transfers)
-	acctCount := len(t.accounts)
-	t.mu.RUnlock()
-	return MWStatus{
-		Name: "TigerBeetle", Connected: true, Mode: "native tigerbeetle-go",
-		Latency: fmtLatency(lat),
-		Details: fmt.Sprintf("binary protocol, cluster=0, %d accounts, %d transfers", acctCount, trCount),
-	}
-}
-
-func (t *tbSDKClient) Close() error {
-	t.client.Close()
-	return nil
-}
-
-func initTigerBeetleClient() TigerBeetleClient {
 	// Try native binary protocol first (TIGERBEETLE_ADDRESSES="host:port")
 	tbAddrs := envOrDefault("TIGERBEETLE_ADDRESSES", "")
 	if tbAddrs == "" {
@@ -679,7 +515,7 @@ func initTigerBeetleClient() TigerBeetleClient {
 	}
 	if tbAddrs != "" {
 		addresses := strings.Split(tbAddrs, ",")
-		client, err := newTBSDKClient(addresses)
+		client, err := newTBNativeClient(addresses[0])
 		if err == nil {
 			log.Info().Strs("addresses", addresses).Msg("TigerBeetle connected via native SDK (binary protocol)")
 			return client

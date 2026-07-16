@@ -604,7 +604,7 @@ func handleSanctionsScreen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, result)
 }
 
-func handleComplianceDashboard(w http.ResponseWriter, r *http.Request) {
+func handleComplianceDashboardEngine(w http.ResponseWriter, r *http.Request) {
 	_, err := requireRole(r, "admin")
 	if err != nil {
 		writeError(w, 401, err.Error())

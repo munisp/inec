@@ -2,7 +2,6 @@ package main
 
 import (
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 
 	"compress/gzip"
 	"context"
