@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"compress/gzip"
 	"context"
 	"crypto/tls"
@@ -59,6 +62,9 @@ var (
 )
 
 func main() {
+	// Initialize OpenTelemetry Tracing
+	_ = otel.Tracer("inec-backend")
+
 	// Initialize structured logging
 	initLogger()
 	// Initialize input validation
