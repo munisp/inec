@@ -29,7 +29,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/auth': 'http://localhost:8088',
+      '/auth': 'http://localhost:8103',
       '/api': 'http://localhost:8088',
       '/disputes': 'http://localhost:8088',
       '/push': 'http://localhost:8088',
@@ -91,6 +91,7 @@ export default defineConfig({
       '/reports': 'http://localhost:8088',
       '/voice': 'http://localhost:8088',
       '/public': 'http://localhost:8088',
+      '/gotv': { target: 'http://localhost:8103', ws: true },
     },
   },
 })

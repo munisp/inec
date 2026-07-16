@@ -397,7 +397,7 @@ func seedDatabase(db *sql.DB) {
 	// Voters with realistic Nigerian data  
 	voterFirstNames := []string{"Chidinma", "Abdullahi", "Folake", "Obinna", "Hauwa", "Emeka", "Zainab", "Tunde", "Amina", "Ifeanyi", "Ngozi", "Sani", "Bukola", "Chidi", "Fatima"}
 	voterLastNames := []string{"Okafor", "Mohammed", "Adeyemi", "Bello", "Nwosu", "Ibrahim", "Eze", "Yusuf", "Adeleke", "Usman", "Afolabi", "Danladi", "Bakare", "Igwe", "Hassan"}
-	genders := []string{"male", "female"}
+	genders := []string{"M", "F"}
 	for i := 0; i < 500; i++ {
 		firstName := voterFirstNames[rand.Intn(len(voterFirstNames))]
 		lastName := voterLastNames[rand.Intn(len(voterLastNames))]
@@ -408,12 +408,10 @@ func seedDatabase(db *sql.DB) {
 		dob := fmt.Sprintf("19%d-%02d-%02d", 60+rand.Intn(40), rand.Intn(12)+1, rand.Intn(28)+1)
 		bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("bio-voter-%d", i))))[:32]
 		pvcNum := fmt.Sprintf("PVC-%09d", 100000000+i)
-		nin := fmt.Sprintf("%011d", 10000000000+int64(i))
-
-		dbExecLog("seed_voter", `INSERT OR IGNORE INTO voters (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status, nin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		dbExecLog("seed_voter", `INSERT OR IGNORE INTO voters (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, pvc_collected, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			vin, firstName, lastName, dob, gender, state.Code,
 			fmt.Sprintf("%s-001", state.Code), fmt.Sprintf("%s-001-W001", state.Code),
-			fmt.Sprintf("%s-001-W001-PU001", state.Code), bioHash, pvcNum, 1, "active", nin)
+			fmt.Sprintf("%s-001-W001-PU001", state.Code), bioHash, pvcNum, 1, "active")
 	}
 
 	// Liveness check records

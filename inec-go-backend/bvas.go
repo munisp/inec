@@ -307,13 +307,15 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 
 func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DeviceID        string `json:"device_id"`
-		ElectionID      int    `json:"election_id"`
-		PollingUnitCode string `json:"polling_unit_code"`
-		VoterPVCNumber  string `json:"voter_pvc_number"`
-		BiometricMatch  bool   `json:"biometric_match"`
-		PVCVerified     bool   `json:"pvc_verified"`
-		Method          string `json:"method"`
+		DeviceID        string   `json:"device_id"`
+		ElectionID      int      `json:"election_id"`
+		PollingUnitCode string   `json:"polling_unit_code"`
+		VoterPVCNumber  string   `json:"voter_pvc_number"`
+		BiometricMatch  bool     `json:"biometric_match"`
+		PVCVerified     bool     `json:"pvc_verified"`
+		Method          string   `json:"method"`
+		DeviceLat       *float64 `json:"device_lat"`
+		DeviceLng       *float64 `json:"device_lng"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -321,6 +323,37 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Method == "" {
 		req.Method = "biometric"
+	}
+
+	// Fix #4: Check device status is 'active'
+	var deviceStatus string
+	if err := db.QueryRow("SELECT status FROM bvas_devices WHERE id=?", req.DeviceID).Scan(&deviceStatus); err != nil {
+		writeError(w, 404, "BVAS device not found")
+		return
+	}
+	if deviceStatus != "active" {
+		writeError(w, 400, fmt.Sprintf("BVAS device is '%s' — must be 'active' to perform accreditation", deviceStatus))
+		return
+	}
+
+	// Fix #5: Check election status is 'voting' or 'active'
+	var electionStatus string
+	if err := db.QueryRow("SELECT status FROM elections WHERE id=?", req.ElectionID).Scan(&electionStatus); err != nil {
+		writeError(w, 404, "Election not found")
+		return
+	}
+	if electionStatus != "voting" && electionStatus != "active" {
+		writeError(w, 400, fmt.Sprintf("Election is '%s' — accreditation only allowed during 'voting' or 'active' phase", electionStatus))
+		return
+	}
+
+	// Fix #9: Geofence validation for BVAS accreditation
+	if req.DeviceLat != nil && req.DeviceLng != nil {
+		geoResult, err := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
+		if err == nil && geoResult != nil && !geoResult.WithinGeofence {
+			writeError(w, 403, fmt.Sprintf("Geofence violation: BVAS device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
+			return
+		}
 	}
 
 	h := sha256.Sum256([]byte(req.VoterPVCNumber))

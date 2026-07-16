@@ -1,18 +1,31 @@
 {
-  "name": "INEC Election Platform",
-  "short_name": "INEC",
-  "description": "Independent National Electoral Commission - Real-Time Election Results & Observer Monitoring",
+  "name": "INEC Election & GOTV Platform",
+  "short_name": "INEC/GOTV",
+  "description": "Independent National Electoral Commission - Election Management & Get Out The Vote (GOTV) Party Mobilization with Party Primaries & Remote Voting",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#15803d",
   "orientation": "any",
-  "categories": ["government", "utilities"],
+  "categories": ["government", "utilities", "politics"],
   "lang": "en-NG",
   "dir": "ltr",
   "scope": "/",
   "prefer_related_applications": false,
+  "id": "/",
   "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
     {
       "src": "/favicon.ico",
       "sizes": "64x64",
@@ -99,6 +112,30 @@
       "description": "Observer monitoring feed"
     },
     {
+      "name": "GOTV Portal",
+      "short_name": "GOTV",
+      "url": "/?page=gotv-portal",
+      "description": "Get Out The Vote — Voter Mobilization Dashboard"
+    },
+    {
+      "name": "Party Primaries",
+      "short_name": "Primaries",
+      "url": "/?page=party-primaries",
+      "description": "Convention management and delegate voting"
+    },
+    {
+      "name": "KOH Indicators",
+      "short_name": "KOH",
+      "url": "/?page=gotv-portal&tab=indicators",
+      "description": "Campaign Performance Index & Analytics"
+    },
+    {
+      "name": "War Room",
+      "short_name": "War Room",
+      "url": "/?page=gotv-portal&tab=warroom",
+      "description": "Election Day live operations center"
+    },
+    {
       "name": "Map View",
       "short_name": "Map",
       "url": "/?page=map",
@@ -118,5 +155,9 @@
     }
   ],
   "screenshots": [],
-  "related_applications": []
+  "related_applications": [],
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  }
 }

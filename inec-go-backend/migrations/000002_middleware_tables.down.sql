@@ -1,3 +1,5 @@
+-- Rollback: Middleware tables
+
 DROP TABLE IF EXISTS waf_blocklist CASCADE;
 DROP TABLE IF EXISTS waf_threats CASCADE;
 DROP TABLE IF EXISTS search_documents CASCADE;

@@ -489,9 +489,9 @@ func (t *ThresholdAutoTuner) RunAnalysis(modality string) M {
 		rows.Close()
 	}
 
-	// If insufficient real data, use biometric_templates quality scores as proxy
+	// If insufficient real data, use biometric_templates quality scores as proxy (sample max 1000)
 	if len(genuineScores) < 50 {
-		rows2, _ := t.db.Query(`SELECT quality_score FROM biometric_templates WHERE modality=? AND quality_score > 0`, modality)
+		rows2, _ := t.db.Query(`SELECT quality_score FROM biometric_templates WHERE modality=? AND quality_score > 0 ORDER BY RANDOM() LIMIT 1000`, modality)
 		if rows2 != nil {
 			for rows2.Next() {
 				var q float64

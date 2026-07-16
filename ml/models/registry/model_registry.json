@@ -1,0 +1,110 @@
+{
+  "models": {
+    "fraud_dnn-v1.1781319810": {
+      "name": "fraud_dnn",
+      "version": "1.1781319810",
+      "metrics": {
+        "roc_auc": 0.9998795789473685,
+        "average_precision": 0.998210555105412,
+        "precision_fraud": 1.0,
+        "recall_fraud": 0.964,
+        "f1_fraud": 0.9816700610997964,
+        "confusion_matrix": [
+          [
+            9500,
+            0
+          ],
+          [
+            18,
+            482
+          ]
+        ]
+      },
+      "weights_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn.pt",
+      "framework": "pytorch",
+      "registered_at": "2026-06-13T03:03:30.404016+00:00",
+      "status": "archived"
+    },
+    "voter_scoring-v1.1781319810": {
+      "name": "voter_scoring",
+      "version": "1.1781319810",
+      "metrics": {
+        "mse": 4726.71142578125,
+        "rmse": 68.75108308805942,
+        "r2": -13.270411491394043
+      },
+      "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt",
+      "framework": "pytorch",
+      "registered_at": "2026-06-13T03:03:30.404837+00:00",
+      "status": "archived"
+    },
+    "gnn_election-v1.1781319810": {
+      "name": "gnn_election",
+      "version": "1.1781319810",
+      "metrics": {
+        "roc_auc": 0.9998391578947369,
+        "average_precision": 0.997576823594206
+      },
+      "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt",
+      "framework": "pytorch",
+      "registered_at": "2026-06-13T03:03:30.405724+00:00",
+      "status": "archived"
+    },
+    "fraud_dnn-v1.1781319961": {
+      "name": "fraud_dnn",
+      "version": "1.1781319961",
+      "metrics": {
+        "roc_auc": 0.9999717894736843,
+        "average_precision": 0.9994853447934363,
+        "precision_fraud": 0.9979633401221996,
+        "recall_fraud": 0.98,
+        "f1_fraud": 0.9889001009081736,
+        "confusion_matrix": [
+          [
+            9499,
+            1
+          ],
+          [
+            10,
+            490
+          ]
+        ]
+      },
+      "weights_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn.pt",
+      "framework": "pytorch",
+      "registered_at": "2026-06-13T03:06:01.332073+00:00",
+      "status": "production"
+    },
+    "voter_scoring-v1.1781319961": {
+      "name": "voter_scoring",
+      "version": "1.1781319961",
+      "metrics": {
+        "mse": 24.59780502319336,
+        "rmse": 4.959617427099933,
+        "r2": 0.9257367849349976
+      },
+      "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt",
+      "framework": "pytorch",
+      "registered_at": "2026-06-13T03:06:01.333164+00:00",
+      "status": "production"
+    },
+    "gnn_election-v1.1781319961": {
+      "name": "gnn_election",
+      "version": "1.1781319961",
+      "metrics": {
+        "roc_auc": 0.9998427368421052,
+        "average_precision": 0.9975721853208386
+      },
+      "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt",
+      "framework": "pytorch",
+      "registered_at": "2026-06-13T03:06:01.334247+00:00",
+      "status": "production"
+    }
+  },
+  "production": {
+    "fraud_dnn": "fraud_dnn-v1.1781319961",
+    "voter_scoring": "voter_scoring-v1.1781319961",
+    "gnn_election": "gnn_election-v1.1781319961"
+  },
+  "ab_tests": {}
+}

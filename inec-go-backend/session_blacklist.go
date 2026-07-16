@@ -144,14 +144,14 @@ func (bl *tokenBlacklist) periodicCleanup() {
 // generateJTI creates a unique token identifier.
 func generateJTI() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
 // ── Active Sessions Table ──
 
 func initActiveSessions(database *sql.DB) {
-	database.Exec(`CREATE TABLE IF NOT EXISTS active_sessions (
+	_, _ = database.Exec(`CREATE TABLE IF NOT EXISTS active_sessions (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		jti TEXT UNIQUE NOT NULL,
 		user_id INTEGER NOT NULL,
@@ -161,8 +161,8 @@ func initActiveSessions(database *sql.DB) {
 		expires_at TIMESTAMP NOT NULL,
 		last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
-	database.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_user ON active_sessions(user_id)")
-	database.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_jti ON active_sessions(jti)")
+	_, _ = database.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_user ON active_sessions(user_id)")
+	_, _ = database.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_jti ON active_sessions(jti)")
 }
 
 // recordSession stores a new session when a token is issued.
@@ -177,7 +177,7 @@ func recordSession(jti string, userID int, expiresAt time.Time, r *http.Request)
 // ── API Key Rotation ──
 
 func initAPIKeyRotation(database *sql.DB) {
-	database.Exec(`CREATE TABLE IF NOT EXISTS api_key_metadata (
+	_, _ = database.Exec(`CREATE TABLE IF NOT EXISTS api_key_metadata (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		key_hash TEXT UNIQUE NOT NULL,
 		name TEXT NOT NULL,
@@ -195,7 +195,7 @@ func initAPIKeyRotation(database *sql.DB) {
 func rotateAPIKey(oldKeyHash string, ownerID int, name string) (string, error) {
 	// Generate new key
 	b := make([]byte, 32)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	newKey := hex.EncodeToString(b)
 	newKeyHash := hashAPIKey(newKey)
 	expiresAt := time.Now().Add(90 * 24 * time.Hour) // 90-day expiry

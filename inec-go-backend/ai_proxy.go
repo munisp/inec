@@ -299,7 +299,7 @@ func callMLInference(ctx context.Context, service, path string, payload interfac
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max response
 	var result M
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
@@ -954,7 +954,7 @@ func handleAIProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max response
 
 	var result M
 	if json.Unmarshal(body, &result) != nil {

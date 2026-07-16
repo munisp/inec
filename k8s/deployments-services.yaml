@@ -1,0 +1,438 @@
+# Service-level K8s deployments for GOTV platform microservices.
+# Each has: startup/liveness/readiness probes, preStop hooks,
+# terminationGracePeriodSeconds, resource limits, and KEDA-compatible labels.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gotv-svc
+  namespace: inec
+  labels:
+    app: gotv-svc
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gotv-svc
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: gotv-svc
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gotv-svc
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: gotv-svc
+          image: ghcr.io/munisp/gotv-svc:latest
+          ports:
+            - containerPort: 8100
+              name: http
+            - containerPort: 8101
+              name: grpc
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: database-url
+            - name: REDIS_URL
+              value: "redis://redis-master.inec.svc.cluster.local:6379/2"
+            - name: KAFKA_BROKERS
+              value: "kafka-0.kafka-headless.inec.svc.cluster.local:9092"
+            - name: KEYCLOAK_ISSUER_URL
+              value: "http://keycloak.inec.svc.cluster.local:8080/realms/inec"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 12
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            failureThreshold: 2
+            timeoutSeconds: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gotv-engine
+  namespace: inec
+  labels:
+    app: gotv-engine
+    tier: engine
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gotv-engine
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: gotv-engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8095"
+    spec:
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: gotv-engine
+          image: ghcr.io/munisp/gotv-engine:latest
+          ports:
+            - containerPort: 8095
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: database-url
+            - name: PORT
+              value: "8095"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 2
+            timeoutSeconds: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 3"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-engine
+  namespace: inec
+  labels:
+    app: inference-engine
+    tier: engine
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inference-engine
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: inference-engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8091"
+    spec:
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: inference-engine
+          image: ghcr.io/munisp/inference-engine:latest
+          ports:
+            - containerPort: 8091
+              name: http
+          env:
+            - name: PORT
+              value: "8091"
+            - name: MODELS_DIR
+              value: "/app/models"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 2
+            timeoutSeconds: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 3"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fluvio-stream
+  namespace: inec
+  labels:
+    app: fluvio-stream
+    tier: streaming
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fluvio-stream
+  template:
+    metadata:
+      labels:
+        app: fluvio-stream
+    spec:
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: fluvio-stream
+          image: ghcr.io/munisp/fluvio-stream:latest
+          ports:
+            - containerPort: 9003
+              name: http
+          env:
+            - name: PORT
+              value: "9003"
+            - name: FLUVIO_ENDPOINT
+              value: "fluvio.inec.svc.cluster.local:9003"
+            - name: RUST_LOG
+              value: "info"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 3"]
+          volumeMounts:
+            - name: checkpoint-data
+              mountPath: /data
+      volumes:
+        - name: checkpoint-data
+          persistentVolumeClaim:
+            claimName: fluvio-checkpoints
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gotv-analytics
+  namespace: inec
+  labels:
+    app: gotv-analytics
+    tier: analytics
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gotv-analytics
+  template:
+    metadata:
+      labels:
+        app: gotv-analytics
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8102"
+    spec:
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: gotv-analytics
+          image: ghcr.io/munisp/gotv-analytics:latest
+          ports:
+            - containerPort: 8102
+              name: http
+          env:
+            - name: PORT
+              value: "8102"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: database-url
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 3"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakehouse-analytics
+  namespace: inec
+  labels:
+    app: lakehouse-analytics
+    tier: analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lakehouse-analytics
+  template:
+    metadata:
+      labels:
+        app: lakehouse-analytics
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: lakehouse-analytics
+          image: ghcr.io/munisp/lakehouse-analytics:latest
+          ports:
+            - containerPort: 8105
+              name: http
+          env:
+            - name: PORT
+              value: "8105"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: database-url
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]

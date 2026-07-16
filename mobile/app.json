@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "INEC Election Platform",
+    "slug": "inec-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#15803d"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ng.gov.inec.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used for BVAS barcode scanning and biometric verification",
+        "NSLocationWhenInUseUsageDescription": "Location is used for polling unit proximity and geo-verification",
+        "NSFaceIDUsageDescription": "Face ID is used for secure authentication"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#15803d"
+      },
+      "package": "ng.gov.inec.mobile",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "USE_BIOMETRIC",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-camera",
+      "expo-local-authentication",
+      "expo-location",
+      "expo-notifications",
+      "expo-secure-store"
+    ],
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#15803d",
+      "androidMode": "default"
+    }
+  }
+}

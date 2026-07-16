@@ -6,12 +6,40 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 )
+
+// isPrivateURL checks if a URL resolves to a private/internal IP to prevent SSRF
+func isPrivateURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	host := u.Hostname()
+	// Block obvious internal hostnames
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return true
+	}
+	// Resolve and check for private IPs
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return true
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return true
+		}
+	}
+	return false
+}
 
 // ElectionState represents a state in the election lifecycle FSM.
 type ElectionState string
@@ -828,6 +856,11 @@ func dispatchWebhook(event string, payload interface{}) {
 		var url, secret string
 		if rows.Scan(&url, &secret) == nil {
 			go func(url, secret string) {
+				// Security: prevent SSRF by blocking webhooks to private/internal IPs
+				if isPrivateURL(url) {
+					log.Warn().Str("url", url).Msg("webhook: blocked delivery to private/internal address")
+					return
+				}
 				req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 				if err != nil {
 					log.Warn().Err(err).Str("url", url).Msg("webhook: failed to create request")

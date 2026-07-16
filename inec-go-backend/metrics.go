@@ -42,6 +42,14 @@ var (
 		[]string{"state_code", "status"},
 	)
 
+	panicCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "inec_handler_panics_total",
+			Help: "Panics recovered in HTTP handlers",
+		},
+		[]string{"path"},
+	)
+
 	middlewareHealth = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "inec_middleware_healthy",
@@ -66,6 +74,7 @@ func initMetrics() {
 		httpRequestDuration,
 		activeConnections,
 		resultsSubmitted,
+		panicCounter,
 		middlewareHealth,
 		dbQueryDuration,
 	)

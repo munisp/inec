@@ -17,6 +17,9 @@ import (
 
 // MojaloopClient implements the 4-Phase Transaction Pattern:
 // Discovery → Quote → Transfer → Settlement
+//
+// FSPIOP is async: requests return 202 Accepted, responses arrive via PUT callbacks.
+// The client supports both sync mode (polling) and async mode (callback registration).
 type MojaloopClient interface {
 	// Discovery phase: lookup payee
 	PartyLookup(ctx context.Context, partyType, partyID string) (*MojaParty, error)
@@ -30,8 +33,21 @@ type MojaloopClient interface {
 	GetTransaction(ctx context.Context, txID string) (*MojaTransaction, error)
 	// List transactions
 	ListTransactions(ctx context.Context, phase string, limit int) ([]MojaTransaction, error)
+	// HandleCallback processes async FSPIOP PUT callbacks from the switch
+	HandleCallback(ctx context.Context, callbackType string, resourceID string, payload []byte) error
+	// RegisterCallbackURL sets the URL where the switch should send async responses
+	RegisterCallbackURL(callbackURL string)
 	Status() MWStatus
 	Close() error
+}
+
+// MojaCallback represents an async FSPIOP callback from the switch.
+type MojaCallback struct {
+	Type       string          `json:"type"`       // "quote", "transfer", "party"
+	ResourceID string          `json:"resource_id"`
+	Status     string          `json:"status"`     // "success", "error"
+	Payload    json.RawMessage `json:"payload"`
+	ReceivedAt string          `json:"received_at"`
 }
 
 type MojaParty struct {
@@ -113,8 +129,9 @@ type MojaTransaction struct {
 
 // HTTP client for real Mojaloop Switch
 type mojaHTTPClient struct {
-	client  *ResilientHTTPClient
-	baseURL string
+	client      *ResilientHTTPClient
+	baseURL     string
+	callbackURL string // URL where switch sends async FSPIOP PUT responses
 }
 
 func (m *mojaHTTPClient) PartyLookup(ctx context.Context, partyType, partyID string) (*MojaParty, error) {
@@ -253,23 +270,56 @@ func (m *mojaHTTPClient) ListTransactions(ctx context.Context, phase string, lim
 func (m *mojaHTTPClient) Status() MWStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", m.baseURL+"/health", nil)
-	lat, err := measureLatency(func() error {
-		resp, e := m.client.Client.Do(req)
-		if e != nil {
-			return e
+	// Try /health first, then root path — TTK may not have /health
+	var lat time.Duration
+	var lastErr error
+	for _, path := range []string{"/health", "/"} {
+		req, _ := http.NewRequestWithContext(ctx, "GET", m.baseURL+path, nil)
+		req.Header.Set("Accept", "application/json")
+		l, err := measureLatency(func() error {
+			resp, e := m.client.Client.Do(req)
+			if e != nil {
+				return e
+			}
+			resp.Body.Close()
+			return nil
+		})
+		if err == nil {
+			lat = l
+			lastErr = nil
+			break
 		}
-		resp.Body.Close()
-		return nil
-	})
-	if err != nil {
-		return MWStatus{Name: "Mojaloop", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
+		lastErr = err
 	}
-	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
+	if lastErr != nil {
+		return MWStatus{Name: "Mojaloop", Connected: false, Mode: "external (unreachable)", Details: lastErr.Error()}
+	}
+	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "external (FSPIOP)", Latency: fmtLatency(lat)}
+}
+
+// HandleCallback processes async FSPIOP PUT callbacks from the Mojaloop switch.
+// In production, the switch sends PUT /quotes/{id}, PUT /transfers/{id} with results.
+func (m *mojaHTTPClient) HandleCallback(ctx context.Context, callbackType string, resourceID string, payload []byte) error {
+	log.Info().Str("type", callbackType).Str("resource_id", resourceID).Msg("mojaloop: received async callback")
+	if db == nil {
+		return nil
+	}
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO mw_mojaloop_callbacks (type, resource_id, payload, status, received_at)
+		 VALUES ($1, $2, $3, 'received', NOW())
+		 ON CONFLICT (resource_id, type) DO UPDATE SET payload=$3, status='received', received_at=NOW()`,
+		callbackType, resourceID, string(payload))
+	return err
+}
+
+func (m *mojaHTTPClient) RegisterCallbackURL(callbackURL string) {
+	m.callbackURL = callbackURL
 }
 
 // Embedded Mojaloop implementation backed by PostgreSQL
-type embeddedMojaloop struct{}
+type embeddedMojaloop struct {
+	callbackURL string
+}
 
 func (m *mojaHTTPClient) Close() error { return nil }
 
@@ -435,6 +485,23 @@ func (m *embeddedMojaloop) Status() MWStatus {
 	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "embedded (DB-backed)", Details: "4-phase ILP pattern"}
 }
 
+func (m *embeddedMojaloop) HandleCallback(ctx context.Context, callbackType string, resourceID string, payload []byte) error {
+	log.Info().Str("type", callbackType).Str("resource_id", resourceID).Msg("mojaloop embedded: callback received")
+	if db == nil {
+		return nil
+	}
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO mw_mojaloop_callbacks (type, resource_id, payload, status, received_at)
+		 VALUES ($1, $2, $3, 'received', NOW())
+		 ON CONFLICT (resource_id, type) DO UPDATE SET payload=$3, status='received', received_at=NOW()`,
+		callbackType, resourceID, string(payload))
+	return err
+}
+
+func (m *embeddedMojaloop) RegisterCallbackURL(callbackURL string) {
+	m.callbackURL = callbackURL
+}
+
 func (m *embeddedMojaloop) Close() error { return nil }
 
 func initMojaloopClient() MojaloopClient {
@@ -445,14 +512,36 @@ func initMojaloopClient() MojaloopClient {
 			client:  NewResilientHTTPClient("mojaloop"),
 			baseURL: baseURL,
 		}
-		_, err := client.PartyLookup(context.Background(), "MSISDN", "test")
-		if err == nil {
-			log.Info().Msg("Mojaloop connected to external service")
+		// Check connectivity via /health endpoint (TTK), PartyLookup, or simple GET
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		connected := false
+		// Try /health first (Mojaloop TTK)
+		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil) // #nosec G704 -- baseURL is admin-configured env var
+		if resp, err := client.client.Client.Do(req); err == nil {               // #nosec G704
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				connected = true
+			}
+		}
+		if !connected {
+			// Try PartyLookup as fallback
+			_, err := client.PartyLookup(ctx, "MSISDN", "test")
+			if err == nil {
+				connected = true
+			}
+		}
+		if connected {
+			log.Info().Str("url", baseURL).Msg("Mojaloop connected to external service")
 			return client
 		}
-		log.Warn().Err(err).Msg("Mojaloop: external connection failed, using embedded")
+		log.Warn().Msg("Mojaloop: external connection failed, using embedded")
 	}
-	log.Info().Msg("Mojaloop using embedded DB-backed implementation")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("Mojaloop is REQUIRED in production/staging for financial settlement. Set MOJALOOP_URL")
+	}
+	log.Warn().Msg("Mojaloop using embedded DB-backed implementation (DEV ONLY)")
 	return &embeddedMojaloop{}
 }
 

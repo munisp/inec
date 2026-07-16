@@ -13,7 +13,7 @@ interface ElectionsState {
   selectedElection: Election | null;
   loading: boolean;
   error: string | null;
-  fetchElections: (token: string) => Promise<void>;
+  fetchElections: () => Promise<void>;
   selectElection: (election: Election | null) => void;
 }
 
@@ -24,11 +24,11 @@ export const useElectionsStore = create<ElectionsState>((set) => ({
   selectedElection: null,
   loading: false,
   error: null,
-  fetchElections: async (token: string) => {
+  fetchElections: async () => {
     set({ loading: true, error: null });
     try {
       const res = await fetch(`${API_URL}/elections`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();

@@ -30,12 +30,13 @@ type OpenAppSecClient interface {
 }
 
 type WAFRequest struct {
-	SourceIP  string            `json:"source_ip"`
-	Method    string            `json:"method"`
-	Path      string            `json:"path"`
-	Headers   map[string]string `json:"headers"`
-	Body      string            `json:"body,omitempty"`
-	UserAgent string            `json:"user_agent"`
+	SourceIP    string            `json:"source_ip"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	QueryString string            `json:"query_string,omitempty"`
+	Headers     map[string]string `json:"headers"`
+	Body        string            `json:"body,omitempty"`
+	UserAgent   string            `json:"user_agent"`
 }
 
 type WAFDecision struct {
@@ -114,19 +115,48 @@ func newEmbeddedWAF() *embeddedWAF {
 }
 
 var sqlInjectionPatterns = []string{
-	"' OR ", "' AND ", "UNION SELECT", "DROP TABLE", "DELETE FROM",
+	"' OR ", "' AND ", "UNION SELECT", "UNION ALL SELECT", "DROP TABLE", "DELETE FROM",
 	"INSERT INTO", "UPDATE SET", "--", "/*", "*/", "xp_cmdshell",
 	"EXEC(", "EXECUTE(", "WAITFOR DELAY", "BENCHMARK(",
+	"HAVING ", "GROUP BY", "ORDER BY", "INFORMATION_SCHEMA",
+	"LOAD_FILE(", "INTO OUTFILE", "INTO DUMPFILE", "CHAR(",
+	"0x", "UNHEX(", "CONCAT(", "SUBSTR(", "SUBSTRING(",
 }
 
 var xssPatterns = []string{
 	"<script", "javascript:", "onerror=", "onload=", "eval(",
 	"document.cookie", "window.location", "innerHTML",
+	"onfocus=", "onmouseover=", "onclick=", "onchange=",
+	"<iframe", "<object", "<embed", "<svg", "vbscript:",
+	"expression(", "url(", "import(", "<img src",
 }
 
 var pathTraversalPatterns = []string{
 	"../", "..\\", "%2e%2e", "%252e%252e",
 	"/etc/passwd", "/etc/shadow", "cmd.exe",
+	"/proc/self", "/dev/null", "\\windows\\system32",
+	"%00", "%0a", "%0d",
+}
+
+// normalizeInput decodes URL encoding, hex encoding, and Unicode escapes
+// to prevent bypass via encoded payloads.
+func normalizeInput(input string) string {
+	// First pass: percent-decode
+	decoded := input
+	for i := 0; i < 3; i++ { // Up to 3 rounds of decoding (double/triple encoding)
+		prev := decoded
+		if d, err := url.QueryUnescape(decoded); err == nil {
+			decoded = d
+		}
+		if decoded == prev {
+			break
+		}
+	}
+	// Remove null bytes
+	decoded = strings.ReplaceAll(decoded, "\x00", "")
+	// Normalize whitespace (collapse multiple spaces, tabs, newlines)
+	decoded = strings.Join(strings.Fields(decoded), " ")
+	return decoded
 }
 
 func (w *embeddedWAF) InspectRequest(ctx context.Context, req WAFRequest) (*WAFDecision, error) {
@@ -150,7 +180,9 @@ func (w *embeddedWAF) InspectRequest(ctx context.Context, req WAFRequest) (*WAFD
 	}
 	w.mu.RUnlock()
 
-	checkStr := strings.ToUpper(req.Path + " " + req.Body + " " + req.UserAgent)
+	// Normalize input to prevent encoding-based bypasses
+	rawStr := req.Path + " " + req.Body + " " + req.UserAgent + " " + req.QueryString
+	checkStr := strings.ToUpper(normalizeInput(rawStr))
 
 	// SQL Injection detection
 	for _, pattern := range sqlInjectionPatterns {
@@ -415,7 +447,11 @@ func initOpenAppSecClient() OpenAppSecClient {
 		}
 		log.Warn().Str("url", baseURL).Msg("OpenAppSec unreachable, falling back to embedded WAF")
 	}
-	log.Info().Msg("OpenAppSec using embedded rule-based WAF")
+	env := os.Getenv("APP_ENV")
+	if env == "production" || env == "staging" {
+		log.Fatal().Msg("OpenAppSec WAF is REQUIRED in production/staging. Set OPENAPPSEC_URL")
+	}
+	log.Warn().Msg("OpenAppSec using embedded rule-based WAF (DEV ONLY)")
 	return newEmbeddedWAF()
 }
 

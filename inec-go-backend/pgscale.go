@@ -182,7 +182,7 @@ func dbQueryCtx(ctx context.Context, query string, args ...interface{}) (*sql.Ro
 	start := time.Now()
 	target := dbReader
 	isReplica := dbReader != dbWriter
-	rows, err := target.QueryContext(ctx, query, args...)
+	rows, err := target.QueryContext(ctx, query, args...) // #nosec G701 -- query is always a hardcoded string literal from callers, args are parameterized
 	dbMetrics.recordRead(time.Since(start), isReplica)
 	d := time.Since(start)
 	if d.Milliseconds() > slowQueryThresholdMs {

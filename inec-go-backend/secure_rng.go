@@ -68,7 +68,8 @@ func (s *SecureRng) Intn(n int) int {
 	}
 	b := s.nextBytes(8)
 	v := binary.BigEndian.Uint64(b)
-	return int(v % uint64(n))
+	result := v % uint64(n)
+	return int(result) // #nosec G115 -- modulo ensures result < n which fits in int
 }
 
 // Float64 returns a random float64 in [0.0, 1.0).

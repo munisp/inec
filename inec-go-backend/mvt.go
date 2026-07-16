@@ -106,7 +106,7 @@ func buildMVTLayer(name string, features []mvtFeatureData, extent int) []byte {
 	for _, f := range features {
 		var tags []uint32
 		for k, v := range f.props {
-			tags = append(tags, uint32(getKeyIdx(k)), uint32(getValIdx(v)))
+			tags = append(tags, uint32(getKeyIdx(k)), uint32(getValIdx(v))) // #nosec G115 -- indices are bounded by slice length
 		}
 		encodedFeatures = append(encodedFeatures, encodeMVTFeature(f.id, f.px, f.py, tags))
 	}
@@ -122,7 +122,7 @@ func buildMVTLayer(name string, features []mvtFeatureData, extent int) []byte {
 	layer = append(layer, nameBytes...)
 
 	layer = appendVarint(layer, (5<<3)|0)
-	layer = appendVarint(layer, uint64(extent))
+	layer = appendVarint(layer, uint64(extent)) // #nosec G115 -- extent is always 4096
 
 	for _, k := range keys {
 		kb := []byte(k)
@@ -155,7 +155,7 @@ func encodeMVTFeature(id, px, py int, tags []uint32) []byte {
 	var buf []byte
 
 	buf = appendVarint(buf, (1<<3)|0)
-	buf = appendVarint(buf, uint64(id))
+	buf = appendVarint(buf, uint64(id)) // #nosec G115 -- feature IDs are sequential positive integers
 
 	if len(tags) > 0 {
 		var tagBuf []byte
@@ -223,7 +223,7 @@ func encodePointGeom(px, py int) []byte {
 }
 
 func zigzag(n int) uint64 {
-	return uint64((n << 1) ^ (n >> 63))
+	return uint64((n << 1) ^ (n >> 63)) // #nosec G115 -- zigzag encoding is defined for all int values
 }
 
 func appendVarint(buf []byte, v uint64) []byte {

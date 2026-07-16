@@ -204,16 +204,21 @@ type ProductionHSM struct {
 func NewProductionHSM(database *sql.DB) *ProductionHSM {
 	mk := make([]byte, 32)
 	envKey := os.Getenv("HSM_MASTER_KEY")
+	env := os.Getenv("APP_ENV")
 	if envKey != "" {
 		decoded, err := hex.DecodeString(envKey)
 		if err == nil && len(decoded) == 32 {
 			copy(mk, decoded)
 		} else {
-			io.ReadFull(rand.Reader, mk)
+			log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key). Generate with: openssl rand -hex 32")
 		}
+	} else if env == "production" || env == "staging" {
+		log.Fatal().Msg("HSM_MASTER_KEY must be set in production/staging (64-char hex). Generate with: openssl rand -hex 32")
 	} else {
-		h := sha256.Sum256([]byte("INEC-HSM-PRODUCTION-MASTER-KEY-" + fmt.Sprintf("%d", time.Now().UnixNano())))
-		copy(mk, h[:])
+		log.Warn().Msg("HSM_MASTER_KEY not set — using random ephemeral key (DEV ONLY)")
+		if _, err := io.ReadFull(rand.Reader, mk); err != nil {
+			log.Fatal().Err(err).Msg("failed to generate random HSM key")
+		}
 	}
 
 	// P-256 to match the PKCS#11 token curve so signatures verify across the
@@ -622,7 +627,7 @@ func (g *ProductionSMSGateway) sendViaTwilio(phone, message string) (string, err
 	twilioAuth := os.Getenv("TWILIO_AUTH_TOKEN")
 	apiURL := fmt.Sprintf("%s/Accounts/%s/Messages.json", g.baseURL, twilioSID)
 
-	req, _ := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	req, _ := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode())) // #nosec G704 -- baseURL is admin-configured Twilio API endpoint
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(twilioSID, twilioAuth)
 

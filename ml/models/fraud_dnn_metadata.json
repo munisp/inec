@@ -1,0 +1,50 @@
+{
+  "model_type": "FraudDetectionDNN",
+  "architecture": "17\u2192128\u219264\u219232\u21921 (BatchNorm+Dropout+Residual)",
+  "framework": "PyTorch",
+  "version": "1.0.0",
+  "trained_at": "2026-06-13T03:04:17.196743+00:00",
+  "n_train": 30000,
+  "n_val": 10000,
+  "n_test": 10000,
+  "epochs_run": 25,
+  "best_val_auc": 0.9999806315789473,
+  "test_metrics": {
+    "roc_auc": 0.9999717894736843,
+    "average_precision": 0.9994853447934363,
+    "precision_fraud": 0.9979633401221996,
+    "recall_fraud": 0.98,
+    "f1_fraud": 0.9889001009081736,
+    "confusion_matrix": [
+      [
+        9499,
+        1
+      ],
+      [
+        10,
+        490
+      ]
+    ]
+  },
+  "feature_columns": [
+    "registered_voters",
+    "accredited_voters",
+    "turnout_rate",
+    "total_valid_votes",
+    "rejected_votes",
+    "apc_votes",
+    "pdp_votes",
+    "apc_share",
+    "pdp_share",
+    "vote_margin",
+    "benford_deviation",
+    "submission_delay_hours",
+    "regional_mean_turnout",
+    "turnout_vs_region",
+    "rejected_rate",
+    "overvoting_flag",
+    "round_number_flag"
+  ],
+  "weights_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn.pt",
+  "scaler_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn_scaler.pkl"
+}

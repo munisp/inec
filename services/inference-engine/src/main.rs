@@ -23,6 +23,7 @@ use tracing::{info, warn};
 
 mod models;
 mod neo4j_client;
+pub mod service_client;
 
 use models::{AnomalyModel, FaceModel, LivenessModel};
 use neo4j_client::Neo4jClient;
@@ -53,9 +54,14 @@ impl AppState {
             .map_err(|e| warn!("Face model not loaded: {}", e))
             .ok();
 
-        let neo4j = Neo4jClient::connect().await
-            .map_err(|e| warn!("Neo4j not connected: {}", e))
-            .ok();
+        let neo4j = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Neo4jClient::connect(),
+        ).await {
+            Ok(Ok(client)) => Some(client),
+            Ok(Err(e)) => { warn!("Neo4j not connected: {}", e); None }
+            Err(_) => { warn!("Neo4j connection timed out after 10s"); None }
+        };
 
         info!(
             anomaly = anomaly_model.is_some(),
@@ -73,7 +79,7 @@ type SharedState = Arc<RwLock<AppState>>;
 
 // ── Request/Response Types ──
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct AnomalyRequest {
     registered_voters: u32,
     accredited_voters: u32,
@@ -278,51 +284,86 @@ async fn batch_predict(
     State(state): State<SharedState>,
     Json(req): Json<BatchAnomalyRequest>,
 ) -> Result<Json<BatchAnomalyResponse>, StatusCode> {
-    let start = std::time::Instant::now();
-    let s = state.read().await;
-
-    let model = s.anomaly_model.as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-
-    let mut results = Vec::with_capacity(req.polling_units.len());
-    let mut total_anomalies = 0;
-
-    for pu in &req.polling_units {
-        let turnout = pu.accredited_voters as f64 / pu.registered_voters.max(1) as f64;
-        let features = vec![
-            pu.registered_voters as f64,
-            pu.accredited_voters as f64,
-            turnout,
-            pu.total_valid_votes as f64,
-            pu.rejected_votes as f64,
-            pu.party_a_votes as f64,
-            pu.party_b_votes as f64,
-            pu.party_a_votes as f64 / pu.total_valid_votes.max(1) as f64,
-            pu.party_b_votes as f64 / pu.total_valid_votes.max(1) as f64,
-            (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs() / pu.total_valid_votes.max(1) as f64,
-            pu.benford_deviation,
-            pu.submission_delay_hours,
-            pu.regional_mean_turnout,
-            turnout - pu.regional_mean_turnout,
-            pu.rejected_votes as f64 / pu.accredited_voters.max(1) as f64,
-            if pu.total_valid_votes > pu.accredited_voters { 1.0 } else { 0.0 },
-            if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
-        ];
-
-        let score = model.predict(&features);
-        let is_anomaly = score > 0.5;
-        if is_anomaly { total_anomalies += 1; }
-
-        results.push(AnomalyResponse {
-            anomaly_score: score,
-            is_anomaly,
-            confidence: (score - 0.5).abs() * 2.0,
-            risk_factors: vec![],
-            model: "xgboost-onnx-v1.0-batch".into(),
-            inference_time_us: 0,
-        });
+    // Reject oversized batches to prevent resource exhaustion
+    if req.polling_units.len() > 50_000 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
+    let start = std::time::Instant::now();
+
+    // Verify model is available before spawning tasks
+    {
+        let s = state.read().await;
+        if s.anomaly_model.is_none() {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
+
+    // Process polling units in parallel using tokio tasks, chunked to limit concurrency
+    let chunk_size = 100;
+    let chunks: Vec<Vec<AnomalyRequest>> = req.polling_units
+        .chunks(chunk_size)
+        .map(|c| c.to_vec())
+        .collect();
+
+    let mut handles = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let state_clone = state.clone();
+        handles.push(tokio::spawn(async move {
+            let s = state_clone.read().await;
+            let model = s.anomaly_model.as_ref().unwrap();
+            let mut chunk_results = Vec::with_capacity(chunk.len());
+
+            for pu in &chunk {
+                let turnout = pu.accredited_voters as f64 / pu.registered_voters.max(1) as f64;
+                let features = vec![
+                    pu.registered_voters as f64,
+                    pu.accredited_voters as f64,
+                    turnout,
+                    pu.total_valid_votes as f64,
+                    pu.rejected_votes as f64,
+                    pu.party_a_votes as f64,
+                    pu.party_b_votes as f64,
+                    pu.party_a_votes as f64 / pu.total_valid_votes.max(1) as f64,
+                    pu.party_b_votes as f64 / pu.total_valid_votes.max(1) as f64,
+                    (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs() / pu.total_valid_votes.max(1) as f64,
+                    pu.benford_deviation,
+                    pu.submission_delay_hours,
+                    pu.regional_mean_turnout,
+                    turnout - pu.regional_mean_turnout,
+                    pu.rejected_votes as f64 / pu.accredited_voters.max(1) as f64,
+                    if pu.total_valid_votes > pu.accredited_voters { 1.0 } else { 0.0 },
+                    if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
+                ];
+
+                let score = model.predict(&features);
+                let is_anomaly = score > 0.5;
+                chunk_results.push(AnomalyResponse {
+                    anomaly_score: score,
+                    is_anomaly,
+                    confidence: (score - 0.5).abs() * 2.0,
+                    risk_factors: vec![],
+                    model: "xgboost-onnx-v1.0-batch-parallel".into(),
+                    inference_time_us: 0,
+                });
+            }
+            chunk_results
+        }));
+    }
+
+    // Collect results from all parallel tasks in order
+    let mut results = Vec::with_capacity(req.polling_units.len());
+    for handle in handles {
+        match handle.await {
+            Ok(chunk_results) => results.extend(chunk_results),
+            Err(e) => {
+                warn!("Batch task failed: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    let total_anomalies = results.iter().filter(|r| r.is_anomaly).count();
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
     Ok(Json(BatchAnomalyResponse {
@@ -511,7 +552,7 @@ async fn query_graph(
     let neo4j = s.neo4j.as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let hops = req.hops.unwrap_or(2);
+    let hops = req.hops.unwrap_or(2).min(5); // cap at 5 to prevent graph traversal explosion
     let result = neo4j.get_neighborhood(&req.pu_code, hops).await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -522,6 +563,23 @@ async fn query_graph(
 
 #[tokio::main]
 async fn main() {
+    // Panic hook for structured logging on unrecoverable errors
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!("PANIC at {}: {}", location, msg);
+        default_panic(info);
+    }));
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -529,7 +587,14 @@ async fn main() {
         )
         .init();
 
+    info!("Starting initialization...");
+
+    if std::env::var("ORT_DYLIB_PATH").is_err() {
+        warn!("ORT_DYLIB_PATH not set — ONNX models will be unavailable");
+    }
+
     let state: SharedState = Arc::new(RwLock::new(AppState::new().await));
+    info!("Initialization complete");
 
     let app = Router::new()
         .route("/health", get(health))
@@ -538,7 +603,22 @@ async fn main() {
         .route("/face/compare", post(compare_faces))
         .route("/graph/neighborhood", post(query_graph))
         .route("/gps/spoof-detect", post(detect_gps_spoof))
-        .layer(CorsLayer::permissive())
+        .layer({
+            let origins_str = std::env::var("CORS_ORIGINS")
+                .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
+            let origins: Vec<_> = origins_str.split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if origins.is_empty() {
+                CorsLayer::permissive()
+            } else {
+                CorsLayer::new()
+                    .allow_origin(origins)
+                    .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                    .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION])
+                    .allow_credentials(true)
+            }
+        })
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8091".to_string());
@@ -546,5 +626,20 @@ async fn main() {
     info!("INEC Inference Engine starting on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+
+    // Graceful shutdown on SIGTERM/SIGINT
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let ctrl_c = tokio::signal::ctrl_c();
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => info!("received SIGINT, shutting down inference engine"),
+                _ = sigterm.recv() => info!("received SIGTERM, shutting down inference engine"),
+            }
+        })
+        .await
+        .unwrap();
+
+    info!("Inference Engine shut down gracefully");
 }

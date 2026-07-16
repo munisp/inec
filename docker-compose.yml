@@ -104,6 +104,7 @@ services:
     volumes:
     - fluvio-data:/fluvio
   frontend:
+    <<: *common
     build:
       context: ./inec-frontend
       dockerfile: Dockerfile

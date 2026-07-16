@@ -1,0 +1,79 @@
+{
+  "description": "INEC Election Day — Real-Time Operations Dashboard",
+  "panels": [
+    {
+      "title": "Voter Throughput (voters/min by state)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "inec_arch_voter_throughput_per_minute", "legendFormat": "{{state_code}}" }]
+    },
+    {
+      "title": "Results Submission Progress",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum(inec_results_submitted_total) by (election_id, level)", "legendFormat": "{{level}}" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "red", "value": null },
+        { "color": "yellow", "value": 20000 },
+        { "color": "green", "value": 40000 }
+      ]}}}
+    },
+    {
+      "title": "Anomaly Detections",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [{ "expr": "sum(rate(inec_arch_events_published_total{event_type=\"anomaly.detected\"}[5m])) * 60" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 5 }
+      ]}}}
+    },
+    {
+      "title": "Incident Reports (rate/min)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [{ "expr": "sum(rate(inec_arch_events_published_total{event_type=\"incident.reported\"}[5m])) * 60" }]
+    },
+    {
+      "title": "BVAS Device Heartbeats (online)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [{ "expr": "sum(rate(inec_arch_events_published_total{event_type=\"bvas.heartbeat\"}[5m])) * 60" }]
+    },
+    {
+      "title": "Geofence Violations",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [{ "expr": "sum(rate(inec_arch_events_published_total{event_type=\"geofence.violation\"}[5m])) * 60" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 }
+      ]}}}
+    },
+    {
+      "title": "Biometric Success vs Failure Rate",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "sum(inec_arch_biometric_verifications_total{result=\"success\"})", "legendFormat": "Success" },
+        { "expr": "sum(inec_arch_biometric_verifications_total{result=\"failure\"})", "legendFormat": "Failure" }
+      ]
+    },
+    {
+      "title": "Blockchain Attestation Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "targets": [{ "expr": "sum(rate(inec_arch_events_published_total{event_type=\"blockchain.attested\"}[5m])) * 60", "legendFormat": "attestations/min" }]
+    },
+    {
+      "title": "Service Health (Circuit Breakers)",
+      "type": "statushistory",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "targets": [{ "expr": "inec_arch_circuit_breaker_state", "legendFormat": "{{service}}" }]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["inec", "election-day", "realtime"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "INEC — Election Day Operations",
+  "uid": "inec-election-day"
+}

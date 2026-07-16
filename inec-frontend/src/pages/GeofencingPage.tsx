@@ -24,7 +24,7 @@ export default function GeofencingPage() {
   const [spoofResult, setSpoofResult] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { api.getGeofenceStats(1).then(setStats).catch(() => {}); }, []);
+  useEffect(() => { api.getGeofenceStats(1).then(setStats).catch(err => console.error("API error:", err)); }, []);
 
   const handleCheck = async () => {
     if (!form.lat || !form.lng || !form.puCode) return;

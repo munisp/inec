@@ -1,0 +1,170 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inec-waf-rules
+  namespace: inec
+data:
+  waf-policy.yaml: |
+    # INEC Election Platform — WAF Rules (OpenAppSec / ModSecurity compatible)
+    #
+    # Tuned for Nigerian election infrastructure:
+    # - Blocks SQL injection, XSS, path traversal, command injection
+    # - Rate limits per-IP and per-party for GOTV
+    # - Geo-blocking for non-Nigerian admin access
+    # - Election Day surge protection
+
+    rules:
+      # --- SQL Injection Prevention ---
+      - id: 1001
+        name: "Block SQL injection in query parameters"
+        phase: 1
+        severity: CRITICAL
+        action: BLOCK
+        match:
+          any:
+            - parameter: "*"
+              pattern: "(?i)(union\\s+select|insert\\s+into|delete\\s+from|drop\\s+table|alter\\s+table|exec\\s*\\(|execute\\s*\\(|xp_cmdshell|0x[0-9a-f]+|char\\s*\\(|concat\\s*\\()"
+            - parameter: "*"
+              pattern: "(?i)(;\\s*--|'\\s*or\\s+'|'\\s*and\\s+'|1\\s*=\\s*1|'\\s*=\\s*')"
+            - header: "*"
+              pattern: "(?i)(union|select|insert|delete|drop|alter|exec|grant|revoke)\\s"
+
+      # --- XSS Prevention ---
+      - id: 1002
+        name: "Block cross-site scripting"
+        phase: 1
+        severity: HIGH
+        action: BLOCK
+        match:
+          any:
+            - parameter: "*"
+              pattern: "(?i)(<script|javascript:|on(load|error|click|mouseover)\\s*=|eval\\s*\\(|document\\.cookie|window\\.location)"
+            - parameter: "*"
+              pattern: "(?i)(&#x[0-9a-f]+|&#[0-9]+|%3[Cc]script)"
+
+      # --- Path Traversal ---
+      - id: 1003
+        name: "Block path traversal attacks"
+        phase: 1
+        severity: HIGH
+        action: BLOCK
+        match:
+          any:
+            - uri: "(\\.\\./|\\.\\.\\\\|%2e%2e|%252e%252e)"
+            - parameter: "*"
+              pattern: "(\\.\\./|/etc/passwd|/proc/self|/dev/null|c:\\\\windows)"
+
+      # --- Command Injection ---
+      - id: 1004
+        name: "Block OS command injection"
+        phase: 1
+        severity: CRITICAL
+        action: BLOCK
+        match:
+          any:
+            - parameter: "*"
+              pattern: "(?i)(;\\s*(ls|cat|wget|curl|bash|sh|python|perl|ruby|nc|netcat)|\\|\\s*(ls|cat|wget)|`[^`]*`|\\$\\([^)]*\\))"
+
+      # --- Rate Limiting ---
+      - id: 2001
+        name: "Rate limit API requests per IP"
+        phase: 1
+        severity: MEDIUM
+        action: RATE_LIMIT
+        rate:
+          requests: 100
+          period: 60s
+          key: "client_ip"
+          action_on_exceed: BLOCK
+          block_duration: 300s
+
+      - id: 2002
+        name: "Rate limit GOTV outreach dispatch"
+        phase: 1
+        severity: MEDIUM
+        action: RATE_LIMIT
+        match:
+          uri: "/gotv/campaigns/.*/launch"
+        rate:
+          requests: 5
+          period: 3600s
+          key: "header:X-GOTV-Party-ID"
+          action_on_exceed: BLOCK
+          block_duration: 3600s
+
+      - id: 2003
+        name: "Rate limit login attempts"
+        phase: 1
+        severity: HIGH
+        action: RATE_LIMIT
+        match:
+          any:
+            - uri: "/api/auth/login"
+            - uri: "/gotv/mobile/auth/otp/verify"
+        rate:
+          requests: 10
+          period: 300s
+          key: "client_ip"
+          action_on_exceed: BLOCK
+          block_duration: 900s
+
+      # --- Election Day Surge Protection ---
+      - id: 3001
+        name: "Election day elevated rate limits"
+        phase: 1
+        severity: LOW
+        action: RATE_LIMIT
+        condition:
+          header: "X-Election-Day"
+          value: "true"
+        rate:
+          requests: 500
+          period: 60s
+          key: "client_ip"
+          action_on_exceed: THROTTLE
+          throttle_delay: 2s
+
+      # --- Request Size Limits ---
+      - id: 4001
+        name: "Block oversized request bodies"
+        phase: 1
+        severity: MEDIUM
+        action: BLOCK
+        match:
+          body_size_gt: 10485760  # 10MB
+
+      # --- Geo-Blocking for Admin ---
+      - id: 5001
+        name: "Restrict admin access to Nigerian IPs"
+        phase: 1
+        severity: HIGH
+        action: BLOCK
+        match:
+          uri_prefix: "/api/admin"
+        condition:
+          not:
+            geo_country: "NG"
+
+      # --- Protocol Enforcement ---
+      - id: 6001
+        name: "Block non-standard HTTP methods"
+        phase: 1
+        severity: MEDIUM
+        action: BLOCK
+        match:
+          method_not_in: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+
+      # --- Response Headers ---
+      - id: 7001
+        name: "Add security response headers"
+        phase: 3
+        severity: LOW
+        action: ADD_HEADER
+        headers:
+          X-Content-Type-Options: "nosniff"
+          X-Frame-Options: "DENY"
+          X-XSS-Protection: "1; mode=block"
+          Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+          Content-Security-Policy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' wss: https:"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=(self), payment=()"

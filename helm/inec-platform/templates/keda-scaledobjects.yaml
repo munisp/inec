@@ -1,0 +1,59 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ .Release.Name }}-backend-keda
+  labels:
+    app.kubernetes.io/name: inec-backend
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  scaleTargetRef:
+    name: {{ .Release.Name }}-backend
+  pollingInterval: {{ .Values.keda.pollingInterval | default 15 }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod | default 120 }}
+  minReplicaCount: {{ .Values.backend.autoscaling.minReplicas | default 3 }}
+  maxReplicaCount: {{ .Values.backend.autoscaling.maxReplicas | default 20 }}
+  fallback:
+    failureThreshold: 3
+    replicas: {{ .Values.backend.autoscaling.minReplicas | default 3 }}
+  triggers:
+    {{- if .Values.keda.kafka.enabled }}
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.keda.kafka.bootstrapServers }}
+        consumerGroup: {{ .Release.Name }}-backend
+        topic: {{ .Values.keda.kafka.topic | default "inec.results.submitted" }}
+        lagThreshold: {{ .Values.keda.kafka.lagThreshold | default "100" | quote }}
+        activationLagThreshold: {{ .Values.keda.kafka.activationLagThreshold | default "10" | quote }}
+    {{- end }}
+    {{- if .Values.keda.prometheus.enabled }}
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.keda.prometheus.serverAddress }}
+        metricName: http_requests_per_second
+        query: {{ .Values.keda.prometheus.query | default "sum(rate(http_requests_total{job=\"inec-backend\"}[2m]))" | quote }}
+        threshold: {{ .Values.keda.prometheus.threshold | default "50" | quote }}
+        activationThreshold: {{ .Values.keda.prometheus.activationThreshold | default "10" | quote }}
+    {{- end }}
+  advanced:
+    restoreToOriginalReplicaCount: true
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+            - type: Pods
+              value: 4
+              periodSeconds: 30
+          selectPolicy: Max
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Percent
+              value: 25
+              periodSeconds: 60
+          selectPolicy: Min
+{{- end }}

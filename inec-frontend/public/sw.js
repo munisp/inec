@@ -12,7 +12,7 @@ const STATIC_ASSETS = [];
 // Install — skip waiting to activate immediately
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+    caches.open(STATIC_CACHE).then((cache) => cache.addAll(PRECACHE_URLS))
   );
   self.skipWaiting();
 });
@@ -41,8 +41,7 @@ self.addEventListener('activate', (event) => {
 // - Hashed assets (/assets/*): cache-first (filename contains content hash)
 // - API requests: pass through (no interception)
 self.addEventListener('fetch', (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
+  const url = new URL(event.request.url);
 
   // API requests — pass through without interception
   const isAPI = url.pathname.startsWith('/api') || 
@@ -54,22 +53,25 @@ self.addEventListener('fetch', (event) => {
   if ((url.pathname.startsWith('/observer/') || url.pathname.startsWith('/results/')) &&
       (request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH')) {
     event.respondWith(
-      fetch(request.clone()).catch(async () => {
-        const body = await request.clone().text();
-        await queueOfflineRequest({
-          url: request.url,
-          method: request.method,
-          headers: Object.fromEntries(request.headers.entries()),
+      fetch(event.request.clone()).catch(async () => {
+        // Queue the request for later
+        const body = await event.request.clone().text();
+        const queueItem = {
+          url: event.request.url,
+          method: 'POST',
+          headers: Object.fromEntries(event.request.headers.entries()),
           body,
           timestamp: Date.now(),
-        });
-        return new Response(JSON.stringify({
-          queued: true,
-          message: 'Request queued — will sync when online',
-        }), {
-          status: 202,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        };
+        const db = await openOfflineDB();
+        const tx = db.transaction('queue', 'readwrite');
+        tx.objectStore('queue').add(queueItem);
+        await tx.complete;
+
+        return new Response(
+          JSON.stringify({ queued: true, message: 'Request queued for when online' }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } }
+        );
       })
     );
     return;
@@ -126,34 +128,17 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
-// Background Sync — replay queued requests when back online
+// Background sync: replay queued requests when online
 self.addEventListener('sync', (event) => {
-  if (event.tag === 'offline-sync') {
-    event.waitUntil(replayOfflineQueue());
+  if (event.tag === 'inec-offline-sync') {
+    event.waitUntil(replayQueue());
   }
 });
 
-// Push Notifications — display result updates
-self.addEventListener('push', (event) => {
-  const data = event.data ? event.data.json() : {};
-  const title = data.title || 'INEC Election Update';
-  const options = {
-    body: data.body || 'New result submitted',
-    icon: '/favicon.ico',
-    badge: '/favicon.ico',
-    data: data.url || '/',
-    actions: [
-      { action: 'view', title: 'View Result' },
-      { action: 'dismiss', title: 'Dismiss' },
-    ],
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
-});
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  if (event.action === 'view') {
-    event.waitUntil(self.clients.openWindow(event.notification.data));
+// Periodic sync: keep critical election data fresh
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'inec-data-refresh') {
+    event.waitUntil(refreshCriticalData());
   }
 });
 
@@ -180,41 +165,75 @@ async function queueOfflineRequest(request) {
   }
 }
 
-async function replayOfflineQueue() {
-  const db = await openIndexedDB();
-  const tx = db.transaction('offline-queue', 'readwrite');
-  const store = tx.objectStore('offline-queue');
-  const requests = await getAllFromStore(store);
+async function replayQueue() {
+  const db = await openOfflineDB();
+  const tx = db.transaction('queue', 'readonly');
+  const items = await tx.objectStore('queue').getAll();
 
-  for (const req of requests) {
+  for (const item of items) {
     try {
-      await fetch(req.url, {
-        method: req.method,
-        headers: req.headers,
-        body: req.body,
+      const response = await fetch(item.url, {
+        method: item.method,
+        headers: item.headers,
+        body: item.body,
+        credentials: 'include',
       });
-      store.delete(req.id);
+      if (response.ok) {
+        const delTx = db.transaction('queue', 'readwrite');
+        delTx.objectStore('queue').delete(item.id);
+      }
     } catch {
       break;
     }
   }
 }
 
-function openIndexedDB() {
+function openOfflineDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('inec-offline', 1);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore('offline-queue', { keyPath: 'id', autoIncrement: true });
+    const req = indexedDB.open('inec-offline', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('queue')) {
+        db.createObjectStore('queue', { keyPath: 'id', autoIncrement: true });
+      }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
 }
 
-function getAllFromStore(store) {
-  return new Promise((resolve) => {
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => resolve([]);
-  });
-}
+// Listen for messages from main thread
+self.addEventListener('message', (event) => {
+  if (event.data === 'skipWaiting') {
+    self.skipWaiting();
+  }
+  if (event.data === 'getQueueCount') {
+    openOfflineDB().then(db => {
+      const tx = db.transaction('queue', 'readonly');
+      const req = tx.objectStore('queue').count();
+      req.onsuccess = () => {
+        event.source.postMessage({ type: 'queueCount', count: req.result });
+      };
+    });
+  }
+});
+
+// Push notification support for election alerts
+self.addEventListener('push', (event) => {
+  const data = event.data ? event.data.json() : { title: 'INEC Alert', body: 'New election update' };
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'INEC Alert', {
+      body: data.body || 'New update available',
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+      tag: data.tag || 'inec-alert',
+      data: { url: data.url || '/' },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(clients.openWindow(url));
+});
