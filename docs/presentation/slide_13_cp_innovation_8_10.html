@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 38px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-top: auto;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 26px;
+            color: #008751;
+            margin-top: 10px;
+        }
+        .columns-wrapper {
+            display: flex;
+            gap: 30px;
+            margin-top: 40px;
+        }
+        .column {
+            flex: 1;
+            background-color: white;
+            padding-top: 30px;
+            padding-left: 25px;
+            padding-right: 25px;
+            border-top: 8px solid #4A1525;
+            min-height: 320px;
+        }
+        .column.alt-border-1 {
+            border-top: 8px solid #008751;
+        }
+        .column.alt-border-2 {
+            border-top: 8px solid #2B1A20;
+        }
+        h3 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 22px;
+            color: #4A1525;
+            text-transform: uppercase;
+        }
+        .column.alt-border-1 h3 {
+            color: #008751;
+        }
+        .column.alt-border-2 h3 {
+            color: #2B1A20;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 20px;
+            line-height: 1.6;
+            color: #2B1A20;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Campaign Planning Innovation 8, 9 & 10:<br>The Complete Campaign Command Center</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>Policy resonance mapping, GRP-optimised media buying, and a live war room dashboard complete the world's most advanced campaign intelligence suite.</h2>
+            <div class="columns-wrapper">
+                <div class="column">
+                    <h3>8. Policy Resonance</h3>
+                    <p>Maps each proposed policy against the specific demographic priorities of Nigeria's six geopolitical zones, ensuring every policy is framed for maximum local impact.</p>
+                </div>
+                <div class="column alt-border-1">
+                    <h3>9. Media Buy Optimizer</h3>
+                    <p>Calculates Gross Rating Points (GRP) across 9 channels and generates a 4-phase flight schedule (Awareness, Persuasion, Mobilization, GOTV).</p>
+                </div>
+                <div class="column alt-border-2">
+                    <h3>10. War Room Dashboard</h3>
+                    <p>Aggregates live data from deployed polling agents, tracking coverage percentages, security incidents, and preliminary vote tallies in real time.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

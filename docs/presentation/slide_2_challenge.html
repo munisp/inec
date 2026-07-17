@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        /* keep title top padding (40px) unchanged, reduce bottom padding to save height */
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding: 40px 60px 20px; /* top 40px preserved, bottom reduced from 40 -> 20 */
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        /* reduce padding in the large content area to cut overall height */
+        .bottom-seventy {
+            height: 70%;
+            padding: 40px; /* reduced from 60px */
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-bottom: 10px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-bottom: 30px;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 24px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+        ul {
+            margin-left: 30px;
+            margin-top: 20px;
+        }
+        li {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 24px;
+            line-height: 1.6;
+            margin-bottom: 10px;
+            color: #2B1A20;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>The Challenge: Elections at Scale Demand Predictive Intelligence</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>Nigeria's 93.5 million registered voters demand a platform that can predict, simulate, and plan — not just record.</h2>
+            <p>Managing a nationwide election across 36 states, 774 LGAs, and over 176,000 polling units is one of the most complex logistical challenges in the world. Traditional electoral management systems react to problems after they occur. The INEC platform's two new modules shift this paradigm entirely, enabling proactive, data-driven decision-making at every level.</p>
+            <ul>
+                <li>Unpredictable voter turnout and logistics failures on Election Day</li>
+                <li>Lack of scientific tools for candidates to plan competitive campaigns</li>
+                <li>No mechanism for stress-testing election infrastructure before deployment</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-top: 10px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-top: 30px;
+        }
+        .columns {
+            display: flex;
+            gap: 60px;
+            margin-top: 40px;
+        }
+        .column {
+            flex: 1;
+            background-color: #ffffff;
+            padding-top: 30px;
+            padding-left: 30px;
+            padding-right: 30px;
+            border-top: 8px solid #4A1525;
+            min-height: 300px;
+        }
+        h3 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 24px;
+            color: #4A1525;
+            text-transform: uppercase;
+            margin-top: 10px;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            line-height: 1.6;
+            color: #2B1A20;
+            margin-top: 20px;
+        }
+        ul {
+            margin-left: 25px;
+            margin-top: 15px;
+        }
+        li {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 20px;
+            line-height: 1.6;
+            color: #2B1A20;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Campaign Planning Innovation 4 & 5:<br>Optimising Money and Movement</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>A 4-tier fundraising model and a TSP route optimizer ensure efficient deployment of resources.</h2>
+            <div class="columns">
+                <div class="column">
+                    <h3>4. Fundraising Optimizer</h3>
+                    <p>Segments donors to calculate expected yield and generates phased event timelines to close funding gaps.</p>
+                    <ul>
+                        <li>Major Donors</li>
+                        <li>Mid-tier Contributors</li>
+                        <li>Grassroots Supporters</li>
+                        <li>Diaspora Network</li>
+                    </ul>
+                </div>
+                <div class="column">
+                    <h3>5. Canvassing Route Optimizer</h3>
+                    <p>Implements a nearest-neighbor Traveling Salesperson Problem (TSP) algorithm for geographically efficient door-to-door canvassing routes.</p>
+                    <ul>
+                        <li>Minimizes travel distance across target wards</li>
+                        <li>Maximizes daily voter contact</li>
+                        <li>Reduces logistical overhead and fuel costs</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding: 40px 60px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding: 40px 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-bottom: 10px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-bottom: 30px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background-color: white;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+        }
+        th, td {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 24px;
+            padding: 20px;
+            text-align: left;
+            border-bottom: 2px solid #E3EBF2;
+        }
+        th {
+            background-color: #4A1525;
+            color: #E3EBF2;
+            font-weight: bold;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        .accent-border {
+            border-left: 8px solid #008751;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Architecture Overview: Two Production-Grade Microservices</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>Two independent Python microservices deliver 20 innovations via REST and WebSocket APIs.</h2>
+            <div class="accent-border">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Module</th>
+                            <th>Lines of Code</th>
+                            <th>Endpoints</th>
+                            <th>Port</th>
+                            <th>WebSocket</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Digital Twin Simulation</td>
+                            <td>671</td>
+                            <td>12 REST</td>
+                            <td>8205</td>
+                            <td>Yes</td>
+                        </tr>
+                        <tr>
+                            <td>Campaign Planning Suite</td>
+                            <td>1,025</td>
+                            <td>14 REST</td>
+                            <td>8204</td>
+                            <td>Yes</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

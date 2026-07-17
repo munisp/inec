@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #4A1525;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 100px;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(255, 255, 255, 0.05) 10px,
+                rgba(255, 255, 255, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .content-box {
+            position: relative;
+            z-index: 1;
+            background-color: #E3EBF2;
+            padding: 60px;
+            border-left: 16px solid #008751;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+            max-width: 1000px;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 64px;
+            text-transform: uppercase;
+            text-align: left;
+            color: #4A1525;
+            line-height: 1.1;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 32px;
+            color: #008751;
+            margin-bottom: 20px;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 20px;
+            color: #2B1A20;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="content-box">
+            <h1>INEC Platform:<br>20 Next-Generation Innovations</h1>
+            <h2>Digital Twin Simulation & Candidate Campaign Planning Modules</h2>
+            <p>Independent National Electoral Commission (INEC) — Technology Modernisation Initiative<br>July 2026</p>
+        </div>
+    </div>
+</body>
+</html>

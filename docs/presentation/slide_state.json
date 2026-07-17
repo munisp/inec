@@ -1,0 +1,177 @@
+{
+  "project_info": {
+    "title": "INEC Platform: 20 Next-Generation Innovations",
+    "created": 1784319805.252,
+    "last_updated": 1784320037.878,
+    "total_slides": 15
+  },
+  "slides": [
+    {
+      "id": "slide_1_title",
+      "state": "edited",
+      "pageNum": 1
+    },
+    {
+      "id": "slide_2_challenge",
+      "state": "edited",
+      "pageNum": 2
+    },
+    {
+      "id": "slide_3_architecture",
+      "state": "edited",
+      "pageNum": 3
+    },
+    {
+      "id": "slide_4_dt_innovation_1",
+      "state": "edited",
+      "pageNum": 4
+    },
+    {
+      "id": "slide_5_dt_innovation_2",
+      "state": "edited",
+      "pageNum": 5
+    },
+    {
+      "id": "slide_6_dt_innovation_3_4",
+      "state": "edited",
+      "pageNum": 6
+    },
+    {
+      "id": "slide_7_dt_innovation_5_6",
+      "state": "edited",
+      "pageNum": 7
+    },
+    {
+      "id": "slide_8_dt_innovation_7_10",
+      "state": "edited",
+      "pageNum": 8
+    },
+    {
+      "id": "slide_9_cp_innovation_1",
+      "state": "edited",
+      "pageNum": 9
+    },
+    {
+      "id": "slide_10_cp_innovation_2_3",
+      "state": "edited",
+      "pageNum": 10
+    },
+    {
+      "id": "slide_11_cp_innovation_4_5",
+      "state": "edited",
+      "pageNum": 11
+    },
+    {
+      "id": "slide_12_cp_innovation_6_7",
+      "state": "edited",
+      "pageNum": 12
+    },
+    {
+      "id": "slide_13_cp_innovation_8_10",
+      "state": "edited",
+      "pageNum": 13
+    },
+    {
+      "id": "slide_14_impact",
+      "state": "edited",
+      "pageNum": 14
+    },
+    {
+      "id": "slide_15_conclusion",
+      "state": "edited",
+      "pageNum": 15
+    }
+  ],
+  "outline": [
+    {
+      "id": "slide_1_title",
+      "title": "INEC Platform: 20 Next-Generation Innovations",
+      "summary": "Title slide introducing the 20 innovations in the Digital Twin Simulation and Candidate Campaign Planning modules for the INEC Platform.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_2_challenge",
+      "title": "The Challenge: Elections at Scale Demand Predictive Intelligence",
+      "summary": "Highlights the logistical complexity of managing nationwide elections in Nigeria and the need for proactive, data-driven decision-making tools.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_3_architecture",
+      "title": "Architecture Overview: Two Production-Grade Microservices",
+      "summary": "Provides an overview of the two Python microservices, their lines of code, endpoints, and WebSocket capabilities.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_4_dt_innovation_1",
+      "title": "Digital Twin Innovation 1: Monte Carlo Forecasting Eliminates Guesswork",
+      "summary": "Explains the 1,000-run Monte Carlo engine that generates probability distributions for turnout and vote shares.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_5_dt_innovation_2",
+      "title": "Digital Twin Innovation 2: Four-Scenario Parallel Branching Prepares INEC for Any Outcome",
+      "summary": "Details the simultaneous simulation of Baseline, Optimistic, Pessimistic, and Crisis scenarios for contingency planning.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_6_dt_innovation_3_4",
+      "title": "Digital Twin Innovation 3 & 4: Disruption Modeling Quantifies the Unquantifiable",
+      "summary": "Describes how weather events and adversarial attacks are modeled to calculate precise turnout suppression percentages.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_7_dt_innovation_5_6",
+      "title": "Digital Twin Innovation 5 & 6: AI and Live Data Close the Prediction Gap",
+      "summary": "Covers the natural-language What-If generator and real-time calibration from live turnout data.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_8_dt_innovation_7_10",
+      "title": "Digital Twin Innovation 7, 8, 9 & 10: From Simulation to Operational Intelligence",
+      "summary": "Summarizes geospatial exports, agent-based crowd modeling, certification timelines, and supply chain simulation.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_9_cp_innovation_1",
+      "title": "Campaign Planning Innovation 1: AI Speech Writer Speaks to Every Nigerian",
+      "summary": "Explains the LLM-backed speech engine generating culturally resonant materials in multiple languages.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_10_cp_innovation_2_3",
+      "title": "Campaign Planning Innovation 2 & 3: Data-Driven Targeting Replaces Guesswork",
+      "summary": "Details ward-level swing analysis and opponent vulnerability scanning for scientific campaign strategy.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_11_cp_innovation_4_5",
+      "title": "Campaign Planning Innovation 4 & 5: Optimising Money and Movement",
+      "summary": "Covers the 4-tier fundraising model and the TSP route optimizer for canvassing efficiency.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_12_cp_innovation_6_7",
+      "title": "Campaign Planning Innovation 6 & 7: Real-Time Performance Intelligence",
+      "summary": "Describes live debate performance scoring and volunteer network graph analysis.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_13_cp_innovation_8_10",
+      "title": "Campaign Planning Innovation 8, 9 & 10: The Complete Campaign Command Center",
+      "summary": "Summarizes policy resonance mapping, GRP-optimized media buying, and the live war room dashboard.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_14_impact",
+      "title": "Combined Impact: A Platform Built for the Future of Democracy",
+      "summary": "Highlights the overall impact of the 20 innovations, transforming INEC into a proactive guardian of democratic integrity.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_15_conclusion",
+      "title": "Conclusion: Production-Ready, Validated, and Deployed",
+      "summary": "Confirms that both modules are syntax-validated, Docker-containerized, and ready for immediate deployment on the main branch.",
+      "image_plan": "Use a suitable image if needed"
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-top: 20px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 26px;
+            color: #008751;
+            margin-top: 10px;
+        }
+        .intro-text {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            line-height: 1.5;
+            color: #2B1A20;
+            margin-top: 20px;
+        }
+        .outcomes-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+        .outcome-box {
+            background-color: white;
+            border-top: 8px solid #4A1525;
+            padding-top: 20px;
+            padding-left: 25px;
+            padding-right: 25px;
+            min-height: 120px;
+        }
+        .outcome-box.alt {
+            border-top: 8px solid #008751;
+        }
+        .outcome-text {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 20px;
+            line-height: 1.5;
+            color: #2B1A20;
+        }
+        .highlight {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            color: #4A1525;
+        }
+        .outcome-box.alt .highlight {
+            color: #008751;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Combined Impact:<br>A Platform Built for the Future of Democracy</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>20 innovations across two modules transform INEC from a reactive administrator into a proactive guardian of democratic integrity.</h2>
+            
+            <p class="intro-text">Together, these innovations represent a fundamental shift in how elections are managed and how candidates compete. INEC gains the ability to predict and prevent failures before they occur. Candidates gain access to scientific, data-driven tools that level the playing field. Nigerian voters gain a more secure, efficient, and transparent electoral process.</p>
+            
+            <div class="outcomes-grid">
+                <div class="outcome-box">
+                    <p class="outcome-text"><span class="highlight">Risk Mitigation:</span> Simulation-based forecasting reduces Election Day logistics and security failures.</p>
+                </div>
+                <div class="outcome-box alt">
+                    <p class="outcome-text"><span class="highlight">Democratized Strategy:</span> AI-powered campaign tools provide universal access to professional political intelligence.</p>
+                </div>
+                <div class="outcome-box alt">
+                    <p class="outcome-text"><span class="highlight">Real-Time Adaptation:</span> Live data integration closes the gap between predictive models and ground reality.</p>
+                </div>
+                <div class="outcome-box">
+                    <p class="outcome-text"><span class="highlight">Inclusive Democracy:</span> Multilingual AI ensures no Nigerian voter is left out of the democratic conversation.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

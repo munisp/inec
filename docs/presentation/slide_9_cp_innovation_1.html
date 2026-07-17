@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding: 40px 60px 0px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .top-third-content {
+            margin-bottom: 20px;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding: 20px 60px 0px; /* reduced top padding */
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 40px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-bottom: 10px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-bottom: 18px; /* reduced */
+        }
+        .content-flex {
+            display: flex;
+            gap: 40px; /* slightly reduced horizontal gap */
+        }
+        .left-col {
+            flex: 1.5;
+            display: flex;
+            flex-direction: column;
+        }
+        .right-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            line-height: 1.6;
+            margin-bottom: 12px; /* reduced */
+            color: #2B1A20;
+        }
+        h3 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 22px;
+            color: #4A1525;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            margin-top: 10px;
+        }
+        ul {
+            margin-left: 25px;
+            margin-bottom: 12px; /* reduced */
+        }
+        li {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 20px;
+            line-height: 1.5;
+            margin-bottom: 6px; /* slightly reduced */
+            color: #2B1A20;
+        }
+        .highlight {
+            color: #008751;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <div class="top-third-content">
+                <h1>Campaign Planning Innovation 1:<br>AI Speech Writer Speaks to Every Nigerian</h1>
+            </div>
+        </div>
+        <div class="bottom-seventy">
+            <h2>An LLM-backed speech engine generates culturally resonant campaign materials in multiple languages in seconds.</h2>
+            <div class="content-flex">
+                <div class="left-col">
+                    <p>The AI Speech Writer dynamically constructs prompts using candidate metadata, including name, office, state, and key policy priorities.</p>
+                    <p>It generates content directly in the target language rather than translating after the fact, preserving political idioms and cultural resonance specific to each zone.</p>
+                    <p>A deterministic template fallback guarantees zero downtime, ensuring candidates always have access to core messaging during API outages.</p>
+                </div>
+                <div class="right-col">
+                    <h3>Supported Languages</h3>
+                    <ul>
+                        <li><span class="highlight">English</span> (National)</li>
+                        <li><span class="highlight">Hausa</span> (North-West / North-East)</li>
+                        <li><span class="highlight">Yoruba</span> (South-West)</li>
+                        <li><span class="highlight">Igbo</span> (South-East)</li>
+                    </ul>
+                    <h3>7 Dynamic Speech Types</h3>
+                    <ul>
+                        <li>Rally &amp; Manifesto</li>
+                        <li>Press Release &amp; Policy Brief</li>
+                        <li>Debate Opening</li>
+                        <li>Victory &amp; Concession</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

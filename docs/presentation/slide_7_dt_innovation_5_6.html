@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding: 40px 60px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding: 40px 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-bottom: 10px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-bottom: 30px;
+        }
+        .columns {
+            display: flex;
+            gap: 40px;
+            margin-top: 10px;
+        }
+        .column {
+            flex: 1;
+            background-color: white;
+            padding: 30px;
+            border-top: 8px solid #008751;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+        }
+        h3 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 24px;
+            color: #4A1525;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            line-height: 1.6;
+            color: #2B1A20;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Digital Twin Innovation 5 & 6: AI and Live Data Close the Prediction Gap</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>A natural-language "What-If" generator and live-data calibration make the simulation engine self-improving in real time.</h2>
+            <div class="columns">
+                <div class="column">
+                    <h3>Innovation 5: AI "What-If" Generator</h3>
+                    <p>Administrators can input hypothetical events in plain English (e.g., "What if a major bridge collapses in Kogi State?"). The engine parses the input and maps it to the appropriate simulation parameters automatically.</p>
+                </div>
+                <div class="column">
+                    <h3>Innovation 6: Real-Time Calibration</h3>
+                    <p>The engine continuously ingests live turnout data from the Fluvio stream on Election Day, recalibrating its predictive models on the fly to reflect ground reality and close the gap between prediction and actuals.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

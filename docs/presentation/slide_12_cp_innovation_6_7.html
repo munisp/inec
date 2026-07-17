@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding-top: 40px;
+            padding-left: 60px;
+            padding-right: 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-top: 20px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-top: 10px;
+        }
+        .columns-wrapper {
+            display: flex;
+            gap: 40px;
+            margin-top: 40px;
+        }
+        .column {
+            flex: 1;
+            background-color: white;
+            padding-top: 30px;
+            padding-left: 30px;
+            padding-right: 30px;
+            border-top: 8px solid #4A1525;
+        }
+        .column.alt-border {
+            border-top: 8px solid #008751;
+        }
+        h3 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 24px;
+            color: #4A1525;
+            text-transform: uppercase;
+        }
+        .column.alt-border h3 {
+            color: #008751;
+        }
+        p {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            line-height: 1.6;
+            color: #2B1A20;
+            margin-top: 20px;
+        }
+        .highlight-text {
+            font-weight: bold;
+            color: #4A1525;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Campaign Planning Innovation 6 & 7:<br>Real-Time Performance Intelligence</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>Debate performance scoring and volunteer network analysis give campaign managers live feedback during the most critical moments.</h2>
+            <div class="columns-wrapper">
+                <div class="column">
+                    <h3>6. Debate Performance Tracker</h3>
+                    <p>Analyzes each statement in real time, scoring sentiment, tone, and thematic coverage.</p>
+                    <p>Grading the overall performance (A–D), the system provides immediate tactical recommendations to the candidate's earpiece or podium screen <span class="highlight-text">(e.g., "Avoid defensive language — pivot to solutions")</span>.</p>
+                </div>
+                <div class="column alt-border">
+                    <h3>7. Volunteer Network Graph</h3>
+                    <p>Models the social reach of the campaign's volunteer base using advanced graph theory.</p>
+                    <p>Identifies <span class="highlight-text">"super-spreader" influencers</span> whose connections can amplify messaging to thousands of additional voters through secondary and tertiary networks.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

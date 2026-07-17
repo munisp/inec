@@ -828,6 +828,10 @@ func main() {
 	r.HandleFunc("/campaign/event-schedule", readAuth(handleCampaignEventSchedule)).Methods("GET")
 	r.HandleFunc("/campaign/sentiment", readAuth(handleCampaignSentimentAnalysis)).Methods("GET")
 	r.HandleFunc("/campaign/eligibility-check", writeAuth(handleCampaignEligibilityCheck)).Methods("POST")
+	// Stakeholder Recommendation Engine
+	r.HandleFunc("/campaign/stakeholders/recommend", writeAuth(handleStakeholderRecommend)).Methods("POST")
+	r.HandleFunc("/campaign/stakeholders/categories", readAuth(handleStakeholderCategories)).Methods("GET")
+	r.HandleFunc("/campaign/stakeholders/states-meta", readAuth(handleStakeholderStatesMeta)).Methods("GET")
 
 	// Static file serving for observer photo uploads
 	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
@@ -1190,6 +1194,5 @@ func handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 var serverStartTime = time.Now()
-
 
 

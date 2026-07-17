@@ -1023,3 +1023,54 @@ async def health():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8204, log_level="info")
+
+# ─── Stakeholder Recommendation Engine ───────────────────────────────────────
+from stakeholder_engine import recommend_stakeholders as _recommend_stakeholders
+
+class StakeholderReq(BaseModel):
+    candidate_name: str
+    state_code: str
+    office_type: str
+    party_code: str
+    religion: Optional[str] = None
+    ethnicity: Optional[str] = None
+    gender: Optional[str] = None
+    top_n: int = 15
+
+@app.post("/api/v1/campaign/stakeholders", tags=["Stakeholder Engagement"])
+async def stakeholder_recommendations(req: StakeholderReq):
+    """
+    Returns a comprehensive, prioritised stakeholder engagement plan for a candidate.
+    Covers local leaders, youth groups, women associations, market unions, religious bodies,
+    traditional rulers, civil society, and professional associations for all 36 states + FCT.
+    """
+    result = _recommend_stakeholders(
+        state_code=req.state_code,
+        office_type=req.office_type,
+        candidate_name=req.candidate_name,
+        party_code=req.party_code,
+        religion=req.religion,
+        ethnicity=req.ethnicity,
+        gender=req.gender,
+        top_n=req.top_n,
+    )
+    return result
+
+@app.get("/api/v1/campaign/stakeholders/categories", tags=["Stakeholder Engagement"])
+async def stakeholder_categories():
+    """Returns all stakeholder categories and subcategories."""
+    from stakeholder_engine import UNIVERSAL_STAKEHOLDERS, ZONE_STAKEHOLDERS
+    categories = {}
+    for s in UNIVERSAL_STAKEHOLDERS:
+        cat = s["category"]
+        if cat not in categories:
+            categories[cat] = []
+        if s["subcategory"] not in categories[cat]:
+            categories[cat].append(s["subcategory"])
+    return {"categories": categories, "zone_specific_zones": list(ZONE_STAKEHOLDERS.keys())}
+
+@app.get("/api/v1/campaign/stakeholders/states", tags=["Stakeholder Engagement"])
+async def stakeholder_states():
+    """Returns all supported states with metadata."""
+    from stakeholder_engine import STATE_META
+    return {"states": STATE_META}

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: sans-serif; background-color: #E3EBF2; color: #2B1A20; }
+        .slide-container {
+            width: 1280px; min-height: 720px;
+            background-color: #E3EBF2;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .hash-pattern {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(43, 26, 32, 0.05) 10px,
+                rgba(43, 26, 32, 0.05) 12px
+            );
+            z-index: 0;
+        }
+        .top-third {
+            height: 30%;
+            background-color: #4A1525;
+            color: #E3EBF2;
+            padding: 40px 60px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            z-index: 1;
+            border-bottom: 8px solid #008751;
+        }
+        .bottom-seventy {
+            height: 70%;
+            padding: 40px 60px;
+            display: flex;
+            flex-direction: column;
+            z-index: 1;
+            background-color: #E3EBF2;
+        }
+        h1 {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 42px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-bottom: 10px;
+        }
+        h2 {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 28px;
+            color: #008751;
+            margin-bottom: 40px;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 50px 60px;
+        }
+        .grid-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .item-title {
+            font-family: 'Arial Black', Impact, sans-serif;
+            font-weight: 800;
+            font-size: 24px;
+            color: #4A1525;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            border-bottom: 4px solid #008751;
+            padding-bottom: 10px;
+            display: inline-block;
+        }
+        .item-text {
+            font-family: 'Arial', sans-serif;
+            font-weight: 500;
+            font-size: 22px;
+            line-height: 1.5;
+            color: #2B1A20;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="hash-pattern"></div>
+        <div class="top-third">
+            <h1>Digital Twin Innovation 7, 8, 9 & 10: From Simulation to Operational Intelligence</h1>
+        </div>
+        <div class="bottom-seventy">
+            <h2>Geospatial exports, agent-based crowd modeling, certification timelines, and supply chain simulation.</h2>
+            <div class="grid-container">
+                <div class="grid-item">
+                    <div class="item-title">7. 3D Geospatial Export</div>
+                    <div class="item-text">Generates GeoJSON outputs rendered directly in the GeoLibre spatial viewer, mapping high-risk LGAs and bottlenecks in real time.</div>
+                </div>
+                <div class="grid-item">
+                    <div class="item-title">8. Agent-Based Crowd Modeling</div>
+                    <div class="item-text">Simulates individual voter behavior at polling units, predicting queue lengths, wait times, and the probability of crowd unrest.</div>
+                </div>
+                <div class="grid-item">
+                    <div class="item-title">9. Predictive Certification Timeline</div>
+                    <div class="item-text">Calculates the estimated time of final result collation and certification based on simulated logistics delays across all 36 states.</div>
+                </div>
+                <div class="grid-item">
+                    <div class="item-title">10. Supply Chain Simulation</div>
+                    <div class="item-text">Models the distribution of ballot papers, BVAS devices, and personnel across all 176,000 polling units to identify vulnerabilities.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
