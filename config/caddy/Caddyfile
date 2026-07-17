@@ -1,0 +1,86 @@
+{
+    admin 0.0.0.0:2019
+    
+    # Store certificates in Redis for clustering
+    storage redis {
+        address redis:6379
+        key_prefix caddy
+    }
+    
+    # Enable experimental HTTP/3
+    servers {
+        protocols h1 h2 h3
+    }
+    
+    order coraza_waf first
+    order authenticate before respond
+}
+
+# Redirect HTTP to HTTPS
+http://localhost, http://inec.local {
+    redir https://{host}{uri} permanent
+}
+
+https://localhost, https://inec.local {
+    # Internal TLS for local development
+    tls internal
+    
+    # Security Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://*; connect-src 'self' https://* wss://*;"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+    
+    # OWASP Coraza WAF
+    coraza_waf {
+        load_owasp_crs
+        directives `
+            Include /etc/caddy/coraza.conf
+            Include @owasp_crs/*.conf
+        `
+    }
+    
+    # API Gateway routing (APISIX)
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy apisix:9080 {
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up Host {host}
+        }
+    }
+    
+    # Keycloak Auth routing
+    handle /auth/* {
+        reverse_proxy keycloak:8080 {
+            header_up Host {host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    
+    # Temporal UI routing
+    handle /workflows/* {
+        reverse_proxy temporal-ui:8080
+    }
+    
+    # Frontend routing
+    handle /* {
+        reverse_proxy frontend:80
+    }
+    
+    # Structured JSON Logs
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100MiB
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+}

@@ -9,8 +9,8 @@ services:
     networks:
     - inec-network
     ports:
-    - 9080:9080
-    - 9443:9443
+    # - 9080:9080
+    # - 9443:9443
     - 9180:9180
     volumes:
     - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml
@@ -368,6 +368,8 @@ services:
     - tigerbeetle-data:/data
 version: '3.9'
 volumes:
+  caddy-data:
+  caddy-config:
   app-data: null
   fluvio-data: null
   kafka-data: null
@@ -378,3 +380,26 @@ volumes:
   redis-data: null
   temporal-data: null
   tigerbeetle-data: null
+
+  caddy:
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./config/caddy/coraza.conf:/etc/caddy/coraza.conf:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - inec-network
+    depends_on:
+      - redis
+      - apisix
+      - keycloak
+    restart: unless-stopped
+    environment:
+      - CADDY_ADMIN=0.0.0.0:2019
