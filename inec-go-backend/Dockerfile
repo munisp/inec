@@ -8,7 +8,7 @@ COPY internal/ ./internal/
 COPY migrations/ ./migrations/
 RUN CGO_ENABLED=1 GOOS=linux go build -o inec-go-backend .
 
-FROM alpine:3.21
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates postgresql16-client curl
 WORKDIR /app
 COPY --from=builder /app/inec-go-backend .
