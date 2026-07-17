@@ -467,3 +467,21 @@ volumes:
     restart: always
     networks:
       - inec-network
+
+  campaign-planning:
+    build: ./services/campaign-planning
+    container_name: inec_campaign_planning
+    restart: unless-stopped
+    ports:
+      - "8204:8204"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+      - INEC_API_URL=http://inec-backend:8088
+    networks:
+      - inec_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8204/api/v1/campaign/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
