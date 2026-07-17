@@ -990,4 +990,95 @@ export const api = {
     request(`/gotv/tasks/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, completed_count: completedCount || 0 }) }),
   autoAssignGOTVTasks: () =>
     request('/gotv/tasks/auto-assign', { method: 'POST', body: JSON.stringify({}) }),
+
+  // ── Innovation APIs ──────────────────────────────────────────────────────────
+  // Innovation 1: AI Anomaly Detection
+  detectAnomaly: (data: Record<string, unknown>) =>
+    request('/innovation/anomaly/detect', { method: 'POST', body: JSON.stringify(data) }),
+  getAnomalyAlerts: () => request('/innovation/anomaly/alerts'),
+  getAnomalyModelStatus: () => request('/innovation/anomaly/model/status'),
+
+  // Innovation 2: Zero-Knowledge Proof Voter Verification
+  generateZKPProof: (data: { voter_id: string; election_id: number; polling_unit_id: string }) =>
+    request('/innovation/zkp/generate', { method: 'POST', body: JSON.stringify(data) }),
+  verifyZKPProof: (data: { proof: string; public_key: string; election_id: number }) =>
+    request('/innovation/zkp/verify', { method: 'POST', body: JSON.stringify(data) }),
+  getZKPStats: () => request('/innovation/zkp/stats'),
+
+  // Innovation 3: Homomorphic Encryption
+  encryptVoteHomomorphic: (data: Record<string, unknown>) =>
+    request('/innovation/homomorphic/encrypt', { method: 'POST', body: JSON.stringify(data) }),
+  tallyHomomorphic: (data: Record<string, unknown>) =>
+    request('/innovation/homomorphic/tally', { method: 'POST', body: JSON.stringify(data) }),
+  decryptHomomorphicResult: (data: Record<string, unknown>) =>
+    request('/innovation/homomorphic/decrypt', { method: 'POST', body: JSON.stringify(data) }),
+  getHomomorphicStats: () => request('/innovation/homomorphic/stats'),
+
+  // Innovation 4: Federated Learning
+  submitFederatedModelUpdate: (data: Record<string, unknown>) =>
+    request('/innovation/federated/model/update', { method: 'POST', body: JSON.stringify(data) }),
+  aggregateFederatedModels: () =>
+    request('/innovation/federated/model/aggregate', { method: 'POST', body: JSON.stringify({}) }),
+  getFederatedFraudScore: (data: Record<string, unknown>) =>
+    request('/innovation/federated/score', { method: 'POST', body: JSON.stringify(data) }),
+  getFederatedStats: () => request('/innovation/federated/stats'),
+
+  // Innovation 5: Digital Twin Simulation
+  runDigitalTwinSimulation: (data: Record<string, unknown>) =>
+    request('/innovation/digital-twin/simulate', { method: 'POST', body: JSON.stringify(data) }),
+  getDigitalTwinScenarios: () => request('/innovation/digital-twin/scenarios'),
+  getDigitalTwinResults: (runId?: string) =>
+    request(`/innovation/digital-twin/results${runId ? `?run_id=${runId}` : ''}`),
+
+  // Innovation 6: Quantum-Resistant Cryptography
+  quantumSign: (data: { document_id: string; content: string; algorithm?: string }) =>
+    request('/innovation/quantum/sign', { method: 'POST', body: JSON.stringify(data) }),
+  quantumVerify: (data: { document_id: string; content: string; signature: string; public_key: string; algorithm?: string }) =>
+    request('/innovation/quantum/verify', { method: 'POST', body: JSON.stringify(data) }),
+  generateQuantumKeyPair: (algorithm?: string) =>
+    request('/innovation/quantum/keypair', { method: 'POST', body: JSON.stringify({ algorithm: algorithm || 'dilithium3' }) }),
+
+  // Innovation 7: Satellite Imagery
+  analyzeSatelliteImagery: (data: Record<string, unknown>) =>
+    request('/innovation/satellite/analyze', { method: 'POST', body: JSON.stringify(data) }),
+  getSatelliteAlerts: () => request('/innovation/satellite/alerts'),
+  getSatelliteStatus: () => request('/innovation/satellite/status'),
+
+  // Innovation 8: IVR Extended
+  getIVRSessionStatus: (sessionId: string) =>
+    request(`/ivr/session/status?session_id=${sessionId}`),
+  getIVRStats: () => request('/ivr/stats'),
+
+  // Innovation 9: IPFS Audit
+  anchorEventToIPFS: (data: { event_type: string; event_data: unknown; election_id: number }) =>
+    request('/innovation/ipfs/anchor', { method: 'POST', body: JSON.stringify(data) }),
+  verifyIPFSAuditRecord: (cid: string) =>
+    request(`/innovation/ipfs/audit/verify?cid=${encodeURIComponent(cid)}`),
+
+  // Innovation 10: Predictive Resource Allocation
+  predictResourceAllocation: (data?: Record<string, unknown>) =>
+    request('/innovation/resource/predict', { method: 'POST', body: JSON.stringify(data || {}) }),
+  optimizeResourceAllocation: (data: Record<string, unknown>) =>
+    request('/innovation/resource/optimize', { method: 'POST', body: JSON.stringify(data) }),
+  getResourceAllocationStatus: () => request('/innovation/resource/status'),
+
+  // ── Candidate Campaign Planning APIs ─────────────────────────────────────────
+  createCampaignPlan: (data: Record<string, unknown>) =>
+    request('/campaign/plan', { method: 'POST', body: JSON.stringify(data) }),
+  getCampaignPlan: (candidateId: string, electionId?: string) =>
+    request(`/campaign/plan?candidate_id=${candidateId}${electionId ? `&election_id=${electionId}` : ''}`),
+  getCampaignVoterTargeting: (data: Record<string, unknown>) =>
+    request('/campaign/voter-targeting', { method: 'POST', body: JSON.stringify(data) }),
+  getCampaignPollingAnalysis: (candidateId: string, stateCode?: string, lgaCode?: string) =>
+    request(`/campaign/polling-analysis?candidate_id=${candidateId}${stateCode ? `&state_code=${stateCode}` : ''}${lgaCode ? `&lga_code=${lgaCode}` : ''}`),
+  getCampaignCompetitorAnalysis: (electionId: string, candidateId?: string) =>
+    request(`/campaign/competitor-analysis?election_id=${electionId}${candidateId ? `&candidate_id=${candidateId}` : ''}`),
+  optimizeCampaignBudget: (data: Record<string, unknown>) =>
+    request('/campaign/budget-allocation', { method: 'POST', body: JSON.stringify(data) }),
+  getCampaignEventSchedule: (candidateId: string, electionId: string) =>
+    request(`/campaign/event-schedule?candidate_id=${candidateId}&election_id=${electionId}`),
+  getCampaignSentiment: (candidateId: string, period?: string) =>
+    request(`/campaign/sentiment?candidate_id=${candidateId}${period ? `&period=${period}` : ''}`),
+  checkCandidateEligibility: (data: { candidate_id: number; office_type: string; state_code?: string; party_code?: string }) =>
+    request('/campaign/eligibility-check', { method: 'POST', body: JSON.stringify(data) }),
 };

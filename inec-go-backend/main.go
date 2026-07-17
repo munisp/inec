@@ -778,6 +778,57 @@ func main() {
 	// Voice Transcription
 	r.HandleFunc("/voice/transcribe", writeAuth(handleVoiceTranscription)).Methods("POST")
 
+	// ── Innovation 1: AI Anomaly Detection ────────────────────────────────────────
+	r.HandleFunc("/innovation/anomaly/detect", writeAuth(handleAnomalyDetectStream)).Methods("POST")
+	r.HandleFunc("/innovation/anomaly/alerts", readAuth(handleAnomalyAlerts)).Methods("GET")
+	r.HandleFunc("/innovation/anomaly/model/status", readAuth(handleAnomalyModelStatus)).Methods("GET")
+	// ── Innovation 2: Zero-Knowledge Proof Voter Verification ─────────────────────
+	r.HandleFunc("/innovation/zkp/generate", writeAuth(handleZKPGenerateProof)).Methods("POST")
+	r.HandleFunc("/innovation/zkp/verify", writeAuth(handleZKPVerifyProof)).Methods("POST")
+	r.HandleFunc("/innovation/zkp/stats", readAuth(handleZKPStats)).Methods("GET")
+	// ── Innovation 3: Homomorphic Encryption Vote Tallying ────────────────────────
+	r.HandleFunc("/innovation/homomorphic/encrypt", writeAuth(handleHomomorphicEncryptVote)).Methods("POST")
+	r.HandleFunc("/innovation/homomorphic/tally", adminOnly(handleHomomorphicTally)).Methods("POST")
+	r.HandleFunc("/innovation/homomorphic/decrypt", adminOnly(handleHomomorphicDecryptResult)).Methods("POST")
+	r.HandleFunc("/innovation/homomorphic/stats", readAuth(handleHomomorphicStats)).Methods("GET")
+	// ── Innovation 4: Federated Learning Fraud Detection ─────────────────────────
+	r.HandleFunc("/innovation/federated/model/update", writeAuth(handleFederatedModelUpdate)).Methods("POST")
+	r.HandleFunc("/innovation/federated/model/aggregate", adminOnly(handleFederatedAggregate)).Methods("POST")
+	r.HandleFunc("/innovation/federated/score", writeAuth(handleFederatedFraudScore)).Methods("POST")
+	r.HandleFunc("/innovation/federated/stats", readAuth(handleFederatedStats)).Methods("GET")
+	// ── Innovation 5: Digital Twin Election Simulation ────────────────────────────
+	r.HandleFunc("/innovation/digital-twin/simulate", writeAuth(handleDigitalTwinSimulate)).Methods("POST")
+	r.HandleFunc("/innovation/digital-twin/scenarios", readAuth(handleDigitalTwinScenarios)).Methods("GET")
+	r.HandleFunc("/innovation/digital-twin/results", readAuth(handleDigitalTwinResults)).Methods("GET")
+	// ── Innovation 6: Quantum-Resistant Cryptography ──────────────────────────────
+	r.HandleFunc("/innovation/quantum/sign", writeAuth(handleQuantumSign)).Methods("POST")
+	r.HandleFunc("/innovation/quantum/verify", writeAuth(handleQuantumVerify)).Methods("POST")
+	r.HandleFunc("/innovation/quantum/keypair", adminOnly(handleQuantumKeyPair)).Methods("POST")
+	// ── Innovation 7: Satellite Imagery Change Detection ──────────────────────────
+	r.HandleFunc("/innovation/satellite/analyze", writeAuth(handleSatelliteAnalyze)).Methods("POST")
+	r.HandleFunc("/innovation/satellite/alerts", readAuth(handleSatelliteAlerts)).Methods("GET")
+	r.HandleFunc("/innovation/satellite/status", readAuth(handleSatelliteStatus)).Methods("GET")
+	// ── Innovation 8: IVR Extended ────────────────────────────────────────────────
+	r.HandleFunc("/ivr/session/status", readAuth(handleIVRSessionStatus)).Methods("GET")
+	r.HandleFunc("/ivr/stats", readAuth(handleIVRStats)).Methods("GET")
+	// ── Innovation 9: IPFS Audit Trail Extended ───────────────────────────────────
+	r.HandleFunc("/innovation/ipfs/anchor", writeAuth(handleIPFSAnchorEvent)).Methods("POST")
+	r.HandleFunc("/innovation/ipfs/audit/verify", readAuth(handleIPFSAuditVerify)).Methods("GET")
+	// ── Innovation 10: Predictive Resource Allocation ─────────────────────────────
+	r.HandleFunc("/innovation/resource/predict", readAuth(handleResourceAllocationPredict)).Methods("GET", "POST")
+	r.HandleFunc("/innovation/resource/optimize", adminOnly(handleResourceAllocationOptimize)).Methods("POST")
+	r.HandleFunc("/innovation/resource/status", readAuth(handleResourceAllocationStatus)).Methods("GET")
+	// ── Candidate Campaign Planning Module ────────────────────────────────────────
+	r.HandleFunc("/campaign/plan", writeAuth(handleCampaignPlanCreate)).Methods("POST")
+	r.HandleFunc("/campaign/plan", readAuth(handleCampaignPlanGet)).Methods("GET")
+	r.HandleFunc("/campaign/voter-targeting", writeAuth(handleCampaignVoterTargeting)).Methods("POST")
+	r.HandleFunc("/campaign/polling-analysis", readAuth(handleCampaignPollingAnalysis)).Methods("GET")
+	r.HandleFunc("/campaign/competitor-analysis", readAuth(handleCampaignCompetitorAnalysis)).Methods("GET")
+	r.HandleFunc("/campaign/budget-allocation", writeAuth(handleCampaignBudgetAllocation)).Methods("POST")
+	r.HandleFunc("/campaign/event-schedule", readAuth(handleCampaignEventSchedule)).Methods("GET")
+	r.HandleFunc("/campaign/sentiment", readAuth(handleCampaignSentimentAnalysis)).Methods("GET")
+	r.HandleFunc("/campaign/eligibility-check", writeAuth(handleCampaignEligibilityCheck)).Methods("POST")
+
 	// Static file serving for observer photo uploads
 	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
