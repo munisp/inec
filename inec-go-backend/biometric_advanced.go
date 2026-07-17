@@ -504,7 +504,7 @@ func (t *ThresholdAutoTuner) RunAnalysis(modality string) M {
 	if len(impostorScores) < 50 {
 		// Use kernel density estimation (Gaussian KDE) on genuine scores to model impostor distribution.
 		// Impostor scores cluster below genuine scores; we estimate this from the genuine distribution.
-		impostorScores = estimateImpostorDistribution(genuineScores, min(50, len(genuineScores)*2))
+		impostorScores = estimateImpostorDistribution(genuineScores, func() int { n := len(genuineScores)*2; if n > 50 { return 50 }; return n }())
 	}
 
 	genuinePairs := len(genuineScores)

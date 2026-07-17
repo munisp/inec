@@ -1,14 +1,70 @@
 version: 2
+
 updates:
-  - package-ecosystem: "npm"
-    directory: "/inec-frontend"
-    schedule:
-      interval: "weekly"
+  # Go backend
   - package-ecosystem: "gomod"
     directory: "/inec-go-backend"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "docker"
+      day: "monday"
+      time: "08:00"
+      timezone: "Africa/Lagos"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Frontend
+  - package-ecosystem: "npm"
+    directory: "/inec-frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Africa/Lagos"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GeoLibre Collab server
+  - package-ecosystem: "gomod"
+    directory: "/services/geolibre-collab"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "go"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Docker images
+  - package-ecosystem: "docker"
+    directory: "/inec-go-backend"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/inec-frontend"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"

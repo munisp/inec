@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"context"
 	"database/sql"
 )
@@ -20,3 +21,20 @@ func querySingleRowCtx(ctx context.Context, query string, args ...interface{}) (
 	}
 	return all[0], nil
 }
+
+
+// envString returns the value of an environment variable or a fallback default.
+func envString(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// envBool returns the boolean value of an environment variable or a fallback default.
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	return v == "true" || v == "1" || (v == "" && fallback)
+}
+
+// envBool returns the boolean value of an environment variable or a fallback default.

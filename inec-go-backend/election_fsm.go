@@ -761,7 +761,7 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// Fallback: return config for client-side exchange
 	writeJSON(w, 200, M{
 		"message":   "OAuth2 callback received",
-		"code":      code[:min(8, len(code))] + "...",
+		"code":      code[:func() int { if len(code) < 8 { return len(code) }; return 8 }()] + "...",
 		"token_url": cfg.TokenURL,
 		"client_id": cfg.ClientID,
 	})

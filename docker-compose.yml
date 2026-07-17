@@ -419,3 +419,51 @@ volumes:
     restart: always
     networks:
       - inec-network
+
+  # ── Next-Generation Innovation Services ─────────────────────────────────────
+
+  ai-anomaly-detection:
+    build:
+      context: ./services/ai-anomaly-detection
+    restart: always
+    networks:
+      - inec-network
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  homomorphic-tally:
+    build:
+      context: ./services/homomorphic-tally
+    restart: always
+    networks:
+      - inec-network
+    environment:
+      - TALLY_DECRYPT_TOKEN=${TALLY_DECRYPT_TOKEN:-inec-tally-secret}
+
+  federated-fraud-detection:
+    build:
+      context: ./services/federated-fraud-detection
+    restart: always
+    networks:
+      - inec-network
+
+  digital-twin-simulation:
+    build:
+      context: ./services/digital-twin-simulation
+    restart: always
+    networks:
+      - inec-network
+
+  satellite-change-detection:
+    build:
+      context: ./services/satellite-change-detection
+    restart: always
+    networks:
+      - inec-network
+
+  predictive-resource-allocation:
+    build:
+      context: ./services/predictive-resource-allocation
+    restart: always
+    networks:
+      - inec-network

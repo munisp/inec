@@ -237,3 +237,25 @@ self.addEventListener('notificationclick', (event) => {
   const url = event.notification.data?.url || '/';
   event.waitUntil(clients.openWindow(url));
 });
+
+// ── Critical Data Refresh (Periodic Sync) ─────────────────────────────────────
+async function refreshCriticalData() {
+  const criticalEndpoints = [
+    '/api/v1/elections',
+    '/api/v1/results/summary',
+    '/api/v1/anomaly/recent',
+    '/api/v1/incidents/active',
+  ];
+  for (const endpoint of criticalEndpoints) {
+    try {
+      const response = await fetch(endpoint);
+      if (response.ok) {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(endpoint, response.clone());
+        console.log('[SW] Refreshed:', endpoint);
+      }
+    } catch (err) {
+      console.warn('[SW] Failed to refresh:', endpoint, err);
+    }
+  }
+}

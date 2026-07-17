@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -361,27 +360,4 @@ func handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 		"api_key": newKey,
 		"note":    "Store this key securely — it won't be shown again",
 	})
-}
-
-// ── mTLS Configuration ──
-
-// MTLSConfig holds TLS configuration for inter-service communication.
-type MTLSConfig struct {
-	Enabled    bool   `json:"enabled"`
-	CertFile   string `json:"cert_file"`
-	KeyFile    string `json:"key_file"`
-	CAFile     string `json:"ca_file"`
-	ServerName string `json:"server_name"`
-}
-func envBool(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	return v == "true" || v == "1" || (v == "" && fallback)
-}
-
-func envString(key, fallback string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	return v
 }
