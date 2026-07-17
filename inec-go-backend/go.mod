@@ -25,7 +25,7 @@ require (
 	go.temporal.io/api v1.29.1
 	go.temporal.io/sdk v1.26.0
 	golang.org/x/crypto v0.54.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.1
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.2
 )
