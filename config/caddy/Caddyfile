@@ -45,6 +45,14 @@ https://localhost, https://inec.local {
     }
     
     # API Gateway routing (APISIX)
+		handle /geolibre/* {
+			reverse_proxy geolibre-web:80
+		}
+
+		handle /geolibre-collab/* {
+			reverse_proxy geolibre-collab:8080
+		}
+
     handle /api/* {
         uri strip_prefix /api
         reverse_proxy apisix:9080 {

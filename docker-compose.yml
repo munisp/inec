@@ -403,3 +403,19 @@ volumes:
     restart: unless-stopped
     environment:
       - CADDY_ADMIN=0.0.0.0:2019
+
+  geolibre-web:
+    build:
+      context: ./services/geolibre-web
+      dockerfile: Dockerfile
+    restart: always
+    networks:
+      - inec-network
+
+  geolibre-collab:
+    build:
+      context: ./services/geolibre-collab
+      dockerfile: Dockerfile
+    restart: always
+    networks:
+      - inec-network

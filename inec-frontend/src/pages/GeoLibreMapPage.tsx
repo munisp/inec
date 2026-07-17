@@ -1369,12 +1369,12 @@ function SpatialAnalysisTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function GeoLibreViewerTab() {
-  const [viewerUrl, setViewerUrl] = useState('https://viewer.geolibre.app');
+  const [viewerUrl, setViewerUrl] = useState(import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090');
   const [urlInput, setUrlInput] = useState('');
   const store = useGeoLibreStore();
 
   const loadProject = useCallback((url: string) => {
-    if (url) setViewerUrl(`https://viewer.geolibre.app/?url=${encodeURIComponent(url)}`);
+    if (url) setViewerUrl(`import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090'/?url=${encodeURIComponent(url)}`);
   }, []);
 
   const exportToGeoLibre = useCallback(async () => {
@@ -1405,10 +1405,10 @@ function GeoLibreViewerTab() {
         <Button variant="outline" size="sm" onClick={exportToGeoLibre}>
           <Download className="w-3.5 h-3.5 mr-1" /> Export to GeoLibre
         </Button>
-        <Button variant="outline" size="sm" onClick={() => setViewerUrl('https://viewer.geolibre.app')}>
+        <Button variant="outline" size="sm" onClick={() => setViewerUrl(import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090')}>
           <RefreshCw className="w-3.5 h-3.5 mr-1" /> Reset
         </Button>
-        <a href="https://viewer.geolibre.app" target="_blank" rel="noopener noreferrer">
+        <a href="import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090'" target="_blank" rel="noopener noreferrer">
           <Button variant="ghost" size="sm" className="text-xs">
             <Satellite className="w-3.5 h-3.5 mr-1" /> Open Full
           </Button>

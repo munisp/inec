@@ -100,6 +100,37 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "protocol": "openid-connect"
+    },
+    {
+      "clientId": "caddy-edge",
+      "secret": "caddy-secret-edge-proxy",
+      "redirectUris": [
+        "https://localhost/auth/oauth2/callback",
+        "https://inec.local/auth/oauth2/callback"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "role-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "role",
+            "jsonType.label": "String"
+          }
+        }
+      ]
     }
   ],
   "users": [
