@@ -11,7 +11,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hyperledger/fabric-gateway v1.5.0
 	github.com/lib/pq v1.11.2
-	github.com/miekg/pkcs11 v1.1.1
+	github.com/miekg/pkcs11 v1.1.2
 	github.com/opensearch-project/opensearch-go/v2 v2.3.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.21.0
