@@ -306,9 +306,9 @@ func initRedisClient() RedisClient {
 			// Parse redis://host:port or just host:port
 			redisAddr = redisURL
 			if len(redisAddr) > 7 && redisAddr[:7] == "redis://" {
-				redisAddr = redisAddr[8:]
+				redisAddr = redisAddr[7:]
 			}
-			if len(redisAddr) > 8 && redisAddr[:8] == "http://" {
+			if len(redisAddr) > 7 && redisAddr[:7] == "http://" {
 				redisAddr = redisAddr[7:]
 			}
 		}

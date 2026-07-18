@@ -271,6 +271,13 @@ func (s *statusCapture) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Flush forwards http.Flusher so SSE streaming works through the wrapper.
+func (s *statusCapture) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // ── Event publishing helper ──
 
 func publishEvent(eventType, source string, data map[string]interface{}) {
