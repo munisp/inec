@@ -2,19 +2,26 @@
 -- Adds 8 tables for: CPI tracking, surveys, social listening, endorsements,
 -- LGA tiers, scheduled reports, platform analytics ingestion.
 
-BEGIN;
-
--- Demographic enrichment on existing contacts
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS age_group VARCHAR(20);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS gender VARCHAR(10);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS lga_code VARCHAR(20);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS lcda_code VARCHAR(20);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS lga_tier INTEGER;
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS socioeconomic_class VARCHAR(5);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS occupation_group VARCHAR(30);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS education_level VARCHAR(20);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS religion VARCHAR(20);
-ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS ethnicity VARCHAR(20);
+-- Demographic enrichment on existing contacts (gotv_contacts is created by
+-- the GOTV service; skip gracefully if it is not present yet — the GOTV
+-- service applies its own column guarantees at startup)
+DO $$
+BEGIN
+    IF to_regclass('gotv_contacts') IS NOT NULL THEN
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS age_group VARCHAR(20);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS gender VARCHAR(10);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS lga_code VARCHAR(20);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS lcda_code VARCHAR(20);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS lga_tier INTEGER;
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS socioeconomic_class VARCHAR(5);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS occupation_group VARCHAR(30);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS education_level VARCHAR(20);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS religion VARCHAR(20);
+        ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS ethnicity VARCHAR(20);
+    ELSE
+        RAISE WARNING 'gotv_contacts not present; demographic columns deferred to GOTV service bootstrap';
+    END IF;
+END $$;
 
 -- Table 1: CPI History (Composite Popularity Index tracking)
 CREATE TABLE IF NOT EXISTS gotv_cpi_history (
@@ -201,4 +208,4 @@ INSERT INTO gotv_lga_tiers (lga_code, lga_name, tier, tier_name, strategic_focus
     ('apapa', 'Apapa', 4, 'Urban Centre', 'Professional and upper-class voter engagement', 1)
 ON CONFLICT (lga_code) DO NOTHING;
 
-COMMIT;
+-- COMMIT removed: the migration runner wraps each file in its own transaction

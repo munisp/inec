@@ -1,4 +1,6 @@
 -- Geospatial: landmarks, tracking, geofences, crowd
+-- Geometry columns and GiST indexes are applied in exception-tolerant blocks
+-- so the migration degrades gracefully where PostGIS is unavailable (dev/CI).
 
 CREATE TABLE IF NOT EXISTS landmarks (
     id SERIAL PRIMARY KEY,
@@ -6,7 +8,6 @@ CREATE TABLE IF NOT EXISTS landmarks (
     category text NOT NULL,
     latitude real NOT NULL,
     longitude real NOT NULL,
-    geom public.geometry(Point,4326),
     state_code text,
     lga_code text,
     address text,
@@ -17,8 +18,15 @@ CREATE TABLE IF NOT EXISTS landmarks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_landmarks_category ON landmarks USING btree (category);
-CREATE INDEX IF NOT EXISTS idx_landmarks_geom ON landmarks USING gist (geom);
 CREATE INDEX IF NOT EXISTS idx_landmarks_state ON landmarks USING btree (state_code);
+
+DO $$
+BEGIN
+    ALTER TABLE landmarks ADD COLUMN IF NOT EXISTS geom public.geometry(Point,4326);
+    CREATE INDEX IF NOT EXISTS idx_landmarks_geom ON landmarks USING gist (geom);
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'landmarks.geom skipped: %', SQLERRM;
+END $$;
 
 CREATE TABLE IF NOT EXISTS official_tracking (
     staff_id text NOT NULL,
@@ -46,13 +54,19 @@ CREATE TABLE IF NOT EXISTS official_tracking_history (
     speed_kmh double precision DEFAULT 0,
     heading double precision DEFAULT 0,
     accuracy_m double precision DEFAULT 0,
-    geom public.geometry(Point,4326),
     recorded_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_tracking_hist_geom ON official_tracking_history USING gist (geom);
 CREATE INDEX IF NOT EXISTS idx_tracking_hist_staff ON official_tracking_history USING btree (staff_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tracking_hist_time ON official_tracking_history USING btree (recorded_at DESC);
+
+DO $$
+BEGIN
+    ALTER TABLE official_tracking_history ADD COLUMN IF NOT EXISTS geom public.geometry(Point,4326);
+    CREATE INDEX IF NOT EXISTS idx_tracking_hist_geom ON official_tracking_history USING gist (geom);
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'official_tracking_history.geom skipped: %', SQLERRM;
+END $$;
 
 CREATE TABLE IF NOT EXISTS crowd_density (
     id SERIAL PRIMARY KEY,
@@ -129,12 +143,18 @@ CREATE TABLE IF NOT EXISTS geofence_zones (
     center_lat double precision NOT NULL,
     center_lng double precision NOT NULL,
     radius_m double precision DEFAULT 500,
-    geom public.geometry(Polygon,4326),
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_geofence_zones_geom ON geofence_zones USING gist (geom);
 CREATE INDEX IF NOT EXISTS idx_geofence_zones_pu ON geofence_zones USING btree (pu_code);
+
+DO $$
+BEGIN
+    ALTER TABLE geofence_zones ADD COLUMN IF NOT EXISTS geom public.geometry(Polygon,4326);
+    CREATE INDEX IF NOT EXISTS idx_geofence_zones_geom ON geofence_zones USING gist (geom);
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'geofence_zones.geom skipped: %', SQLERRM;
+END $$;
 
 CREATE TABLE IF NOT EXISTS geofenced_submissions (
     id SERIAL PRIMARY KEY,
@@ -155,7 +175,6 @@ CREATE TABLE IF NOT EXISTS incident_locations (
     incident_id integer,
     latitude double precision NOT NULL,
     longitude double precision NOT NULL,
-    geom public.geometry(Point,4326),
     severity text DEFAULT 'medium'::text,
     incident_type text,
     description text,
@@ -163,7 +182,13 @@ CREATE TABLE IF NOT EXISTS incident_locations (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_incident_loc_geom ON incident_locations USING gist (geom);
+DO $$
+BEGIN
+    ALTER TABLE incident_locations ADD COLUMN IF NOT EXISTS geom public.geometry(Point,4326);
+    CREATE INDEX IF NOT EXISTS idx_incident_loc_geom ON incident_locations USING gist (geom);
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'incident_locations.geom skipped: %', SQLERRM;
+END $$;
 
 CREATE TABLE IF NOT EXISTS pu_photos (
     id SERIAL PRIMARY KEY,
@@ -173,13 +198,17 @@ CREATE TABLE IF NOT EXISTS pu_photos (
     photo_type text DEFAULT 'verification'::text,
     latitude double precision,
     longitude double precision,
-    geom public.geometry(Point,4326),
     uploaded_by text,
     verified boolean DEFAULT false,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_pu_photos_code ON pu_photos USING btree (pu_code);
-CREATE INDEX IF NOT EXISTS idx_pu_photos_geom ON pu_photos USING gist (geom);
 
-
+DO $$
+BEGIN
+    ALTER TABLE pu_photos ADD COLUMN IF NOT EXISTS geom public.geometry(Point,4326);
+    CREATE INDEX IF NOT EXISTS idx_pu_photos_geom ON pu_photos USING gist (geom);
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'pu_photos.geom skipped: %', SQLERRM;
+END $$;
