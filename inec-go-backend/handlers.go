@@ -232,47 +232,51 @@ func handleRefresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"access_token": token, "token_type": "Bearer", "expires_in": 3600})
 }
 
+// handleRefreshToken issues a new access+refresh token pair from a valid refresh token.
+func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RefreshToken == "" {
+		writeError(w, 400, "refresh_token is required")
+		return
+	}
+	claims, err := decodeToken(req.RefreshToken)
+	if err != nil {
+		writeError(w, 401, "invalid or expired refresh token")
+		return
+	}
+	tokenType, _ := claims["type"].(string)
+	if tokenType != "refresh" {
+		writeError(w, 401, "not a refresh token")
+		return
+	}
+	// Issue new access + refresh tokens
+	baseClaims := map[string]interface{}{
+		"sub": claims["sub"], "username": claims["username"], "role": claims["role"], "full_name": claims["full_name"],
+	}
+	newAccess, _ := createAccessToken(baseClaims)
+	newRefresh, _ := createRefreshToken(baseClaims)
+	writeJSON(w, 200, M{
+		"access_token": newAccess, "refresh_token": newRefresh, "token_type": "bearer", "expires_in": 3600,
+	})
+}
+
+// handleMe returns the currently authenticated user's claims.
+func handleMe(w http.ResponseWriter, r *http.Request) {
+	user, err := getCurrentUser(r)
+	if err != nil {
+		writeError(w, 401, "Not authenticated")
+		return
+	}
+	writeJSON(w, 200, user)
+}
+
 func handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"message": "logged out"})
 }
 
 // ── Users ──
-
-func handleListUsers(w http.ResponseWriter, r *http.Request) {
-	rows, _ := dbQueryCtx(r.Context(), "SELECT id, username, full_name, role, staff_id, state_code, created_at FROM users ORDER BY id")
-	writeJSON(w, 200, scanRows(rows))
-}
-
-func handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username string `json:"username" validate:"required,min=3"`
-		Password string `json:"password" validate:"required,min=8"`
-		FullName string `json:"full_name" validate:"required"`
-		Role     string `json:"role" validate:"required"`
-		StaffID  string `json:"staff_id"`
-	}
-	if err := decodeAndValidate(r, &req); err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	hash, err := hashPassword(req.Password)
-	if err != nil {
-		writeError(w, 500, "password hashing failed")
-		return
-	}
-	var staffID interface{}
-	if req.StaffID != "" {
-		staffID = req.StaffID
-	}
-	res, err := dbExecCtx(r.Context(), "INSERT INTO users (username, password_hash, full_name, role, staff_id) VALUES (?,?,?,?,?)",
-		req.Username, hash, req.FullName, req.Role, staffID)
-	if err != nil {
-		writeError(w, 409, "username or staff_id already exists")
-		return
-	}
-	id, _ := res.LastInsertId()
-	writeJSON(w, 201, M{"id": id, "username": req.Username, "role": req.Role})
-}
 
 func handleUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
