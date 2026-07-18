@@ -31,7 +31,6 @@ func getNFIQ2Description(score int) string {
 // NIST FRVT defaults if the file is not found.
 func SkipTestLoadBenchmarkCohort(t *testing.T) {
 	t.Skip("skip")
-	return
 	if db == nil { t.Skip("No DB") }
 	// Initialize benchmarks if not already done (from initBiometricBenchmarks).
 	// The initBiometricBenchmarks() function is called from init() or main init flow.
@@ -167,7 +166,6 @@ func SkipTestComputeNFIQ2ScoreRange(t *testing.T) {
 // TestGetEERRange verifies that EER ranges are returned correctly for known modalities.
 func SkipTestGetEERRange(t *testing.T) {
 	t.Skip("skip")
-	return
 	if db == nil { t.Skip("No DB") }
 	testCases := []struct {
 		modality    string

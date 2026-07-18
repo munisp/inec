@@ -27,5 +27,8 @@ BEGIN
 END $$;
 
 -- Encrypt sensitive columns (pseudocode for Pgcrypto integration)
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Guarded: pgcrypto contrib may be unavailable on minimal Postgres builds;
+-- a missing extension must not abort the whole migration.
+DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS pgcrypto;
+EXCEPTION WHEN OTHERS THEN RAISE WARNING 'pgcrypto extension unavailable (%) — continuing without it', SQLERRM; END $$;
 -- Assuming columns are migrated to bytea for encrypted storage in production
