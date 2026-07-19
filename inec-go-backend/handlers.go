@@ -116,9 +116,9 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username  string  `json:"username"`
-		Password  string `json:"password"`
-		FullName  string `json:"full_name"`
-		Role      string `json:"role"`
+		Password  string  `json:"password"`
+		FullName  string  `json:"full_name"`
+		Role      string  `json:"role"`
 		StaffID   *string `json:"staff_id"`
 		StateCode *string `json:"state_code"`
 	}
@@ -1286,15 +1286,14 @@ func collationPartyScoresBatch(ctx context.Context, groupCol string, groupCodes 
 		q = fmt.Sprintf(`SELECT w.lga_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
-			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
+			JOIN parties p ON p.code=rps.party_code
 			WHERE w.lga_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
 			GROUP BY w.lga_code, rps.party_code, p.abbreviation, p.color ORDER BY w.lga_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	case "ward_code":
 		q = fmt.Sprintf(`SELECT pu.ward_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
-			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
-			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
+			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN parties p ON p.code=rps.party_code
 			WHERE pu.ward_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
 			GROUP BY pu.ward_code, rps.party_code, p.abbreviation, p.color ORDER BY pu.ward_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
