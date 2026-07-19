@@ -14,6 +14,7 @@ import {
 import EngagementCalendar from "../components/EngagementCalendar";
 import LGADrillDown from "../components/LGADrillDown";
 import StakeholderCRM from "../components/StakeholderCRM";
+import StakeholdersCRMTab from "../components/StakeholdersCRMTab";
 import EngagementDashboard from "../components/EngagementDashboard";
 import type { Stakeholder as StakeholderType } from "../components/StakeholderTypes";
 import type { CRMContact } from "../components/StakeholderTypes";
@@ -1059,10 +1060,7 @@ export default function StakeholdersPage() {
               {/* Tab: Contact CRM */}
               {activeTab === "crm" && (
                 <div className="flex-1 overflow-y-auto p-4">
-                  <StakeholderCRM
-                    stakeholders={results}
-                    onContactsChange={setCrmContacts}
-                  />
+                  <StakeholdersCRMTab />
                 </div>
               )}
             </>

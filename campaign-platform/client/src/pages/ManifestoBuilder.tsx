@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, BookOpen, Plus, Loader2, Pencil, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUp, ArrowDown, BookOpen, Plus, Loader2, Pencil, Sparkles, Trash2 } from "lucide-react";
 
 type Priority = "low" | "medium" | "high" | "critical";
 const PRIORITY_COLORS: Record<Priority, string> = {
@@ -88,6 +88,18 @@ export default function ManifestoBuilder() {
     });
   };
 
+
+  const reorderMut = trpc.manifesto.upsert.useMutation({
+    onSuccess: () => utils.manifesto.list.invalidate(),
+  });
+  function moveSection(idx: number, dir: -1 | 1) {
+    const sorted = [...sections].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    const target = sorted[idx];
+    const swap = sorted[idx + dir];
+    if (!target || !swap) return;
+    reorderMut.mutate({ profileId: profileId!, id: target.id, sectionTitle: target.sectionTitle, sortOrder: swap.sortOrder ?? idx + dir + 1 });
+    reorderMut.mutate({ profileId: profileId!, id: swap.id, sectionTitle: swap.sectionTitle, sortOrder: target.sortOrder ?? idx + 1 });
+  }
   return (
     <div className="min-h-screen" style={{ background: "#F5F0EB" }}>
       <header style={{ background: "#4A1525" }} className="px-4 sm:px-6 py-4 flex items-center justify-between">
@@ -128,7 +140,9 @@ export default function ManifestoBuilder() {
           </div>
         ) : (
           <div className="space-y-4">
-            {[...sections].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)).map((s, i) => (
+            {(() => {
+              const sortedSections = [...sections].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+              return sortedSections.map((s, i) => (
               <div
                 key={s.id}
                 className="bg-white border border-gray-200 rounded p-5"
@@ -150,6 +164,16 @@ export default function ManifestoBuilder() {
                     )}
                   </div>
                   <div className="flex gap-1">
+                    {canEdit && (
+                      <>
+                        <Button variant="ghost" size="sm" onClick={() => moveSection(i, -1)} disabled={i === 0} title="Move up">
+                          <ArrowUp size={14} />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => moveSection(i, 1)} disabled={i === sortedSections.length - 1} title="Move down">
+                          <ArrowDown size={14} />
+                        </Button>
+                      </>
+                    )}
                     <Button variant="ghost" size="sm" onClick={() => openEdit(s)} disabled={!canEdit}>
                       <Pencil size={14} />
                     </Button>
@@ -168,7 +192,8 @@ export default function ManifestoBuilder() {
                 </div>
                 <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap ml-8">{s.summary}</p>
               </div>
-            ))}
+            ));
+            })()}
           </div>
         )}
       </div>

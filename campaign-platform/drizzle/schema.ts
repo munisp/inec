@@ -44,6 +44,7 @@ export const candidateProfiles = pgTable("candidate_profiles", {
   gender: varchar("gender", { length: 20 }),
   geopoliticalZone: varchar("geopolitical_zone", { length: 50 }),
   isActive: boolean("is_active").default(true),
+  isSeeded: boolean("is_seeded").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

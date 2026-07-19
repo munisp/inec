@@ -15,6 +15,7 @@ const SEV_COLORS: Record<string, string> = {
   high: "#C0392B",
   critical: "#7B0000",
   resolved: "#008751",
+  escalated: "#D97706",
 };
 
 type FeedFilter = "all" | "unresolved" | "resolved";
@@ -182,6 +183,8 @@ export default function ElectionDayWarRoom() {
                   <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                     {inc.status === "resolved" ? (
                       <Badge style={{ background: SEV_COLORS.resolved + "33", color: SEV_COLORS.resolved }} className="text-xs">RESOLVED</Badge>
+                    ) : inc.status === "escalated" ? (
+                      <Badge style={{ background: SEV_COLORS.escalated + "33", color: SEV_COLORS.escalated }} className="text-xs">ESCALATED</Badge>
                     ) : (
                       <Badge style={{ background: (SEV_COLORS[inc.severity ?? "low"] ?? SEV_COLORS.low) + "33", color: SEV_COLORS[inc.severity ?? "low"] ?? SEV_COLORS.low }} className="text-xs">{inc.severity?.toUpperCase()}</Badge>
                     )}
@@ -192,10 +195,18 @@ export default function ElectionDayWarRoom() {
                   <p className="text-sm text-gray-200">{inc.description}</p>
                 </div>
                 {inc.status !== "resolved" && (
-                  <Button size="sm" variant="ghost" className="text-green-400 text-xs hover:bg-green-900/20"
-                    onClick={() => resolveMut.mutate({ id: inc.id, status: "resolved" })}>
-                    Resolve
-                  </Button>
+                  <div className="flex flex-col gap-1">
+                    {inc.status !== "escalated" && (
+                      <Button size="sm" variant="ghost" className="text-yellow-400 text-xs hover:bg-yellow-900/20"
+                        onClick={() => resolveMut.mutate({ id: inc.id, status: "escalated" })}>
+                        Escalate
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" className="text-green-400 text-xs hover:bg-green-900/20"
+                      onClick={() => resolveMut.mutate({ id: inc.id, status: "resolved" })}>
+                      Resolve
+                    </Button>
+                  </div>
                 )}
               </div>
             ))}

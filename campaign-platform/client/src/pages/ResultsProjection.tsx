@@ -82,7 +82,7 @@ export default function ResultsProjection() {
                 <Input placeholder="Candidate Name *" value={form.candidateName} onChange={e=>setForm(f=>({...f,candidateName:e.target.value}))}/>
                 <Input placeholder="Party" value={form.partyName} onChange={e=>setForm(f=>({...f,partyName:e.target.value}))}/>
                 <Input type="number" placeholder="Votes *" value={form.votes} onChange={e=>setForm(f=>({...f,votes:e.target.value}))}/>
-                <Button onClick={()=>{ if(!profileId||!form.lga||!form.candidateName||!form.votes) return toast.error("LGA, candidate and votes required"); addMut.mutate({profileId,lga:form.lga,party:form.partyName||form.candidateName,votes:parseInt(form.votes)}); }} disabled={addMut.isPending} style={{background:"#4A1525",color:"white"}}>
+                <Button onClick={()=>{ if(!profileId||!form.lga||!form.candidateName||!form.votes) return toast.error("LGA, candidate and votes required"); addMut.mutate({profileId,candidateName:form.candidateName,lga:form.lga,party:form.partyName||form.candidateName,votes:parseInt(form.votes)}); }} disabled={addMut.isPending} style={{background:"#4A1525",color:"white"}}>
                   {addMut.isPending?<Loader2 size={14} className="animate-spin"/>:"Add"}
                 </Button>
               </div>
