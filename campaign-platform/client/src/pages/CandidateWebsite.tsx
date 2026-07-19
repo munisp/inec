@@ -3,7 +3,8 @@
  * Auto-generates a shareable single-page campaign microsite from candidate profile, endorsements, and party branding.
  */
 import { useState, useEffect } from "react";
-import { ArrowLeft, Globe, Copy, CheckCheck, Eye, Code2, Download, Palette, Type, Image, Star, Loader2 } from "lucide-react";
+import { ArrowLeft, Globe, Copy, CheckCheck, Eye, Code2, Download, Palette, Type, Image, Star, Loader2, Upload } from "lucide-react";
+import { toast } from "sonner";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
@@ -147,6 +148,16 @@ export default function CandidateWebsite() {
   const [tab, setTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
   const [newPoint, setNewPoint] = useState("");
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
+  const [publishCopied, setPublishCopied] = useState(false);
+
+  const publishMut = trpc.candidateWebsite.publish.useMutation({
+    onSuccess: (data) => {
+      setPublishedUrl(data.url);
+      toast.success("Campaign site published successfully!");
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   const html = generateHTML(cfg);
 
@@ -215,8 +226,41 @@ export default function CandidateWebsite() {
           <button onClick={downloadHTML} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border font-bold transition-all" style={{ borderColor: "oklch(0.55 0.18 145)", color: "oklch(0.65 0.18 145)", background: "oklch(0.16 0.04 145)" }}>
             <Download className="w-3.5 h-3.5" /> Download
           </button>
+          <button
+            onClick={() => {
+              if (!profileId) { toast.error("No candidate profile selected"); return; }
+              publishMut.mutate({ profileId, htmlContent: html, candidateName: cfg.candidateName });
+            }}
+            disabled={publishMut.isPending}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border font-bold transition-all disabled:opacity-50"
+            style={{ borderColor: "oklch(0.55 0.18 30)", color: "oklch(0.65 0.18 30)", background: "oklch(0.16 0.04 30)" }}
+          >
+            {publishMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+            {publishMut.isPending ? "Publishing…" : "Publish"}
+          </button>
         </div>
       </div>
+
+      {/* Published URL banner */}
+      {publishedUrl && (
+        <div className="flex items-center gap-3 px-6 py-2.5 text-xs border-b" style={{ background: "oklch(0.14 0.04 145)", borderColor: "oklch(0.22 0.06 145)", color: "oklch(0.75 0.12 145)" }}>
+          <Globe className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="font-semibold">Published:</span>
+          <span className="font-mono truncate flex-1">{window.location.origin}{publishedUrl}</span>
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.origin + publishedUrl);
+              setPublishCopied(true);
+              setTimeout(() => setPublishCopied(false), 2000);
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded border flex-shrink-0"
+            style={{ borderColor: "oklch(0.35 0.08 145)", color: "oklch(0.65 0.12 145)" }}
+          >
+            {publishCopied ? <CheckCheck className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+            {publishCopied ? "Copied" : "Copy URL"}
+          </button>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Config sidebar */}

@@ -4,7 +4,7 @@
  * Data source: live DB via trpc.pollingUnits.list; falls back to demo data when DB is empty.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Search, MapPin, Users, RefreshCw, Upload } from "lucide-react";
+import { ArrowLeft, Search, MapPin, Users, RefreshCw, Upload, Database } from "lucide-react";
 import { Link } from "wouter";
 import { MapView } from "@/components/Map";
 import { trpc } from "@/lib/trpc";
@@ -42,6 +42,31 @@ const STATUS_COLORS: Record<string, string> = {
   Disputed: "#ef4444",
 };
 
+
+// 20 realistic INEC-style sample polling units across 6 states
+const SAMPLE_INEC_UNITS = [
+  { name: "Garki Area 10 Primary School", puCode: "FCT/AMAC/001", lga: "AMAC", ward: "Garki", latitude: 9.0579, longitude: 7.4951, registeredVoters: 1124 },
+  { name: "Wuse Zone 4 Community Hall", puCode: "FCT/AMAC/002", lga: "AMAC", ward: "Wuse", latitude: 9.0765, longitude: 7.4892, registeredVoters: 876 },
+  { name: "Maitama District School", puCode: "FCT/AMAC/003", lga: "AMAC", ward: "Maitama", latitude: 9.0820, longitude: 7.5010, registeredVoters: 654 },
+  { name: "Gwagwalada Town Hall", puCode: "FCT/GWA/001", lga: "Gwagwalada", ward: "Gwagwalada Central", latitude: 8.9400, longitude: 7.0800, registeredVoters: 2100 },
+  { name: "Kuje Market Square PU", puCode: "FCT/KUJ/001", lga: "Kuje", ward: "Kuje Central", latitude: 8.8800, longitude: 7.2300, registeredVoters: 1450 },
+  { name: "Agodi Gate Primary School", puCode: "OYO/IBN/001", lga: "Ibadan North", ward: "Agodi-Gate", latitude: 7.3986, longitude: 3.9007, registeredVoters: 842 },
+  { name: "Oke-Aremo Town Hall", puCode: "OYO/IBN/002", lga: "Ibadan North", ward: "Oke-Aremo", latitude: 7.4020, longitude: 3.8950, registeredVoters: 612 },
+  { name: "Egbeda I Primary School", puCode: "OYO/EGB/001", lga: "Egbeda", ward: "Egbeda I", latitude: 7.3700, longitude: 3.8650, registeredVoters: 1400 },
+  { name: "Ikeja GRA Community Hall", puCode: "LAG/IKJ/001", lga: "Ikeja", ward: "GRA", latitude: 6.5960, longitude: 3.3470, registeredVoters: 980 },
+  { name: "Surulere Stadium PU", puCode: "LAG/SUR/001", lga: "Surulere", ward: "Surulere Central", latitude: 6.5000, longitude: 3.3500, registeredVoters: 1320 },
+  { name: "Oshodi Market Primary School", puCode: "LAG/OSH/001", lga: "Oshodi-Isolo", ward: "Oshodi", latitude: 6.5560, longitude: 3.3500, registeredVoters: 1750 },
+  { name: "Kano Municipal Town Hall", puCode: "KAN/KMC/001", lga: "Kano Municipal", ward: "Fagge", latitude: 12.0022, longitude: 8.5920, registeredVoters: 2300 },
+  { name: "Nassarawa Primary School Kano", puCode: "KAN/KMC/002", lga: "Kano Municipal", ward: "Nassarawa", latitude: 12.0100, longitude: 8.6100, registeredVoters: 1890 },
+  { name: "Dala Community Centre", puCode: "KAN/DAL/001", lga: "Dala", ward: "Dala Central", latitude: 12.0300, longitude: 8.5500, registeredVoters: 1560 },
+  { name: "Enugu GRA Primary School", puCode: "ENU/ENG/001", lga: "Enugu North", ward: "GRA", latitude: 6.4698, longitude: 7.5560, registeredVoters: 720 },
+  { name: "Ogui Road Community Hall", puCode: "ENU/ENG/002", lga: "Enugu North", ward: "Ogui", latitude: 6.4550, longitude: 7.5400, registeredVoters: 890 },
+  { name: "Independence Layout PU", puCode: "ENU/ENS/001", lga: "Enugu South", ward: "Independence Layout", latitude: 6.4400, longitude: 7.5200, registeredVoters: 1100 },
+  { name: "Port Harcourt GRA PU", puCode: "RIV/PHC/001", lga: "Port Harcourt", ward: "GRA Phase 1", latitude: 4.8156, longitude: 7.0498, registeredVoters: 1200 },
+  { name: "Rumuola Primary School", puCode: "RIV/PHC/002", lga: "Port Harcourt", ward: "Rumuola", latitude: 4.8300, longitude: 7.0600, registeredVoters: 940 },
+  { name: "Eleme Town Hall", puCode: "RIV/ELE/001", lga: "Eleme", ward: "Eleme Central", latitude: 4.7800, longitude: 7.1100, registeredVoters: 1650 },
+];
+
 export default function PollingUnitLocator() {
   const [selected, setSelected] = useState<PollingUnit | null>(null);
   const [search, setSearch] = useState("");
@@ -51,6 +76,11 @@ export default function PollingUnitLocator() {
     onSuccess: d => { refetch(); toast.success(`Imported ${d.inserted} polling units`); },
     onError: (e: any) => toast.error(e.message),
   });
+
+  function handleSeedSampleData() {
+    if (!profileId) return;
+    bulkMut.mutate({ profileId, rows: SAMPLE_INEC_UNITS });
+  }
 
   function parsePUCSV(text: string) {
     const lines = text.trim().split("\n").filter(l => l.trim());
@@ -209,6 +239,13 @@ export default function PollingUnitLocator() {
             style={{ borderColor: "oklch(0.35 0.06 140)", color: "oklch(0.65 0.08 140)" }}>
             <Upload className="w-3 h-3" /> {bulkMut.isPending ? "Importing…" : "Import CSV"}
           </button>
+          {usingDemo && (
+            <button onClick={handleSeedSampleData} disabled={bulkMut.isPending}
+              className="text-xs px-2 py-1 rounded border flex items-center gap-1"
+              style={{ borderColor: "oklch(0.35 0.08 200)", color: "oklch(0.65 0.10 200)" }}>
+              <Database className="w-3 h-3" /> {bulkMut.isPending ? "Seeding…" : "Seed 20 Sample PUs"}
+            </button>
+          )}
           <button onClick={() => refetch()} className="text-xs px-2 py-1 rounded border flex items-center gap-1" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.55 0.01 240)" }}>
             <RefreshCw className="w-3 h-3" /> Refresh
           </button>

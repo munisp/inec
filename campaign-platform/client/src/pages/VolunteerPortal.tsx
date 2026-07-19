@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Users, Plus, Loader2, ClipboardList, CheckCircle2, Clock, XCircle, Trash2 } from "lucide-react";
+import { ArrowLeft, Users, Plus, Loader2, ClipboardList, CheckCircle2, Clock, XCircle, Trash2, BarChart2 } from "lucide-react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts";
 
 type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 type TaskType = "canvassing" | "polling_unit" | "data_entry" | "logistics" | "other" | "social_media" | "other";
@@ -99,6 +100,7 @@ export default function VolunteerPortal() {
           <TabsList className="mb-4">
             <TabsTrigger value="tasks">Task Board</TabsTrigger>
             <TabsTrigger value="volunteers">Volunteers ({volunteers.length})</TabsTrigger>
+            <TabsTrigger value="analytics">Analytics</TabsTrigger>
           </TabsList>
 
           <TabsContent value="tasks">
@@ -203,6 +205,77 @@ export default function VolunteerPortal() {
                 })}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="analytics">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Task status breakdown */}
+              <div className="bg-white border border-gray-200 rounded p-5" style={{ borderTop: "3px solid #4A1525" }}>
+                <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-4">Task Status Breakdown</p>
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: "Pending", value: pendingCount },
+                        { name: "In Progress", value: inProgressCount },
+                        { name: "Completed", value: completedCount },
+                        { name: "Cancelled", value: allTasks.filter(t => t.status === "cancelled").length },
+                      ].filter(d => d.value > 0)}
+                      dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false}
+                    >
+                      {[STATUS_COLORS.pending, STATUS_COLORS.in_progress, STATUS_COLORS.completed, "#9CA3AF"].map((color, i) => (
+                        <Cell key={i} fill={color} />
+                      ))}
+                    </Pie>
+                    <Legend />
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              {/* Task type breakdown */}
+              <div className="bg-white border border-gray-200 rounded p-5" style={{ borderTop: "3px solid #1A3A5C" }}>
+                <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-4">Tasks by Type</p>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart
+                    data={Object.entries(
+                      allTasks.reduce<Record<string, number>>((acc, t) => {
+                        const type = (t.taskType ?? "other").replace("_", " ");
+                        acc[type] = (acc[type] ?? 0) + 1;
+                        return acc;
+                      }, {})
+                    ).map(([name, count]) => ({ name, count }))}
+                    margin={{ top: 5, right: 10, left: 0, bottom: 30 }}
+                  >
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" height={50} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="count" radius={[3, 3, 0, 0]} fill="#1A3A5C" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              {/* Volunteer task load */}
+              <div className="bg-white border border-gray-200 rounded p-5 md:col-span-2" style={{ borderTop: "3px solid #008751" }}>
+                <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-4">Task Load per Volunteer</p>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart
+                    data={volunteers.map(v => ({
+                      name: v.fullName.split(" ")[0],
+                      total: allTasks.filter(t => t.volunteerId === v.id).length,
+                      done: allTasks.filter(t => t.volunteerId === v.id && t.status === "completed").length,
+                    })).filter(v => v.total > 0).sort((a, b) => b.total - a.total).slice(0, 12)}
+                    margin={{ top: 5, right: 10, left: 0, bottom: 30 }}
+                  >
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" height={50} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="total" name="Total" fill="#4A1525" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="done" name="Completed" fill="#008751" radius={[3, 3, 0, 0]} />
+                    <Legend />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </TabsContent>
         </Tabs>
       </div>

@@ -805,6 +805,21 @@ Produce only the manifesto section text, no commentary.`;
       .input(z.object({ id: z.number() }))
       .mutation(({ input }) => db.deleteVolunteerTask(input.id)),
   }),
+  // ─── Candidate Website Publish ────────────────────────────────────────────
+  candidateWebsite: router({
+    publish: protectedProcedure
+      .input(z.object({
+        profileId: z.number(),
+        htmlContent: z.string().max(500_000),
+        candidateName: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const { storagePut } = await import('./storage.js');
+        const key = `campaign-sites/profile-${input.profileId}/index.html`;
+        const { url } = await storagePut(key, input.htmlContent, 'text/html');
+        return { url, key };
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

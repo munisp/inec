@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Globe, Plus, Loader2 } from "lucide-react";
+import { ArrowLeft, Globe, Plus, Loader2, MessageSquare, Mail, Copy, Check, X } from "lucide-react";
 
 export default function DiasporaOutreach() {
   const { profileId , canEdit, canDelete } = useCandidateProfile();
@@ -21,6 +21,27 @@ export default function DiasporaOutreach() {
   });
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: "", country: "", city: "", email: "", phone: "", organization: "", pledgedAmount: "", notes: "" });
+  const [selectedContact, setSelectedContact] = useState<typeof contacts[number] | null>(null);
+  const [templateType, setTemplateType] = useState<"whatsapp" | "email">("whatsapp");
+  const [copied, setCopied] = useState(false);
+
+  const messageTemplate = useMemo(() => {
+    if (!selectedContact) return "";
+    const name = selectedContact.name ?? "Friend";
+    const country = selectedContact.country ?? "";
+    if (templateType === "whatsapp") {
+      return `Dear ${name},\n\nGreetings from Nigeria! We hope this message finds you well in ${country}.\n\nAs a valued member of our diaspora community, your support and voice matter greatly in shaping the future of our nation. We are reaching out to update you on our campaign progress and to invite your participation.\n\nYour pledge and advocacy from abroad make a real difference. Please share this message with fellow Nigerians in ${country} who share our vision for a better Nigeria.\n\nWith gratitude,\nThe Campaign Team`;
+    }
+    return `Subject: Campaign Update — Your Support Makes a Difference\n\nDear ${name},\n\nI hope this email finds you well in ${country}.\n\nOn behalf of our campaign team, I am writing to personally thank you for your continued support and to share an important update on our progress.\n\nOur campaign has reached significant milestones, and the diaspora community has been instrumental in amplifying our message globally. Your involvement — whether through financial support, social media advocacy, or mobilising fellow Nigerians abroad — is deeply valued.\n\nWe would be honoured if you could:\n• Share our campaign materials with your network in ${country}\n• Encourage eligible voters to register and participate\n• Consider increasing your pledge if circumstances allow\n\nWarm regards,\nThe Campaign Team`;
+  }, [selectedContact, templateType]);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(messageTemplate).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      toast.success("Message copied to clipboard");
+    });
+  }
 
   const byCountry = contacts.reduce<Record<string, number>>((acc, c) => {
     const key = c.country ?? "Unknown";
@@ -89,11 +110,81 @@ export default function DiasporaOutreach() {
                   {c.email && <p>{c.email}</p>}
                   {c.phone && <p>{c.phone}</p>}
                 </div>
+                <div className="mt-3 flex gap-1.5 flex-wrap">
+                  {c.phone && (
+                    <button
+                      className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors"
+                      onClick={() => { setSelectedContact(c); setTemplateType("whatsapp"); }}
+                    >
+                      <MessageSquare size={10} /> WhatsApp
+                    </button>
+                  )}
+                  {c.email && (
+                    <button
+                      className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors"
+                      onClick={() => { setSelectedContact(c); setTemplateType("email"); }}
+                    >
+                      <Mail size={10} /> Email
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
+      {/* Message template modal */}
+      {selectedContact && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedContact(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderTop: "3px solid #4A1525" }}>
+              <div>
+                <p className="font-bold text-gray-900">{selectedContact.name}</p>
+                <p className="text-xs text-gray-500">{selectedContact.country}</p>
+              </div>
+              <button onClick={() => setSelectedContact(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+            </div>
+            <div className="px-5 pt-4">
+              <div className="flex gap-2 mb-3">
+                <button
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded font-medium transition-colors ${templateType === "whatsapp" ? "bg-green-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                  onClick={() => setTemplateType("whatsapp")}
+                ><MessageSquare size={11} /> WhatsApp</button>
+                <button
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded font-medium transition-colors ${templateType === "email" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                  onClick={() => setTemplateType("email")}
+                ><Mail size={11} /> Email</button>
+              </div>
+              <textarea
+                className="w-full text-xs font-mono leading-relaxed border border-gray-200 rounded p-3 bg-gray-50 resize-none focus:outline-none focus:ring-1 focus:ring-gray-300"
+                rows={12}
+                value={messageTemplate}
+                onChange={() => {}}
+                readOnly
+              />
+            </div>
+            <div className="flex gap-2 px-5 py-4 border-t">
+              <Button size="sm" className="gap-1.5 flex-1" style={{ background: "#4A1525", color: "white" }} onClick={handleCopy}>
+                {copied ? <><Check size={12} /> Copied!</> : <><Copy size={12} /> Copy Message</>}
+              </Button>
+              {templateType === "whatsapp" && selectedContact.phone && (
+                <Button size="sm" variant="outline" className="gap-1.5 flex-1 border-green-300 text-green-700 hover:bg-green-50" asChild>
+                  <a href={`https://wa.me/${selectedContact.phone.replace(/\D/g, "")}?text=${encodeURIComponent(messageTemplate)}`} target="_blank" rel="noopener noreferrer">
+                    <MessageSquare size={12} /> Open in WhatsApp
+                  </a>
+                </Button>
+              )}
+              {templateType === "email" && selectedContact.email && (
+                <Button size="sm" variant="outline" className="gap-1.5 flex-1 border-blue-300 text-blue-700 hover:bg-blue-50" asChild>
+                  <a href={`mailto:${selectedContact.email}?subject=Campaign Update — Your Support Makes a Difference&body=${encodeURIComponent(messageTemplate)}`}>
+                    <Mail size={12} /> Open in Email
+                  </a>
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
