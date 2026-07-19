@@ -4,7 +4,9 @@ networks:
 services:
   apisix:
     depends_on:
-    - go-backend
+    - etcd
+    environment:
+    - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
     image: apache/apisix:3.7.0-debian
     networks:
     - inec-network
@@ -15,6 +17,18 @@ services:
     volumes:
     - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml
     - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml
+  etcd:
+    environment:
+    - ALLOW_NONE_AUTHENTICATION=yes
+    - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+    - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+    image: bitnami/etcd:3.5.11
+    networks:
+    - inec-network
+    ports:
+    - 2379:2379
+    volumes:
+    - etcd-data:/bitnami/etcd
   biometric-go:
     build:
       context: ./services/biometric-go
@@ -104,7 +118,6 @@ services:
     volumes:
     - fluvio-data:/fluvio
   frontend:
-    <<: *common
     build:
       context: ./inec-frontend
       dockerfile: Dockerfile
@@ -152,8 +165,9 @@ services:
     - KEYCLOAK_CLIENT_ID=inec-backend
     - PERMIFY_URL=http://permify:3476
     - PERMIFY_TENANT_ID=inec
-    - FLUVIO_URL=http://fluvio:9003
-    - TIGERBEETLE_URL=http://tigerbeetle-http:3000
+    - FLUVIO_URL=http://fluvio-sc:9003
+    - TIGERBEETLE_URL=http://tigerbeetle:3001
+    - OPENAPPSEC_URL=http://openappsec-agent:4000
     - APISIX_ADMIN_URL=http://apisix:9180
     - APISIX_API_KEY=edd1c9f034335f136f87ad84b625c8f1
     - LAKEHOUSE_URL=http://lakehouse:8090
@@ -366,21 +380,16 @@ services:
     - inec-network
     volumes:
     - tigerbeetle-data:/data
-version: '3.9'
-volumes:
-  caddy-data:
-  caddy-config:
-  app-data: null
-  fluvio-data: null
-  kafka-data: null
-  lakehouse-data: null
-  permify-data: null
-  pg-primary-data: null
-  pg-replica-data: null
-  redis-data: null
-  temporal-data: null
-  tigerbeetle-data: null
-
+  openappsec-agent:
+    build:
+      context: ./services/openappsec-agent
+      dockerfile: Dockerfile
+    environment:
+    - PORT=4000
+    networks:
+    - inec-network
+    ports:
+    - 4000:4000
   caddy:
     build:
       context: ./caddy
@@ -479,9 +488,23 @@ volumes:
       - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
       - INEC_API_URL=http://inec-backend:8088
     networks:
-      - inec_net
+      - inec-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8204/api/v1/campaign/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+volumes:
+  caddy-data:
+  caddy-config:
+  app-data: null
+  fluvio-data: null
+  kafka-data: null
+  lakehouse-data: null
+  permify-data: null
+  pg-primary-data: null
+  pg-replica-data: null
+  redis-data: null
+  temporal-data: null
+  tigerbeetle-data: null
+  etcd-data: null
