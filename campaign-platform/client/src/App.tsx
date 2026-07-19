@@ -5,6 +5,7 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
+import JoinCampaign from "./pages/JoinCampaign";
 import StakeholdersPage from "./pages/Stakeholders";
 import EndorsementTracker from "./pages/EndorsementTracker";
 import OfflineBanner from "./components/OfflineBanner";
@@ -37,6 +38,7 @@ function Router() {
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/join"} component={JoinCampaign} />
       <Route path={"/stakeholders"} component={StakeholdersPage} />
       <Route path={"/endorsements"} component={EndorsementTracker} />
       <Route path={"/timeline"} component={CampaignTimeline} />

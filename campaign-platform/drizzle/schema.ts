@@ -388,6 +388,7 @@ export const campaignMembers = pgTable("campaign_members", {
   role: memberRoleEnum("role").default("viewer").notNull(),
   invitedAt: timestamp("invited_at").defaultNow().notNull(),
   acceptedAt: timestamp("accepted_at"),
+  inviteToken: varchar("invite_token", { length: 64 }),
 });
 export type CampaignMember = typeof campaignMembers.$inferSelect;
 export type InsertCampaignMember = typeof campaignMembers.$inferInsert;

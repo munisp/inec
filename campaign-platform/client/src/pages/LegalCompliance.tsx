@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Scale, Plus, Loader2, CheckCircle, AlertTriangle, XCircle, FileText, Download } from "lucide-react";
+import { ArrowLeft, Scale, Plus, Loader2, CheckCircle, AlertTriangle, XCircle, FileText, Download, Bell, BellOff, Send } from "lucide-react";
 import { exportToCSV, exportToPDF } from "@/hooks/useExport";
 
 const STATUS_META = {
@@ -29,6 +29,10 @@ const CATEGORIES = ["Financial","Campaign Materials","Rallies & Events","Digital
 
 export default function LegalCompliance() {
   const { profileId , canEdit, canDelete } = useCandidateProfile();
+  const { data: notifStatus, refetch: refetchNotif } = trpc.notifications.status.useQuery(undefined, { refetchInterval: 30000 });
+  const enableNotifMut = trpc.notifications.enable.useMutation({ onSuccess: () => { refetchNotif(); toast.success("Deadline alerts enabled — daily at 08:00 UTC"); } });
+  const disableNotifMut = trpc.notifications.disable.useMutation({ onSuccess: () => { refetchNotif(); toast.success("Deadline alerts disabled"); } });
+  const testAlertMut = trpc.notifications.testAlert.useMutation({ onSuccess: (d) => toast.success(d.count > 0 ? `Test alert sent — ${d.count} upcoming deadline(s)` : "Test alert sent — no upcoming deadlines") });
   const utils = trpc.useUtils();
   const { data: items = [], isLoading } = trpc.compliance.list.useQuery({ profileId: profileId! }, { enabled: !!profileId });
   const upsertMut = trpc.compliance.upsert.useMutation({
@@ -55,6 +59,41 @@ export default function LegalCompliance() {
           <div className="text-right"><p className="text-xs text-white/60">ISSUES</p><p className="font-mono font-bold text-red-300">{nonCompliant}</p></div>
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("legal-compliance", EXPORT_COLS_C, items as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("legal-compliance", "Legal Compliance Report", `Score: ${score}% | Issues: ${nonCompliant}`, EXPORT_COLS_C, items as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
+        {/* Notification Settings Panel */}
+        <div className="mb-6 p-4 rounded-lg border" style={{ borderColor: "#1A3A5C33", background: "#EBF2F8" }}>
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <Bell size={16} style={{ color: "#1A3A5C" }} />
+              <div>
+                <p className="text-sm font-bold" style={{ color: "#1A3A5C" }}>Deadline Reminder Notifications</p>
+                <p className="text-xs text-gray-500">Daily push notifications 7 days and 1 day before each compliance deadline</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => testAlertMut.mutate({ profileId: profileId! })} disabled={!profileId || testAlertMut.isPending}
+                className="text-xs px-3 py-1.5 rounded border flex items-center gap-1" style={{ borderColor: "#1A3A5C44", color: "#1A3A5C", background: "white" }}>
+                {testAlertMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} Test Alert
+              </button>
+              {notifStatus?.enabled ? (
+                <button onClick={() => profileId && disableNotifMut.mutate({ profileId })} disabled={disableNotifMut.isPending}
+                  className="text-xs px-3 py-1.5 rounded border flex items-center gap-1" style={{ borderColor: "#C0392B44", color: "#C0392B", background: "white" }}>
+                  {disableNotifMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <BellOff size={12} />} Disable Alerts
+                </button>
+              ) : (
+                <button onClick={() => profileId && enableNotifMut.mutate({ profileId })} disabled={enableNotifMut.isPending}
+                  className="text-xs px-3 py-1.5 rounded text-white flex items-center gap-1" style={{ background: "#008751" }}>
+                  {enableNotifMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />} Enable Alerts
+                </button>
+              )}
+            </div>
+          </div>
+          {notifStatus?.enabled && (
+            <div className="mt-2 flex items-center gap-1.5 text-xs" style={{ color: "#008751" }}>
+              <CheckCircle size={12} />
+              <span>Daily alerts active — next run: {notifStatus.job?.nextExecutionAt ? new Date(notifStatus.job.nextExecutionAt).toLocaleString("en-NG") : "scheduled"}</span>
+            </div>
+          )}
+        </div>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5"><Plus size={14}/> Add Item</Button></DialogTrigger>
             <DialogContent>

@@ -775,8 +775,30 @@ Format with clear headers. Be specific to Nigerian political context.`;
         email: z.string().email(),
         name: z.string(),
         role: z.enum(["manager", "viewer"]),
+        origin: z.string().url().optional(),
       }))
-      .mutation(({ input }) => db.inviteCampaignMember(input)),
+      .mutation(async ({ ctx, input }) => {
+        const result = await db.inviteCampaignMember(input);
+        // Notify the platform owner that a new team member was invited
+        const profile = await db.getOrCreateUserProfile(ctx.user.id);
+        const candidateName = profile?.candidateName ?? "Campaign";
+        const inviteUrl = result.inviteUrl ?? "(no URL — origin not provided)";
+        await notifyOwner({
+          title: `👥 New Team Invite — ${candidateName}`,
+          content: `${ctx.user.name} invited ${input.name} (${input.email}) as ${input.role} to the ${candidateName} campaign.
+
+Invite link: ${inviteUrl}
+
+The invitee can use this link to join the campaign team.`,
+        }).catch(() => {}); // non-blocking
+        return result;
+      }),
+    acceptInvite: publicProcedure
+      .input(z.object({ token: z.string() }))
+      .query(({ input }) => db.getMemberByInviteToken(input.token)),
+    confirmAccept: protectedProcedure
+      .input(z.object({ token: z.string() }))
+      .mutation(({ ctx, input }) => db.acceptCampaignInvite(input.token, ctx.user.id)),
     updateRole: protectedProcedure
       .input(z.object({
         memberId: z.number(),
@@ -812,6 +834,18 @@ Format with clear headers. Be specific to Nigerian political context.`;
           description: `Daily deadline alerts for profile ${input.profileId}`,
         }, sessionToken);
         return { taskUid: job.taskUid, nextExecutionAt: job.nextExecutionAt };
+      }),
+    // Disable deadline alert notifications
+    disable: protectedProcedure
+      .input(z.object({ profileId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+        const jobs = await listHeartbeatJobs(sessionToken);
+        const alertJob = jobs.jobs.find(j => j.name.startsWith(`deadline-alerts-${input.profileId}-`));
+        if (alertJob) {
+          await deleteHeartbeatJob(alertJob.taskUid, sessionToken);
+        }
+        return { disabled: true };
       }),
     // Send a test notification immediately
     testAlert: protectedProcedure

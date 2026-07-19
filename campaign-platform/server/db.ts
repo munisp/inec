@@ -901,17 +901,43 @@ export async function getCampaignMembers(profileId: number) {
 }
 
 export async function inviteCampaignMember(input: {
-  profileId: number; email: string; name: string; role: "manager" | "viewer";
+  profileId: number; email: string; name: string; role: "manager" | "viewer"; origin?: string;
 }) {
   const db = getDb();
   if (!db) throw new Error("DB not available");
+  // Generate a cryptographically random invite token
+  const { randomBytes } = await import("crypto");
+  const inviteToken = randomBytes(32).toString("hex");
   const [row] = await db.insert(schema.campaignMembers).values({
     profileId: input.profileId,
     email: input.email,
     name: input.name,
     role: input.role,
+    inviteToken,
   }).returning();
-  return row;
+  return { ...row, inviteToken, inviteUrl: input.origin ? `${input.origin}/join?token=${inviteToken}` : null };
+}
+
+export async function acceptCampaignInvite(token: string, userId: number) {
+  const db = getDb();
+  if (!db) throw new Error("DB not available");
+  const [member] = await db.select().from(schema.campaignMembers)
+    .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
+  if (!member) throw new Error("Invalid or expired invite token");
+  if (member.acceptedAt) throw new Error("Invite already accepted");
+  const [updated] = await db.update(schema.campaignMembers)
+    .set({ userId, acceptedAt: new Date(), inviteToken: null })
+    .where(eq(schema.campaignMembers.id, member.id))
+    .returning();
+  return updated;
+}
+
+export async function getMemberByInviteToken(token: string) {
+  const db = getDb();
+  if (!db) return null;
+  const [member] = await db.select().from(schema.campaignMembers)
+    .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
+  return member ?? null;
 }
 
 export async function updateMemberRole(memberId: number, role: "manager" | "viewer") {

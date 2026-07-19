@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Users, UserPlus, Trash2, Shield, Eye, Loader2 } from "lucide-react";
+import { ArrowLeft, Users, UserPlus, Trash2, Shield, Eye, Loader2 , Link2, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -21,8 +21,14 @@ export default function CampaignTeam() {
   const { data: members = [], isLoading } = trpc.team.list.useQuery(
     { profileId: profileId! }, { enabled: !!profileId }
   );
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
   const inviteMut = trpc.team.invite.useMutation({
-    onSuccess: () => { utils.team.list.invalidate(); toast.success("Member invited"); setForm({ name: "", email: "", role: "viewer" }); },
+    onSuccess: (data) => {
+      utils.team.list.invalidate();
+      if (data.inviteUrl) setInviteLink(data.inviteUrl);
+      toast.success("Member invited — share the invite link below");
+      setForm({ name: "", email: "", role: "viewer" });
+    },
     onError: e => toast.error(e.message),
   });
   const updateRoleMut = trpc.team.updateRole.useMutation({
@@ -40,7 +46,7 @@ export default function CampaignTeam() {
     if (!profileId) return toast.error("No profile selected");
     if (!form.name.trim()) return toast.error("Name is required");
     if (!form.email.trim()) return toast.error("Email is required");
-    inviteMut.mutate({ profileId, ...form });
+    inviteMut.mutate({ profileId, ...form, origin: window.location.origin });
   };
 
   return (
@@ -72,6 +78,20 @@ export default function CampaignTeam() {
           <Button className="mt-3 gap-1 bg-[#008751] hover:bg-[#006B40] text-white" onClick={handleInvite} disabled={inviteMut.isPending}>
             {inviteMut.isPending ? <Loader2 size={14} className="animate-spin"/> : <UserPlus size={14}/>} Invite Member
           </Button>
+          {inviteLink && (
+            <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded text-xs">
+              <p className="font-bold text-green-800 mb-1 flex items-center gap-1"><Link2 size={12}/> Invite Link Generated</p>
+              <p className="text-green-700 mb-2">Share this link with the invitee. It expires once accepted.</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-white border border-green-200 rounded px-2 py-1 text-xs text-green-900 truncate">{inviteLink}</code>
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1 border-green-300 text-green-700 hover:bg-green-100"
+                  onClick={() => { navigator.clipboard.writeText(inviteLink); toast.success("Copied!"); }}>
+                  <Copy size={10}/> Copy
+                </Button>
+              </div>
+              <Button variant="ghost" size="sm" className="mt-1 h-6 text-xs text-green-600" onClick={() => setInviteLink(null)}>Dismiss</Button>
+            </div>
+          )}
         </div>
 
         {/* Role Permissions Reference */}
