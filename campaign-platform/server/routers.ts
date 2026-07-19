@@ -85,6 +85,27 @@ export const appRouter = router({
         status: z.string().optional(),
       }))
       .mutation(({ input }) => db.addVoterRegistration(input as any)),
+    bulkImport: protectedProcedure
+      .input(z.object({
+        profileId: z.number(),
+        rows: z.array(z.object({
+          fullName: z.string(),
+          vin: z.string().optional(),
+          lga: z.string().optional(),
+          ward: z.string().optional(),
+          pollingUnit: z.string().optional(),
+          phone: z.string().optional(),
+        })),
+      }))
+      .mutation(async ({ input }) => {
+        let inserted = 0;
+        for (const row of input.rows) {
+          if (!row.fullName?.trim()) continue;
+          await db.addVoterRegistration({ profileId: input.profileId, fullName: row.fullName, vinNumber: row.vin, lga: row.lga, ward: row.ward, pollingUnit: row.pollingUnit, phone: row.phone } as any);
+          inserted++;
+        }
+        return { inserted };
+      }),
   }),
   // ─── Polling Units ─────────────────────────────────────────────────────────
   pollingUnits: router({
@@ -107,6 +128,28 @@ export const appRouter = router({
         status: z.string().optional(),
       }))
       .mutation(({ input }) => db.upsertPollingUnit(input as any)),
+    bulkImport: protectedProcedure
+      .input(z.object({
+        profileId: z.number(),
+        rows: z.array(z.object({
+          puCode: z.string().optional(),
+          name: z.string(),
+          lga: z.string().optional(),
+          ward: z.string().optional(),
+          latitude: z.number().optional(),
+          longitude: z.number().optional(),
+          registeredVoters: z.number().optional(),
+        })),
+      }))
+      .mutation(async ({ input }) => {
+        let inserted = 0;
+        for (const row of input.rows) {
+          if (!row.name?.trim()) continue;
+          await db.upsertPollingUnit({ profileId: input.profileId, ...row } as any);
+          inserted++;
+        }
+        return { inserted };
+      }),
   }),
   // ─── Volunteers ────────────────────────────────────────────────────────────
   volunteers: router({
@@ -188,6 +231,28 @@ export const appRouter = router({
         hashtags: z.array(z.string()).optional(),
       }))
       .mutation(({ input }) => db.saveSocialPost(input as any)),
+    aiGenerate: protectedProcedure
+      .input(z.object({
+        platform: z.string(),
+        topic: z.string(),
+        tone: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const profile = await db.getOrCreateUserProfile(ctx.user.id);
+        const candidate = profile?.candidateName ?? "The Candidate";
+        const party = profile?.partyName ?? "The Party";
+        const limits: Record<string, number> = { twitter: 280, facebook: 500, instagram: 2200, whatsapp: 1000 };
+        const limit = limits[input.platform.toLowerCase()] ?? 500;
+        const response = await invokeLLM({
+          messages: [{
+            role: "user",
+            content: `Write a ${input.platform} post for Nigerian political candidate ${candidate} (${party}). Topic: ${input.topic}. Tone: ${input.tone ?? "inspiring and relatable"}. Max ${limit} characters. Include 2-3 relevant hashtags at the end. Output only the post text.`,
+          }],
+          max_tokens: 300,
+        });
+        const content = (response as any)?.choices?.[0]?.message?.content ?? "";
+        return { content };
+      }),
   }),
   // ─── Compliance ────────────────────────────────────────────────────────────
   compliance: router({
@@ -225,6 +290,28 @@ export const appRouter = router({
         notes: z.string().optional(),
       }))
       .mutation(({ input }) => db.upsertOppositionEntry(input as any)),
+    aiAnalyze: protectedProcedure
+      .input(z.object({
+        opponentName: z.string(),
+        party: z.string().optional(),
+        strength: z.string().optional(),
+        weakness: z.string().optional(),
+        notes: z.string().optional(),
+        threatLevel: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const profile = await db.getOrCreateUserProfile(ctx.user.id);
+        const candidate = profile?.candidateName ?? "Our candidate";
+        const response = await invokeLLM({
+          messages: [{
+            role: "user",
+            content: `You are a Nigerian political strategist. Analyse this opponent and provide 3-4 specific, actionable counter-strategy recommendations for ${candidate}.\n\nOpponent: ${input.opponentName} (${input.party ?? "Unknown party"})\nThreat level: ${input.threatLevel ?? "medium"}\nStrengths: ${input.strength ?? "Unknown"}\nWeaknesses: ${input.weakness ?? "Unknown"}\nNotes: ${input.notes ?? "None"}\n\nProvide only the strategic analysis, no preamble.`,
+          }],
+          max_tokens: 400,
+        });
+        const analysis = (response as any)?.choices?.[0]?.message?.content ?? "Unable to generate analysis.";
+        return { analysis };
+      }),
   }),
   // ─── War Room ──────────────────────────────────────────────────────────────
   warRoom: router({
@@ -239,7 +326,18 @@ export const appRouter = router({
         lga: z.string().optional(),
         pollingUnit: z.string().optional(),
       }))
-      .mutation(({ input }) => db.addWarRoomIncident(input as any)),
+      .mutation(async ({ input }) => {
+        const incident = await db.addWarRoomIncident(input as any);
+        if (input.severity === "critical" || input.severity === "high") {
+          try {
+            await notifyOwner({
+              title: `⚠️ ${input.severity.toUpperCase()} Incident — ${input.lga ?? "Unknown LGA"}`,
+              content: `${input.description}${input.pollingUnit ? ` (PU: ${input.pollingUnit})` : ""}`,
+            });
+          } catch { /* notification failure must not block incident save */ }
+        }
+        return incident;
+      }),
     updateIncidentStatus: protectedProcedure
       .input(z.object({ id: z.number(), status: z.string() }))
       .mutation(({ input }) => db.updateIncidentStatus(input.id, input.status as any)),
@@ -512,6 +610,7 @@ Format with clear headers. Be specific to Nigerian political context.`;
         modelConfidence: z.number().optional(),
         disruptions: z.array(z.string()).optional(),
         aiNarrative: z.string().optional(),
+        label: z.string().max(120).optional(),
       }))
       .mutation(({ input }) => db.saveSimulationRun(input as any)),
     narrative: protectedProcedure
@@ -560,6 +659,15 @@ Format with clear headers. Be specific to Nigerian political context.`;
     kpis: protectedProcedure
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getDashboardKPIs(input.profileId)),
+    electionDate: protectedProcedure
+      .input(z.object({ profileId: z.number() }))
+      .query(async ({ input }) => {
+        const events = await db.getTimelineEvents(input.profileId);
+        const electionEvent = events.find(e =>
+          e.title.toLowerCase().includes("election day") || e.category === "election_day"
+        );
+        return { electionDate: electionEvent?.eventDate ?? null };
+      }),
   }),
   // ─── Deadline Notifications ────────────────────────────────────────────────
   // ─── Campaign Team ─────────────────────────────────────────────────────────

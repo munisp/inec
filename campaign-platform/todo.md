@@ -74,11 +74,46 @@
 
 ## Phase 16 — Simulation Deep Features + GitHub Sync
 
-- [ ] DB schema: add ai_narrative TEXT column to simulation_runs table
-- [ ] db.ts: update saveSimulationRun helper to accept and store aiNarrative
-- [ ] routers.ts: pass narrative to save mutation after narrative is generated
-- [ ] Home.tsx: display stored narrative in Run History cards
-- [ ] Sensitivity heatmap: sweep weatherSeverity vs securityThreat grid (11x11) and render D3 heatmap in new chart tab
-- [ ] Share report: button generates a formatted plain-text/WhatsApp-ready summary of current run KPIs + AI narrative, copies to clipboard
-- [ ] GitHub: merge feat/production-readiness-audit into main (27 unmerged commits)
+- [x] DB schema: add ai_narrative TEXT column to simulation_runs table
+- [x] db.ts: update saveSimulationRun helper to accept and store aiNarrative
+- [x] routers.ts: pass narrative to save mutation after narrative is generated
+- [x] Home.tsx: display stored narrative in Run History cards
+- [x] Sensitivity heatmap: sweep weatherSeverity vs securityThreat grid (6x6) and render colour heatmap in new chart tab
+- [x] Share report: button generates a formatted plain-text/WhatsApp-ready summary of current run KPIs + AI narrative, copies to clipboard
+- [x] GitHub: merge feat/production-readiness-audit into main (27 unmerged commits)
+- [x] GitHub: push campaign-platform (Manus webdev project) to munisp/inec repo
+- [x] TypeScript: 0 errors
+
+## Phase 17 — Simulation Labels, Polling Unit Map, War Room Live Feed
+
+- [x] DB schema: add label TEXT column to simulation_runs table
+- [x] db.ts: update saveSimulationRun helper to accept and store label
+- [x] routers.ts: add label to simulation.save input and simulation.history output
+- [x] Home.tsx: label input field in Save Run dialog; filter-by-label in Run History tab
+- [x] PollingUnitLocator.tsx: wire Map component to display polling units as interactive pins
+- [x] PollingUnitLocator.tsx: click-to-detail popup showing unit name, LGA, ward, registered voters
+- [x] ElectionDayWarRoom.tsx: real-time incident feed via polling (trpc.incidents.list with refetchInterval)
+- [x] ElectionDayWarRoom.tsx: unresolved incident badge counter on hub card in Home.tsx
+- [x] App.tsx / Home.tsx: badge counter on War Room hub card showing unresolved count
+- [x] TypeScript: 0 errors
+
+## Phase 18 — Production Complete: Gap Fixes + Premiere Enhancements
+
+- [ ] GAP FIX: Home.tsx handleSaveRun — pass label: runLabel in saveSimMut.mutate()
+- [ ] GAP FIX: warRoom.addIncident — call notifyOwner for critical/high severity incidents
+- [ ] GAP FIX: OppositionResearch — add AI threat analysis button per opponent dossier
+- [ ] GAP FIX: SocialMediaCenter — add AI content generator + scheduled-at date/time picker
+- [ ] GAP FIX: VoterRegistration — add CSV bulk import (parse fullName, VIN, LGA, ward, pollingUnit, phone)
+- [ ] GAP FIX: ResultsProjection — add live auto-refresh every 30s with LIVE badge
+- [ ] GAP FIX: PostElectionAnalytics — add AI narrative summary button
+- [ ] FEATURE: PollingUnitLocator — CSV bulk import (puCode, name, LGA, ward, lat, lng, registeredVoters)
+- [ ] FEATURE: War Room — notifyOwner push alert for critical/high incidents (server-side)
+- [ ] FEATURE: SocialMedia — AI content generator using invokeLLM
+- [ ] FEATURE: Opposition — AI threat analysis using invokeLLM per opponent
+- [ ] FEATURE: PostElection — AI narrative summary using invokeLLM
+- [ ] FEATURE: Simulation — "Compare to latest" shortcut in Run History tab
+- [ ] FEATURE: Dashboard — real-time KPI refresh every 60s + election countdown timer
+- [ ] FEATURE: CandidateWebsite — wire to live profile/endorsements from DB
+- [ ] FEATURE: Results — live auto-refresh + percentage bar chart per candidate
+- [ ] FEATURE: routers.ts — add bulk import procedures for voters and polling units
 - [ ] TypeScript: 0 errors

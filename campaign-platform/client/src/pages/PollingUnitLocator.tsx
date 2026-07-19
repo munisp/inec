@@ -1,11 +1,14 @@
 /**
  * Polling Unit Locator Map
  * Interactive Google Maps integration for locating and managing polling units.
+ * Data source: live DB via trpc.pollingUnits.list; falls back to demo data when DB is empty.
  */
-import { useCallback, useRef, useState } from "react";
-import { ArrowLeft, Search, MapPin, Users, CheckCircle2, AlertTriangle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, Search, MapPin, Users, RefreshCw } from "lucide-react";
 import { Link } from "wouter";
 import { MapView } from "@/components/Map";
+import { trpc } from "@/lib/trpc";
+import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 
 interface PollingUnit {
   id: string;
@@ -17,9 +20,10 @@ interface PollingUnit {
   lat: number;
   lng: number;
   agent: string;
+  puCode?: string;
 }
 
-const POLLING_UNITS: PollingUnit[] = [
+const DEMO_UNITS: PollingUnit[] = [
   { id: "pu1", name: "Agodi Gate Primary School", lga: "Ibadan North", ward: "Agodi-Gate", registeredVoters: 842, status: "Active", lat: 7.3986, lng: 3.9007, agent: "Bola Adeyemi" },
   { id: "pu2", name: "Oke-Aremo Town Hall", lga: "Ibadan North", ward: "Oke-Aremo", registeredVoters: 612, status: "Active", lat: 7.4020, lng: 3.8950, agent: "Chukwudi Obi" },
   { id: "pu3", name: "Oke-Padre Community Centre", lga: "Ibadan South-West", ward: "Oke-Padre", registeredVoters: 1100, status: "Relocated", lat: 7.3850, lng: 3.8880, agent: "Fatima Yusuf" },
@@ -30,7 +34,12 @@ const POLLING_UNITS: PollingUnit[] = [
   { id: "pu8", name: "Sango Primary School", lga: "Ibadan North-West", ward: "Sango", registeredVoters: 720, status: "Merged", lat: 7.4050, lng: 3.8800, agent: "Emeka Okonkwo" },
 ];
 
-const STATUS_COLORS = { Active: "#22c55e", Relocated: "#f59e0b", Merged: "#94a3b8", Disputed: "#ef4444" };
+const STATUS_COLORS: Record<string, string> = {
+  Active: "#22c55e",
+  Relocated: "#f59e0b",
+  Merged: "#94a3b8",
+  Disputed: "#ef4444",
+};
 
 export default function PollingUnitLocator() {
   const [selected, setSelected] = useState<PollingUnit | null>(null);
@@ -38,21 +47,44 @@ export default function PollingUnitLocator() {
   const [filterStatus, setFilterStatus] = useState<"all" | PollingUnit["status"]>("all");
   const mapRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
 
-  const filtered = POLLING_UNITS.filter(pu =>
+  const { profileId } = useCandidateProfile();
+  const { data: dbUnits = [], isLoading, refetch } = trpc.pollingUnits.list.useQuery(
+    { profileId: profileId! }, { enabled: !!profileId }
+  );
+
+  // Map DB rows to local shape; fall back to demo data when DB is empty or no coords
+  const dbMapped: PollingUnit[] = dbUnits
+    .filter((u: any) => u.lat != null && u.lng != null)
+    .map((u: any) => ({
+      id: String(u.id),
+      name: u.name,
+      lga: u.lga ?? "—",
+      ward: u.ward ?? "—",
+      registeredVoters: u.registeredVoters ?? 0,
+      status: (["Active", "Relocated", "Merged", "Disputed"].includes(u.status ?? "")) ? u.status as PollingUnit["status"] : "Active",
+      lat: u.lat,
+      lng: u.lng,
+      agent: u.agentAssigned ?? "Unassigned",
+      puCode: u.puCode ?? undefined,
+    }));
+
+  const ALL_UNITS = dbMapped.length > 0 ? dbMapped : DEMO_UNITS;
+  const usingDemo = dbMapped.length === 0;
+
+  const filtered = ALL_UNITS.filter(pu =>
     (filterStatus === "all" || pu.status === filterStatus) &&
     (search === "" || pu.name.toLowerCase().includes(search.toLowerCase()) || pu.lga.toLowerCase().includes(search.toLowerCase()))
   );
 
-  const handleMapReady = useCallback((map: google.maps.Map) => {
-    mapRef.current = map;
-    map.setCenter({ lat: 7.3986, lng: 3.9007 });
-    map.setZoom(12);
-
+  // Rebuild markers whenever the unit list changes
+  const buildMarkers = useCallback((map: google.maps.Map, units: PollingUnit[]) => {
     markersRef.current.forEach(m => m.setMap(null));
     markersRef.current = [];
+    if (!infoWindowRef.current) infoWindowRef.current = new google.maps.InfoWindow();
 
-    POLLING_UNITS.forEach(pu => {
+    units.forEach(pu => {
       const marker = new google.maps.Marker({
         position: { lat: pu.lat, lng: pu.lng },
         map,
@@ -60,22 +92,50 @@ export default function PollingUnitLocator() {
         icon: {
           path: google.maps.SymbolPath.CIRCLE,
           scale: 10,
-          fillColor: STATUS_COLORS[pu.status],
+          fillColor: STATUS_COLORS[pu.status] ?? "#94a3b8",
           fillOpacity: 0.9,
           strokeColor: "#ffffff",
           strokeWeight: 2,
         },
       });
-      marker.addListener("click", () => setSelected(pu));
+      marker.addListener("click", () => {
+        setSelected(pu);
+        infoWindowRef.current?.setContent(
+          `<div style="font-family:sans-serif;font-size:12px;max-width:200px">
+            <strong>${pu.name}</strong><br/>
+            ${pu.lga} · ${pu.ward}<br/>
+            <span style="color:${STATUS_COLORS[pu.status]};font-weight:bold">${pu.status}</span><br/>
+            👤 ${pu.agent}<br/>
+            🗳 ${pu.registeredVoters.toLocaleString()} voters
+          </div>`
+        );
+        infoWindowRef.current?.open({ map, anchor: marker });
+      });
       markersRef.current.push(marker);
     });
   }, []);
+
+  const handleMapReady = useCallback((map: google.maps.Map) => {
+    mapRef.current = map;
+    const center = ALL_UNITS.length > 0 ? { lat: ALL_UNITS[0].lat, lng: ALL_UNITS[0].lng } : { lat: 7.3986, lng: 3.9007 };
+    map.setCenter(center);
+    map.setZoom(12);
+    buildMarkers(map, ALL_UNITS);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ALL_UNITS.length, buildMarkers]);
+
+  // Rebuild markers when DB data loads
+  useEffect(() => {
+    if (mapRef.current && ALL_UNITS.length > 0) {
+      buildMarkers(mapRef.current, ALL_UNITS);
+    }
+  }, [ALL_UNITS.length, buildMarkers]);
 
   function flyTo(pu: PollingUnit) {
     setSelected(pu);
     if (mapRef.current) {
       mapRef.current.panTo({ lat: pu.lat, lng: pu.lng });
-      mapRef.current.setZoom(15);
+      mapRef.current.setZoom(16);
     }
   }
 
@@ -84,10 +144,22 @@ export default function PollingUnitLocator() {
       <div className="border-b px-6 py-4 flex items-center justify-between flex-shrink-0" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
         <div className="flex items-center gap-4">
           <Link href="/stakeholders"><button className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.65 0.01 240)" }}><ArrowLeft className="w-3.5 h-3.5" /> Back</button></Link>
-          <div><div className="text-xs tracking-widest uppercase mb-0.5" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div><div className="font-bold text-sm">Polling Unit Locator</div></div>
+          <div>
+            <div className="text-xs tracking-widest uppercase mb-0.5" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div>
+            <div className="font-bold text-sm flex items-center gap-2">
+              Polling Unit Locator
+              {usingDemo && <span className="text-xs px-2 py-0.5 rounded-full font-normal" style={{ background: "oklch(0.22 0.04 60)", color: "oklch(0.70 0.08 60)" }}>Demo data — add units in Volunteer Portal</span>}
+              {isLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ color: "oklch(0.55 0.01 240)" }} />}
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2 text-xs" style={{ color: "oklch(0.50 0.01 240)" }}>
-          {Object.entries(STATUS_COLORS).map(([s, c]) => <span key={s} className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: c }} />{s}</span>)}
+        <div className="flex items-center gap-3">
+          <button onClick={() => refetch()} className="text-xs px-2 py-1 rounded border flex items-center gap-1" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.55 0.01 240)" }}>
+            <RefreshCw className="w-3 h-3" /> Refresh
+          </button>
+          <div className="flex items-center gap-2 text-xs" style={{ color: "oklch(0.50 0.01 240)" }}>
+            {Object.entries(STATUS_COLORS).map(([s, c]) => <span key={s} className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: c }} />{s}</span>)}
+          </div>
         </div>
       </div>
 
@@ -104,6 +176,9 @@ export default function PollingUnitLocator() {
                 <button key={s} onClick={() => setFilterStatus(s)} className="text-xs px-2 py-0.5 rounded-full border capitalize transition-all" style={{ borderColor: filterStatus === s ? "oklch(0.55 0.18 280)" : "oklch(0.28 0.01 240)", color: filterStatus === s ? "oklch(0.65 0.18 280)" : "oklch(0.50 0.01 240)", background: filterStatus === s ? "oklch(0.16 0.04 280)" : "transparent" }}>{s}</button>
               ))}
             </div>
+            <div className="text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>
+              {filtered.length} of {ALL_UNITS.length} unit{ALL_UNITS.length !== 1 ? "s" : ""}
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto divide-y" style={{ borderColor: "oklch(0.18 0.008 240)" }}>
             {filtered.map(pu => (
@@ -115,8 +190,9 @@ export default function PollingUnitLocator() {
                     <div className="text-xs" style={{ color: "oklch(0.50 0.01 240)" }}>{pu.lga} · {pu.ward}</div>
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-xs" style={{ color: "oklch(0.55 0.18 145)" }}><Users className="w-3 h-3 inline mr-0.5" />{pu.registeredVoters.toLocaleString()}</span>
-                      <span className="text-xs px-1.5 py-0.5 rounded-full font-bold" style={{ background: STATUS_COLORS[pu.status] + "22", color: STATUS_COLORS[pu.status] }}>{pu.status}</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded-full font-bold" style={{ background: (STATUS_COLORS[pu.status] ?? "#94a3b8") + "22", color: STATUS_COLORS[pu.status] ?? "#94a3b8" }}>{pu.status}</span>
                     </div>
+                    {pu.puCode && <div className="text-xs mt-0.5" style={{ color: "oklch(0.40 0.01 240)" }}>Code: {pu.puCode}</div>}
                   </div>
                 </div>
               </button>
@@ -128,13 +204,19 @@ export default function PollingUnitLocator() {
         <div className="flex-1 relative">
           <MapView onMapReady={handleMapReady} className="w-full h-full" />
           {selected && (
-            <div className="absolute bottom-4 left-4 right-4 max-w-sm rounded-xl border p-4 shadow-2xl" style={{ borderColor: "oklch(0.28 0.01 240)", background: "oklch(0.14 0.008 240)/95", backdropFilter: "blur(8px)" }}>
+            <div className="absolute bottom-4 left-4 right-4 max-w-sm rounded-xl border p-4 shadow-2xl" style={{ borderColor: "oklch(0.28 0.01 240)", background: "oklch(0.14 0.008 240)", backdropFilter: "blur(8px)" }}>
               <div className="flex items-start justify-between mb-2">
                 <div className="font-bold text-sm" style={{ color: "oklch(0.85 0.01 240)" }}>{selected.name}</div>
                 <button onClick={() => setSelected(null)} className="text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>✕</button>
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
-                {[["LGA", selected.lga], ["Ward", selected.ward], ["Registered Voters", selected.registeredVoters.toLocaleString()], ["Assigned Agent", selected.agent]].map(([k, v]) => (
+                {[
+                  ["LGA", selected.lga],
+                  ["Ward", selected.ward],
+                  ["Registered Voters", selected.registeredVoters.toLocaleString()],
+                  ["Assigned Agent", selected.agent],
+                  ...(selected.puCode ? [["PU Code", selected.puCode]] : []),
+                ].map(([k, v]) => (
                   <div key={k}><div style={{ color: "oklch(0.45 0.01 240)" }}>{k}</div><div className="font-bold" style={{ color: "oklch(0.75 0.01 240)" }}>{v}</div></div>
                 ))}
               </div>

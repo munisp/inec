@@ -2,14 +2,21 @@ import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
-import { ArrowLeft, TrendingUp, Loader2, Download, FileText } from "lucide-react";
+import { ArrowLeft, TrendingUp, Loader2, Download, FileText, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 import { exportToCSV, exportToPDF } from "@/hooks/useExport";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts";
 
 const COLORS = ["#4A1525","#008751","#1A3A5C","#C0392B","#F59E0B","#6366F1"];
 
 export default function PostElectionAnalytics() {
-  const { profileId , canEdit, canDelete } = useCandidateProfile();
+  const { profileId } = useCandidateProfile();
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const aiMut = trpc.simulation.narrative.useMutation({
+    onSuccess: d => setAiSummary(typeof d.narrative === 'string' ? d.narrative : String(d.narrative)),
+    onError: e => toast.error(e.message),
+  });
   const { data: results = [], isLoading } = trpc.results.list.useQuery({ profileId: profileId! }, { enabled: !!profileId });
   const { data: volunteers = [] } = trpc.volunteers.list.useQuery({ profileId: profileId! }, { enabled: !!profileId });
   const { data: voters = [] } = trpc.voters.list.useQuery({ profileId: profileId! }, { enabled: !!profileId });
@@ -38,12 +45,42 @@ export default function PostElectionAnalytics() {
         <div className="flex gap-2">
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("post-election", EXPORT_COLS_P, (results ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("post-election", "Post-Election Analytics Report", "INEC Campaign Intelligence Platform", EXPORT_COLS_P, (results ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10"
+            disabled={aiMut.isPending || results.length === 0}
+            onClick={() => {
+              const myPartyVotes = results.reduce((s, r) => s + (r.votes ?? 0), 0);
+              aiMut.mutate({
+                scenario: "post-election",
+                stateCode: "NG",
+                projectedTurnout: voters.length > 0 ? Math.round((totalVotes / voters.length) * 100) : 0,
+                validVotesCast: totalVotes,
+                bvasFailureRate: 0,
+                logisticsScore: 80,
+                securityIndex: 80,
+                certificationEta: 48,
+                rejectedBallots: 0,
+                monteCarloP5: 0,
+                monteCarloP50: totalVotes > 0 ? Math.round((myPartyVotes / totalVotes) * 100) : 0,
+                monteCarloP95: 0,
+                modelConfidence: 95,
+                disruptions: [`${results.length} result entries across ${Object.keys(lgaBreakdown).length} LGAs`],
+              });
+            }}>
+            {aiMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} AI Summary
+          </Button>
         </div>
       </header>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         {isLoading ? <div className="flex justify-center py-20"><Loader2 size={32} className="animate-spin text-gray-400"/></div>
         : (
           <>
+            {/* AI Summary */}
+            {aiSummary && (
+              <div className="mb-6 p-4 rounded" style={{ background: "#E6F4EE", borderLeft: "4px solid #008751" }}>
+                <p className="text-xs font-bold uppercase tracking-wider text-green-800 mb-1">AI Post-Election Summary</p>
+                <p className="text-sm text-green-900 leading-relaxed">{aiSummary}</p>
+              </div>
+            )}
             {/* KPI row */}
             <div className="grid grid-cols-4 gap-4 mb-6">
               {[

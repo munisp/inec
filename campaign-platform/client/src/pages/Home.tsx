@@ -267,13 +267,21 @@ export default function Home() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [narrative, setNarrative] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<[number | null, number | null]>([null, null]);
+  const [runLabel, setRunLabel] = useState("");
+  const [historyFilter, setHistoryFilter] = useState("");
+
+  // Live unresolved incident count for War Room badge
+  const { data: warRoomData } = trpc.warRoom.incidents.useQuery(
+    { profileId: profileId! }, { enabled: !!profileId, refetchInterval: 15_000 }
+  );
+  const unresolvedCount = (warRoomData ?? []).filter((inc: any) => inc.status !== "resolved").length;
 
   const { data: simHistory = [] } = trpc.simulation.history.useQuery(
     { profileId: profileId! }, { enabled: !!profileId }
   );
 
   const saveSimMut = trpc.simulation.save.useMutation({
-    onSuccess: () => { utils.simulation.history.invalidate(); toast.success("Simulation run saved to history"); },
+    onSuccess: () => { utils.simulation.history.invalidate(); setRunLabel(""); toast.success("Simulation run saved to history"); },
     onError: (e) => toast.error("Save failed: " + e.message),
   });
   const narrativeMut = trpc.simulation.narrative.useMutation({
@@ -345,6 +353,7 @@ export default function Home() {
       modelConfidence: result.confidence,
       disruptions: result.disruptions,
       aiNarrative: narrative ?? undefined,
+      label: runLabel || undefined,
     });
   };
 
@@ -522,7 +531,7 @@ export default function Home() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
             {[
               { path: "/dashboard", icon: Activity, label: "KPI Dashboard", color: "#1A3A5C" },
-              { path: "/war-room", icon: Zap, label: "War Room", color: "#C0392B" },
+              { path: "/war-room", icon: Zap, label: "War Room", color: "#C0392B", badge: unresolvedCount > 0 ? unresolvedCount : undefined },
               { path: "/legal-compliance", icon: Scale, label: "Compliance", color: "#008751" },
               { path: "/timeline", icon: Calendar, label: "Timeline", color: "#4A1525" },
             ].map(q => (
@@ -530,7 +539,12 @@ export default function Home() {
                 <div className="bg-white border border-gray-200 rounded p-4 flex items-center gap-3 cursor-pointer hover:shadow-sm transition-shadow"
                   style={{ borderLeft: `4px solid ${q.color}` }}>
                   <q.icon size={20} style={{ color: q.color }} />
-                  <span className="text-sm font-semibold text-gray-800">{q.label}</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">{q.label}</span>
+                  {(q as any).badge && (
+                    <span className="flex items-center justify-center min-w-5 h-5 px-1 rounded-full text-white text-xs font-bold flex-shrink-0" style={{ background: "#C0392B" }}>
+                      {(q as any).badge > 99 ? "99+" : (q as any).badge}
+                    </span>
+                  )}
                 </div>
               </Link>
             ))}
@@ -601,6 +615,15 @@ export default function Home() {
               </button>
               {result && (
                 <>
+                  <input
+                    type="text"
+                    value={runLabel}
+                    onChange={e => setRunLabel(e.target.value)}
+                    placeholder="Label this run (optional)…"
+                    maxLength={120}
+                    className="w-full px-3 py-2 text-xs bg-transparent border text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
+                    style={{ borderColor: "#3D1520" }}
+                  />
                   <button onClick={handleSaveRun} disabled={saveSimMut.isPending}
                     className="w-full py-2 font-semibold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all border"
                     style={{ background: "transparent", color: "#C9B8BE", borderColor: "#3D1520" }}>
@@ -765,7 +788,16 @@ export default function Home() {
                   <>
                     {/* Toolbar: export + compare */}
                     <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                      <p className="text-xs text-gray-500 font-mono">{simHistory.length} saved run{simHistory.length !== 1 ? "s" : ""}</p>
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <p className="text-xs text-gray-500 font-mono whitespace-nowrap">{simHistory.length} run{simHistory.length !== 1 ? "s" : ""}</p>
+                        <input
+                          type="text"
+                          value={historyFilter}
+                          onChange={e => setHistoryFilter(e.target.value)}
+                          placeholder="Filter by label or scenario…"
+                          className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 rounded focus:outline-none focus:border-gray-400"
+                        />
+                      </div>
                       <div className="flex gap-2">
                         <button onClick={handleExportCSV}
                           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold uppercase tracking-widest border transition-all active:scale-95"
@@ -784,6 +816,17 @@ export default function Home() {
                             <X size={11} /> Clear Compare
                           </button>
                         )}
+                        {simHistory.length >= 2 && compareIds[0] === null && compareIds[1] === null && (
+                          <button onClick={() => {
+                            const latest = simHistory[0];
+                            const second = simHistory[1];
+                            if (latest && second) setCompareIds([second.id, latest.id]);
+                          }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold uppercase tracking-widest border transition-all active:scale-95"
+                            style={{ borderColor: "#008751", color: "#008751" }}>
+                            Compare to Latest
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -794,7 +837,11 @@ export default function Home() {
 
                     {/* Run list */}
                     <div className="space-y-3">
-                      {[...simHistory].reverse().map((run: any, i: number) => {
+                      {[...simHistory].reverse().filter((run: any) => {
+                        if (!historyFilter.trim()) return true;
+                        const q = historyFilter.toLowerCase();
+                        return (run.label ?? "").toLowerCase().includes(q) || (run.scenario ?? "").toLowerCase().includes(q) || (run.stateCode ?? "").toLowerCase().includes(q);
+                      }).map((run: any, i: number) => {
                         const isSelected = compareIds[0] === run.id || compareIds[1] === run.id;
                         const selIdx = compareIds[0] === run.id ? 0 : compareIds[1] === run.id ? 1 : -1;
                         const handleCompareToggle = () => {
@@ -818,6 +865,9 @@ export default function Home() {
                                   {run.scenario}
                                 </Badge>
                                 <span className="text-xs text-gray-500">{run.stateCode}</span>
+                                {run.label && (
+                                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 max-w-[160px] truncate">{run.label}</span>
+                                )}
                               </div>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-gray-400">{new Date(run.runAt ?? run.createdAt ?? Date.now()).toLocaleString("en-NG")}</span>

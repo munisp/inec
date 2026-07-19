@@ -370,6 +370,7 @@ export const simulationRuns = pgTable("simulation_runs", {
   disruptions: jsonb("disruptions"),
   runAt: timestamp("run_at").defaultNow().notNull(),
   aiNarrative: text("ai_narrative"),
+  label: varchar("label", { length: 120 }),
 });
 export type SimulationRun = typeof simulationRuns.$inferSelect;
 
