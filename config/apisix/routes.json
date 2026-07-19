@@ -1,0 +1,109 @@
+{
+  "comment": "APISIX route table for the INEC platform. Applied to etcd via the Admin API by scripts/bootstrap_integrations.py (config.yaml deploys APISIX in traditional mode, so conf/apisix.yaml standalone routes are ignored). AuthN/AuthZ stays in the go-backend middleware (readAuth/writeAuth/adminOnly); the gateway adds CORS, rate limiting on /auth/*, WebSocket upgrade, tile caching and Prometheus metrics.",
+  "upstreams": [
+    {
+      "id": "inec-go-backend",
+      "type": "roundrobin",
+      "nodes": {"go-backend:8088": 1},
+      "timeout": {"connect": 6, "send": 6, "read": 3600},
+      "retries": 1,
+      "checks": {
+        "active": {
+          "type": "http",
+          "http_path": "/healthz",
+          "healthy": {"interval": 10, "successes": 2},
+          "unhealthy": {"interval": 5, "http_failures": 3}
+        }
+      }
+    },
+    {
+      "id": "inec-frontend",
+      "type": "roundrobin",
+      "nodes": {"frontend:80": 1},
+      "timeout": {"connect": 6, "send": 6, "read": 60}
+    }
+  ],
+  "routes": [
+    {
+      "id": "auth-open",
+      "uri": "/auth/*",
+      "upstream_id": "inec-go-backend",
+      "plugins": {
+        "cors": {},
+        "limit-count": {"count": 30, "time_window": 60, "rejected_code": 429, "key": "remote_addr"}
+      }
+    },
+    {
+      "id": "health-probes",
+      "uris": ["/healthz", "/readiness"],
+      "upstream_id": "inec-go-backend",
+      "plugins": {"cors": {}}
+    },
+    {
+      "id": "ws-result-updates",
+      "uris": ["/results/ws/updates", "/results/ws/updates/sharded"],
+      "upstream_id": "inec-go-backend",
+      "plugins": {"cors": {}},
+      "websocket": true
+    },
+    {
+      "id": "geo-tile-cache",
+      "uri": "/geo/tiles/*",
+      "upstream_id": "inec-go-backend",
+      "plugins": {
+        "cors": {},
+        "proxy-cache": {"cache_ttl": 300, "cache_http_statuses": [200]}
+      }
+    },
+    {
+      "id": "static-root",
+      "uri": "/",
+      "upstream_id": "inec-frontend",
+      "plugins": {
+        "response-rewrite": {"headers": {"set": {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}}}
+      }
+    },
+    {
+      "id": "static-index",
+      "uri": "/index.html",
+      "upstream_id": "inec-frontend",
+      "plugins": {
+        "response-rewrite": {"headers": {"set": {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}}}
+      }
+    },
+    {
+      "id": "static-sw",
+      "uri": "/sw.js",
+      "upstream_id": "inec-frontend",
+      "plugins": {
+        "response-rewrite": {"headers": {"set": {"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"}}}
+      }
+    },
+    {
+      "id": "static-manifest",
+      "uri": "/manifest.json",
+      "upstream_id": "inec-frontend",
+      "plugins": {
+        "response-rewrite": {"headers": {"set": {"Cache-Control": "public, max-age=3600"}}}
+      }
+    },
+    {
+      "id": "static-assets",
+      "uri": "/assets/*",
+      "upstream_id": "inec-frontend",
+      "plugins": {
+        "response-rewrite": {"headers": {"set": {"Cache-Control": "public, max-age=31536000, immutable"}}}
+      }
+    },
+    {
+      "id": "backend-catchall",
+      "uri": "/*",
+      "priority": -10,
+      "upstream_id": "inec-go-backend",
+      "plugins": {"cors": {}}
+    }
+  ],
+  "global_rules": [
+    {"id": "prometheus", "plugins": {"prometheus": {}}}
+  ]
+}
