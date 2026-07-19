@@ -276,6 +276,9 @@ func requirePermission(permission string, next http.HandlerFunc) http.HandlerFun
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleBatchScoreContacts(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	modelVersion := "v2.1"
 
@@ -334,6 +337,9 @@ func handleBatchScoreContacts(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleExportContacts(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	format := r.URL.Query().Get("format")
 	if format == "" {
@@ -403,6 +409,9 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleExportVolunteers(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=volunteers.csv")
@@ -430,6 +439,9 @@ func handleExportVolunteers(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleExportTasks(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=tasks.csv")
@@ -461,6 +473,9 @@ func handleExportTasks(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleCampaignPreview(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	campaignID := mux.Vars(r)["id"]
 
@@ -606,6 +621,9 @@ func recomputeCPIForParty(db *sql.DB, partyID int) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleVolunteerSelfRegister(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	var req struct {
 		FullName    string `json:"full_name"`
 		Phone       string `json:"phone"`
@@ -684,6 +702,9 @@ var waKeywordActions = map[string]string{
 }
 
 func handleWhatsAppInbound(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	var msg struct {
 		From    string `json:"from"`
 		Body    string `json:"body"`
@@ -750,6 +771,9 @@ func handleWhatsAppInbound(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleSaveDashboardLayout(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	userID := r.Header.Get("X-User-ID")
 	if userID == "" {
@@ -778,6 +802,9 @@ func handleSaveDashboardLayout(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGetDashboardLayout(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	userID := r.URL.Query().Get("user_id")
 	if userID == "" {
@@ -816,6 +843,9 @@ func defaultDashboardWidgets() []map[string]interface{} {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleFieldReportWithMedia(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	if err := r.ParseMultipartForm(32 << 20); err != nil { // 32MB max
 		http.Error(w, jsonErrResp("request too large"), 413)
@@ -863,6 +893,9 @@ func handleFieldReportWithMedia(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handlePredictiveTurnout(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	state := r.URL.Query().Get("state")
 
@@ -954,6 +987,9 @@ type RouteStop struct {
 }
 
 func handleOptimizeRoute(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	var req struct {
 		VolunteerID string  `json:"volunteer_id"`
@@ -1076,6 +1112,9 @@ type WarRoomAlert struct {
 }
 
 func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	ctx := r.Context()
 	var alerts []WarRoomAlert
@@ -1194,6 +1233,9 @@ func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleTeamLeaderboard(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	groupBy := r.URL.Query().Get("group_by")
 	if groupBy == "" {
@@ -1256,6 +1298,9 @@ func handleTeamLeaderboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleVolunteerBadges(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	volID := mux.Vars(r)["id"]
 
@@ -1308,6 +1353,9 @@ func handleVolunteerBadges(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleSimulation(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	var req struct {
 		Scenario         string  `json:"scenario"` // add_drivers, add_canvassers, increase_budget
@@ -1469,6 +1517,10 @@ func handleNLQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !requireDBConn(w) {
+		return
+	}
+
 	// Match against patterns
 	for _, p := range nlQueryPatterns {
 		for _, pat := range p.patterns {
@@ -1539,6 +1591,9 @@ func extractState(query string) string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handlePledgeMerkleRoot(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	rows, err := dbConn.QueryContext(r.Context(), `
 		SELECT pledge_id, contact_id, pledge_type, created_at
@@ -1596,6 +1651,9 @@ func handlePledgeMerkleRoot(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleCrowdEstimate(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	var req struct {
 		ImageURL    string  `json:"image_url"`
@@ -1670,6 +1728,9 @@ func handleCrowdEstimate(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleSocialInbox(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	platform := r.URL.Query().Get("platform") // twitter, facebook, whatsapp, instagram
 	status := r.URL.Query().Get("status")     // unread, read, responded, escalated
@@ -1725,6 +1786,9 @@ func handleSocialInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSocialRespond(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	var req struct {
 		MessageID int    `json:"message_id"`
 		Response  string `json:"response"`
@@ -1750,6 +1814,9 @@ func handleSocialRespond(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleExperimentDashboard(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	partyID := getPartyID(r)
 	rows, err := dbConn.QueryContext(r.Context(), `
 		SELECT variant_id, variant_text, language, impressions, conversions,
@@ -1838,6 +1905,9 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 }
 
 func handleHealthDashboard(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	ctx := r.Context()
 	checks := make(map[string]string)
 
@@ -1901,6 +1971,9 @@ var startTime = time.Now()
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleFederatedStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireDBConn(w) {
+		return
+	}
 	// Query actual federated learning state from DB
 	var parties, rounds int
 	var lastRoundAt *time.Time
@@ -1948,6 +2021,16 @@ func genPlatformID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// requireDBConn guards handlers that need the database: when dbConn is nil
+// (DB unavailable at startup) it responds 503 instead of panicking on nil deref.
+func requireDBConn(w http.ResponseWriter) bool {
+	if dbConn == nil {
+		http.Error(w, jsonErrResp("database unavailable"), http.StatusServiceUnavailable)
+		return false
+	}
+	return true
 }
 
 // jsonErrResp writes a JSON error response (wraps existing jsonErr)

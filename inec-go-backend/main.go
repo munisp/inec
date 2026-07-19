@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -266,8 +267,8 @@ func main() {
 	r.HandleFunc("/audit/verify/{id:[0-9]+}", readAuth(handleVerifyResult)).Methods("GET")
 	r.HandleFunc("/audit/stats", readAuth(handleAuditStats)).Methods("GET")
 
-	// Incidents — write auth for create/update, read for listing
-	r.HandleFunc("/incidents", writeAuth(handleCreateIncident)).Methods("POST")
+	// Incidents — officer/admin create, write auth update, read for listing
+	r.HandleFunc("/incidents", adminOrOfficer(handleCreateIncident)).Methods("POST")
 	r.HandleFunc("/incidents", readAuth(handleListIncidents)).Methods("GET")
 	r.HandleFunc("/incidents/{id:[0-9]+}", writeAuth(handleUpdateIncident)).Methods("PATCH")
 
@@ -1019,20 +1020,30 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		limit  int
 		window time.Duration
 	}
+	// Limits are env-overridable (RATE_LIMIT_*) so tests, CI and special
+	// deployments can relax them without code changes; defaults are unchanged.
+	limit := func(envKey string, def int) int {
+		if v := os.Getenv(envKey); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				return n
+			}
+		}
+		return def
+	}
 	limits := []rateRule{
 		// Auth endpoints: aggressive limits (brute-force protection)
-		{"/auth/login", 5, time.Minute},           // 5 login attempts per minute per IP
-		{"/auth/register", 3, time.Minute},         // 3 registrations per minute per IP
-		{"/auth/refresh", 10, time.Minute},         // 10 token refreshes per minute
-		{"/auth/forgot-password", 2, time.Minute},  // 2 password reset requests per minute
-		{"/sms/send-otp", 2, time.Minute},          // 2 OTP sends per minute
-		{"/sms/verify-otp", 5, time.Minute},        // 5 OTP verifications per minute
+		{"/auth/login", limit("RATE_LIMIT_LOGIN", 5), time.Minute}, // 5 login attempts per minute per IP
+		{"/auth/register", limit("RATE_LIMIT_REGISTER", 3), time.Minute}, // 3 registrations per minute per IP
+		{"/auth/refresh", limit("RATE_LIMIT_REFRESH", 10), time.Minute}, // 10 token refreshes per minute
+		{"/auth/forgot-password", limit("RATE_LIMIT_FORGOT_PASSWORD", 2), time.Minute}, // 2 password reset requests per minute
+		{"/sms/send-otp", limit("RATE_LIMIT_SMS_OTP_SEND", 2), time.Minute}, // 2 OTP sends per minute
+		{"/sms/verify-otp", limit("RATE_LIMIT_SMS_OTP_VERIFY", 5), time.Minute}, // 5 OTP verifications per minute
 		// Data endpoints
-		{"/geo/tiles", 120, time.Minute},
-		{"/dashboard/metrics", 30, time.Minute},
-		{"/results", 60, time.Minute},
-		{"/geo/reports", 10, time.Minute},
-		{"/export/", 2, time.Minute},
+		{"/geo/tiles", limit("RATE_LIMIT_GEO_TILES", 120), time.Minute},
+		{"/dashboard/metrics", limit("RATE_LIMIT_DASHBOARD_METRICS", 30), time.Minute},
+		{"/results", limit("RATE_LIMIT_RESULTS", 60), time.Minute},
+		{"/geo/reports", limit("RATE_LIMIT_GEO_REPORTS", 10), time.Minute},
+		{"/export/", limit("RATE_LIMIT_EXPORT", 2), time.Minute},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := getClientIP(r) // X-Forwarded-For aware — works behind load balancers
@@ -1066,7 +1077,7 @@ func gzipMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		// Skip gzip for SSE/streaming endpoints (they need raw Flusher access)
-		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Path == "/observer/stream" {
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Path == "/observer/stream" || r.URL.Path == "/dashboard/stream" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1174,10 +1185,14 @@ func handleDeepHealthCheck(w http.ResponseWriter, r *http.Request) {
 	// Memory / uptime info
 	checks["uptime"] = time.Since(serverStartTime).String()
 
+	// Only the database is a hard dependency — return 503 only when it is down.
+	// Middleware subsystems may legitimately run in degraded/stub mode.
 	status := 200
 	result := "healthy"
-	if !allOK {
+	if ch, ok := checks["database"].(M); ok && ch["status"] == "unhealthy" {
 		status = 503
+		result = "unhealthy"
+	} else if !allOK {
 		result = "degraded"
 	}
 	writeJSON(w, status, M{"status": result, "checks": checks})
@@ -1194,5 +1209,3 @@ func handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 var serverStartTime = time.Now()
-
-

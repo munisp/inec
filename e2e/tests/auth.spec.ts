@@ -43,8 +43,9 @@ test.describe('Authentication Flows', () => {
   });
 
   test('should block admin self-registration', async ({ request }) => {
-    const resp = await request.post(`${API_URL}/register`, {
-      data: { username: 'hacker', password: 'test123', role: 'admin' },
+    const resp = await request.post(`${API_URL}/auth/register`, {
+      // Password passes policy so the 403 is specifically the role lock.
+      data: { username: 'hacker_admin', password: 'Test1234x', full_name: 'Hacker Admin', role: 'admin' },
     });
     expect(resp.status()).toBe(403);
   });
@@ -61,7 +62,7 @@ test.describe('CSRF Protection', () => {
 
 test.describe('WAF Protection', () => {
   test('should block SQL injection in request body', async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
+    const resp = await request.post(`${API_URL}/auth/login`, {
       data: { username: "admin' OR 1=1--", password: 'test' },
     });
     expect(resp.status()).toBe(403);

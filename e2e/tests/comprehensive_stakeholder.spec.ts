@@ -32,20 +32,21 @@ async function loginAsRole(page: any, role: string) {
 
 // Helper to mock API responses
 async function mockApis(page: any, role: string) {
-  await page.route('**/api/v1/auth/login', async (route) => {
+  await page.route('**/auth/login', async (route) => {
     const json = {
-      token: 'mock-jwt-token',
+      access_token: 'mock-jwt-token',
+      token_type: 'bearer',
       user: { id: 1, username: `${role}_user`, role, full_name: `Test ${role}` }
     };
     await route.fulfill({ json });
   });
 
-  await page.route('**/api/v1/elections*', async (route) => {
-    const json = { elections: [], total: 0 };
+  await page.route('**/elections*', async (route) => {
+    const json: any[] = [];
     await route.fulfill({ json });
   });
 
-  await page.route('**/api/v1/results*', async (route) => {
+  await page.route('**/results*', async (route) => {
     const json = { results: [], total: 0 };
     await route.fulfill({ json });
   });

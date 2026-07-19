@@ -231,5 +231,3 @@ CREATE TABLE IF NOT EXISTS stakeholders (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stakeholder_type ON stakeholders USING btree (stakeholder_type);
-
-

@@ -25,4 +25,3 @@ DROP TABLE IF EXISTS biometric_vault_keys CASCADE;
 DROP TABLE IF EXISTS biometric_verifications CASCADE;
 DROP TABLE IF EXISTS biometric_templates CASCADE;
 DROP TABLE IF EXISTS biometric_profiles CASCADE;
-

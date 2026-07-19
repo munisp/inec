@@ -1,7 +1,7 @@
 -- ─── Stakeholder Management ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS staff_assignments (
     id SERIAL PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
     election_id INTEGER NOT NULL REFERENCES elections(id),
     role TEXT NOT NULL,
     state_code TEXT,
@@ -115,4 +115,4 @@ CREATE TABLE IF NOT EXISTS stablecoin_transactions (
     completed_at TIMESTAMP
 );
 
-COMMIT;
+-- COMMIT removed: the migration runner wraps each file in its own transaction

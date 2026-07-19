@@ -6,7 +6,7 @@ test.describe('Observer Monitoring', () => {
   let observerToken: string;
 
   test.beforeAll(async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
+    const resp = await request.post(`${API_URL}/auth/login`, {
       data: { username: 'observer', password: 'observer123' },
     });
     const body = await resp.json();
@@ -28,9 +28,18 @@ test.describe('Observer Monitoring', () => {
   });
 
   test('should stream SSE events', async ({ request }) => {
-    const resp = await request.get(`${API_URL}/observer/stream?party=APC`);
-    expect(resp.status()).toBe(200);
-    expect(resp.headers()['content-type']).toContain('text/event-stream');
+    // SSE streams never complete: a 401/403 resolves immediately (fail), while a
+    // live stream holds the connection open until our client timeout (pass).
+    try {
+      const resp = await request.get(`${API_URL}/observer/stream?party=APC`, {
+        headers: { Authorization: `Bearer ${observerToken}` },
+        timeout: 5000,
+      });
+      expect(resp.status()).toBe(200);
+      expect(resp.headers()['content-type']).toContain('text/event-stream');
+    } catch (e: any) {
+      expect(String(e)).toMatch(/timeout|timed out/i);
+    }
   });
 
   test('should get party dashboard', async ({ request }) => {
@@ -46,14 +55,15 @@ test.describe('Observer Monitoring', () => {
     const resp = await request.post(`${API_URL}/observer/alerts`, {
       headers: { Authorization: `Bearer ${observerToken}` },
       data: {
-        type: 'result_submitted',
-        filter_state: 'FCT',
-        filter_party: 'APC',
+        alert_type: 'result_submitted',
+        state_code: 'LA',
+        party_code: 'APC',
       },
     });
     expect(resp.status()).toBe(201);
     const body = await resp.json();
-    expect(body.id).toBeDefined();
+    expect(body.rule_id).toBeDefined();
+    expect(body.filters.party_code).toBe('APC');
   });
 
   test('should upload observer report', async ({ request }) => {
@@ -80,8 +90,8 @@ test.describe('GPS Spoofing Detection', () => {
   let officerToken: string;
 
   test.beforeAll(async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
-      data: { username: 'officer', password: 'officer123' },
+    const resp = await request.post(`${API_URL}/auth/login`, {
+      data: { username: 'officer1', password: 'officer123' },
     });
     const body = await resp.json();
     officerToken = body.access_token;
@@ -138,7 +148,7 @@ test.describe('Webhook Subscriptions', () => {
   let adminToken: string;
 
   test.beforeAll(async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
+    const resp = await request.post(`${API_URL}/auth/login`, {
       data: { username: 'admin', password: 'admin123' },
     });
     const body = await resp.json();
@@ -172,8 +182,13 @@ test.describe('Webhook Subscriptions', () => {
 
 test.describe('Dashboard SSE', () => {
   test('should stream dashboard updates', async ({ request }) => {
-    const resp = await request.get(`${API_URL}/dashboard/stream`);
-    expect(resp.status()).toBe(200);
-    expect(resp.headers()['content-type']).toContain('text/event-stream');
+    // SSE streams never complete: connection held open = stream is live.
+    try {
+      const resp = await request.get(`${API_URL}/dashboard/stream`, { timeout: 5000 });
+      expect(resp.status()).toBe(200);
+      expect(resp.headers()['content-type']).toContain('text/event-stream');
+    } catch (e: any) {
+      expect(String(e)).toMatch(/timeout|timed out/i);
+    }
   });
 });

@@ -1,5 +1,12 @@
--- Ensure PostGIS is available before using geometry types
-CREATE EXTENSION IF NOT EXISTS postgis;
+-- Ensure PostGIS is available before using geometry types.
+-- Tolerate environments without the PostGIS contrib package (dev/CI):
+-- geo features degrade, the rest of the schema still applies.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS postgis;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'postgis extension unavailable (%); geo features disabled', SQLERRM;
+END $$;
 
 -- Core extended tables: voters, audit, collation, validation
 
@@ -304,8 +311,12 @@ DO $$ BEGIN
     ) THEN
         ALTER TABLE polling_unit_locations ADD COLUMN geom public.geometry(Point,4326);
     END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'polling_unit_locations.geom skipped: %', SQLERRM;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_pu_locations_geom ON polling_unit_locations USING gist (geom);
-
-
+DO $$ BEGIN
+    CREATE INDEX IF NOT EXISTS idx_pu_locations_geom ON polling_unit_locations USING gist (geom);
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'idx_pu_locations_geom skipped: %', SQLERRM;
+END $$;

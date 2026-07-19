@@ -1,5 +1,7 @@
 """INEC AI-Powered Election Analytics Service - Statistical anomaly detection and validation."""
 import os
+import re
+import json
 import time
 import math
 import sqlite3
@@ -14,6 +16,7 @@ app = FastAPI(title="INEC AI Analytics", version="2.0.0",
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 DB_PATH = os.getenv("DB_PATH", "/data/app.db")
+LAKEHOUSE_DIR = os.getenv("LAKEHOUSE_DIR", "/lakehouse")
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -24,6 +27,10 @@ class LakehouseQuery(BaseModel):
     query: str
     parameters: Optional[dict] = None
     format: Optional[str] = "json"
+
+class LakehouseIngest(BaseModel):
+    table: str
+    rows: list[dict]
 
 def mean_std(values):
     if not values:
@@ -498,6 +505,64 @@ def execute_query(q: LakehouseQuery):
     except Exception as e:
         db.close()
         return {"error": str(e)}
+
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+@app.post("/ingest")
+def lakehouse_ingest(payload: LakehouseIngest):
+    """Append rows to a lakehouse table, creating/widening the schema as needed.
+
+    All identifiers are validated against IDENT_RE so dynamic DDL cannot be
+    used for SQL injection. Rows are also mirrored to a JSONL file under
+    LAKEHOUSE_DIR for external analytics tooling.
+    """
+    table = payload.table.strip()
+    if not IDENT_RE.match(table):
+        return {"error": "invalid table name"}
+    if not payload.rows:
+        return {"error": "rows must be a non-empty list"}
+
+    # Union of keys across all rows, preserving first-seen order
+    columns = []
+    for row in payload.rows:
+        if not isinstance(row, dict):
+            return {"error": "each row must be a JSON object"}
+        for key in row.keys():
+            if not IDENT_RE.match(str(key)):
+                return {"error": f"invalid column name: {key}"}
+            if key not in columns:
+                columns.append(key)
+
+    db = get_db()
+    try:
+        col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
+        db.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})')
+        existing = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")').fetchall()}
+        for c in columns:
+            if c not in existing:
+                db.execute(f'ALTER TABLE "{table}" ADD COLUMN "{c}" TEXT')
+        placeholders = ", ".join("?" for _ in columns)
+        col_list = ", ".join(f'"{c}"' for c in columns)
+        db.executemany(
+            f'INSERT INTO "{table}" ({col_list}) VALUES ({placeholders})',
+            [[None if row.get(c) is None else str(row.get(c)) for c in columns] for row in payload.rows],
+        )
+        db.commit()
+    except Exception as e:
+        db.close()
+        return {"error": str(e)}
+    db.close()
+
+    # JSONL mirror for the lakehouse volume (best-effort)
+    try:
+        os.makedirs(LAKEHOUSE_DIR, exist_ok=True)
+        with open(os.path.join(LAKEHOUSE_DIR, f"{table}.jsonl"), "a") as fh:
+            for row in payload.rows:
+                fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+    return {"status": "ok", "table": table, "rows_inserted": len(payload.rows), "columns": columns}
 
 if __name__ == "__main__":
     import uvicorn

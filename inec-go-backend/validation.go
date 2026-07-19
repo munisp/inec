@@ -71,7 +71,7 @@ type ElectionCreate struct {
 	ElectionType string `json:"election_type" validate:"required,oneof=presidential gubernatorial senatorial house_of_reps"`
 	ElectionDate string `json:"election_date" validate:"required"`
 	Description  string `json:"description" validate:"max=2000"`
-	Status       string `json:"status" validate:"omitempty,oneof=upcoming active completed cancelled"`
+	Status       string `json:"status" validate:"omitempty,oneof=draft scheduled upcoming active voting collating closed completed cancelled disputed"`
 }
 
 // UserPromotion is the validated input for promoting a user to a new role.

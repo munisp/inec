@@ -119,6 +119,13 @@ func (w *statusResponseWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Flush forwards http.Flusher so SSE streaming works through the wrapper.
+func (w *statusResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // GetTraceContext extracts trace context from request context.
 func GetTraceContext(ctx context.Context) *TraceContext {
 	if tc, ok := ctx.Value(traceContextKey{}).(*TraceContext); ok {

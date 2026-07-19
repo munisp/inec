@@ -292,7 +292,8 @@ func handleCreateElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Status == "" {
-		req.Status = "upcoming"
+		// FSM initial state is "draft"; "upcoming" is legacy vocabulary.
+		req.Status = "draft"
 	}
 	lid := insertReturningID(db, "INSERT INTO elections (title, election_type, election_date, status, description) VALUES (?,?,?,?,?)",
 		req.Title, req.ElectionType, req.ElectionDate, req.Status, req.Description)

@@ -127,8 +127,9 @@ func HealthHandler(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
 			},
 		}
 
+		// Only the database is a hard dependency; middleware may run degraded.
 		httpStatus := http.StatusOK
-		if overall == "degraded" {
+		if ch, ok := checks["postgresql"]; ok && ch.Status == "unhealthy" {
 			httpStatus = http.StatusServiceUnavailable
 		}
 

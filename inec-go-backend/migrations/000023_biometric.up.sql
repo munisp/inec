@@ -412,5 +412,3 @@ CREATE TABLE IF NOT EXISTS threshold_tuning_runs (
     status text DEFAULT 'completed'::text,
     run_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
-
-

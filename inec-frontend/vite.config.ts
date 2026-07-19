@@ -20,16 +20,10 @@ function swVersionPlugin(): Plugin {
   };
 }
 
-export default defineConfig({
-  plugins: [react(), swVersionPlugin()],
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-  server: {
-    proxy: {
-      '/auth': 'http://localhost:8103',
+// Shared proxy map: used by both `vite dev` (server) and `vite preview` so the
+// production preview can also reach the backend.
+const apiProxy: Record<string, any> = {
+      '/auth': 'http://localhost:8088',
       '/api': 'http://localhost:8088',
       '/disputes': 'http://localhost:8088',
       '/push': 'http://localhost:8088',
@@ -92,7 +86,19 @@ export default defineConfig({
       '/voice': 'http://localhost:8088',
       '/public': 'http://localhost:8088',
       '/gotv': { target: 'http://localhost:8103', ws: true },
+}
+
+export default defineConfig({
+  plugins: [react(), swVersionPlugin()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    proxy: apiProxy,
+  },
+  preview: {
+    proxy: apiProxy,
+  },
 })
-
