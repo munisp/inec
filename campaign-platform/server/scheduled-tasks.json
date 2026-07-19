@@ -1,0 +1,9 @@
+{
+  "deadlineCheck": {
+    "name": "inec-deadline-check",
+    "taskUid": "CtKwktDiMzJRWiuqUmtDYF",
+    "cron": "0 0 * * * *",
+    "path": "/api/scheduled/deadline-check",
+    "description": "Hourly scan for campaign deadlines within 48 hours — sends owner notification for critical events"
+  }
+}

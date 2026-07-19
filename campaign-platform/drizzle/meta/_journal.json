@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784332895254,
+      "tag": "0000_complex_fixer",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784334767452,
+      "tag": "0001_giant_energizer",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784335011611,
+      "tag": "0002_yellow_saracen",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784337538990,
+      "tag": "0003_marvelous_tombstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784461436115,
+      "tag": "0004_previous_clint_barton",
+      "breakpoints": true
+    }
+  ]
+}
