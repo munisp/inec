@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Stakeholder Workflows', () => {
   test.beforeEach(async ({ page }) => {
     // Setup mock API
-    await page.route('**/api/auth/login', async route => {
+    await page.route('**/auth/login', async route => {
       const { username } = JSON.parse(route.request().postData() || '{}');
       let role = 'citizen';
       if (username === 'admin') role = 'admin';
@@ -13,11 +13,11 @@ test.describe('Stakeholder Workflows', () => {
       
       await route.fulfill({
         status: 200,
-        json: { token: `mock_token_${role}`, user: { id: 1, username, role, full_name: 'Test User' } }
+        json: { access_token: `mock_token_${role}`, token_type: 'bearer', user: { id: 1, username, role, full_name: 'Test User' } }
       });
     });
     
-    await page.route('**/api/elections', async route => {
+    await page.route('**/elections', async route => {
       await route.fulfill({
         status: 200,
         json: [{ id: 1, title: 'Presidential Election 2027', status: 'active', election_type: 'presidential' }]

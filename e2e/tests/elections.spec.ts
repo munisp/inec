@@ -6,7 +6,7 @@ test.describe('Election Management', () => {
   let authToken: string;
 
   test.beforeAll(async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
+    const resp = await request.post(`${API_URL}/auth/login`, {
       data: { username: 'admin', password: 'admin123' },
     });
     const body = await resp.json();
@@ -86,15 +86,15 @@ test.describe('Form EC8A Submission', () => {
   let authToken: string;
 
   test.beforeAll(async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
-      data: { username: 'officer', password: 'officer123' },
+    const resp = await request.post(`${API_URL}/auth/login`, {
+      data: { username: 'officer1', password: 'officer123' },
     });
     const body = await resp.json();
     authToken = body.access_token;
   });
 
   test('should reject invalid EC8A (votes > accredited)', async ({ request }) => {
-    const resp = await request.post(`${API_URL}/ec8a/submit`, {
+    const resp = await request.post(`${API_URL}/inec/ec8a/submit`, {
       headers: { Authorization: `Bearer ${authToken}` },
       data: {
         election_id: 1,
@@ -119,11 +119,11 @@ test.describe('Form EC8A Submission', () => {
   });
 
   test('should accept valid EC8A submission', async ({ request }) => {
-    const resp = await request.post(`${API_URL}/ec8a/submit`, {
+    const resp = await request.post(`${API_URL}/inec/ec8a/submit`, {
       headers: { Authorization: `Bearer ${authToken}` },
       data: {
         election_id: 1,
-        polling_unit_code: 'FCT/ABJ/001/02',
+        polling_unit_code: 'LA-001-W001-PU001',
         presiding_officer_id: 'PO-002',
         registered_voters: 500,
         accredited_voters: 400,
@@ -146,7 +146,7 @@ test.describe('Collation', () => {
   let authToken: string;
 
   test.beforeAll(async ({ request }) => {
-    const resp = await request.post(`${API_URL}/login`, {
+    const resp = await request.post(`${API_URL}/auth/login`, {
       data: { username: 'admin', password: 'admin123' },
     });
     const body = await resp.json();
@@ -154,7 +154,7 @@ test.describe('Collation', () => {
   });
 
   test('should collate at national level', async ({ request }) => {
-    const resp = await request.get(`${API_URL}/collation?level=national&election_id=1`, {
+    const resp = await request.get(`${API_URL}/inec/collation?level=national&election_id=1`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
     expect(resp.status()).toBe(200);
