@@ -108,7 +108,19 @@ export default function LegalCompliance() {
                       {item.category && <Badge variant="outline">{item.category}</Badge>}
                     </div>
                     {item.description && <p className="text-sm text-gray-600">{item.description}</p>}
-                    {item.deadline && <p className="text-xs text-gray-400 mt-1">Deadline: {new Date(item.deadline).toLocaleDateString()}</p>}
+                    {item.deadline && (() => {
+                      const daysLeft = Math.ceil((new Date(item.deadline).getTime() - Date.now()) / 86400000);
+                      const isOverdue = daysLeft < 0;
+                      const isUrgent = daysLeft >= 0 && daysLeft <= 7;
+                      return (
+                        <div className="flex items-center gap-2 mt-1">
+                          <p className="text-xs text-gray-400">Deadline: {new Date(item.deadline).toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })}</p>
+                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isOverdue ? "bg-red-100 text-red-700" : isUrgent ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-600"}`}>
+                            {isOverdue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? "Due today!" : `${daysLeft}d left`}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     {item.notes && <p className="text-xs text-gray-500 mt-1 italic">{item.notes}</p>}
                   </div>
                   <Button variant="outline" size="sm" onClick={()=>upsertMut.mutate({id:item.id,profileId:profileId!,title:item.title,status:"compliant"})}>

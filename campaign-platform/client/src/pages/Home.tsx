@@ -16,7 +16,7 @@ import {
   Scale, Search, Zap, BarChart2, FileText, ClipboardList,
   Globe, Star, DollarSign, Wallet, Radio, Mic2, TrendingUp, Activity,
   Settings, ChevronRight, Cpu, UserCog, Save, History, CheckCircle,
-  AlertTriangle, Clock, Shield, Database, GitCompare, Download, Sparkles, X, Copy
+  AlertTriangle, Clock, Shield, Database, GitCompare, Download, Sparkles, X, Copy, Loader2
 } from "lucide-react";
 
 // ─── Feature Grid ─────────────────────────────────────────────────────────────
@@ -253,6 +253,15 @@ function SensitivityHeatmap({ config }: { config: SimConfig }) {
 export default function Home() {
   const { profile, isLoading, profileId } = useCandidateProfile();
   const utils = trpc.useUtils();
+  const [seedLoading, setSeedLoading] = useState(false);
+  const seedMut = trpc.seed.all.useMutation({
+    onSuccess: () => {
+      utils.invalidate();
+      setSeedLoading(false);
+      toast.success("Sample data seeded! All 22 campaign tools are now populated with realistic Nigerian election data.");
+    },
+    onError: (e) => { setSeedLoading(false); toast.error(e.message); },
+  });
 
   const [activeTab, setActiveTab] = useState<"hub" | "simulation">("hub");
   const [config, setConfig] = useState<SimConfig>({
@@ -524,6 +533,31 @@ export default function Home() {
               <Link href="/profile">
                 <Button size="sm" style={{ background: "#4A1525", color: "white" }}>Set Up Profile</Button>
               </Link>
+            </div>
+          )}
+
+          {/* Seed Sample Data Banner */}
+          {!isLoading && profile && (
+            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <Database size={18} className="text-green-700 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-green-900">Populate All 22 Campaign Tools with Sample Data</p>
+                  <p className="text-xs text-green-700 mt-0.5">Seeds realistic Nigerian election data across all modules: timeline, volunteers, media, endorsements, fundraising, budget, and more.</p>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                style={{ background: "#008751", color: "white" }}
+                disabled={seedLoading || !profileId}
+                onClick={() => {
+                  if (!profileId) return toast.error("Profile required");
+                  setSeedLoading(true);
+                  seedMut.mutate({ profileId });
+                }}
+              >
+                {seedLoading ? <><Loader2 size={13} className="animate-spin mr-1" /> Seeding...</> : <><Database size={13} className="mr-1" /> Seed Sample Data</>}
+              </Button>
             </div>
           )}
 

@@ -42,6 +42,8 @@ export default function SocialMediaCenter() {
   const [aiTone, setAiTone] = useState("inspiring and relatable");
   const [showAiPanel, setShowAiPanel] = useState(false);
   const [scheduledDate, setScheduledDate] = useState("");
+  const [viewMode, setViewMode] = useState<"feed" | "calendar">("feed");
+  const [calendarMonth, setCalendarMonth] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; });
   const [scheduledTime, setScheduledTime] = useState("");
 
   const limit = CHAR_LIMITS[platform] ?? 280;
@@ -59,6 +61,20 @@ export default function SocialMediaCenter() {
     }
     saveMut.mutate({ profileId, platform, content, scheduledAt, status: scheduledAt ? "scheduled" : "pending" });
   };
+
+  // Calendar grid data
+  const [calYear, calMonthNum] = calendarMonth.split("-").map(Number);
+  const daysInMonth = new Date(calYear, calMonthNum, 0).getDate();
+  const firstDayOfWeek = new Date(calYear, calMonthNum - 1, 1).getDay();
+  const postsByDay: Record<number, typeof posts> = {};
+  posts.forEach(p => {
+    const dateStr = p.scheduledAt ? new Date(p.scheduledAt).toISOString().slice(0, 10) : new Date(p.createdAt).toISOString().slice(0, 10);
+    const [y, m, d] = dateStr.split("-").map(Number);
+    if (y === calYear && m === calMonthNum) {
+      if (!postsByDay[d]) postsByDay[d] = [];
+      postsByDay[d].push(p);
+    }
+  });
 
   return (
     <div className="min-h-screen" style={{ background: "#F5F0EB" }}>
@@ -156,8 +172,66 @@ export default function SocialMediaCenter() {
           </div>
         </div>
 
+        {/* View toggle */}
+        <div className="flex gap-2 mb-4 items-center">
+          <button onClick={() => setViewMode("feed")}
+            className={`px-4 py-1.5 text-xs font-semibold uppercase tracking-wide rounded transition-all ${viewMode === "feed" ? "text-white" : "bg-white text-gray-600 border border-gray-200"}`}
+            style={viewMode === "feed" ? { background: "#4A1525" } : {}}>
+            Feed View
+          </button>
+          <button onClick={() => setViewMode("calendar")}
+            className={`px-4 py-1.5 text-xs font-semibold uppercase tracking-wide rounded transition-all ${viewMode === "calendar" ? "text-white" : "bg-white text-gray-600 border border-gray-200"}`}
+            style={viewMode === "calendar" ? { background: "#1A3A5C" } : {}}>
+            Monthly Calendar
+          </button>
+        </div>
+
+        {/* Calendar View */}
+        {viewMode === "calendar" && (
+          <div className="bg-white border border-gray-200 rounded p-5 mb-6" style={{ borderTop: "3px solid #1A3A5C" }}>
+            <div className="flex items-center justify-between mb-4">
+              <button onClick={() => {
+                const [y, m] = calendarMonth.split("-").map(Number);
+                const prev = new Date(y, m - 2, 1);
+                setCalendarMonth(`${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`);
+              }} className="px-3 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50">← Prev</button>
+              <p className="font-bold text-gray-800">{new Date(calYear, calMonthNum - 1).toLocaleString("en-NG", { month: "long", year: "numeric" })}</p>
+              <button onClick={() => {
+                const [y, m] = calendarMonth.split("-").map(Number);
+                const next = new Date(y, m, 1);
+                setCalendarMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`);
+              }} className="px-3 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50">Next →</button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 mb-2">
+              {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d => (
+                <div key={d} className="text-center text-xs font-semibold text-gray-500 py-1">{d}</div>
+              ))}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {Array.from({ length: firstDayOfWeek }, (_, i) => <div key={`empty-${i}`} />)}
+              {Array.from({ length: daysInMonth }, (_, i) => {
+                const day = i + 1;
+                const dayPosts = postsByDay[day] ?? [];
+                const isToday = new Date().getDate() === day && new Date().getMonth() + 1 === calMonthNum && new Date().getFullYear() === calYear;
+                return (
+                  <div key={day} className={`min-h-[64px] rounded p-1 border ${isToday ? "border-amber-400 bg-amber-50" : "border-gray-100 bg-gray-50"}`}>
+                    <p className={`text-xs font-bold mb-1 ${isToday ? "text-amber-700" : "text-gray-600"}`}>{day}</p>
+                    {dayPosts.slice(0, 2).map(p => (
+                      <div key={p.id} className="text-xs rounded px-1 py-0.5 mb-0.5 truncate"
+                        style={{ background: (PLATFORM_COLORS[p.platform] ?? "#666") + "22", color: PLATFORM_COLORS[p.platform] ?? "#666" }}>
+                        {p.platform.slice(0, 2)} · {p.content.slice(0, 20)}…
+                      </div>
+                    ))}
+                    {dayPosts.length > 2 && <p className="text-xs text-gray-400">+{dayPosts.length - 2} more</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Feed */}
-        {isLoading
+        {viewMode === "feed" && isLoading
           ? <div className="flex justify-center py-20"><Loader2 size={32} className="animate-spin text-gray-400" /></div>
           : filtered.length === 0
             ? <div className="text-center py-20 text-gray-500"><Share2 size={48} className="mx-auto mb-4 opacity-30" /><p>No posts yet. Use AI Generate or write your first post above.</p></div>

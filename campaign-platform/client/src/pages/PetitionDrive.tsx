@@ -5,11 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, FileSignature, Plus, Loader2, Copy, Share2 } from "lucide-react";
+import { ArrowLeft, FileSignature, Plus, Loader2, Copy, Share2, QrCode } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 
 export default function PetitionDrive() {
   const { profileId, canEdit, canDelete } = useCandidateProfile();
   const utils = trpc.useUtils();
+  const [showQR, setShowQR] = useState(false);
 
   // Get or create the campaign petition
   const { data: petitions = [], isLoading: loadingPetitions } = trpc.petitions.list.useQuery(
@@ -93,7 +95,22 @@ export default function PetitionDrive() {
               >
                 <Copy size={12} /> Copy
               </button>
+              <button
+                onClick={() => setShowQR(q => !q)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded border border-gray-200 hover:bg-gray-50 transition-all"
+              >
+                <QrCode size={12} /> QR
+              </button>
             </div>
+            {showQR && (
+              <div className="mt-4 flex flex-col items-center gap-2">
+                <p className="text-xs text-gray-500">Scan to sign the petition</p>
+                <div className="p-3 border border-gray-200 rounded bg-white inline-block">
+                  <QRCodeSVG value={shareUrl} size={160} fgColor="#4A1525" />
+                </div>
+                <p className="text-xs text-gray-400 font-mono">{petition?.title}</p>
+              </div>
+            )}
           </div>
         )}
         {/* Add signature form */}

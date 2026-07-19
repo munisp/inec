@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Plus, Calendar, Trash2, Loader2 } from "lucide-react";
+import { ArrowLeft, Plus, Calendar, Trash2, Loader2, BarChart2 } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "#008751", pending: "#1A3A5C", completed: "#666",
@@ -32,12 +32,19 @@ export default function CampaignTimeline() {
   });
 
   const [open, setOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"timeline" | "gantt">("timeline");
   const [form, setForm] = useState({ title: "", description: "", eventDate: "", category: "Rally", status: "pending" as const, priority: "medium" as const, location: "" });
 
   const handleSave = () => {
     if (!profileId || !form.title || !form.eventDate) return toast.error("Title and date required");
     upsertMut.mutate({ profileId, ...form });
   };
+
+  // Gantt data: find date range
+  const sortedByDate = [...events].filter(e => e.eventDate).sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+  const minDate = sortedByDate.length > 0 ? new Date(sortedByDate[0].eventDate) : new Date();
+  const maxDate = sortedByDate.length > 0 ? new Date(sortedByDate[sortedByDate.length - 1].eventDate) : new Date();
+  const totalDays = Math.max(1, Math.ceil((maxDate.getTime() - minDate.getTime()) / 86400000) + 1);
 
   return (
     <div className="min-h-screen" style={{ background: "#F5F0EB" }}>
@@ -74,7 +81,56 @@ export default function CampaignTimeline() {
         </Dialog>
       </header>
       <div className="max-w-4xl mx-auto px-6 py-8">
-        {isLoading ? <div className="flex justify-center py-20"><Loader2 size={32} className="animate-spin text-gray-400"/></div>
+        {/* View toggle */}
+        <div className="flex gap-2 mb-4">
+          {(["timeline", "gantt"] as const).map(v => (
+            <button key={v} onClick={() => setViewMode(v)}
+              className={`px-4 py-1.5 text-xs font-semibold uppercase tracking-wide rounded transition-all ${viewMode === v ? "text-white" : "bg-white text-gray-600 border border-gray-200"}`}
+              style={viewMode === v ? { background: "#4A1525" } : {}}>
+              {v === "timeline" ? "Timeline View" : "Gantt View"}
+            </button>
+          ))}
+        </div>
+
+        {/* Gantt View */}
+        {viewMode === "gantt" && events.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded p-5 mb-4 overflow-x-auto" style={{ borderTop: "3px solid #1A3A5C" }}>
+            <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-4">Gantt Chart — Campaign Events</p>
+            <div className="min-w-[600px]">
+              {sortedByDate.map(ev => {
+                const start = Math.max(0, Math.ceil((new Date(ev.eventDate).getTime() - minDate.getTime()) / 86400000));
+                const barLeft = (start / totalDays) * 100;
+                const barWidth = Math.max(1.5, (1 / totalDays) * 100);
+                const color = STATUS_COLORS[ev.status ?? "pending"];
+                return (
+                  <div key={ev.id} className="flex items-center gap-3 mb-2">
+                    <div className="w-32 shrink-0 text-xs text-gray-700 truncate font-medium">{ev.title}</div>
+                    <div className="flex-1 relative h-7 bg-gray-100 rounded">
+                      <div
+                        className="absolute top-0.5 bottom-0.5 rounded flex items-center px-1.5"
+                        style={{ left: `${barLeft}%`, width: `${barWidth}%`, background: color, minWidth: "8px" }}
+                        title={`${ev.title} — ${new Date(ev.eventDate).toLocaleDateString("en-NG")}`}
+                      >
+                        <span className="text-white text-xs font-mono truncate hidden sm:block">{new Date(ev.eventDate).toLocaleDateString("en-NG", { day: "numeric", month: "short" })}</span>
+                      </div>
+                    </div>
+                    <div className="w-16 shrink-0 text-xs text-gray-400 text-right">{ev.category ?? ""}</div>
+                  </div>
+                );
+              })}
+              <div className="flex mt-3 pt-3 border-t border-gray-100">
+                <div className="w-32 shrink-0" />
+                <div className="flex-1 flex justify-between text-xs text-gray-400">
+                  <span>{minDate.toLocaleDateString("en-NG", { month: "short", day: "numeric" })}</span>
+                  <span>{maxDate.toLocaleDateString("en-NG", { month: "short", day: "numeric" })}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Timeline View */}
+        {viewMode === "timeline" && (isLoading ? <div className="flex justify-center py-20"><Loader2 size={32} className="animate-spin text-gray-400"/></div>
         : events.length === 0 ? (
           <div className="text-center py-20 text-gray-500">
             <Calendar size={48} className="mx-auto mb-4 opacity-30"/>
@@ -109,7 +165,7 @@ export default function CampaignTimeline() {
               ))}
             </div>
           </div>
-        )}
+        ))}
       </div>
     </div>
   );

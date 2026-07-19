@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Link } from "wouter";
 import { ArrowLeft, Calculator, Plus, Loader2, Download, FileText } from "lucide-react";
 import { exportToCSV, exportToPDF } from "@/hooks/useExport";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 const CATEGORIES = ["Advertising","Events & Rallies","Staff & Salaries","Travel & Logistics","Legal & Compliance","Technology","Printing","Security","Miscellaneous"];
 type Priority = "low"|"medium"|"high"|"critical";
@@ -26,11 +27,23 @@ export default function BudgetPlanner() {
     onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"table" | "chart">("table");
   const [form, setForm] = useState({ description: "", category: "Advertising", budgetedAmount: "", spentAmount: "", priority: "medium" as Priority, notes: "" });
 
   const totalBudgeted = items.reduce((s, i) => s + (i.budgetedAmount ?? 0), 0);
   const totalSpent = items.reduce((s, i) => s + (i.spentAmount ?? 0), 0);
   const variance = totalBudgeted - totalSpent;
+
+  // Reconciliation chart data: budgeted vs spent by category
+  const categoryData = Object.entries(
+    items.reduce<Record<string, { budgeted: number; spent: number }>>((acc, item) => {
+      const cat = item.category ?? "Other";
+      if (!acc[cat]) acc[cat] = { budgeted: 0, spent: 0 };
+      acc[cat].budgeted += item.budgetedAmount ?? 0;
+      acc[cat].spent += item.spentAmount ?? 0;
+      return acc;
+    }, {})
+  ).map(([category, vals]) => ({ category, ...vals }));
 
   const EXPORT_COLS = [
     { header: "Category", key: "category" },
@@ -96,31 +109,79 @@ export default function BudgetPlanner() {
         </div>
       </header>
       <div className="max-w-5xl mx-auto px-6 py-8">
-        {isLoading ? <div className="flex justify-center py-20"><Loader2 size={32} className="animate-spin text-gray-400"/></div>
-        : items.length === 0 ? <div className="text-center py-20 text-gray-500"><Calculator size={48} className="mx-auto mb-4 opacity-30"/><p>No budget items yet</p></div>
-        : (
-          <div className="bg-white border border-gray-200 rounded overflow-hidden">
-            <table className="w-full text-sm">
-              <thead><tr className="bg-gray-50 border-b">
-                {["Description","Category","Budgeted","Spent","Variance","Priority","Notes"].map(h => <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">{h}</th>)}
-              </tr></thead>
-              <tbody>{items.map((item, i) => {
-                const spent = item.spentAmount ?? 0;
-                const v = (item.budgetedAmount ?? 0) - spent;
-                return (
-                  <tr key={item.id} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{item.description}</td>
-                    <td className="px-4 py-3 text-gray-600">{item.category}</td>
-                    <td className="px-4 py-3 font-mono">₦{(item.budgetedAmount ?? 0).toLocaleString()}</td>
-                    <td className="px-4 py-3 font-mono">{item.spentAmount ? `₦${item.spentAmount.toLocaleString()}` : "—"}</td>
-                    <td className={`px-4 py-3 font-mono font-bold ${v >= 0 ? "text-green-700" : "text-red-700"}`}>{v >= 0 ? "+" : ""}{v.toLocaleString()}</td>
-                    <td className="px-4 py-3"><Badge style={{ background: PRIORITY_COLORS[(item.priority ?? "medium") as Priority] + "22", color: PRIORITY_COLORS[(item.priority ?? "medium") as Priority] }}>{item.priority ?? "medium"}</Badge></td>
-                    <td className="px-4 py-3 text-xs text-gray-500">{item.notes ?? "—"}</td>
-                  </tr>
-                );
-              })}</tbody>
-            </table>
+        {/* Tab switcher */}
+        <div className="flex gap-2 mb-4">
+          {(["table", "chart"] as const).map(t => (
+            <button key={t} onClick={() => setActiveTab(t)}
+              className={`px-4 py-1.5 text-xs font-semibold uppercase tracking-wide rounded transition-all ${activeTab === t ? "text-white" : "bg-white text-gray-600 border border-gray-200"}`}
+              style={activeTab === t ? { background: "#4A1525" } : {}}>
+              {t === "table" ? "Budget Table" : "Reconciliation Chart"}
+            </button>
+          ))}
+        </div>
+
+        {/* Reconciliation Chart */}
+        {activeTab === "chart" && (
+          <div className="bg-white border border-gray-200 rounded p-5 mb-6" style={{ borderTop: "3px solid #1A3A5C" }}>
+            <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Budgeted vs Spent by Category</p>
+            <p className="text-xs text-gray-400 mb-4">All amounts in ₦</p>
+            {categoryData.length === 0 ? (
+              <p className="text-center text-gray-400 py-8">No budget items yet</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={categoryData} margin={{ top: 5, right: 10, left: 10, bottom: 50 }}>
+                  <XAxis dataKey="category" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" height={60} />
+                  <YAxis tickFormatter={v => `₦${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 10 }} />
+                  <Tooltip formatter={(v: number) => [`₦${v.toLocaleString()}`, ""]} />
+                  <Legend />
+                  <Bar dataKey="budgeted" name="Budgeted" fill="#1A3A5C" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="spent" name="Spent" fill="#008751" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+            <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-gray-100">
+              {[
+                { label: "Total Budgeted", value: `₦${totalBudgeted.toLocaleString()}`, color: "#1A3A5C" },
+                { label: "Total Spent", value: `₦${totalSpent.toLocaleString()}`, color: "#008751" },
+                { label: "Variance", value: `${variance >= 0 ? "+" : ""}₦${Math.abs(variance).toLocaleString()}`, color: variance >= 0 ? "#008751" : "#C0392B" },
+              ].map(s => (
+                <div key={s.label} className="text-center">
+                  <p className="text-xs text-gray-500 mb-1">{s.label}</p>
+                  <p className="font-mono font-bold text-lg" style={{ color: s.color }}>{s.value}</p>
+                </div>
+              ))}
+            </div>
           </div>
+        )}
+
+        {/* Budget Table */}
+        {activeTab === "table" && (
+          isLoading ? <div className="flex justify-center py-20"><Loader2 size={32} className="animate-spin text-gray-400"/></div>
+          : items.length === 0 ? <div className="text-center py-20 text-gray-500"><Calculator size={48} className="mx-auto mb-4 opacity-30"/><p>No budget items yet</p></div>
+          : (
+            <div className="bg-white border border-gray-200 rounded overflow-hidden">
+              <table className="w-full text-sm">
+                <thead><tr className="bg-gray-50 border-b">
+                  {["Description","Category","Budgeted","Spent","Variance","Priority","Notes"].map(h => <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">{h}</th>)}
+                </tr></thead>
+                <tbody>{items.map((item, i) => {
+                  const spent = item.spentAmount ?? 0;
+                  const v = (item.budgetedAmount ?? 0) - spent;
+                  return (
+                    <tr key={item.id} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                      <td className="px-4 py-3 font-medium text-gray-900">{item.description}</td>
+                      <td className="px-4 py-3 text-gray-600">{item.category}</td>
+                      <td className="px-4 py-3 font-mono">₦{(item.budgetedAmount ?? 0).toLocaleString()}</td>
+                      <td className="px-4 py-3 font-mono">{item.spentAmount ? `₦${item.spentAmount.toLocaleString()}` : "—"}</td>
+                      <td className={`px-4 py-3 font-mono font-bold ${v >= 0 ? "text-green-700" : "text-red-700"}`}>{v >= 0 ? "+" : ""}{v.toLocaleString()}</td>
+                      <td className="px-4 py-3"><Badge style={{ background: PRIORITY_COLORS[(item.priority ?? "medium") as Priority] + "22", color: PRIORITY_COLORS[(item.priority ?? "medium") as Priority] }}>{item.priority ?? "medium"}</Badge></td>
+                      <td className="px-4 py-3 text-xs text-gray-500">{item.notes ?? "—"}</td>
+                    </tr>
+                  );
+                })}</tbody>
+              </table>
+            </div>
+          )
         )}
       </div>
     </div>

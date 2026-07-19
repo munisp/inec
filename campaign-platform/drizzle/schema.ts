@@ -324,6 +324,9 @@ export const mediaItems = pgTable("media_items", {
   source: varchar("source", { length: 200 }).notNull(),
   headline: text("headline").notNull(),
   sentiment: varchar("sentiment", { length: 20 }),
+  sourceType: varchar("source_type", { length: 20 }).default("online"),
+  reach: integer("reach").default(0),
+  zone: varchar("zone", { length: 100 }),
   url: text("url"),
   publishedAt: timestamp("published_at"),
   notes: text("notes"),
@@ -407,3 +410,36 @@ export const volunteerTasks = pgTable("volunteer_tasks", {
 
 export type VolunteerTask = typeof volunteerTasks.$inferSelect;
 export type InsertVolunteerTask = typeof volunteerTasks.$inferInsert;
+
+// ─── Debate Practice Scores ───────────────────────────────────────────────────
+export const debatePracticeScores = pgTable("debate_practice_scores", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").references(() => candidateProfiles.id),
+  topic: varchar("topic", { length: 200 }).notNull(),
+  score: integer("score").notNull(),
+  maxScore: integer("max_score").default(10),
+  notes: text("notes"),
+  scoredAt: timestamp("scored_at").defaultNow().notNull(),
+});
+export type DebatePracticeScore = typeof debatePracticeScores.$inferSelect;
+
+// ─── Stakeholder Contacts ─────────────────────────────────────────────────────
+export const stakeholderContacts = pgTable("stakeholder_contacts", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").references(() => candidateProfiles.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  title: varchar("title", { length: 200 }),
+  organization: varchar("organization", { length: 200 }),
+  category: varchar("category", { length: 100 }),
+  phone: varchar("phone", { length: 30 }),
+  email: varchar("email", { length: 320 }),
+  state: varchar("state", { length: 100 }),
+  lga: varchar("lga", { length: 100 }),
+  influenceLevel: priorityEnum("influence_level").default("medium"),
+  relationship: varchar("relationship", { length: 50 }).default("neutral"),
+  lastContact: date("last_contact"),
+  nextAction: text("next_action"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type StakeholderContact = typeof stakeholderContacts.$inferSelect;

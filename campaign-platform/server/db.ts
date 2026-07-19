@@ -809,3 +809,52 @@ export async function deleteVolunteerTask(id: number) {
   await db.delete(volunteerTasks).where(eq(volunteerTasks.id, id));
   return { success: true };
 }
+
+// ─── Debate Practice Scores ───────────────────────────────────────────────────
+export async function getDebatePracticeScores(profileId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const { debatePracticeScores } = await import("../drizzle/schema");
+  const { eq, desc } = await import("drizzle-orm");
+  return db.select().from(debatePracticeScores).where(eq(debatePracticeScores.profileId, profileId)).orderBy(desc(debatePracticeScores.scoredAt));
+}
+
+export async function addDebatePracticeScore(data: { profileId: number; topic: string; score: number; maxScore?: number; notes?: string }) {
+  const db = await getDb();
+  if (!db) return null;
+  const { debatePracticeScores } = await import("../drizzle/schema");
+  const result = await db.insert(debatePracticeScores).values(data as any).returning();
+  return result[0] ?? null;
+}
+
+// ─── Stakeholder Contacts ─────────────────────────────────────────────────────
+export async function getStakeholderContacts(profileId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const { stakeholderContacts } = await import("../drizzle/schema");
+  const { eq, desc } = await import("drizzle-orm");
+  return db.select().from(stakeholderContacts).where(eq(stakeholderContacts.profileId, profileId)).orderBy(desc(stakeholderContacts.createdAt));
+}
+
+export async function upsertStakeholderContact(data: any) {
+  const db = await getDb();
+  if (!db) return null;
+  const { stakeholderContacts } = await import("../drizzle/schema");
+  const { eq } = await import("drizzle-orm");
+  if (data.id) {
+    const { id, ...rest } = data;
+    await db.update(stakeholderContacts).set(rest).where(eq(stakeholderContacts.id, id));
+    return { id };
+  }
+  const result = await db.insert(stakeholderContacts).values(data).returning();
+  return result[0] ?? null;
+}
+
+export async function deleteStakeholderContact(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const { stakeholderContacts } = await import("../drizzle/schema");
+  const { eq } = await import("drizzle-orm");
+  await db.delete(stakeholderContacts).where(eq(stakeholderContacts.id, id));
+  return { success: true };
+}

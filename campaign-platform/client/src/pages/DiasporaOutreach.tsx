@@ -7,10 +7,10 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Globe, Plus, Loader2, MessageSquare, Mail, Copy, Check, X } from "lucide-react";
+import { ArrowLeft, Globe, Plus, Loader2, MessageSquare, Mail, Copy, Check, X, Sparkles } from "lucide-react";
 
 export default function DiasporaOutreach() {
-  const { profileId , canEdit, canDelete } = useCandidateProfile();
+  const { profileId, profile, canEdit, canDelete } = useCandidateProfile();
   const utils = trpc.useUtils();
   const { data: contacts = [], isLoading } = trpc.diaspora.list.useQuery(
     { profileId: profileId! }, { enabled: !!profileId }
@@ -23,6 +23,11 @@ export default function DiasporaOutreach() {
   const [form, setForm] = useState({ name: "", country: "", city: "", email: "", phone: "", organization: "", pledgedAmount: "", notes: "" });
   const [selectedContact, setSelectedContact] = useState<typeof contacts[number] | null>(null);
   const [templateType, setTemplateType] = useState<"whatsapp" | "email">("whatsapp");
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
+  const aiDraftMut = trpc.diaspora.aiDraft.useMutation({
+    onSuccess: (data) => { const msg = typeof data.content === "string" ? data.content : ""; setAiMessage(msg); toast.success("AI message generated!"); },
+    onError: (e) => toast.error(e.message),
+  });
   const [copied, setCopied] = useState(false);
 
   const messageTemplate = useMemo(() => {
@@ -114,7 +119,7 @@ export default function DiasporaOutreach() {
                   {c.phone && (
                     <button
                       className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors"
-                      onClick={() => { setSelectedContact(c); setTemplateType("whatsapp"); }}
+                      onClick={() => { setSelectedContact(c); setTemplateType("whatsapp"); setAiMessage(null); }}
                     >
                       <MessageSquare size={10} /> WhatsApp
                     </button>
@@ -122,7 +127,7 @@ export default function DiasporaOutreach() {
                   {c.email && (
                     <button
                       className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors"
-                      onClick={() => { setSelectedContact(c); setTemplateType("email"); }}
+                      onClick={() => { setSelectedContact(c); setTemplateType("email"); setAiMessage(null); }}
                     >
                       <Mail size={10} /> Email
                     </button>
@@ -142,7 +147,7 @@ export default function DiasporaOutreach() {
                 <p className="font-bold text-gray-900">{selectedContact.name}</p>
                 <p className="text-xs text-gray-500">{selectedContact.country}</p>
               </div>
-              <button onClick={() => setSelectedContact(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+              <button onClick={() => { setSelectedContact(null); setAiMessage(null); }} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
             </div>
             <div className="px-5 pt-4">
               <div className="flex gap-2 mb-3">
@@ -158,12 +163,26 @@ export default function DiasporaOutreach() {
               <textarea
                 className="w-full text-xs font-mono leading-relaxed border border-gray-200 rounded p-3 bg-gray-50 resize-none focus:outline-none focus:ring-1 focus:ring-gray-300"
                 rows={12}
-                value={messageTemplate}
-                onChange={() => {}}
-                readOnly
+                value={aiMessage ?? messageTemplate}
+                onChange={e => setAiMessage(e.target.value)}
               />
             </div>
-            <div className="flex gap-2 px-5 py-4 border-t">
+            <div className="flex gap-2 px-5 py-4 border-t flex-wrap">
+              <Button size="sm" variant="outline" className="gap-1.5 border-purple-300 text-purple-700 hover:bg-purple-50"
+                disabled={aiDraftMut.isPending || !profileId}
+                onClick={() => profileId && selectedContact && aiDraftMut.mutate({
+                  profileId,
+                  contactName: selectedContact.name ?? "Friend",
+                  country: selectedContact.country ?? "Nigeria",
+                  city: selectedContact.city ?? undefined,
+                  messageType: templateType,
+                  candidateName: profile?.candidateName ?? undefined,
+                  partyName: profile?.partyName ?? undefined,
+                  keyMessage: undefined,
+                })}>
+                {aiDraftMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                AI Draft
+              </Button>
               <Button size="sm" className="gap-1.5 flex-1" style={{ background: "#4A1525", color: "white" }} onClick={handleCopy}>
                 {copied ? <><Check size={12} /> Copied!</> : <><Copy size={12} /> Copy Message</>}
               </Button>

@@ -8,7 +8,8 @@ import { trpc } from "@/lib/trpc";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { toast } from "sonner";
 import { Streamdown } from "streamdown";
-import { Cpu, ChevronLeft, Mic, BookOpen, Zap, Clock, RotateCcw, Save } from "lucide-react";
+import { Cpu, ChevronLeft, Mic, BookOpen, Zap, Clock, RotateCcw, Save, BarChart2, Plus } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 const TOPICS = [
   "Economy & Job Creation", "Security & Public Safety", "Education Reform",
@@ -46,7 +47,15 @@ export default function DebateCoach() {
   const [selectedOpponentId, setSelectedOpponentId] = useState<number | null>(null);
   const [timer, setTimer] = useState(0);
   const [timerActive, setTimerActive] = useState(false);
-  const [activeTab, setActiveTab] = useState<"ai" | "saved" | "timer">("ai");
+  const [activeTab, setActiveTab] = useState<"ai" | "saved" | "timer" | "scores">("ai");
+  const [scoreForm, setScoreForm] = useState({ topic: "", score: "7", notes: "" });
+  const { data: practiceScores = [] } = trpc.debateScores.list.useQuery(
+    { profileId: profileId! }, { enabled: !!profileId }
+  );
+  const addScoreMut = trpc.debateScores.add.useMutation({
+    onSuccess: () => { utils.debateScores.list.invalidate(); toast.success("Score recorded"); setScoreForm({ topic: "", score: "7", notes: "" }); },
+    onError: e => toast.error(e.message),
+  });
 
   // Timer logic
   useState(() => {
@@ -170,7 +179,7 @@ export default function DebateCoach() {
         <main className="flex-1 overflow-y-auto p-4 sm:p-6">
           {/* Tabs */}
           <div className="flex gap-4 border-b border-gray-200 mb-5">
-            {([["ai", "AI Draft", Zap], ["saved", "Saved Notes", BookOpen], ["timer", "Practice Timer", Clock]] as const).map(([tab, label, Icon]) => (
+            {([["ai", "AI Draft", Zap], ["saved", "Saved Notes", BookOpen], ["timer", "Practice Timer", Clock], ["scores", "Score Tracker", BarChart2]] as const).map(([tab, label, Icon]) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -303,6 +312,81 @@ export default function DebateCoach() {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+          {/* Score Tracker Tab */}
+          {activeTab === "scores" && (
+            <div className="p-6">
+              <div className="bg-white border border-gray-200 rounded p-4 mb-5" style={{ borderTop: "3px solid #1A3A5C" }}>
+                <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Record Practice Score</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <input
+                    className="border border-gray-200 rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+                    placeholder="Topic (e.g. Economy)"
+                    value={scoreForm.topic}
+                    onChange={e => setScoreForm(f => ({ ...f, topic: e.target.value }))}
+                  />
+                  <input
+                    type="number" min={0} max={10}
+                    className="border border-gray-200 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-gray-300"
+                    placeholder="Score (0–10)"
+                    value={scoreForm.score}
+                    onChange={e => setScoreForm(f => ({ ...f, score: e.target.value }))}
+                  />
+                  <input
+                    className="border border-gray-200 rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-300"
+                    placeholder="Notes (optional)"
+                    value={scoreForm.notes}
+                    onChange={e => setScoreForm(f => ({ ...f, notes: e.target.value }))}
+                  />
+                </div>
+                <button
+                  className="mt-3 flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white rounded"
+                  style={{ background: "#1A3A5C" }}
+                  disabled={addScoreMut.isPending || !profileId || !scoreForm.topic}
+                  onClick={() => profileId && addScoreMut.mutate({
+                    profileId,
+                    topic: scoreForm.topic,
+                    score: Number(scoreForm.score),
+                    notes: scoreForm.notes || undefined,
+                  })}
+                >
+                  <Plus size={12} /> Record Score
+                </button>
+              </div>
+              {practiceScores.length === 0 ? (
+                <div className="text-center py-12 text-gray-400"><BarChart2 size={40} className="mx-auto mb-3 opacity-30"/><p className="text-sm">No practice scores yet. Record your first session above.</p></div>
+              ) : (
+                <>
+                  <div className="bg-white border border-gray-200 rounded p-4 mb-4" style={{ borderTop: "3px solid #008751" }}>
+                    <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Score Trend</p>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={practiceScores.map((s, i) => ({ session: i + 1, score: s.score, topic: s.topic }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#F0EBE8" />
+                        <XAxis dataKey="session" tick={{ fontSize: 10 }} label={{ value: "Session", position: "insideBottom", offset: -3, fontSize: 10 }} />
+                        <YAxis domain={[0, 10]} tick={{ fontSize: 10 }} />
+                        <Tooltip formatter={(v: number) => [`${v}/10`, ""]} />
+                        <Line type="monotone" dataKey="score" stroke="#008751" strokeWidth={2} dot={{ fill: "#008751", r: 4 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="space-y-2">
+                    {practiceScores.slice().reverse().map(s => (
+                      <div key={s.id} className="flex items-center gap-3 bg-white border border-gray-100 rounded px-4 py-3">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-mono font-bold text-sm"
+                          style={{ background: s.score >= 8 ? "#E6F4EE" : s.score >= 6 ? "#FEF3C7" : "#FBEAE9", color: s.score >= 8 ? "#008751" : s.score >= 6 ? "#D97706" : "#C0392B" }}>
+                          {s.score}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-900">{s.topic}</p>
+                          {s.notes && <p className="text-xs text-gray-500 mt-0.5">{s.notes}</p>}
+                        </div>
+                        <p className="text-xs text-gray-400">{new Date(s.scoredAt).toLocaleDateString("en-NG")}</p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </main>
