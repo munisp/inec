@@ -21,7 +21,7 @@ const SEV_COLORS: Record<string, string> = {
 type FeedFilter = "all" | "unresolved" | "resolved";
 
 export default function ElectionDayWarRoom() {
-  const { profileId } = useCandidateProfile();
+  const { profileId, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
   const { data: incidents = [], isLoading } = trpc.warRoom.incidents.useQuery(
     { profileId: profileId! }, { enabled: !!profileId, refetchInterval: 10000 }
@@ -198,12 +198,12 @@ export default function ElectionDayWarRoom() {
                   <div className="flex flex-col gap-1">
                     {inc.status !== "escalated" && (
                       <Button size="sm" variant="ghost" className="text-yellow-400 text-xs hover:bg-yellow-900/20"
-                        onClick={() => resolveMut.mutate({ id: inc.id, status: "escalated" })}>
+                        onClick={() => resolveMut.mutate({ id: inc.id, status: "escalated", profileId: profileId! })} disabled={!canEdit}>
                         Escalate
                       </Button>
                     )}
                     <Button size="sm" variant="ghost" className="text-green-400 text-xs hover:bg-green-900/20"
-                      onClick={() => resolveMut.mutate({ id: inc.id, status: "resolved" })}>
+                      onClick={() => resolveMut.mutate({ id: inc.id, status: "resolved", profileId: profileId! })} disabled={!canEdit}>
                       Resolve
                     </Button>
                   </div>
@@ -239,8 +239,8 @@ export default function ElectionDayWarRoom() {
               className="flex-1 bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
             />
             <Button
-              onClick={() => { if (!profileId || !desc.trim()) return; addMut.mutate({ profileId, description: desc, severity, lga }); }}
-              disabled={addMut.isPending}
+              onClick={() => { if (!profileId || !desc.trim() || !canEdit) return; addMut.mutate({ profileId, description: desc, severity, lga }); }}
+              disabled={!canEdit || addMut.isPending}
               style={{ background: "#C0392B", color: "white" }}
               className="gap-1.5"
             >

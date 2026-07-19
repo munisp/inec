@@ -4,6 +4,7 @@
  * Palette: #4A1525 (burgundy), #008751 (green), #1A3A5C (navy), #F5F0EB (paper)
  */
 import { useState } from "react";
+import { exportToCSV, exportToPDF } from "@/hooks/useExport";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { Share2, Copy, CheckCheck, Trophy, Users, MapPin, BadgeCheck, Plus, Loader2, ArrowLeft } from "lucide-react";
+import { Share2, Copy, CheckCheck, Trophy, Users, MapPin, BadgeCheck, Plus, Loader2, ArrowLeft, FileText, Download} from "lucide-react";
 
 const CATEGORY_COLORS: Record<string, string> = {
   "Traditional Leaders": "#b45309",
@@ -29,6 +30,14 @@ function getColor(category: string): string {
   return CATEGORY_COLORS[category] ?? "#374151";
 }
 
+const EXPORT_COLS_E = [
+  { header: "Endorser", key: "endorserName" },
+  { header: "Title", key: "endorserTitle" },
+  { header: "Category", key: "category" },
+  { header: "Status", key: "status" },
+  { header: "Date", key: "endorsedAt" },
+  { header: "Statement", key: "statement" },
+];
 export default function EndorsementTracker() {
   const { profileId, profile, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
@@ -85,7 +94,9 @@ export default function EndorsementTracker() {
           </button>
           {canEdit && (
             <Dialog open={open} onOpenChange={setOpen}>
-              <DialogTrigger asChild>
+              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("endorsements", EXPORT_COLS_E, (endorsements ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("endorsements", "Endorsement Tracker Report", `Total: ${(endorsements ?? []).length} endorsements`, EXPORT_COLS_E, (endorsements ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
+          <DialogTrigger asChild>
                 <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5"><Plus size={14}/> Add Endorsement</Button>
               </DialogTrigger>
               <DialogContent>

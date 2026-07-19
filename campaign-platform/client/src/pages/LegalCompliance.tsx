@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Scale, Plus, Loader2, CheckCircle, AlertTriangle, XCircle } from "lucide-react";
+import { ArrowLeft, Scale, Plus, Loader2, CheckCircle, AlertTriangle, XCircle, FileText, Download } from "lucide-react";
+import { exportToCSV, exportToPDF } from "@/hooks/useExport";
 
 const STATUS_META = {
   compliant: { color: "#008751", icon: CheckCircle, label: "Compliant" },
@@ -16,6 +17,14 @@ const STATUS_META = {
   non_compliant: { color: "#C0392B", icon: XCircle, label: "Non-Compliant" },
   pending: { color: "#1A3A5C", icon: AlertTriangle, label: "Pending" },
 };
+const EXPORT_COLS_C = [
+  { header: "Title", key: "title" },
+  { header: "Category", key: "category" },
+  { header: "Status", key: "status" },
+  { header: "Deadline", key: "deadline" },
+  { header: "Description", key: "description" },
+  { header: "Notes", key: "notes" },
+];
 const CATEGORIES = ["Financial","Campaign Materials","Rallies & Events","Digital Media","Staff & Agents","Voter Registration","Reporting","Other"];
 
 export default function LegalCompliance() {
@@ -44,6 +53,8 @@ export default function LegalCompliance() {
         <div className="flex items-center gap-6">
           <div className="text-right"><p className="text-xs text-white/60">SCORE</p><p className="font-mono font-bold text-white">{score}%</p></div>
           <div className="text-right"><p className="text-xs text-white/60">ISSUES</p><p className="font-mono font-bold text-red-300">{nonCompliant}</p></div>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("legal-compliance", EXPORT_COLS_C, items as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("legal-compliance", "Legal Compliance Report", `Score: ${score}% | Issues: ${nonCompliant}`, EXPORT_COLS_C, items as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5"><Plus size={14}/> Add Item</Button></DialogTrigger>
             <DialogContent>

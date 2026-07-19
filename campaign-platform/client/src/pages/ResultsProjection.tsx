@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { exportToCSV, exportToPDF } from "@/hooks/useExport";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -6,14 +7,20 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, BarChart2, Plus, Loader2, RefreshCw, Radio } from "lucide-react";
+import { ArrowLeft, BarChart2, Plus, Loader2, RefreshCw, Radio, FileText, Download} from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts";
 
 const COLORS = ["#4A1525","#008751","#1A3A5C","#C0392B","#F59E0B","#6366F1","#EC4899","#14B8A6"];
 const REFRESH_INTERVAL = 30_000;
 
+const EXPORT_COLS_R = [
+  { header: "LGA", key: "lga" },
+  { header: "Candidate", key: "candidateName" },
+  { header: "Party", key: "party" },
+  { header: "Votes", key: "votes" },
+];
 export default function ResultsProjection() {
-  const { profileId } = useCandidateProfile();
+  const { profileId, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
   const { data: results = [], isLoading, dataUpdatedAt } = trpc.results.list.useQuery(
     { profileId: profileId! },
@@ -71,7 +78,9 @@ export default function ResultsProjection() {
           </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5">
+              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("results", EXPORT_COLS_R, (results ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("results", "Election Results Report", `Total LGAs: ${(results ?? []).length}`, EXPORT_COLS_R, (results ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
+          <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5">
                 <Plus size={14}/> Add Result
               </Button>
             </DialogTrigger>
@@ -82,7 +91,7 @@ export default function ResultsProjection() {
                 <Input placeholder="Candidate Name *" value={form.candidateName} onChange={e=>setForm(f=>({...f,candidateName:e.target.value}))}/>
                 <Input placeholder="Party" value={form.partyName} onChange={e=>setForm(f=>({...f,partyName:e.target.value}))}/>
                 <Input type="number" placeholder="Votes *" value={form.votes} onChange={e=>setForm(f=>({...f,votes:e.target.value}))}/>
-                <Button onClick={()=>{ if(!profileId||!form.lga||!form.candidateName||!form.votes) return toast.error("LGA, candidate and votes required"); addMut.mutate({profileId,candidateName:form.candidateName,lga:form.lga,party:form.partyName||form.candidateName,votes:parseInt(form.votes)}); }} disabled={addMut.isPending} style={{background:"#4A1525",color:"white"}}>
+                <Button onClick={()=>{ if(!profileId||!form.lga||!form.candidateName||!form.votes) return toast.error("LGA, candidate and votes required"); addMut.mutate({profileId,candidateName:form.candidateName,lga:form.lga,party:form.partyName||form.candidateName,votes:parseInt(form.votes)}); }} disabled={addMut.isPending || !canEdit} style={{background:"#4A1525",color:"white"}}>
                   {addMut.isPending?<Loader2 size={14} className="animate-spin"/>:"Add"}
                 </Button>
               </div>

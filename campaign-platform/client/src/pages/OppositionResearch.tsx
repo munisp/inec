@@ -85,7 +85,7 @@ function OpponentCard({ entry }: { entry: any }) {
 }
 
 export default function OppositionResearch() {
-  const { profileId } = useCandidateProfile();
+  const { profileId, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
   const { data: entries = [], isLoading } = trpc.opposition.list.useQuery(
     { profileId: profileId! }, { enabled: !!profileId }

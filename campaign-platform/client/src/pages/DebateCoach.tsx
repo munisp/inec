@@ -18,7 +18,7 @@ const TOPICS = [
 ];
 
 export default function DebateCoach() {
-  const { profileId, profile } = useCandidateProfile();
+  const { profileId, profile, canEdit } = useCandidateProfile();
   const candidateName = profile?.candidateName;
   const partyName = profile?.partyName;
   const utils = trpc.useUtils();

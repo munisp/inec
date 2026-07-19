@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Plus, UserCheck, Loader2, Search, Upload, Download } from "lucide-react";
+import { exportToCSV, exportToPDF } from "@/hooks/useExport";
+import { ArrowLeft, Plus, UserCheck, Loader2, Search, Upload, Download, FileText } from "lucide-react";
 
 function parseVoterCSV(text: string): Array<{ fullName: string; vin?: string; lga?: string; ward?: string; pollingUnit?: string; phone?: string }> {
   const lines = text.trim().split("\n").filter(l => l.trim());
@@ -33,8 +34,16 @@ function parseVoterCSV(text: string): Array<{ fullName: string; vin?: string; lg
   }).filter(v => v.fullName);
 }
 
+const EXPORT_COLS_V = [
+  { header: "Full Name", key: "fullName" },
+  { header: "VIN", key: "vin" },
+  { header: "LGA", key: "lga" },
+  { header: "Ward", key: "ward" },
+  { header: "Polling Unit", key: "pollingUnit" },
+  { header: "Status", key: "status" },
+];
 export default function VoterRegistration() {
-  const { profileId } = useCandidateProfile();
+  const { profileId, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
   const { data: voters = [], isLoading } = trpc.voters.list.useQuery({ profileId: profileId! }, { enabled: !!profileId });
   const addMut = trpc.voters.add.useMutation({
@@ -107,6 +116,8 @@ export default function VoterRegistration() {
           </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
+              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("voters", EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("voters", "Voter Registration Report", `Total: ${(voters ?? []).length} voters`, EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
               <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5">
                 <Plus size={14}/> Register Voter
               </Button>
@@ -121,7 +132,7 @@ export default function VoterRegistration() {
                 <Input placeholder="Polling Unit" value={form.pollingUnit} onChange={e=>setForm(f=>({...f,pollingUnit:e.target.value}))}/>
                 <Input placeholder="Phone" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/>
                 <Button onClick={() => { if (!profileId || !form.fullName) return toast.error("Name required"); addMut.mutate({ profileId, ...form }); }}
-                  disabled={addMut.isPending} style={{ background: "#4A1525", color: "white" }}>
+                  disabled={addMut.isPending || !canEdit} style={{ background: "#4A1525", color: "white" }}>
                   {addMut.isPending ? <Loader2 size={14} className="animate-spin"/> : "Register"}
                 </Button>
               </div>

@@ -251,7 +251,7 @@ function SensitivityHeatmap({ config }: { config: SimConfig }) {
 }
 
 export default function Home() {
-  const { profile, isLoading, profileId } = useCandidateProfile();
+  const { profile, isLoading, profileId, memberRole, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
   const [seedLoading, setSeedLoading] = useState(false);
   const seedMut = trpc.seed.all.useMutation({
@@ -499,6 +499,7 @@ export default function Home() {
             <div className="hidden sm:block text-right">
               <p className="text-white text-sm font-semibold">{profile.candidateName ?? "—"}</p>
               <p className="text-xs" style={{ color: "#C9B8BE" }}>{profile.partyName ?? "—"} · {profile.office ?? "—"}</p>
+              <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-sm mt-0.5 inline-block ${memberRole === "owner" ? "bg-amber-200 text-amber-900" : memberRole === "manager" ? "bg-blue-200 text-blue-900" : "bg-gray-200 text-gray-700"}`}>{memberRole}</span>
             </div>
           )}
           <Link href="/profile">

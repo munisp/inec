@@ -11,7 +11,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 const COLORS = ["#4A1525","#008751","#1A3A5C","#C0392B","#F59E0B","#6366F1"];
 
 export default function PostElectionAnalytics() {
-  const { profileId } = useCandidateProfile();
+  const { profileId, canEdit } = useCandidateProfile();
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const aiMut = trpc.simulation.narrative.useMutation({
     onSuccess: d => setAiSummary(typeof d.narrative === 'string' ? d.narrative : String(d.narrative)),

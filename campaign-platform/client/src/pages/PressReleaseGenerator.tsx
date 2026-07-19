@@ -16,7 +16,7 @@ const TEMPLATES = ["Policy Announcement","Campaign Rally","Response to Opponent"
 const TONES = ["professional and authoritative","urgent and passionate","calm and reassuring","bold and assertive","empathetic and community-focused"];
 
 export default function PressReleaseGenerator() {
-  const { profileId, profile } = useCandidateProfile();
+  const { profileId, profile, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
   const { data: releases = [], isLoading } = trpc.pressRelease.list.useQuery(
     { profileId: profileId! }, { enabled: !!profileId }

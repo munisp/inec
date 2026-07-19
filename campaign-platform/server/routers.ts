@@ -4,6 +4,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { notifyOwner } from "./_core/notification";
+import { broadcastWarRoomUpdate } from "./_core/index";
 import { createHeartbeatJob, deleteHeartbeatJob, listHeartbeatJobs } from "./_core/heartbeat";
 import { parse as parseCookie } from "cookie";
 import * as db from "./db";
@@ -336,11 +337,16 @@ export const appRouter = router({
             });
           } catch { /* notification failure must not block incident save */ }
         }
+        broadcastWarRoomUpdate(input.profileId);
         return incident;
       }),
     updateIncidentStatus: protectedProcedure
-      .input(z.object({ id: z.number(), status: z.string() }))
-      .mutation(({ input }) => db.updateIncidentStatus(input.id, input.status as any)),
+      .input(z.object({ id: z.number(), status: z.string(), profileId: z.number().optional() }))
+      .mutation(async ({ input }) => {
+        const result = await db.updateIncidentStatus(input.id, input.status as any);
+        if (input.profileId) broadcastWarRoomUpdate(input.profileId);
+        return result;
+      }),
     agents: protectedProcedure
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getFieldAgents(input.profileId)),

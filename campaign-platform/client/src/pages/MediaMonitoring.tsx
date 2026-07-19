@@ -3,9 +3,10 @@
  * Real media mentions, sentiment tracking, and competitor coverage analysis.
  */
 import { useState } from "react";
-import { ArrowLeft, TrendingUp, TrendingDown, Minus, Radio, Newspaper, Tv, Globe, Plus, Trash2, Loader2, Database } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, Minus, Radio, Newspaper, Tv, Globe, Plus, Trash2, Loader2, Database, FileText, Download} from "lucide-react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { exportToCSV, exportToPDF } from "@/hooks/useExport";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +32,14 @@ function SentimentIcon({ s }: { s: string }) {
   return <Minus className="w-3.5 h-3.5 text-gray-400" />;
 }
 
+const EXPORT_COLS_M = [
+  { header: "Source", key: "source" },
+  { header: "Type", key: "sourceType" },
+  { header: "Sentiment", key: "sentiment" },
+  { header: "Reach", key: "reach" },
+  { header: "Zone", key: "zone" },
+  { header: "Headline", key: "headline" },
+];
 export default function MediaMonitoring() {
   const { profileId, canEdit, canDelete } = useCandidateProfile();
   const utils = trpc.useUtils();
@@ -102,7 +111,9 @@ export default function MediaMonitoring() {
           )}
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5" disabled={!canEdit}>
+              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("media-monitoring", EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("media-monitoring", "Media Monitoring Report", `Total mentions: ${(mentions ?? []).length}`, EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
+          <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5" disabled={!canEdit}>
                 <Plus size={14} /> Add Mention
               </Button>
             </DialogTrigger>
