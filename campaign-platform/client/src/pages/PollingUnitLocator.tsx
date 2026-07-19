@@ -4,10 +4,11 @@
  * Data source: live DB via trpc.pollingUnits.list; falls back to demo data when DB is empty.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Search, MapPin, Users, RefreshCw } from "lucide-react";
+import { ArrowLeft, Search, MapPin, Users, RefreshCw, Upload } from "lucide-react";
 import { Link } from "wouter";
 import { MapView } from "@/components/Map";
 import { trpc } from "@/lib/trpc";
+import { toast } from "sonner";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 
 interface PollingUnit {
@@ -45,6 +46,54 @@ export default function PollingUnitLocator() {
   const [selected, setSelected] = useState<PollingUnit | null>(null);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | PollingUnit["status"]>("all");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const bulkMut = trpc.pollingUnits.bulkImport.useMutation({
+    onSuccess: d => { refetch(); toast.success(`Imported ${d.inserted} polling units`); },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  function parsePUCSV(text: string) {
+    const lines = text.trim().split("\n").filter(l => l.trim());
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/\s+/g, "_"));
+    const col = (names: string[]) => names.map(n => headers.indexOf(n)).find(i => i >= 0) ?? -1;
+    const nameIdx = col(["name","unit_name","polling_unit_name","pu_name"]);
+    const codeIdx = col(["pu_code","pucode","code","polling_unit_code"]);
+    const lgaIdx = col(["lga","local_government"]);
+    const wardIdx = col(["ward"]);
+    const latIdx = col(["lat","latitude"]);
+    const lngIdx = col(["lng","lon","longitude"]);
+    const votersIdx = col(["registered_voters","voters","registered"]);
+    if (nameIdx < 0) throw new Error("CSV must have a 'name' column");
+    return lines.slice(1).map(line => {
+      const c = line.split(",").map(s => s.trim().replace(/^"|"$/g, ""));
+      return {
+        name: c[nameIdx] ?? "",
+        puCode: codeIdx >= 0 ? c[codeIdx] : undefined,
+        lga: lgaIdx >= 0 ? c[lgaIdx] : undefined,
+        ward: wardIdx >= 0 ? c[wardIdx] : undefined,
+        latitude: latIdx >= 0 ? parseFloat(c[latIdx]) || undefined : undefined,
+        longitude: lngIdx >= 0 ? parseFloat(c[lngIdx]) || undefined : undefined,
+        registeredVoters: votersIdx >= 0 ? parseInt(c[votersIdx]) || undefined : undefined,
+      };
+    }).filter(r => r.name);
+  }
+
+  function handleCSVUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !profileId) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const rows = parsePUCSV(ev.target?.result as string);
+        if (rows.length === 0) return toast.error("No valid rows found in CSV");
+        bulkMut.mutate({ profileId, rows });
+      } catch (err: any) { toast.error(err.message ?? "CSV parse error"); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
   const mapRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
@@ -154,6 +203,12 @@ export default function PollingUnitLocator() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleCSVUpload}/>
+          <button onClick={() => fileRef.current?.click()} disabled={bulkMut.isPending}
+            className="text-xs px-2 py-1 rounded border flex items-center gap-1"
+            style={{ borderColor: "oklch(0.35 0.06 140)", color: "oklch(0.65 0.08 140)" }}>
+            <Upload className="w-3 h-3" /> {bulkMut.isPending ? "Importing…" : "Import CSV"}
+          </button>
           <button onClick={() => refetch()} className="text-xs px-2 py-1 rounded border flex items-center gap-1" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.55 0.01 240)" }}>
             <RefreshCw className="w-3 h-3" /> Refresh
           </button>

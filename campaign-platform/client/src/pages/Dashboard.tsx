@@ -85,7 +85,7 @@ export default function Dashboard() {
             <p className="text-xs" style={{ color: "#C9B8BE" }}>LIVE KPI OVERVIEW · ALL 21 MODULES</p>
           </div>
         </div>
-        <div className="hidden sm:flex items-center gap-3 text-right">
+        <div className="hidden sm:flex items-center gap-4 text-right">
           <div>
             <p className="text-xs" style={{ color: "#C9B8BE" }}>CANDIDATE</p>
             <p className="text-sm font-bold text-white">{candidateName ?? "—"}</p>
@@ -93,6 +93,18 @@ export default function Dashboard() {
           <div>
             <p className="text-xs" style={{ color: "#C9B8BE" }}>PARTY · STATE</p>
             <p className="text-sm font-bold text-white">{partyName ?? "—"} · {stateName ?? "—"}</p>
+          </div>
+          {/* Election countdown */}
+          <div className="border-l border-white/20 pl-4">
+            <p className="text-xs" style={{ color: "#C9B8BE" }}>ELECTION COUNTDOWN</p>
+            {(() => {
+              const electionDay = new Date("2027-02-20T08:00:00");
+              const diff = electionDay.getTime() - Date.now();
+              if (diff <= 0) return <p className="text-sm font-bold text-red-300">Election Day!</p>;
+              const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+              const hrs = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+              return <p className="text-sm font-mono font-bold" style={{ color: days < 30 ? "#FCA5A5" : "#86EFAC" }}>{days}d {hrs}h</p>;
+            })()}
           </div>
         </div>
       </header>

@@ -99,21 +99,21 @@
 
 ## Phase 18 — Production Complete: Gap Fixes + Premiere Enhancements
 
-- [ ] GAP FIX: Home.tsx handleSaveRun — pass label: runLabel in saveSimMut.mutate()
-- [ ] GAP FIX: warRoom.addIncident — call notifyOwner for critical/high severity incidents
-- [ ] GAP FIX: OppositionResearch — add AI threat analysis button per opponent dossier
-- [ ] GAP FIX: SocialMediaCenter — add AI content generator + scheduled-at date/time picker
-- [ ] GAP FIX: VoterRegistration — add CSV bulk import (parse fullName, VIN, LGA, ward, pollingUnit, phone)
-- [ ] GAP FIX: ResultsProjection — add live auto-refresh every 30s with LIVE badge
-- [ ] GAP FIX: PostElectionAnalytics — add AI narrative summary button
-- [ ] FEATURE: PollingUnitLocator — CSV bulk import (puCode, name, LGA, ward, lat, lng, registeredVoters)
-- [ ] FEATURE: War Room — notifyOwner push alert for critical/high incidents (server-side)
-- [ ] FEATURE: SocialMedia — AI content generator using invokeLLM
-- [ ] FEATURE: Opposition — AI threat analysis using invokeLLM per opponent
-- [ ] FEATURE: PostElection — AI narrative summary using invokeLLM
-- [ ] FEATURE: Simulation — "Compare to latest" shortcut in Run History tab
-- [ ] FEATURE: Dashboard — real-time KPI refresh every 60s + election countdown timer
-- [ ] FEATURE: CandidateWebsite — wire to live profile/endorsements from DB
-- [ ] FEATURE: Results — live auto-refresh + percentage bar chart per candidate
-- [ ] FEATURE: routers.ts — add bulk import procedures for voters and polling units
-- [ ] TypeScript: 0 errors
+- [x] GAP FIX: Home.tsx handleSaveRun — pass label: runLabel in saveSimMut.mutate()
+- [x] GAP FIX: warRoom.addIncident — call notifyOwner for critical/high severity incidents
+- [x] GAP FIX: OppositionResearch — add AI threat analysis button per opponent dossier
+- [x] GAP FIX: SocialMediaCenter — add AI content generator + scheduled-at date/time picker
+- [x] GAP FIX: VoterRegistration — add CSV bulk import (parse fullName, VIN, LGA, ward, pollingUnit, phone)
+- [x] GAP FIX: ResultsProjection — add live auto-refresh every 30s with LIVE badge
+- [x] GAP FIX: PostElectionAnalytics — add AI narrative summary button
+- [x] FEATURE: PollingUnitLocator — CSV bulk import (puCode, name, LGA, ward, lat, lng, registeredVoters)
+- [x] FEATURE: War Room — notifyOwner push alert for critical/high incidents (server-side)
+- [x] FEATURE: SocialMedia — AI content generator using invokeLLM
+- [x] FEATURE: Opposition — AI threat analysis using invokeLLM per opponent
+- [x] FEATURE: PostElection — AI narrative summary using invokeLLM
+- [x] FEATURE: Simulation — "Compare to latest" shortcut in Run History tab
+- [x] FEATURE: Dashboard — real-time KPI refresh every 60s + election countdown timer
+- [x] FEATURE: CandidateWebsite — wire to live profile/endorsements from DB
+- [x] FEATURE: Results — live auto-refresh + percentage bar chart per candidate
+- [x] FEATURE: routers.ts — add bulk import procedures for voters and polling units
+- [x] TypeScript: 0 errors

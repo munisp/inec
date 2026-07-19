@@ -130,6 +130,27 @@ export default function ResultsProjection() {
                     </ResponsiveContainer>
                   </div>
                 </div>
+                {/* Percentage bar chart per candidate */}
+                <div className="bg-white border border-gray-200 rounded p-5 mb-6" style={{ borderTop: "3px solid #008751" }}>
+                  <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-4">Vote Share % per Candidate</p>
+                  <div className="space-y-3">
+                    {results.sort((a,b)=>(b.votes??0)-(a.votes??0)).map((r,i) => {
+                      const pct = total > 0 ? ((r.votes??0)/total*100) : 0;
+                      return (
+                        <div key={r.id}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="font-medium text-gray-900">{r.candidateName} <span className="text-gray-400">({r.party ?? r.lga})</span></span>
+                            <span className="font-mono font-bold" style={{ color: COLORS[i%COLORS.length] }}>{pct.toFixed(1)}%</span>
+                          </div>
+                          <div className="h-3 rounded-full bg-gray-100 overflow-hidden">
+                            <div className="h-full rounded-full transition-all duration-700"
+                              style={{ width: `${pct}%`, background: COLORS[i%COLORS.length] }}/>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div className="bg-white border border-gray-200 rounded overflow-hidden">
                   <table className="w-full text-sm">
                     <thead>

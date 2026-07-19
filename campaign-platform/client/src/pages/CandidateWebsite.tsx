@@ -2,9 +2,11 @@
  * Candidate Website Builder
  * Auto-generates a shareable single-page campaign microsite from candidate profile, endorsements, and party branding.
  */
-import { useState } from "react";
-import { ArrowLeft, Globe, Copy, CheckCheck, Eye, Code2, Download, Palette, Type, Image, Star } from "lucide-react";
+import { useState, useEffect } from "react";
+import { ArrowLeft, Globe, Copy, CheckCheck, Eye, Code2, Download, Palette, Type, Image, Star, Loader2 } from "lucide-react";
 import { Link } from "wouter";
+import { trpc } from "@/lib/trpc";
+import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 
 interface SiteConfig {
   candidateName: string;
@@ -120,7 +122,28 @@ function generateHTML(cfg: SiteConfig): string {
 }
 
 export default function CandidateWebsite() {
+  const { profileId, profile } = useCandidateProfile();
+  const { data: endorsements = [] } = trpc.endorsements.list.useQuery(
+    { profileId: profileId! },
+    { enabled: !!profileId }
+  );
   const [cfg, setCfg] = useState<SiteConfig>(DEFAULT_CONFIG);
+
+  // Pre-populate config from live profile data once loaded
+  useEffect(() => {
+    if (!profile) return;
+    setCfg(prev => ({
+      ...prev,
+      candidateName: profile.candidateName ?? prev.candidateName,
+      office: profile.office ?? prev.office,
+      state: profile.stateName ?? prev.state,
+      party: profile.partyName ?? prev.party,
+      tagline: (profile as any).tagline ?? prev.tagline,
+      bio: (profile as any).bio ?? prev.bio,
+      phone: (profile as any).phone ?? prev.phone,
+      email: (profile as any).email ?? prev.email,
+    }));
+  }, [profile?.id]);
   const [tab, setTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
   const [newPoint, setNewPoint] = useState("");
