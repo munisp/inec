@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -340,118 +341,47 @@ func (w *embeddedWAF) Status() MWStatus {
 
 func (w *embeddedWAF) Close() error { return nil }
 
-// --- Real OpenAppSec HTTP client ---
+// gatewayAttachedWAF represents the supported OpenAppSec topology: the APISIX
+// attachment enforces policy before a request reaches this service. The agent
+// does not expose the custom inspection REST interface that this repository
+// previously assumed, so application code must not emulate a second WAF.
+type gatewayAttachedWAF struct{}
 
-type openAppSecHTTPClient struct {
-	baseURL string
-	client  *ResilientHTTPClient
+var errOpenAppSecGatewayManaged = errors.New("OpenAppSec enforcement is gateway-managed; use the configured OpenAppSec management plane for telemetry and blocklist changes")
+
+func (gatewayAttachedWAF) InspectRequest(_ context.Context, _ WAFRequest) (*WAFDecision, error) {
+	return &WAFDecision{Action: "allow", ThreatLevel: "none", RulesMatched: []string{"APISIX_OPENAPPSEC_ATTACHMENT"}}, nil
 }
-
-func (o *openAppSecHTTPClient) InspectRequest(ctx context.Context, req WAFRequest) (*WAFDecision, error) {
-	body, _ := json.Marshal(req)
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/api/v1/inspect", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var decision WAFDecision
-	json.NewDecoder(resp.Body).Decode(&decision)
-	return &decision, nil
+func (gatewayAttachedWAF) GetThreatLog(_ context.Context, _ int) ([]WAFEvent, error) {
+	return nil, errOpenAppSecGatewayManaged
 }
-
-func (o *openAppSecHTTPClient) GetThreatLog(ctx context.Context, limit int) ([]WAFEvent, error) {
-	httpReq, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/v1/threats?limit=%d", o.baseURL, limit), nil)
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var result struct {
-		Events []WAFEvent `json:"events"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	return result.Events, nil
+func (gatewayAttachedWAF) GetStats(_ context.Context) (*WAFStats, error) {
+	return nil, errOpenAppSecGatewayManaged
 }
-
-func (o *openAppSecHTTPClient) GetStats(ctx context.Context) (*WAFStats, error) {
-	httpReq, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/v1/stats", nil)
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var stats WAFStats
-	json.NewDecoder(resp.Body).Decode(&stats)
-	return &stats, nil
+func (gatewayAttachedWAF) AddIPToBlocklist(_ context.Context, _, _ string) error {
+	return errOpenAppSecGatewayManaged
 }
-
-func (o *openAppSecHTTPClient) AddIPToBlocklist(ctx context.Context, ip, reason string) error {
-	body, _ := json.Marshal(map[string]string{"ip": ip, "reason": reason})
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", o.baseURL+"/api/v1/blocklist", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return nil
+func (gatewayAttachedWAF) GetBlocklist(_ context.Context) ([]BlocklistEntry, error) {
+	return nil, errOpenAppSecGatewayManaged
 }
-
-func (o *openAppSecHTTPClient) GetBlocklist(ctx context.Context) ([]BlocklistEntry, error) {
-	httpReq, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/v1/blocklist", nil)
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return nil, err
+func (gatewayAttachedWAF) Status() MWStatus {
+	return MWStatus{
+		Name: "OpenAppSec", Connected: true, Mode: "APISIX gateway attachment",
+		Details: "Requests are enforced by the OpenAppSec APISIX attachment before backend delivery",
 	}
-	defer resp.Body.Close()
-	var result struct {
-		Entries []BlocklistEntry `json:"entries"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	return result.Entries, nil
 }
-
-func (o *openAppSecHTTPClient) Status() MWStatus {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	httpReq, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/v1/health", nil)
-	lat, err := measureLatency(func() error {
-		resp, e := o.client.Client.Do(httpReq)
-		if e != nil {
-			return e
-		}
-		resp.Body.Close()
-		return nil
-	})
-	if err != nil {
-		return MWStatus{Name: "OpenAppSec", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
-	}
-	return MWStatus{Name: "OpenAppSec", Connected: true, Mode: "external", Latency: fmtLatency(lat)}
-}
-
-func (o *openAppSecHTTPClient) Close() error { return nil }
+func (gatewayAttachedWAF) Close() error { return nil }
 
 func initOpenAppSecClient() OpenAppSecClient {
-	baseURL := os.Getenv("OPENAPPSEC_URL")
-	if baseURL != "" {
-		client := &openAppSecHTTPClient{
-			baseURL: baseURL,
-			client:  NewResilientHTTPClient("openappsec"),
-		}
-		s := client.Status()
-		if s.Connected {
-			log.Info().Str("url", baseURL).Msg("OpenAppSec connected via HTTP")
-			return client
-		}
-		log.Warn().Str("url", baseURL).Msg("OpenAppSec unreachable, falling back to embedded WAF")
+	if os.Getenv("OPENAPPSEC_GATEWAY_ENFORCED") == "true" {
+		log.Info().Msg("OpenAppSec enforcement is attached to APISIX gateway")
+		return gatewayAttachedWAF{}
 	}
 	env := os.Getenv("APP_ENV")
 	if env == "production" || env == "staging" {
-		log.Fatal().Msg("OpenAppSec WAF is REQUIRED in production/staging. Set OPENAPPSEC_URL")
+		log.Fatal().Msg("OpenAppSec APISIX gateway attachment is required in production/staging; set OPENAPPSEC_GATEWAY_ENFORCED=true")
 	}
-	log.Warn().Msg("OpenAppSec using embedded rule-based WAF (DEV ONLY)")
+	log.Warn().Msg("OpenAppSec gateway attachment is disabled; using development-only local WAF")
 	return newEmbeddedWAF()
 }
 

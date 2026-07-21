@@ -139,6 +139,12 @@ struct ConsumeQuery {
     commit: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateTopicRequest {
+    topic: String,
+    partitions: Option<u32>,
+}
+
 // POST /produce — publish an event to a Fluvio topic
 async fn produce_event(
     state: web::Data<Arc<AppState>>,
@@ -287,6 +293,41 @@ async fn consume_events(
     }))
 }
 
+// POST /topics — create a Fluvio topic through the official Admin API.
+async fn create_topic(
+    state: web::Data<Arc<AppState>>,
+    body: web::Json<CreateTopicRequest>,
+) -> HttpResponse {
+    let topic = body.topic.trim();
+    if topic.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "topic is required"}));
+    }
+    let partitions = body.partitions.unwrap_or(1).max(1);
+    let admin = state.fluvio.admin().await;
+    let spec = TopicSpec::new_computed(partitions, 1, None);
+    match admin.create(topic.to_string(), false, spec).await {
+        Ok(_) => HttpResponse::Created().json(serde_json::json!({
+            "created": true,
+            "topic": topic,
+            "partitions": partitions,
+        })),
+        Err(error) if error.to_string().to_lowercase().contains("already exists") => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "created": false,
+                "topic": topic,
+                "partitions": partitions,
+                "status": "already_exists",
+            }))
+        }
+        Err(error) => {
+            error!("Failed to create topic {}: {}", topic, error);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to create topic: {}", error),
+            }))
+        }
+    }
+}
+
 // GET /topics — list all managed topics
 async fn list_topics(state: web::Data<Arc<AppState>>) -> HttpResponse {
     let stats = state.stats.read().await;
@@ -393,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting INEC Fluvio Stream Processor");
 
     let fluvio_endpoint = std::env::var("FLUVIO_ENDPOINT")
-        .unwrap_or_else(|_| "localhost:9003".to_string());
+        .expect("FLUVIO_ENDPOINT is required for the real Fluvio controller connection");
 
     info!("Connecting to Fluvio at {}", fluvio_endpoint);
     let config = FluvioConfig::new(&fluvio_endpoint);
@@ -435,6 +476,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/health", web::get().to(health_check))
             .route("/stats", web::get().to(get_stats))
             .route("/topics", web::get().to(list_topics))
+            .route("/topics", web::post().to(create_topic))
             .route("/produce", web::post().to(produce_event))
             .route("/consume", web::get().to(consume_events))
             .route("/checkpoints", web::get().to(get_checkpoints))

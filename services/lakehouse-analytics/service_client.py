@@ -109,38 +109,6 @@ class InferenceClient(ServiceClient):
         return await self.post("/predict/anomaly", {"features": features})
 
 
-class MiddlewareClient(ServiceClient):
-    """Client for the shared middleware service (Kafka, Redis, Temporal)."""
-
-    def __init__(self, base_url: str | None = None):
-        url = base_url or os.getenv("MIDDLEWARE_URL", "http://localhost:8085")
-        super().__init__("middleware-svc", url)
-
-    async def publish_event(self, topic: str, key: str, value: Any) -> dict:
-        return await self.post(
-            "/kafka/publish", {"topic": topic, "key": key, "value": value}
-        )
-
-    async def cache_get(self, key: str) -> Any:
-        result = await self.get(f"/cache/{key}")
-        return result.get("value")
-
-    async def cache_set(self, key: str, value: Any) -> None:
-        await self._client.put(f"/cache/{key}", json={"value": value})
-
-    async def start_workflow(
-        self, workflow_id: str, workflow_type: str, input_data: Any
-    ) -> dict:
-        return await self.post(
-            "/workflows/start",
-            {
-                "workflow_id": workflow_id,
-                "workflow_type": workflow_type,
-                "input": input_data,
-            },
-        )
-
-
 class ComplianceClient(ServiceClient):
     def __init__(self, base_url: str | None = None):
         url = base_url or os.getenv("COMPLIANCE_URL", "http://localhost:8094")
@@ -161,13 +129,12 @@ class ServiceRegistry:
         self.election = ElectionServiceClient()
         self.geo = GeoServiceClient()
         self.inference = InferenceClient()
-        self.middleware = MiddlewareClient()
         self.compliance = ComplianceClient()
 
     async def close(self):
         for client in [
             self.auth, self.election, self.geo,
-            self.inference, self.middleware, self.compliance,
+            self.inference, self.compliance,
         ]:
             await client.close()
 
@@ -178,7 +145,6 @@ class ServiceRegistry:
             "election": self.election.health(),
             "geo": self.geo.health(),
             "inference": self.inference.health(),
-            "middleware": self.middleware.health(),
             "compliance": self.compliance.health(),
         }
         results = await asyncio.gather(*checks.values(), return_exceptions=True)

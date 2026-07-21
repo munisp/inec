@@ -293,8 +293,6 @@ func initBiometricAdvanced(database *sql.DB) {
 	kioskModeManager = NewEnrollmentKioskManager(database)
 	multiFingerMgr = NewMultiInstanceEnrollment(database)
 	privacyMatcher = NewPrivacyPreservingMatcher(database)
-
-	seedBiometricAdvanced(database)
 }
 
 type HSMManager struct {
@@ -349,6 +347,7 @@ func (h *HSMManager) GenerateKey(purpose string, slot int) (string, error) {
 		"key_generate", keyID, slot, 1, latency)
 	return keyID, nil
 }
+
 type BiometricSDKRegistry struct {
 	db        *sql.DB
 	providers map[string]*SDKProvider
@@ -504,7 +503,13 @@ func (t *ThresholdAutoTuner) RunAnalysis(modality string) M {
 	if len(impostorScores) < 50 {
 		// Use kernel density estimation (Gaussian KDE) on genuine scores to model impostor distribution.
 		// Impostor scores cluster below genuine scores; we estimate this from the genuine distribution.
-		impostorScores = estimateImpostorDistribution(genuineScores, func() int { n := len(genuineScores)*2; if n > 50 { return 50 }; return n }())
+		impostorScores = estimateImpostorDistribution(genuineScores, func() int {
+			n := len(genuineScores) * 2
+			if n > 50 {
+				return 50
+			}
+			return n
+		}())
 	}
 
 	genuinePairs := len(genuineScores)
@@ -865,9 +870,9 @@ func (n *MatchScoreNormalizer) Normalize(score float64, modality, normType strin
 		bench := GetBenchmarkCohort(modality)
 		if bench != nil {
 			cohort = &NormCohort{
-				MeanGenuine:  bench.MeanGenuine, StdGenuine:   bench.StdGenuine,
-				MeanImpostor: bench.MeanImpostor, StdImpostor:  bench.StdImpostor,
-				SampleSize:   bench.SampleSize,
+				MeanGenuine: bench.MeanGenuine, StdGenuine: bench.StdGenuine,
+				MeanImpostor: bench.MeanImpostor, StdImpostor: bench.StdImpostor,
+				SampleSize: bench.SampleSize,
 			}
 		} else {
 			// Fallback: NIST FRVT 2002/2006 defaults

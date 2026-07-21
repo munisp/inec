@@ -122,36 +122,6 @@ impl AnalyticsClient {
 }
 
 #[derive(Clone)]
-pub struct EventBusClient(ServiceClient);
-
-impl EventBusClient {
-    pub fn new(base_url: &str) -> Self {
-        Self(ServiceClient::new("middleware-svc", base_url))
-    }
-
-    pub async fn publish(&self, topic: &str, key: &str, value: &serde_json::Value) -> Result<()> {
-        #[derive(Serialize)]
-        struct PublishReq<'a> {
-            topic: &'a str,
-            key: &'a str,
-            value: &'a serde_json::Value,
-        }
-        let _: serde_json::Value = self
-            .0
-            .post(
-                "/kafka/publish",
-                &PublishReq { topic, key, value },
-            )
-            .await?;
-        Ok(())
-    }
-
-    pub async fn health(&self) -> bool {
-        self.0.health().await
-    }
-}
-
-#[derive(Clone)]
 pub struct GeoServiceClient(ServiceClient);
 
 impl GeoServiceClient {
@@ -200,7 +170,6 @@ pub struct GeofenceResult {
 pub struct ServiceRegistry {
     pub auth: AuthServiceClient,
     pub analytics: AnalyticsClient,
-    pub event_bus: EventBusClient,
     pub geo: GeoServiceClient,
 }
 
@@ -209,14 +178,11 @@ impl ServiceRegistry {
         let auth_url = std::env::var("AUTH_URL").unwrap_or_else(|_| "http://localhost:8090".into());
         let analytics_url =
             std::env::var("LAKEHOUSE_URL").unwrap_or_else(|_| "http://localhost:8098".into());
-        let middleware_url =
-            std::env::var("MIDDLEWARE_URL").unwrap_or_else(|_| "http://localhost:8085".into());
         let geo_url = std::env::var("GEO_URL").unwrap_or_else(|_| "http://localhost:8093".into());
 
         Self {
             auth: AuthServiceClient::new(&auth_url),
             analytics: AnalyticsClient::new(&analytics_url),
-            event_bus: EventBusClient::new(&middleware_url),
             geo: GeoServiceClient::new(&geo_url),
         }
     }

@@ -145,15 +145,26 @@ export const api = {
   getMiddlewareStatus: () => request('/middleware/status'),
   
   // Lakehouse Analytics Bindings
-  getLakehouseAnomalies: (electionId: number) => request(`/lakehouse/anomalies?election_id=${electionId}`),
-  getLakehouseTrends: (electionId: number) => request(`/lakehouse/trends?election_id=${electionId}`),
+  getLakehouseAnomalies: (electionId: number) =>
+    request(`/middleware/lakehouse/analytics/${electionId}/anomalies`),
+  getLakehouseTrends: (electionId: number) =>
+    request(`/middleware/lakehouse/analytics/${electionId}/timeline`),
   
   // Workflow (Temporal) Bindings
-  startWorkflow: (workflowName: string, payload: any) => request(`/workflows/start`, { method: 'POST', body: JSON.stringify({ workflow: workflowName, payload }) }),
-  getWorkflowStatus: (workflowId: string) => request(`/workflows/${workflowId}/status`),
+  startWorkflow: (workflowName: string, payload: Record<string, unknown>) =>
+    request('/middleware/temporal/workflows', {
+      method: 'POST',
+      body: JSON.stringify({ workflow: workflowName, payload }),
+    }),
+  getWorkflowStatus: (workflowId: string) =>
+    request(`/middleware/temporal/workflows/${encodeURIComponent(workflowId)}`),
   
   // Permify Authorization Bindings
-  checkPermission: (entity: string, entityId: string, action: string) => request(`/permify/check`, { method: 'POST', body: JSON.stringify({ entity, entityId, action }) }),
+  checkPermission: (resourceType: string, resource: string, permission: string) =>
+    request('/middleware/permify/check', {
+      method: 'POST',
+      body: JSON.stringify({ resource_type: resourceType, resource, permission }),
+    }),
   
   // Biometric Integration Bindings
   verifyBiometric: (vin: string, payload: string) => request(`/biometric/verify`, { method: 'POST', body: JSON.stringify({ vin, payload }) }),
@@ -286,8 +297,11 @@ export const api = {
     request(`/biometric/abis/${id}/resolve`, { method: 'POST', body: JSON.stringify({ status }) }),
 
   getBiometricEngineStats: () => request('/biometric/engine/stats'),
-  abisEnroll: (vin: string, modality: string, deviceId?: string) =>
-    request('/biometric/engine/enroll', { method: 'POST', body: JSON.stringify({ vin, modality, device_id: deviceId || 'BVAS-001' }) }),
+  abisEnroll: (vin: string, modality: string, deviceId: string, imageData: string) =>
+    request('/biometric/engine/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ vin, modality, device_id: deviceId, image_data: imageData }),
+    }),
   abisVerify: (vin: string, modality: string, deviceId?: string) =>
     request('/biometric/engine/verify', { method: 'POST', body: JSON.stringify({ vin, modality, device_id: deviceId || 'BVAS-001' }) }),
   abisMultiModalVerify: (vin: string, deviceId?: string) =>

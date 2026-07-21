@@ -418,61 +418,21 @@ func (c *FluvioStreamClient) GetTopicStats(ctx context.Context, topic string) (m
 	return result, err
 }
 
-// --- Middleware Service Client ---
-
-type MiddlewareClient struct{ *ServiceClient }
-
-func NewMiddlewareClient(baseURL string) *MiddlewareClient {
-	return &MiddlewareClient{NewServiceClient("middleware-svc", baseURL)}
-}
-
-func (c *MiddlewareClient) PublishEvent(ctx context.Context, topic, key string, value interface{}) error {
-	return c.Post(ctx, "/kafka/publish", map[string]interface{}{
-		"topic": topic,
-		"key":   key,
-		"value": value,
-	}, nil)
-}
-
-func (c *MiddlewareClient) CacheGet(ctx context.Context, key string) (interface{}, error) {
-	var result map[string]interface{}
-	err := c.Get(ctx, fmt.Sprintf("/cache/%s", key), &result)
-	if err != nil {
-		return nil, err
-	}
-	return result["value"], nil
-}
-
-func (c *MiddlewareClient) CacheSet(ctx context.Context, key string, value interface{}) error {
-	return c.Put(ctx, fmt.Sprintf("/cache/%s", key), map[string]interface{}{"value": value}, nil)
-}
-
-func (c *MiddlewareClient) StartWorkflow(ctx context.Context, workflowID, workflowType string, input interface{}) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := c.Post(ctx, "/workflows/start", map[string]interface{}{
-		"workflow_id":   workflowID,
-		"workflow_type": workflowType,
-		"input":         input,
-	}, &result)
-	return result, err
-}
-
 // --- Service Registry ---
 
 // Registry holds clients for all services, used by gateway and monolith.
 type Registry struct {
-	Auth          *AuthClient
-	Election      *ElectionClient
-	Biometric     *BiometricClient
-	Geo           *GeoClient
-	Compliance    *ComplianceClient
-	Ingestion     *IngestionClient
-	BVAS          *BVASClient
-	Inference     *InferenceClient
-	Analytics     *AnalyticsClient
-	DocumentAI    *DocumentAIClient
-	FluvioStream  *FluvioStreamClient
-	Middleware    *MiddlewareClient
+	Auth         *AuthClient
+	Election     *ElectionClient
+	Biometric    *BiometricClient
+	Geo          *GeoClient
+	Compliance   *ComplianceClient
+	Ingestion    *IngestionClient
+	BVAS         *BVASClient
+	Inference    *InferenceClient
+	Analytics    *AnalyticsClient
+	DocumentAI   *DocumentAIClient
+	FluvioStream *FluvioStreamClient
 }
 
 // NewRegistry creates a complete service registry from service URLs.
@@ -489,7 +449,6 @@ func NewRegistry(urls map[string]string) *Registry {
 		Analytics:    NewAnalyticsClient(urls["lakehouse-analytics"]),
 		DocumentAI:   NewDocumentAIClient(urls["document-ai"]),
 		FluvioStream: NewFluvioStreamClient(urls["fluvio-stream"]),
-		Middleware:   NewMiddlewareClient(urls["middleware-svc"]),
 	}
 }
 
@@ -507,6 +466,5 @@ func DefaultURLs() map[string]string {
 		"lakehouse-analytics": "http://localhost:8098",
 		"document-ai":         "http://localhost:8099",
 		"fluvio-stream":       "http://localhost:8100",
-		"middleware-svc":      "http://localhost:8085",
 	}
 }

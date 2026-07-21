@@ -1,0 +1,18 @@
+# The repository root is used only by the CPU inference image build.
+# Keep its context constrained to the runtime source and model artifacts.
+*
+!services/
+!services/inference-engine/
+!services/inference-engine/Cargo.toml
+!services/inference-engine/Cargo.lock
+!services/inference-engine/src/
+!services/inference-engine/src/**
+!services/ml-models/
+!services/ml-models/biometric-python/
+!services/ml-models/biometric-python/models/
+!services/ml-models/biometric-python/models/cdc_pad.onnx
+!services/ml-models/biometric-python/models/liveness_cdcn.onnx
+!services/ml-models/biometric-python/models/arcface_embedding.onnx
+!ml/
+!ml/models/
+!ml/models/anomaly_xgboost.onnx

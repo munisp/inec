@@ -1,35 +1,38 @@
+# OpenAppSec v1beta1 local policy for the APISIX gateway attachment.
+# This file is mounted as /ext/appsec/local_policy.yaml in appsec-agent.
 policies:
-- mode: prevent
-  name: inec-waf-policy
-  rules:
-  - action: block
-    name: block-sql-injection
-    type: sqli
-  - action: block
-    name: block-xss
-    type: xss
-  - action: challenge
-    limit: 5
-    name: rate-limit-login
-    type: rate-limit
-    uri: /auth/login
-    window: 60
-  - action: block
-    confidence: high
-    name: block-malicious-bots
-    type: bot-protection
-  - action: block
-    allowed_countries:
-    - NG
-    name: geo-block-non-ng
-    type: geo
-  - action: Redirect
-    name: Enforce HTTPS
-    type: https-enforcement
-  - action: Block
-    log: true
-    name: CSRF Protection
-    type: csrf
-  triggers:
-  - log
-  - block
+  default:
+    mode: prevent-learn
+    triggers:
+      - appsec-default-log-trigger
+    practices:
+      - webapp-default-practice
+    custom-response: appsec-default-web-user-response
+  specific-rules:
+    - host: "inec.local"
+      mode: prevent-learn
+      triggers:
+        - appsec-default-log-trigger
+      practices:
+        - webapp-default-practice
+      custom-response: appsec-default-web-user-response
+
+practices:
+  - name: webapp-default-practice
+    web-attacks:
+      minimum-confidence: high
+      override-mode: as-top-level
+
+log-triggers:
+  - name: appsec-default-log-trigger
+    appsec-logging:
+      detect-events: true
+      prevent-events: true
+      log-destination:
+        stdout:
+          format: json
+
+custom-responses:
+  - name: appsec-default-web-user-response
+    mode: response-code-only
+    http-response-code: 403

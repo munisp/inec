@@ -1,16 +1,19 @@
+# Dapr has no built-in Fluvio binding. Event delivery through the Dapr sidecar
+# therefore uses the deployed Kafka broker; Fluvio ingestion is handled by the
+# platform's native Fluvio client and service instead of impersonating Kafka.
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
-  name: fluvio-binding
+  name: kafka-event-binding
 spec:
   type: bindings.kafka
   version: v1
   metadata:
-  - name: brokers
-    value: "fluvio-sc:9003"
-  - name: topics
-    value: "inec.results.submitted,inec.incidents.reported,inec.audit.log"
-  - name: consumerGroup
-    value: "dapr-consumer"
-  - name: publishTopic
-    value: "inec.results.submitted"
+    - name: brokers
+      value: kafka:29092
+    - name: topics
+      value: inec.results.submitted,inec.incidents.reported,inec.audit.log
+    - name: consumerGroup
+      value: dapr-event-binding
+    - name: publishTopic
+      value: inec.results.submitted

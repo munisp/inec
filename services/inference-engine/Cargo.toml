@@ -12,7 +12,9 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # ML inference
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+# Download and statically link the CPU ONNX Runtime archive during the build.
+# The runtime image therefore does not depend on a host-installed ONNX library.
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 ndarray = "0.16"
 
 # Neo4j

@@ -9,8 +9,12 @@ This service provides:
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import math
+import re
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -19,6 +23,8 @@ import duckdb
 import httpx
 import joblib
 import numpy as np
+import psycopg2
+import psycopg2.extras
 import structlog
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -35,7 +41,7 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8088")
 
 # --- Model persistence ---
 
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.path.dirname(__file__), "models"))
 MODEL_PATH = os.path.join(MODEL_DIR, "anomaly_detector.joblib")
 # Metadata key for persisting training info alongside the model
 # Prevents arbitrary object deserialization by storing metadata separately
@@ -97,23 +103,12 @@ class Lakehouse:
 
     def _init_tables(self):
         self.conn.execute("""
-            
-        self.conn.execute('''
             CREATE TABLE IF NOT EXISTS election_results (
-                id VARCHAR,
-                election_id VARCHAR,
-                polling_unit_code VARCHAR,
+                id VARCHAR PRIMARY KEY,
+                election_id VARCHAR NOT NULL,
+                polling_unit_code VARCHAR NOT NULL,
                 party_code VARCHAR,
-                votes INTEGER,
-                submitted_at TIMESTAMP
-            )
-        ''')
-
-                id INTEGER,
-                election_id INTEGER,
-                polling_unit_code VARCHAR,
-                party_code VARCHAR,
-                votes INTEGER,
+                votes INTEGER NOT NULL DEFAULT 0,
                 status VARCHAR,
                 state_code VARCHAR,
                 lga_code VARCHAR,
@@ -122,22 +117,22 @@ class Lakehouse:
         """)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS collation_snapshots (
-                id INTEGER PRIMARY KEY,
-                level VARCHAR,
-                code VARCHAR,
+                id VARCHAR PRIMARY KEY,
+                level VARCHAR NOT NULL,
+                code VARCHAR NOT NULL,
                 party_code VARCHAR,
-                total_votes BIGINT,
+                total_votes BIGINT NOT NULL DEFAULT 0,
                 snapshot_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS anomaly_log (
                 id VARCHAR PRIMARY KEY,
-                polling_unit_code VARCHAR,
-                anomaly_type VARCHAR,
-                severity VARCHAR,
-                confidence DOUBLE,
-                description VARCHAR,
+                polling_unit_code VARCHAR NOT NULL,
+                anomaly_type VARCHAR NOT NULL,
+                severity VARCHAR NOT NULL,
+                confidence DOUBLE NOT NULL,
+                description VARCHAR NOT NULL,
                 detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -150,8 +145,8 @@ class Lakehouse:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
-                    r.get("id"),
-                    r.get("election_id"),
+                    f"{r.get('id')}:{r.get('party_code') or '_'}",
+                    str(r.get("election_id")),
                     r.get("polling_unit_code"),
                     r.get("party_code"),
                     r.get("votes"),
@@ -191,11 +186,24 @@ class Lakehouse:
             for r in result
         ]
 
-    def get_vote_distribution(self) -> list[int]:
-        result = self.conn.execute(
-            "SELECT votes FROM election_results WHERE votes > 0 ORDER BY votes"
-        ).fetchall()
-        return [r[0] for r in result]
+    def get_vote_records(self, election_id: Optional[str] = None) -> list[tuple[str, int]]:
+        if election_id is None:
+            result = self.conn.execute(
+                """SELECT polling_unit_code, SUM(votes) AS votes
+                   FROM election_results WHERE votes > 0
+                   GROUP BY polling_unit_code ORDER BY polling_unit_code"""
+            ).fetchall()
+        else:
+            result = self.conn.execute(
+                """SELECT polling_unit_code, SUM(votes) AS votes
+                   FROM election_results WHERE election_id = ? AND votes > 0
+                   GROUP BY polling_unit_code ORDER BY polling_unit_code""",
+                [str(election_id)],
+            ).fetchall()
+        return [(str(row[0]), int(row[1])) for row in result]
+
+    def get_vote_distribution(self, election_id: Optional[str] = None) -> list[int]:
+        return [votes for _, votes in self.get_vote_records(election_id)]
 
     def get_stats(self) -> dict:
         total = self.conn.execute("SELECT COUNT(*) FROM election_results").fetchone()[0]
@@ -222,6 +230,75 @@ class Lakehouse:
             ),
         )
 
+    def ingest_collation_events(self, records: list[dict]) -> int:
+        for record in records:
+            canonical = json.dumps(record, sort_keys=True, default=str, separators=(",", ":"))
+            snapshot_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            self.conn.execute(
+                """INSERT OR REPLACE INTO collation_snapshots
+                   (id, level, code, party_code, total_votes, snapshot_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    snapshot_id,
+                    str(record.get("level", "unknown")),
+                    str(record.get("code", "unknown")),
+                    record.get("party_code"),
+                    int(record.get("total_votes", 0)),
+                    record.get("collated_at") or datetime.now(timezone.utc).isoformat(),
+                ],
+            )
+        return len(records)
+
+    def query_readonly(
+        self,
+        query: str,
+        parameters: Optional[dict] = None,
+        limit: int = 0,
+        offset: int = 0,
+    ) -> dict:
+        normalized = query.strip()
+        if not normalized:
+            normalized = "SELECT id, election_id, polling_unit_code, party_code, votes, status, submitted_at FROM election_results"
+        if ";" in normalized or not re.match(r"^(SELECT|WITH)\b", normalized, flags=re.IGNORECASE):
+            raise ValueError("only a single SELECT or WITH query is allowed")
+        if re.search(r"\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|COPY|ATTACH|INSTALL|LOAD)\b", normalized, flags=re.IGNORECASE):
+            raise ValueError("mutation and extension statements are not allowed")
+
+        values: list[object] = []
+        params = parameters or {}
+        names = re.findall(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)", normalized)
+        for name in names:
+            if name not in params:
+                raise ValueError(f"missing query parameter: {name}")
+            normalized = re.sub(rf"(?<!:):{re.escape(name)}\b", "?", normalized, count=1)
+            values.append(params[name])
+
+        total_count = 0
+        if limit > 0 or offset > 0:
+            total_count = int(self.conn.execute(f"SELECT COUNT(*) FROM ({normalized}) AS _count", values).fetchone()[0])
+        if limit > 0:
+            normalized = f"{normalized} LIMIT {int(limit)}"
+            if offset > 0:
+                normalized = f"{normalized} OFFSET {int(offset)}"
+
+        cursor = self.conn.execute(normalized, values)
+        columns = [column[0] for column in cursor.description]
+        rows = []
+        for row in cursor.fetchall():
+            rows.append({
+                column: value.isoformat() if hasattr(value, "isoformat") else value
+                for column, value in zip(columns, row)
+            })
+        return {
+            "columns": columns,
+            "rows": rows,
+            "count": len(rows),
+            "total_count": total_count if limit > 0 or offset > 0 else len(rows),
+            "limit": limit,
+            "offset": offset,
+            "has_more": bool(limit > 0 and offset + len(rows) < total_count),
+        }
+
 
 # --- AI/ML Engine ---
 
@@ -231,8 +308,8 @@ class AnomalyDetector:
 
     Model persistence:
     - On init, attempts to load a persisted model from disk.
-    - If no persisted model exists, trains on first call with available data.
-    - Training is done via train_model() which persists the model to disk.
+    - Training is an explicit, persisted lifecycle operation performed from
+      available historical data at controlled startup or via the train endpoint.
     """
 
     def __init__(self):
@@ -300,16 +377,15 @@ class AnomalyDetector:
         log.info("model_trained", path=MODEL_PATH, samples=self._training_samples)
         return True
 
-    def detect_anomalies(self, vote_counts: list[int]) -> list[AnomalyResult]:
+    def detect_anomalies(self, vote_counts: list[int], polling_unit_codes: list[str]) -> list[AnomalyResult]:
+        if len(vote_counts) != len(polling_unit_codes):
+            raise ValueError("each anomaly observation requires its real polling-unit identifier")
         if len(vote_counts) < 10:
             return []
+        if self.model is None:
+            raise RuntimeError("anomaly model is not trained; ingest historical data and invoke POST /api/anomaly/train")
 
         arr = np.array(vote_counts).reshape(-1, 1)
-
-        # If no model loaded, train on the current data and persist
-        if self.model is None:
-            self.train_model(arr)
-
         predictions = self.model.predict(arr)
         scores = self.model.decision_function(arr)
 
@@ -321,7 +397,7 @@ class AnomalyDetector:
                 anomalies.append(
                     AnomalyResult(
                         id=f"anomaly-{i}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-                        polling_unit_code=f"PU-{i:05d}",
+                        polling_unit_code=polling_unit_codes[i],
                         anomaly_type="statistical_outlier",
                         severity=severity,
                         confidence=round(confidence, 4),
@@ -445,8 +521,11 @@ async def lifespan(app: FastAPI):
         # Train in executor to avoid blocking the async event loop
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _auto_train_model)
-    except Exception as e:
-        log.warning("initial_sync_failed", error=str(e))
+    except Exception as exc:
+        log.error("initial_sync_failed", error=str(exc))
+        lakehouse.conn.close()
+        lakehouse = None
+        raise RuntimeError("lakehouse initial synchronization failed") from exc
 
     yield
 
@@ -481,17 +560,46 @@ app = FastAPI(
 )
 
 
+def _read_results_from_postgres() -> list[dict]:
+    """Read result-party rows from the transactional PostgreSQL store.
+
+    The lakehouse receives a read-only snapshot through Pgpool instead of
+    calling a browser-authenticated backend endpoint. This keeps analytics
+    ingestion deterministic and works in service-to-service deployments.
+    """
+    query = """
+        SELECT
+            r.id::text AS id,
+            r.election_id::text AS election_id,
+            r.polling_unit_code,
+            rps.party_code,
+            COALESCE(rps.votes, 0) AS votes,
+            r.status,
+            s.code AS state_code,
+            l.code AS lga_code,
+            r.submitted_at
+        FROM results r
+        LEFT JOIN result_party_scores rps ON rps.result_id = r.id
+        LEFT JOIN polling_units pu ON pu.code = r.polling_unit_code
+        LEFT JOIN wards w ON w.code = pu.ward_code
+        LEFT JOIN lgas l ON l.code = w.lga_code
+        LEFT JOIN states s ON s.code = l.state_code
+        ORDER BY r.submitted_at ASC, r.id ASC
+    """
+    with psycopg2.connect(POSTGRES_URL, connect_timeout=10) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+            cursor.execute(query)
+            return [dict(row) for row in cursor.fetchall()]
+
+
 async def sync_from_postgres():
-    """Pull latest results from the Go backend into DuckDB."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{BACKEND_URL}/results", timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            results = data if isinstance(data, list) else data.get("results", [])
-            count = lakehouse.ingest_results(results)
-            log.info("sync_completed", count=count)
-            return count
-    return 0
+    """Pull a current PostgreSQL result snapshot into DuckDB."""
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+    rows = await asyncio.to_thread(_read_results_from_postgres)
+    count = lakehouse.ingest_results(rows)
+    log.info("sync_completed", count=count)
+    return count
 
 
 @app.get("/health")
@@ -533,11 +641,16 @@ async def stats():
 
 @app.get("/ai/anomalies")
 async def detect_anomalies():
-    votes = lakehouse.get_vote_distribution()
-    anomalies = detector.detect_anomalies(votes)
-    for a in anomalies:
-        lakehouse.log_anomaly(a)
-    return {"anomalies": [a.model_dump() for a in anomalies], "total": len(anomalies)}
+    records = lakehouse.get_vote_records()
+    votes = [votes for _, votes in records]
+    polling_unit_codes = [code for code, _ in records]
+    try:
+        anomalies = detector.detect_anomalies(votes, polling_unit_codes)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    for anomaly in anomalies:
+        lakehouse.log_anomaly(anomaly)
+    return {"anomalies": [anomaly.model_dump() for anomaly in anomalies], "total": len(anomalies)}
 
 
 @app.get("/ai/benford")
@@ -549,9 +662,14 @@ async def benford_analysis():
 
 @app.get("/ai/integrity")
 async def integrity_score():
-    votes = lakehouse.get_vote_distribution()
+    records = lakehouse.get_vote_records()
+    votes = [votes for _, votes in records]
+    polling_unit_codes = [code for code, _ in records]
     benford = detector.benford_analysis(votes)
-    anomalies = detector.detect_anomalies(votes)
+    try:
+        anomalies = detector.detect_anomalies(votes, polling_unit_codes)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     result = detector.integrity_score(votes, benford, len(anomalies))
     return result.model_dump()
 
@@ -780,6 +898,155 @@ async def spatial_capabilities():
         ],
         "supported_formats": ["geojson", "wkt", "point"],
     }
+
+
+# --- Compatibility API for the platform middleware client ---
+
+class LakehouseQueryRequest(BaseModel):
+    query: str = ""
+    parameters: Optional[dict] = None
+    format: str = "json"
+    limit: int = 0
+    offset: int = 0
+
+
+class LakehouseIngestRequest(BaseModel):
+    table: str
+    rows: list[dict]
+
+
+def _rows_as_dicts(sql: str, parameters: list[object]) -> list[dict]:
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+    cursor = lakehouse.conn.execute(sql, parameters)
+    columns = [column[0] for column in cursor.description]
+    return [
+        {
+            column: value.isoformat() if hasattr(value, "isoformat") else value
+            for column, value in zip(columns, row)
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+@app.get("/tables")
+async def compatibility_tables():
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+    return [item["name"] for item in lakehouse.get_stats()["tables"]]
+
+
+@app.post("/ingest")
+async def compatibility_ingest(payload: LakehouseIngestRequest):
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+    table = payload.table.strip().lower()
+    if table in {"results", "election_results"}:
+        count = lakehouse.ingest_results(payload.rows)
+    elif table in {"collation_events", "collation_snapshots"}:
+        count = lakehouse.ingest_collation_events(payload.rows)
+    else:
+        raise HTTPException(status_code=422, detail=f"unsupported lakehouse table: {payload.table}")
+    return {"table": table, "ingested": count}
+
+
+@app.post("/query")
+async def compatibility_query(payload: LakehouseQueryRequest):
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+    started = time.perf_counter()
+    try:
+        response = lakehouse.query_readonly(
+            payload.query,
+            payload.parameters,
+            max(0, min(payload.limit, 10_000)),
+            max(0, payload.offset),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    response["query_ms"] = round((time.perf_counter() - started) * 1000, 3)
+    return response
+
+
+@app.get("/analytics/{election_id}/{analysis_type}")
+async def compatibility_election_analytics(election_id: str, analysis_type: str):
+    if lakehouse is None:
+        raise HTTPException(status_code=503, detail="lakehouse not initialized")
+
+    analysis_type = analysis_type.strip().lower()
+    if analysis_type == "turnout":
+        data = _rows_as_dicts(
+            """
+            SELECT state_code, SUM(votes) AS total_votes,
+                   COUNT(DISTINCT polling_unit_code) AS polling_units
+            FROM election_results
+            WHERE election_id = ?
+            GROUP BY state_code
+            ORDER BY total_votes DESC
+            """,
+            [election_id],
+        )
+        return {"election_id": election_id, "type": analysis_type, "data": data}
+
+    if analysis_type == "party_performance":
+        data = _rows_as_dicts(
+            """
+            SELECT party_code, SUM(votes) AS total_votes,
+                   COUNT(DISTINCT polling_unit_code) AS polling_units
+            FROM election_results
+            WHERE election_id = ?
+            GROUP BY party_code
+            ORDER BY total_votes DESC
+            """,
+            [election_id],
+        )
+        return {"election_id": election_id, "type": analysis_type, "data": data}
+
+    if analysis_type == "timeline":
+        data = _rows_as_dicts(
+            """
+            SELECT DATE_TRUNC('hour', submitted_at) AS period,
+                   SUM(votes) AS total_votes,
+                   COUNT(DISTINCT polling_unit_code) AS polling_units
+            FROM election_results
+            WHERE election_id = ? AND submitted_at IS NOT NULL
+            GROUP BY period
+            ORDER BY period ASC
+            """,
+            [election_id],
+        )
+        return {"election_id": election_id, "type": analysis_type, "data": data}
+
+    records = lakehouse.get_vote_records(election_id)
+    votes = [votes for _, votes in records]
+    polling_unit_codes = [code for code, _ in records]
+    if analysis_type == "anomalies":
+        try:
+            anomalies = detector.detect_anomalies(votes, polling_unit_codes)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        for anomaly in anomalies:
+            lakehouse.log_anomaly(anomaly)
+        return {
+            "election_id": election_id,
+            "type": analysis_type,
+            "anomalies": [item.model_dump() for item in anomalies],
+            "total": len(anomalies),
+        }
+    if analysis_type == "benford":
+        return {"election_id": election_id, "type": analysis_type, **detector.benford_analysis(votes).model_dump()}
+    if analysis_type == "integrity_score":
+        benford = detector.benford_analysis(votes)
+        try:
+            anomalies = detector.detect_anomalies(votes, polling_unit_codes)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {
+            "election_id": election_id,
+            "type": analysis_type,
+            **detector.integrity_score(votes, benford, len(anomalies)).model_dump(),
+        }
+    raise HTTPException(status_code=404, detail=f"unknown analytics type: {analysis_type}")
 
 
 if __name__ == "__main__":

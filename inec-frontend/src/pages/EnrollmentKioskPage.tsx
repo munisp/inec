@@ -18,6 +18,7 @@ type KioskStep =
 
 interface EnrollmentData {
   voterVin: string;
+  deviceId: string;
   firstName: string;
   lastName: string;
   dateOfBirth: string;
@@ -48,6 +49,7 @@ export default function EnrollmentKioskPage() {
   const [step, setStep] = useState<KioskStep>('welcome');
   const [data, setData] = useState<EnrollmentData>({
     voterVin: '',
+    deviceId: '',
     firstName: '',
     lastName: '',
     dateOfBirth: '',
@@ -124,17 +126,7 @@ export default function EnrollmentKioskPage() {
           qualityScores: { ...d.qualityScores, fingerprint: result.quality },
         }));
       } else {
-        // Fallback: use camera for fingerprint image
-        if (videoRef.current && canvasRef.current) {
-          await camera.start(videoRef.current, canvasRef.current, 'face', setQuality);
-          const result = await camera.capture('face');
-          camera.stop();
-          setData(d => ({
-            ...d,
-            fingerprint: { ...result, modality: 'fingerprint' },
-            qualityScores: { ...d.qualityScores, fingerprint: result.quality },
-          }));
-        }
+        throw new Error('A registered fingerprint scanner is required; camera images cannot be used as fingerprint evidence.');
       }
       goNext();
     } catch (e) {
@@ -156,13 +148,8 @@ export default function EnrollmentKioskPage() {
         }));
       }
       goNext();
-    } catch {
-      // If PAD service unavailable, pass through with warning
-      setData(d => ({
-        ...d,
-        livenessResult: { decision: 'unavailable', score: 0 },
-      }));
-      goNext();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Liveness verification failed');
     } finally {
       setProcessing(false);
     }
@@ -173,13 +160,13 @@ export default function EnrollmentKioskPage() {
     setError(null);
     try {
       if (data.fingerprint?.imageData) {
-        await api.enroll(data.voterVin, 'fingerprint', data.fingerprint.imageData);
+        await api.enroll(data.voterVin, 'fingerprint', data.fingerprint.imageData, data.deviceId);
       }
       if (data.face?.imageData) {
-        await api.enroll(data.voterVin, 'face', data.face.imageData);
+        await api.enroll(data.voterVin, 'face', data.face.imageData, data.deviceId);
       }
       if (data.iris?.imageData) {
-        await api.enroll(data.voterVin, 'iris', data.iris.imageData);
+        await api.enroll(data.voterVin, 'iris', data.iris.imageData, data.deviceId);
       }
       goNext();
     } catch (e) {
@@ -263,6 +250,17 @@ export default function EnrollmentKioskPage() {
                     placeholder="VIN..."
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Registered BVAS Device ID</label>
+                  <input
+                    type="text"
+                    value={data.deviceId}
+                    onChange={e => setData(d => ({ ...d, deviceId: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                    placeholder="Enter the registered device ID"
+                    autoComplete="off"
+                  />
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
@@ -312,7 +310,7 @@ export default function EnrollmentKioskPage() {
                 <button onClick={goBack} className="px-6 py-2 text-gray-600 hover:text-gray-800">Back</button>
                 <button
                   onClick={goNext}
-                  disabled={!data.voterVin || !data.firstName || !data.lastName}
+                  disabled={!data.voterVin || !data.deviceId || !data.firstName || !data.lastName}
                   className="px-8 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                 >
                   Next
@@ -570,7 +568,7 @@ export default function EnrollmentKioskPage() {
                 onClick={() => {
                   setStep('welcome');
                   setData({
-                    voterVin: '', firstName: '', lastName: '', dateOfBirth: '', stateCode: '',
+                    voterVin: '', deviceId: '', firstName: '', lastName: '', dateOfBirth: '', stateCode: '',
                     qualityScores: {},
                   });
                 }}

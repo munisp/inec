@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -205,8 +206,6 @@ func initBiometricEngine(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_abis_pipe ON abis_enrollment_pipeline(voter_vin, stage);
 	`
 	execMulti(database, schema)
-
-	seedBiometricEngine(database)
 }
 
 type FingerprintMinutiae struct {
@@ -1428,23 +1427,88 @@ func handleBiometricEngineStats(w http.ResponseWriter, r *http.Request) {
 
 func handleABISEnroll(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		VIN      string `json:"vin"`
-		Modality string `json:"modality"`
-		DeviceID string `json:"device_id"`
+		VIN       string `json:"vin"`
+		Modality  string `json:"modality"`
+		DeviceID  string `json:"device_id"`
+		ImageData string `json:"image_data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 14<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid enrollment JSON")
 		return
 	}
-	if req.VIN == "" || req.Modality == "" {
-		writeError(w, 400, "vin and modality required")
+
+	req.VIN = strings.TrimSpace(req.VIN)
+	req.Modality = strings.TrimSpace(strings.ToLower(req.Modality))
+	req.DeviceID = strings.TrimSpace(req.DeviceID)
+	if req.VIN == "" || req.Modality == "" || req.DeviceID == "" {
+		writeError(w, http.StatusBadRequest, "vin, modality, and device_id are required")
 		return
 	}
-	if req.DeviceID == "" {
-		req.DeviceID = "BVAS-001"
+	if req.Modality == "face" {
+		req.Modality = "facial"
 	}
-	result := abisEngine.Enroll(req.VIN, req.Modality, req.DeviceID)
-	writeJSON(w, 200, result)
+	if req.Modality != "fingerprint" && req.Modality != "facial" && req.Modality != "iris" {
+		writeError(w, http.StatusBadRequest, "modality must be fingerprint, facial, or iris")
+		return
+	}
+
+	// The client must provide real BVAS capture data encoded as base64. The old
+	// endpoint derived synthetic templates from VINs, which cannot support real
+	// biometric assurance or deduplication.
+	encodedImage := strings.TrimSpace(req.ImageData)
+	if comma := strings.IndexByte(encodedImage, ','); strings.HasPrefix(encodedImage, "data:") && comma >= 0 {
+		encodedImage = encodedImage[comma+1:]
+	}
+	imageData, err := base64.StdEncoding.DecodeString(encodedImage)
+	if err != nil || len(imageData) == 0 {
+		writeError(w, http.StatusBadRequest, "image_data must be a non-empty base64 BVAS capture")
+		return
+	}
+	if len(imageData) > 10<<20 {
+		writeError(w, http.StatusRequestEntityTooLarge, "image_data exceeds the 10MB capture limit")
+		return
+	}
+
+	pipelineURL := strings.TrimRight(strings.TrimSpace(os.Getenv("BIOMETRIC_PIPELINE_URL")), "/")
+	if pipelineURL == "" {
+		writeError(w, http.StatusServiceUnavailable, "biometric pipeline is not configured")
+		return
+	}
+	payload, err := json.Marshal(struct {
+		VoterVIN  string `json:"voter_vin"`
+		Modality  string `json:"modality"`
+		DeviceID  string `json:"device_id"`
+		ImageData []byte `json:"image_data"`
+	}{
+		VoterVIN: req.VIN, Modality: req.Modality, DeviceID: req.DeviceID, ImageData: imageData,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not serialize enrollment request")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, pipelineURL+"/abis/enroll", bytes.NewReader(payload))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create biometric pipeline request")
+		return
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(upstreamReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "biometric pipeline unavailable")
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "could not read biometric pipeline response")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
 }
 
 func handleABISVerify(w http.ResponseWriter, r *http.Request) {

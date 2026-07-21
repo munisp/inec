@@ -45,6 +45,73 @@ func handleTemporalWorkflowStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ws)
 }
 
+// handleTemporalStartWorkflow starts a workflow through the configured Temporal
+// client. It accepts both the canonical WorkflowInput fields and the legacy web
+// client shape (workflow + payload) while normalizing requests to a safe,
+// registered workflow type.
+func handleTemporalStartWorkflow(w http.ResponseWriter, r *http.Request) {
+	if mwHub == nil || mwHub.Temporal == nil {
+		writeError(w, http.StatusServiceUnavailable, "Temporal workflow engine is unavailable")
+		return
+	}
+
+	var req struct {
+		WorkflowID   string                 `json:"workflow_id"`
+		WorkflowType string                 `json:"workflow_type"`
+		Workflow     string                 `json:"workflow"`
+		TaskQueue    string                 `json:"task_queue"`
+		Input        map[string]interface{} `json:"input"`
+		Payload      map[string]interface{} `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if req.WorkflowType == "" {
+		req.WorkflowType = req.Workflow
+	}
+	if req.WorkflowType == "" {
+		writeError(w, http.StatusBadRequest, "workflow_type is required")
+		return
+	}
+	if req.Input == nil {
+		req.Input = req.Payload
+	}
+	if req.Input == nil {
+		req.Input = map[string]interface{}{}
+	}
+	if req.WorkflowID == "" {
+		req.WorkflowID = fmt.Sprintf("api-%s-%d", req.WorkflowType, time.Now().UTC().UnixNano())
+	}
+	if req.TaskQueue == "" {
+		req.TaskQueue = temporalSDKTaskQueue
+	}
+
+	// The in-process SDK worker only registers these workflow names. Preserve an
+	// arbitrary client label as input to GenericWorkflow rather than attempting to
+	// execute an unregistered Temporal workflow type.
+	switch req.WorkflowType {
+	case "ResultSubmissionWorkflow", "ResultValidationWorkflow", "ResultFinalizationWorkflow", "GenericWorkflow":
+	default:
+		req.Input["requested_workflow_type"] = req.WorkflowType
+		req.WorkflowType = "GenericWorkflow"
+	}
+
+	workflow, err := mwHub.Temporal.StartWorkflow(r.Context(), WorkflowInput{
+		WorkflowID:   req.WorkflowID,
+		WorkflowType: req.WorkflowType,
+		TaskQueue:    req.TaskQueue,
+		Input:        req.Input,
+		RetryPolicy:  DefaultRetryPolicy,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, workflow)
+}
+
 func handleTBAccounts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	accounts := []string{"inec-operational", "inec-official"}
@@ -87,16 +154,36 @@ func handleAPISIXConfig(w http.ResponseWriter, r *http.Request) {
 func handlePermifyCheck(w http.ResponseWriter, r *http.Request) {
 	var check PermifyCheck
 	if err := json.NewDecoder(r.Body).Decode(&check); err != nil {
-		writeError(w, 400, "invalid JSON")
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	ctx := r.Context()
-	allowed, err := mwHub.Permify.Check(ctx, check)
+	if check.ResourceType == "" || check.Resource == "" || check.Permission == "" {
+		writeError(w, http.StatusBadRequest, "resource_type, resource, and permission are required")
+		return
+	}
+
+	// Do not accept a client-supplied authorization subject. The resource and
+	// requested permission are client input, but identity must come from the
+	// authenticated access token to prevent subject impersonation.
+	claims, err := getCurrentUser(r)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	writeJSON(w, 200, M{"allowed": allowed, "check": check})
+	subject, ok := claims["sub"].(string)
+	if !ok || subject == "" {
+		writeError(w, http.StatusUnauthorized, "authenticated subject is missing")
+		return
+	}
+	check.Subject = subject
+	check.SubjectType = "user"
+
+	allowed, err := mwHub.Permify.Check(r.Context(), check)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, M{"allowed": allowed, "check": check})
 }
 
 func handleFluvioTopics(w http.ResponseWriter, r *http.Request) {
@@ -213,27 +300,40 @@ func checkPermission(role, permission string) bool {
 	return allowed
 }
 
-func createTBTransfer(resultID int64, amount int64, userData string) *TBTransfer {
-	ctx := context.Background()
-	transfer, _ := mwHub.TigerBeetle.CreateTransfer(ctx, TBTransfer{
+func createTBTransfer(resultID int64, amount int64, userData string) (*TBTransfer, error) {
+	if mwHub == nil || mwHub.TigerBeetle == nil {
+		return nil, fmt.Errorf("TigerBeetle client is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return mwHub.TigerBeetle.CreateTransfer(ctx, TBTransfer{
 		DebitAccountID:  "inec-operational",
 		CreditAccountID: "inec-official",
 		Amount:          amount,
 		Ledger:          1,
 		Code:            1,
+		Status:          "PENDING",
 		UserData:        userData,
+		IdempotencyKey:  fmt.Sprintf("result:%d:%s", resultID, userData),
 	})
-	return transfer
 }
 
-func postTBTransfer(transferID string) {
-	ctx := context.Background()
-	mwHub.TigerBeetle.PostTransfer(ctx, transferID)
+func postTBTransfer(transferID string) error {
+	if mwHub == nil || mwHub.TigerBeetle == nil {
+		return fmt.Errorf("TigerBeetle client is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return mwHub.TigerBeetle.PostTransfer(ctx, transferID)
 }
 
-func voidTBTransfer(transferID string) {
-	ctx := context.Background()
-	mwHub.TigerBeetle.VoidTransfer(ctx, transferID)
+func voidTBTransfer(transferID string) error {
+	if mwHub == nil || mwHub.TigerBeetle == nil {
+		return fmt.Errorf("TigerBeetle client is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return mwHub.TigerBeetle.VoidTransfer(ctx, transferID)
 }
 
 func startResultWorkflow(workflowType string, resultID int64, data map[string]interface{}) *WorkflowStatus {

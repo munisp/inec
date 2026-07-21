@@ -538,21 +538,21 @@ export class BiometricAPIClient {
     return resp.json();
   }
 
-  async enroll(voterVin: string, modality: string, image: Blob, deviceId?: string): Promise<any> {
+  async enroll(voterVin: string, modality: string, image: Blob, deviceId: string): Promise<any> {
     const reader = new FileReader();
-    const b64 = await new Promise<string>((resolve) => {
+    const b64 = await new Promise<string>((resolve, reject) => {
+      reader.onerror = () => reject(new Error('Unable to read biometric capture'));
       reader.onload = () => resolve((reader.result as string).split(',')[1]);
       reader.readAsDataURL(image);
     });
-    const imageBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-    const resp = await fetch(`${this.baseUrl}/biometric/abis/enroll`, {
+    const resp = await fetch(`${this.baseUrl}/biometric/engine/enroll`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        voter_vin: voterVin,
+        vin: voterVin,
         modality,
-        image_data: Array.from(imageBytes),
-        device_id: deviceId || 'web-capture',
+        image_data: b64,
+        device_id: deviceId,
       }),
     });
     if (!resp.ok) throw new Error(await resp.text());

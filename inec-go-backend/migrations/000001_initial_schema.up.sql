@@ -40,7 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_elections_status ON elections USING btree (status
 
 CREATE TABLE IF NOT EXISTS parties (
     id SERIAL PRIMARY KEY,
-    code text NOT NULL,
+    code text NOT NULL UNIQUE,
     name text NOT NULL,
     abbreviation text NOT NULL,
     logo_url text,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS parties (
 
 CREATE TABLE IF NOT EXISTS states (
     id SERIAL PRIMARY KEY,
-    code text NOT NULL,
+    code text NOT NULL UNIQUE,
     name text NOT NULL,
     geo_zone text NOT NULL,
     capital text
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS states (
 
 CREATE TABLE IF NOT EXISTS lgas (
     id SERIAL PRIMARY KEY,
-    code text NOT NULL,
+    code text NOT NULL UNIQUE,
     name text NOT NULL,
     state_code text NOT NULL
 );
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_lgas_state ON lgas USING btree (state_code);
 
 CREATE TABLE IF NOT EXISTS wards (
     id SERIAL PRIMARY KEY,
-    code text NOT NULL,
+    code text NOT NULL UNIQUE,
     name text NOT NULL,
     lga_code text NOT NULL
 );
@@ -76,7 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_wards_lga ON wards USING btree (lga_code);
 
 CREATE TABLE IF NOT EXISTS polling_units (
     id SERIAL PRIMARY KEY,
-    code text NOT NULL,
+    code text NOT NULL UNIQUE,
     name text NOT NULL,
     ward_code text NOT NULL,
     registered_voters integer DEFAULT 0,

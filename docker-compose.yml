@@ -2,21 +2,24 @@ networks:
   inec-network:
     driver: bridge
 services:
+  # OpenAppSec's APISIX attachment is the actual traffic enforcement point.
+  # Caddy proxies /api traffic to this service, then the attachment invokes the
+  # OpenAppSec agent before APISIX forwards the request to platform services.
   apisix:
     depends_on:
-    - etcd
+      openappsec-agent:
+        condition: service_started
     environment:
-    - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
-    image: apache/apisix:3.7.0-debian
+    - APISIX_STAND_ALONE=true
+    - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY must be set}
+    image: ghcr.io/openappsec/apisix-attachment:${APPSEC_VERSION:-latest}
     networks:
     - inec-network
     ports:
-    # - 9080:9080
-    # - 9443:9443
     - 9180:9180
     volumes:
-    - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml
-    - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml
+    - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
   etcd:
     environment:
     - ALLOW_NONE_AUTHENTICATION=yes
@@ -38,7 +41,10 @@ services:
         condition: service_healthy
       biometric-rust:
         condition: service_healthy
+      pgpool:
+        condition: service_healthy
     environment:
+    - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
     - BIOMETRIC_PYTHON_URL=http://biometric-python:8090
     - BIOMETRIC_RUST_URL=http://biometric-rust:8091
     healthcheck:
@@ -110,19 +116,47 @@ services:
     - ./config/dapr/components:/components
   fluvio-sc:
     command: run sc --local /fluvio/metadata
-    image: infinyon/fluvio:0.11.0
+    image: infinyon/fluvio:latest
     networks:
     - inec-network
     ports:
     - 9003:9003
+    restart: unless-stopped
     volumes:
     - fluvio-data:/fluvio
+  fluvio-stream:
+    build:
+      context: ./services/fluvio-stream
+      dockerfile: Dockerfile
+    depends_on:
+      fluvio-sc:
+        condition: service_started
+    environment:
+    - FLUVIO_ENDPOINT=fluvio-sc:9003
+    - PORT=8100
+    - CHECKPOINT_FILE=/data/fluvio_offsets.json
+    healthcheck:
+      interval: 10s
+      retries: 10
+      start_period: 30s
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - http://localhost:8100/health
+      timeout: 5s
+    networks:
+    - inec-network
+    restart: on-failure
+    volumes:
+    - fluvio-bridge-data:/data
   frontend:
     build:
       context: ./inec-frontend
       dockerfile: Dockerfile
     depends_on:
-    - python-proxy
+      go-backend:
+        condition: service_started
     networks:
     - inec-network
     ports:
@@ -148,6 +182,12 @@ services:
         condition: service_started
       temporal:
         condition: service_started
+      inference-engine:
+        condition: service_started
+      biometric-go:
+        condition: service_healthy
+      fluvio-stream:
+        condition: service_healthy
     environment:
     - PORT=8088
     - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
@@ -156,27 +196,42 @@ services:
     - PGPOOL_PORT=5432
     - PGPOOL_PCP_HOST=pgpool
     - PGPOOL_PCP_PORT=9898
-    - REDIS_URL=http://redis:6379
-    - KAFKA_REST_URL=http://kafka-rest:8082
-    - TEMPORAL_URL=http://temporal:7233
+    - REDIS_URL=redis://redis:6379/0
+    - KAFKA_BROKERS=kafka:29092
+    - TEMPORAL_HOST_PORT=temporal:7233
+    - TEMPORAL_NAMESPACE=default
     - DAPR_HTTP_PORT=3500
     - KEYCLOAK_URL=http://keycloak:8080
     - KEYCLOAK_REALM=inec
     - KEYCLOAK_CLIENT_ID=inec-backend
     - PERMIFY_URL=http://permify:3476
     - PERMIFY_TENANT_ID=inec
-    - FLUVIO_URL=http://fluvio-sc:9003
+    - FLUVIO_STREAM_URL=http://fluvio-stream:8100
     - TIGERBEETLE_URL=http://tigerbeetle:3001
-    - OPENAPPSEC_URL=http://openappsec-agent:4000
+    - OPENAPPSEC_GATEWAY_ENFORCED=true
     - APISIX_ADMIN_URL=http://apisix:9180
-    - APISIX_API_KEY=edd1c9f034335f136f87ad84b625c8f1
+    - APISIX_API_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY must be set}
+    - HSM_MASTER_KEY=${HSM_MASTER_KEY:?HSM_MASTER_KEY must be set}
     - LAKEHOUSE_URL=http://lakehouse:8090
+    - RUST_INFERENCE_URL=http://inference-engine:8091
+    - BIOMETRIC_PIPELINE_URL=http://biometric-go:8092
     networks:
     - inec-network
     ports:
     - 8088:8088
     volumes:
     - app-data:/data
+  inference-engine:
+    build:
+      context: .
+      dockerfile: ./services/inference-engine/Dockerfile
+    environment:
+    - PORT=8091
+    - MODELS_DIR=/app/models
+    - CORS_ORIGINS=https://inec.local,http://localhost:3000
+    networks:
+    - inec-network
+    restart: unless-stopped
   kafka:
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
@@ -210,32 +265,49 @@ services:
     ports:
     - 8082:8082
   keycloak:
-    command: start-dev --import-realm
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/opt/keycloak/import-realm.sh"]
     environment:
-    - KEYCLOAK_ADMIN=admin
-    - KEYCLOAK_ADMIN_PASSWORD=admin
-    - KC_DB=dev-mem
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD must be set}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?KEYCLOAK_CLIENT_SECRET must be set}
+      INEC_ADMIN_PASSWORD: ${INEC_ADMIN_PASSWORD:?INEC_ADMIN_PASSWORD must be set}
+      OFFICER_PASSWORD: ${OFFICER_PASSWORD:?OFFICER_PASSWORD must be set}
+      OBSERVER_PASSWORD: ${OBSERVER_PASSWORD:?OBSERVER_PASSWORD must be set}
+      KC_DB: postgres
+      KC_DB_URL_HOST: pg-primary
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: ${PG_USER:-inec_admin}
+      KC_DB_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
+      KC_HEALTH_ENABLED: "true"
     image: quay.io/keycloak/keycloak:23.0
     networks:
     - inec-network
     ports:
     - 8180:8080
     volumes:
-    - ./config/keycloak:/opt/keycloak/data/import
+    - ./config/keycloak/inec-realm.json:/opt/keycloak/data/import-template/inec-realm.json:ro
+    - ./config/keycloak/import-realm.sh:/opt/keycloak/import-realm.sh:ro
   lakehouse:
     build:
-      context: ./inec-analytics
+      context: ./services/lakehouse-analytics
       dockerfile: Dockerfile
+    depends_on:
+      pgpool:
+        condition: service_healthy
     environment:
-    - DB_PATH=/data/app.db
+    - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
+    - DUCKDB_PATH=/data/inec_lakehouse.duckdb
+    - MODEL_DIR=/data/models
     - PORT=8090
     networks:
     - inec-network
     ports:
     - 8090:8090
     volumes:
-    - app-data:/data
-    - lakehouse-data:/lakehouse
+    - lakehouse-data:/data
   permify:
     command: serve
     image: ghcr.io/permify/permify:latest
@@ -331,20 +403,6 @@ services:
     - ./config/pgpool/pgpool.conf:/etc/pgpool-II/pgpool.conf
     - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
     - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
-  python-proxy:
-    build:
-      context: ./inec-backend
-      dockerfile: Dockerfile
-    depends_on:
-    - go-backend
-    environment:
-    - DB_PATH=/data/app.db
-    networks:
-    - inec-network
-    ports:
-    - 8000:8000
-    volumes:
-    - app-data:/data
   redis:
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
     image: redis:7-alpine
@@ -353,16 +411,23 @@ services:
     volumes:
     - redis-data:/data
   temporal:
+    depends_on:
+      pg-primary:
+        condition: service_healthy
     environment:
-    - DB=sqlite
-    - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    - DB=postgres12
+    - POSTGRES_SEEDS=pg-primary
+    - DB_PORT=5432
+    - POSTGRES_USER=${PG_USER:-inec_admin}
+    - POSTGRES_PWD=${PG_PASSWORD:?PG_PASSWORD must be set}
+    - DBNAME=temporal
+    - VISIBILITY_DBNAME=temporal_visibility
+    - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/docker.yaml
     image: temporalio/auto-setup:1.22
     networks:
     - inec-network
     ports:
     - 7233:7233
-    volumes:
-    - temporal-data:/tmp/temporal
   temporal-ui:
     depends_on:
     - temporal
@@ -374,22 +439,85 @@ services:
     ports:
     - 8233:8080
   tigerbeetle:
-    command: start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
+    cap_add:
+    - IPC_LOCK
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+    - |
+      if [ ! -f /data/0_0.tigerbeetle ]; then
+        /tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+      fi
+      exec /tigerbeetle start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
     image: ghcr.io/tigerbeetle/tigerbeetle:0.15.3
     networks:
     - inec-network
+    restart: unless-stopped
+    security_opt:
+    - seccomp=unconfined
     volumes:
     - tigerbeetle-data:/data
+  # Official OpenAppSec standalone services. The agent is paired with the
+  # APISIX attachment above; it is not an application-level inspection API.
   openappsec-agent:
-    build:
-      context: ./services/openappsec-agent
-      dockerfile: Dockerfile
+    command: /cp-nano-agent
     environment:
-    - PORT=4000
+    - SHARED_STORAGE_HOST=openappsec-shared-storage
+    - LEARNING_HOST=openappsec-smartsync
+    - TUNING_HOST=openappsec-tuning
+    - autoPolicyLoad=true
+    - registered_server=APISIX
+    image: ghcr.io/openappsec/agent:${APPSEC_VERSION:-latest}
+    ipc: host
     networks:
     - inec-network
-    ports:
-    - 4000:4000
+    restart: unless-stopped
+    volumes:
+    - ./config/openappsec/agent-config:/etc/cp/conf
+    - ./data/openappsec/agent:/etc/cp/data
+    - ./logs/openappsec:/var/log/nano_agent
+    - ./config/openappsec/policy.yaml:/ext/appsec/local_policy.yaml:ro
+  openappsec-smartsync:
+    environment:
+    - SHARED_STORAGE_HOST=openappsec-shared-storage
+    image: ghcr.io/openappsec/smartsync:${APPSEC_VERSION:-latest}
+    networks:
+    - inec-network
+    restart: unless-stopped
+  openappsec-shared-storage:
+    image: ghcr.io/openappsec/smartsync-shared-files:${APPSEC_VERSION:-latest}
+    ipc: host
+    networks:
+    - inec-network
+    restart: unless-stopped
+    user: root
+    volumes:
+    - openappsec-shared-storage:/db
+  openappsec-tuning:
+    depends_on:
+    - openappsec-db
+    - openappsec-shared-storage
+    environment:
+    - SHARED_STORAGE_HOST=openappsec-shared-storage
+    - QUERY_DB_HOST=openappsec-db
+    - QUERY_DB_USER=appsec
+    - QUERY_DB_PASSWORD=${OPENAPPSEC_DB_PASSWORD:?set OPENAPPSEC_DB_PASSWORD}
+    image: ghcr.io/openappsec/smartsync-tuning:${APPSEC_VERSION:-latest}
+    networks:
+    - inec-network
+    restart: unless-stopped
+    volumes:
+    - ./config/openappsec/agent-config:/etc/cp/conf
+  openappsec-db:
+    environment:
+    - POSTGRES_DB=openappsec
+    - POSTGRES_USER=appsec
+    - POSTGRES_PASSWORD=${OPENAPPSEC_DB_PASSWORD:?set OPENAPPSEC_DB_PASSWORD}
+    image: postgres:16-alpine
+    networks:
+    - inec-network
+    restart: unless-stopped
+    volumes:
+    - openappsec-db-data:/var/lib/postgresql/data
   caddy:
     build:
       context: ./caddy
@@ -447,7 +575,7 @@ services:
     networks:
       - inec-network
     environment:
-      - TALLY_DECRYPT_TOKEN=${TALLY_DECRYPT_TOKEN:-inec-tally-secret}
+      - TALLY_DECRYPT_TOKEN=${TALLY_DECRYPT_TOKEN:?TALLY_DECRYPT_TOKEN must be set}
 
   federated-fraud-detection:
     build:
@@ -499,6 +627,7 @@ volumes:
   caddy-config:
   app-data: null
   fluvio-data: null
+  fluvio-bridge-data: null
   kafka-data: null
   lakehouse-data: null
   permify-data: null
@@ -508,3 +637,5 @@ volumes:
   temporal-data: null
   tigerbeetle-data: null
   etcd-data: null
+  openappsec-shared-storage: null
+  openappsec-db-data: null

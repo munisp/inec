@@ -41,11 +41,11 @@ const (
 
 type GOTVCircuitBreaker struct {
 	name         string
-	state        int32  // atomic CircuitState
-	failures     int32  // atomic failure count
-	successes    int32  // atomic success count in half-open
-	threshold    int32  // failures before opening
-	halfOpenMax  int32  // successes needed to close
+	state        int32 // atomic CircuitState
+	failures     int32 // atomic failure count
+	successes    int32 // atomic success count in half-open
+	threshold    int32 // failures before opening
+	halfOpenMax  int32 // successes needed to close
 	resetTimeout time.Duration
 	lastFailure  time.Time
 	mu           sync.RWMutex
@@ -126,10 +126,10 @@ func (cb *GOTVCircuitBreaker) State() string {
 
 func (cb *GOTVCircuitBreaker) Stats() map[string]interface{} {
 	return map[string]interface{}{
-		"name":       cb.name,
-		"state":      cb.State(),
-		"failures":   atomic.LoadInt32(&cb.failures),
-		"threshold":  cb.threshold,
+		"name":          cb.name,
+		"state":         cb.State(),
+		"failures":      atomic.LoadInt32(&cb.failures),
+		"threshold":     cb.threshold,
 		"reset_timeout": cb.resetTimeout.String(),
 	}
 }
@@ -146,18 +146,18 @@ type ResilientClient struct {
 
 var (
 	// Circuit breakers for each downstream service
-	cbRustEngine     *GOTVCircuitBreaker
+	cbRustEngine      *GOTVCircuitBreaker
 	cbPythonAnalytics *GOTVCircuitBreaker
-	cbKeycloak       *GOTVCircuitBreaker
-	cbPermify        *GOTVCircuitBreaker
-	cbOpenSearch     *GOTVCircuitBreaker
-	cbTemporal       *GOTVCircuitBreaker
-	cbMojaloop       *GOTVCircuitBreaker
-	cbFluvio         *GOTVCircuitBreaker
-	cbOpenAppSec     *GOTVCircuitBreaker
-	cbAPISIX         *GOTVCircuitBreaker
-	cbLakehouse      *GOTVCircuitBreaker
-	cbTigerBeetleMW  *GOTVCircuitBreaker
+	cbKeycloak        *GOTVCircuitBreaker
+	cbPermify         *GOTVCircuitBreaker
+	cbOpenSearch      *GOTVCircuitBreaker
+	cbTemporal        *GOTVCircuitBreaker
+	cbMojaloop        *GOTVCircuitBreaker
+	cbFluvio          *GOTVCircuitBreaker
+	cbOpenAppSec      *GOTVCircuitBreaker
+	cbAPISIX          *GOTVCircuitBreaker
+	cbLakehouse       *GOTVCircuitBreaker
+	cbTigerBeetleMW   *GOTVCircuitBreaker
 )
 
 func initCircuitBreakers() {
@@ -236,8 +236,8 @@ func startGRPCServer(port int) {
 	}
 
 	grpcServer = grpc.NewServer(
-		grpc.MaxRecvMsgSize(10 << 20), // 10MB
-		grpc.MaxSendMsgSize(10 << 20),
+		grpc.MaxRecvMsgSize(10<<20), // 10MB
+		grpc.MaxSendMsgSize(10<<20),
 	)
 
 	// Register health service for k8s probes
@@ -443,14 +443,14 @@ func handleCircuitBreakerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Middleware Integration Audit Endpoint — shows real vs stub status
+// Middleware Integration Audit Endpoint — reports configured real integrations or explicit disabled state
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 	type IntegrationStatus struct {
 		Name        string `json:"name"`
 		Connected   bool   `json:"connected"`
-		Mode        string `json:"mode"` // "production", "dev-fallback", "disabled"
+		Mode        string `json:"mode"` // "production" or "disabled"
 		Features    int    `json:"features_using"`
 		HasRetry    bool   `json:"has_retry"`
 		HasCB       bool   `json:"has_circuit_breaker"`
@@ -468,7 +468,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if redisClient != nil {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 12, HasRetry: false, HasCB: false, HasGraceful: true,
 		},
@@ -478,7 +478,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if kafkaClient != nil {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 8, HasRetry: true, HasCB: false, HasGraceful: true,
 		},
@@ -498,7 +498,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if tigerbeetleURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 2, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -508,7 +508,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if keycloakURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 3, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -518,7 +518,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if permifyURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 4, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -528,7 +528,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if opensearchURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 5, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -538,7 +538,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if daprPort != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 4, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -548,7 +548,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if temporalURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 3, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -568,7 +568,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if fluvioURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 2, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -578,7 +578,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if openappsecURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 1, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -588,7 +588,7 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 				if apisixAdminURL != "" {
 					return "production"
 				}
-				return "dev-fallback"
+				return "disabled"
 			}(),
 			Features: 3, HasRetry: false, HasCB: true, HasGraceful: false,
 		},
@@ -607,11 +607,11 @@ func handleIntegrationAudit(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"integrations":     integrations,
-		"total":            len(integrations),
-		"connected":        connected,
-		"production_mode":  production,
-		"dev_fallback":     len(integrations) - production,
+		"integrations":    integrations,
+		"total":           len(integrations),
+		"connected":       connected,
+		"production_mode": production,
+		"disabled":        len(integrations) - production,
 	})
 }
 

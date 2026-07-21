@@ -22,7 +22,6 @@ import (
 var (
 	fabricNetwork   *HyperledgerFabricNetwork
 	ipfsStore       *IPFSContentStore
-	persistentTB    *PersistentTigerBeetle
 	chaincodeEngine *ChaincodeExecutionEngine
 	merkleBuilder   *MerkleTreeBuilder
 )
@@ -146,186 +145,11 @@ func initBlockchainProduction(database *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_tb_transfers_credit ON tb_transfers(credit_account_id);
 	`)
 
-	persistentTB = NewPersistentTigerBeetle(database)
-	fabricNetwork = NewHyperledgerFabricNetwork(database)
-	ipfsStore = NewIPFSContentStore(database)
-	chaincodeEngine = NewChaincodeExecutionEngine(database, fabricNetwork)
+	// The local Merkle builder is deterministic and database-backed. External
+	// Fabric/IPFS clients are intentionally not instantiated until real gateway
+	// configuration is supplied; the previous PostgreSQL simulations are disabled.
 	merkleBuilder = NewMerkleTreeBuilder(database)
 
-	seedBlockchainProduction(database)
-}
-
-type PersistentTigerBeetle struct {
-	db *sql.DB
-	mu sync.Mutex
-}
-
-func NewPersistentTigerBeetle(database *sql.DB) *PersistentTigerBeetle {
-	ptb := &PersistentTigerBeetle{db: database}
-	ptb.ensureAccounts()
-	return ptb
-}
-
-func (p *PersistentTigerBeetle) ensureAccounts() {
-	accounts := []struct {
-		id           string
-		ledger, code int
-	}{
-		{"inec-operational", 1, 1},
-		{"inec-official", 2, 1},
-		{"inec-escrow", 3, 1},
-		{"inec-disputed", 4, 1},
-	}
-	for _, a := range accounts {
-		dbExecLog("tb_account", `INSERT OR IGNORE INTO tb_accounts (id, ledger, code) VALUES (?,?,?)`, a.id, a.ledger, a.code)
-	}
-}
-
-func (p *PersistentTigerBeetle) CreateTransfer(debitAcct, creditAcct string, amount int64, ledger, code int, userData string) (string, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	h := sha256.Sum256([]byte(fmt.Sprintf("%d-%s-%s-%d", time.Now().UnixNano(), debitAcct, creditAcct, amount)))
-	txID := "TB-" + hex.EncodeToString(h[:8])
-	_, err := p.db.Exec(`INSERT INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)`,
-		txID, debitAcct, creditAcct, amount, ledger, code, "PENDING", userData)
-	if err != nil {
-		return "", err
-	}
-	if _, err2 := p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct); err2 != nil {
-		return txID, fmt.Errorf("debit account update failed: %w", err2)
-	}
-	if _, err2 := p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct); err2 != nil {
-		return txID, fmt.Errorf("credit account update failed: %w", err2)
-	}
-	return txID, nil
-}
-
-func (p *PersistentTigerBeetle) PostTransfer(txID string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var debitAcct, creditAcct string
-	var amount int64
-	var status string
-	err := p.db.QueryRow(`SELECT debit_account_id, credit_account_id, amount, status FROM tb_transfers WHERE id=?`, txID).Scan(&debitAcct, &creditAcct, &amount, &status)
-	if err != nil {
-		return fmt.Errorf("transfer not found: %s", txID)
-	}
-	if status != "PENDING" {
-		return fmt.Errorf("transfer not pending: %s", status)
-	}
-	if _, err = p.db.Exec(`UPDATE tb_transfers SET status='POSTED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID); err != nil {
-		return fmt.Errorf("post transfer failed: %w", err)
-	}
-	if _, err = p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending - ?, debits_posted = debits_posted + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, amount, debitAcct); err != nil {
-		return fmt.Errorf("debit post failed: %w", err)
-	}
-	if _, err = p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending - ?, credits_posted = credits_posted + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, amount, creditAcct); err != nil {
-		return fmt.Errorf("credit post failed: %w", err)
-	}
-	return nil
-}
-
-func (p *PersistentTigerBeetle) VoidTransfer(txID string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var debitAcct, creditAcct string
-	var amount int64
-	var status string
-	err := p.db.QueryRow(`SELECT debit_account_id, credit_account_id, amount, status FROM tb_transfers WHERE id=?`, txID).Scan(&debitAcct, &creditAcct, &amount, &status)
-	if err != nil {
-		return fmt.Errorf("transfer not found: %s", txID)
-	}
-	if status == "PENDING" {
-		if _, err = p.db.Exec(`UPDATE tb_accounts SET debits_pending = debits_pending - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct); err != nil {
-			return fmt.Errorf("void debit failed: %w", err)
-		}
-		if _, err = p.db.Exec(`UPDATE tb_accounts SET credits_pending = credits_pending - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct); err != nil {
-			return fmt.Errorf("void credit failed: %w", err)
-		}
-	}
-	if _, err = p.db.Exec(`UPDATE tb_transfers SET status='VOIDED', posted_at=CURRENT_TIMESTAMP WHERE id=?`, txID); err != nil {
-		return fmt.Errorf("void transfer update failed: %w", err)
-	}
-	return nil
-}
-
-func (p *PersistentTigerBeetle) GetAccount(accountID string) (M, error) {
-	var id string
-	var ledger, code int
-	var cp, dp, cpen, dpen int64
-	var created, updated string
-	err := p.db.QueryRow(`SELECT id, ledger, code, credits_posted, debits_posted, credits_pending, debits_pending, created_at, updated_at FROM tb_accounts WHERE id=?`, accountID).Scan(
-		&id, &ledger, &code, &cp, &dp, &cpen, &dpen, &created, &updated)
-	if err != nil {
-		return nil, fmt.Errorf("account not found: %s", accountID)
-	}
-	return M{
-		"id": id, "ledger": ledger, "code": code,
-		"credits_posted": cp, "debits_posted": dp,
-		"credits_pending": cpen, "debits_pending": dpen,
-		"balance": cp - dp, "pending_balance": cpen - dpen,
-		"created_at": created, "updated_at": updated,
-	}, nil
-}
-
-func (p *PersistentTigerBeetle) GetTransfers(accountID string, limit int) ([]M, error) {
-	rows, err := p.db.Query(`SELECT id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data, created_at, COALESCE(posted_at,'') FROM tb_transfers WHERE debit_account_id=? OR credit_account_id=? ORDER BY created_at DESC LIMIT ?`,
-		accountID, accountID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var transfers []M
-	for rows.Next() {
-		var id, debit, credit, status, userData, created, posted string
-		var amount int64
-		var ledger, code int
-		rows.Scan(&id, &debit, &credit, &amount, &ledger, &code, &status, &userData, &created, &posted)
-		transfers = append(transfers, M{
-			"id": id, "debit_account_id": debit, "credit_account_id": credit,
-			"amount": amount, "ledger": ledger, "code": code, "status": status,
-			"user_data": userData, "created_at": created, "posted_at": posted,
-		})
-	}
-	return transfers, nil
-}
-
-func (p *PersistentTigerBeetle) GetStats() M {
-	var totalAccounts, totalTransfers int
-	var posted, pending, voided int
-	var totalAmount int64
-	p.db.QueryRow(`SELECT COUNT(*) FROM tb_accounts`).Scan(&totalAccounts)
-	p.db.QueryRow(`SELECT COUNT(*) FROM tb_transfers`).Scan(&totalTransfers)
-	p.db.QueryRow(`SELECT COUNT(*) FROM tb_transfers WHERE status='POSTED'`).Scan(&posted)
-	p.db.QueryRow(`SELECT COUNT(*) FROM tb_transfers WHERE status='PENDING'`).Scan(&pending)
-	p.db.QueryRow(`SELECT COUNT(*) FROM tb_transfers WHERE status='VOIDED'`).Scan(&voided)
-	p.db.QueryRow(`SELECT COALESCE(SUM(amount),0) FROM tb_transfers WHERE status='POSTED'`).Scan(&totalAmount)
-
-	accounts := []M{}
-	rows, _ := p.db.Query(`SELECT id, ledger, credits_posted, debits_posted, credits_pending, debits_pending FROM tb_accounts`)
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id string
-			var ledger int
-			var cp, dp, cpen, dpen int64
-			rows.Scan(&id, &ledger, &cp, &dp, &cpen, &dpen)
-			accounts = append(accounts, M{
-				"id": id, "ledger": ledger,
-				"credits_posted": cp, "debits_posted": dp,
-				"credits_pending": cpen, "debits_pending": dpen,
-				"balance": cp - dp,
-			})
-		}
-	}
-	return M{
-		"persistent": true, "storage": "postgresql",
-		"total_accounts": totalAccounts, "total_transfers": totalTransfers,
-		"posted": posted, "pending": pending, "voided": voided,
-		"total_posted_amount": totalAmount,
-		"accounts":            accounts,
-		"double_entry":        true, "acid_compliant": true,
-	}
 }
 
 type FabricPeer struct {
@@ -1130,83 +954,143 @@ func handleIPFSObjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"objects": objects})
 }
 
+func handleExternalBlockchainUnavailable(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusServiceUnavailable, "External Hyperledger Fabric/IPFS integration is not configured; simulated backends are disabled")
+}
+
+func nativeTigerBeetleClient(w http.ResponseWriter) TigerBeetleClient {
+	if mwHub == nil || mwHub.TigerBeetle == nil {
+		writeError(w, http.StatusServiceUnavailable, "native TigerBeetle client is unavailable")
+		return nil
+	}
+	return mwHub.TigerBeetle
+}
+
 func handlePersistentTBStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, persistentTB.GetStats())
+	client := nativeTigerBeetleClient(w)
+	if client == nil {
+		return
+	}
+	ids := strings.Split(strings.TrimSpace(r.URL.Query().Get("account_ids")), ",")
+	if len(ids) == 0 || strings.TrimSpace(ids[0]) == "" {
+		writeError(w, http.StatusBadRequest, "account_ids is required for native TigerBeetle statistics")
+		return
+	}
+	accounts := make([]*TBAccount, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		account, err := client.GetAccount(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		accounts = append(accounts, account)
+	}
+	writeJSON(w, http.StatusOK, M{"mode": "native_tigerbeetle", "accounts": accounts, "account_count": len(accounts)})
 }
 
 func handlePersistentTBAccounts(w http.ResponseWriter, r *http.Request) {
-	rows, _ := persistentTB.db.Query(`SELECT id, ledger, code, credits_posted, debits_posted, credits_pending, debits_pending, created_at, updated_at FROM tb_accounts`)
-	if rows == nil {
-		writeJSON(w, 200, M{"accounts": []M{}})
+	client := nativeTigerBeetleClient(w)
+	if client == nil {
 		return
 	}
-	defer rows.Close()
-	accounts := []M{}
-	for rows.Next() {
-		var id, created, updated string
-		var ledger, code int
-		var cp, dp, cpen, dpen int64
-		rows.Scan(&id, &ledger, &code, &cp, &dp, &cpen, &dpen, &created, &updated)
-		accounts = append(accounts, M{
-			"id": id, "ledger": ledger, "code": code,
-			"credits_posted": cp, "debits_posted": dp,
-			"credits_pending": cpen, "debits_pending": dpen,
-			"balance": cp - dp, "created_at": created, "updated_at": updated,
-		})
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		writeError(w, http.StatusBadRequest, "account_id is required; TigerBeetle does not support unrestricted account enumeration")
+		return
 	}
-	writeJSON(w, 200, M{"accounts": accounts, "persistent": true})
+	account, err := client.GetAccount(r.Context(), accountID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, M{"mode": "native_tigerbeetle", "account": account})
 }
 
 func handlePersistentTBTransfers(w http.ResponseWriter, r *http.Request) {
-	accountID := queryParam(r, "account_id", "inec-operational")
-	limit := queryParamInt(r, "limit", 50)
-	transfers, err := persistentTB.GetTransfers(accountID, limit)
-	if err != nil {
-		writeError(w, 500, err.Error())
+	client := nativeTigerBeetleClient(w)
+	if client == nil {
 		return
 	}
-	writeJSON(w, 200, M{"transfers": transfers, "account_id": accountID, "persistent": true})
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		writeError(w, http.StatusBadRequest, "account_id is required")
+		return
+	}
+	limit := queryParamInt(r, "limit", 50)
+	transfers, err := client.LookupTransfers(r.Context(), accountID, limit)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, M{"mode": "native_tigerbeetle", "transfers": transfers, "account_id": accountID})
 }
 
 func handlePersistentTBCreateTransfer(w http.ResponseWriter, r *http.Request) {
+	client := nativeTigerBeetleClient(w)
+	if client == nil {
+		return
+	}
 	var req struct {
-		DebitAccount  string `json:"debit_account"`
-		CreditAccount string `json:"credit_account"`
-		Amount        int64  `json:"amount"`
-		UserData      string `json:"user_data"`
+		ID             string `json:"id"`
+		DebitAccount   string `json:"debit_account"`
+		CreditAccount  string `json:"credit_account"`
+		Amount         int64  `json:"amount"`
+		Ledger         int    `json:"ledger"`
+		Code           int    `json:"code"`
+		UserData       string `json:"user_data"`
+		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.DebitAccount == "" {
-		req.DebitAccount = "inec-operational"
+	if strings.TrimSpace(req.DebitAccount) == "" || strings.TrimSpace(req.CreditAccount) == "" || req.Amount <= 0 {
+		writeError(w, http.StatusBadRequest, "debit_account, credit_account, and a positive amount are required")
+		return
 	}
-	if req.CreditAccount == "" {
-		req.CreditAccount = "inec-official"
+	if req.Ledger <= 0 {
+		req.Ledger = 1
 	}
-	txID, err := persistentTB.CreateTransfer(req.DebitAccount, req.CreditAccount, req.Amount, 1, 1, req.UserData)
+	if req.Code <= 0 {
+		req.Code = 1
+	}
+	transfer, err := client.CreateTransfer(r.Context(), TBTransfer{
+		ID: req.ID, DebitAccountID: req.DebitAccount, CreditAccountID: req.CreditAccount,
+		Amount: req.Amount, Ledger: req.Ledger, Code: req.Code, Status: "PENDING",
+		UserData: req.UserData, IdempotencyKey: req.IdempotencyKey,
+	})
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, 200, M{"transfer_id": txID, "status": "PENDING", "persistent": true})
+	writeJSON(w, http.StatusCreated, M{"mode": "native_tigerbeetle", "transfer": transfer})
 }
 
 func handlePersistentTBPostTransfer(w http.ResponseWriter, r *http.Request) {
+	client := nativeTigerBeetleClient(w)
+	if client == nil {
+		return
+	}
 	var req struct {
 		TransferID string `json:"transfer_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	err := persistentTB.PostTransfer(req.TransferID)
-	if err != nil {
-		writeError(w, 400, err.Error())
+	if strings.TrimSpace(req.TransferID) == "" {
+		writeError(w, http.StatusBadRequest, "transfer_id is required")
 		return
 	}
-	writeJSON(w, 200, M{"transfer_id": req.TransferID, "status": "POSTED"})
+	if err := client.PostTransfer(r.Context(), req.TransferID); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, M{"mode": "native_tigerbeetle", "transfer_id": req.TransferID, "status": "POSTED"})
 }
 
 func handleMerkleTreeBuild(w http.ResponseWriter, r *http.Request) {
@@ -1253,7 +1137,16 @@ func handleMerkleTreeList(w http.ResponseWriter, r *http.Request) {
 func handleBlockchainProductionStats(w http.ResponseWriter, r *http.Request) {
 	fabric := fabricNetwork.GetNetworkStats()
 	ipfs := ipfsStore.GetStats()
-	tb := persistentTB.GetStats()
+	tb := M{"mode": "native_tigerbeetle_go"}
+	if mwHub != nil && mwHub.TigerBeetle != nil {
+		status := mwHub.TigerBeetle.Status()
+		tb["connected"] = status.Connected
+		tb["latency"] = status.Latency
+		tb["details"] = status.Details
+	} else {
+		tb["connected"] = false
+		tb["details"] = "native TigerBeetle client is unavailable"
+	}
 	chain := fabricNetwork.VerifyChain(100)
 
 	var merkleCount int
@@ -1268,7 +1161,7 @@ func handleBlockchainProductionStats(w http.ResponseWriter, r *http.Request) {
 		"production_grade": true,
 		"components": M{
 			"hyperledger_fabric": "persistent (PostgreSQL-backed Fabric simulation with ECDSA signatures, endorsement, ordering)",
-			"tigerbeetle_ledger": "persistent (PostgreSQL WAL, ACID double-entry accounting)",
+			"tigerbeetle_ledger": "native TigerBeetle binary-protocol client",
 			"ipfs_content_store": "persistent (content-addressed SHA256, CIDv1-compatible)",
 			"smart_contracts":    "executable (chaincode with real validation logic)",
 			"merkle_trees":       "real (SHA256 binary Merkle tree construction and verification)",

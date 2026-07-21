@@ -5,8 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -25,6 +26,9 @@ type DaprValidationResult struct {
 	ExtraFields   []string `json:"extra_fields,omitempty"`
 }
 
+// DaprClient is implemented exclusively by the Dapr sidecar HTTP client. State,
+// pub/sub, and service invocation must retain Dapr's component semantics and
+// cannot silently be emulated through PostgreSQL or in-process handlers.
 type DaprClient interface {
 	PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error
 	InvokeService(ctx context.Context, appID, method string, data interface{}) ([]byte, error)
@@ -41,85 +45,88 @@ type daprHTTPClient struct {
 	client  *ResilientHTTPClient
 }
 
-func (d *daprHTTPClient) PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error {
-	body, _ := json.Marshal(data)
-	url := fmt.Sprintf("%s/v1.0/publish/%s/%s", d.baseURL, pubsub, topic)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+func (d *daprHTTPClient) do(ctx context.Context, method, url string, payload []byte) ([]byte, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("create Dapr request: %w", err)
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	return nil
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read Dapr response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("Dapr %s %s returned %d: %s", method, url, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
+}
+
+func (d *daprHTTPClient) PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal Dapr event: %w", err)
+	}
+	_, err = d.do(ctx, http.MethodPost, fmt.Sprintf("%s/v1.0/publish/%s/%s", d.baseURL, pubsub, topic), body)
+	return err
 }
 
 func (d *daprHTTPClient) InvokeService(ctx context.Context, appID, method string, data interface{}) ([]byte, error) {
-	body, _ := json.Marshal(data)
-	url := fmt.Sprintf("%s/v1.0/invoke/%s/method/%s", d.baseURL, appID, method)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := d.client.Do(req)
+	body, err := json.Marshal(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshal Dapr invocation: %w", err)
 	}
-	defer resp.Body.Close()
-	var buf bytes.Buffer
-	buf.ReadFrom(resp.Body)
-	return buf.Bytes(), nil
+	return d.do(ctx, http.MethodPost, fmt.Sprintf("%s/v1.0/invoke/%s/method/%s", d.baseURL, appID, method), body)
 }
 
 func (d *daprHTTPClient) GetState(ctx context.Context, store, key string) ([]byte, error) {
-	url := fmt.Sprintf("%s/v1.0/state/%s/%s", d.baseURL, store, key)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var buf bytes.Buffer
-	buf.ReadFrom(resp.Body)
-	return buf.Bytes(), nil
+	return d.do(ctx, http.MethodGet, fmt.Sprintf("%s/v1.0/state/%s/%s", d.baseURL, store, key), nil)
 }
 
 func (d *daprHTTPClient) SaveState(ctx context.Context, store, key string, value interface{}) error {
-	body, _ := json.Marshal([]map[string]interface{}{{"key": key, "value": value}})
-	url := fmt.Sprintf("%s/v1.0/state/%s", d.baseURL, store)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := d.client.Do(req)
+	body, err := json.Marshal([]map[string]interface{}{{"key": key, "value": value}})
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal Dapr state: %w", err)
 	}
-	defer resp.Body.Close()
-	return nil
+	_, err = d.do(ctx, http.MethodPost, fmt.Sprintf("%s/v1.0/state/%s", d.baseURL, store), body)
+	return err
 }
 
 func (d *daprHTTPClient) DeleteState(ctx context.Context, store, key string) error {
-	url := fmt.Sprintf("%s/v1.0/state/%s/%s", d.baseURL, store, key)
-	req, _ := http.NewRequestWithContext(ctx, "DELETE", url, nil)
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return nil
+	_, err := d.do(ctx, http.MethodDelete, fmt.Sprintf("%s/v1.0/state/%s/%s", d.baseURL, store, key), nil)
+	return err
 }
 
 func (d *daprHTTPClient) Status() MWStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", d.baseURL+"/v1.0/healthz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/v1.0/healthz", nil)
+	if err != nil {
+		return MWStatus{Name: "Dapr", Connected: false, Mode: "sidecar", Details: err.Error()}
+	}
 	lat, err := measureLatency(func() error {
 		resp, e := d.client.Client.Do(req)
 		if e != nil {
 			return e
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
+			return fmt.Errorf("health endpoint returned %d", resp.StatusCode)
+		}
 		return nil
 	})
 	if err != nil {
-		return MWStatus{Name: "Dapr", Connected: false, Mode: "external (unreachable)", Details: err.Error()}
+		return MWStatus{Name: "Dapr", Connected: false, Mode: "sidecar", Details: err.Error()}
 	}
 	return MWStatus{Name: "Dapr", Connected: true, Mode: "sidecar", Latency: fmtLatency(lat)}
 }
@@ -134,100 +141,6 @@ func (d *daprHTTPClient) InvokeServiceValidated(ctx context.Context, appID, meth
 }
 
 func (d *daprHTTPClient) Close() error { return nil }
-
-// --- PostgreSQL-backed Dapr fallback (persistent) ---
-
-type pgDapr struct {
-	mu   sync.RWMutex
-	subs map[string][]func(interface{})
-}
-
-func newPGDapr() *pgDapr {
-	db.Exec(`CREATE TABLE IF NOT EXISTS dapr_state (
-		store_name TEXT NOT NULL,
-		key TEXT NOT NULL,
-		value JSONB NOT NULL DEFAULT '{}',
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (store_name, key)
-	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS dapr_events (
-		id BIGSERIAL PRIMARY KEY,
-		pubsub TEXT NOT NULL,
-		topic TEXT NOT NULL,
-		data JSONB NOT NULL DEFAULT '{}',
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-	)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_dapr_events_topic ON dapr_events(pubsub, topic, created_at DESC)`)
-	log.Info().Msg("Dapr fallback: PostgreSQL-backed state/pubsub initialized")
-	return &pgDapr{subs: make(map[string][]func(interface{}))}
-}
-
-func (d *pgDapr) PublishEvent(_ context.Context, pubsub, topic string, data interface{}) error {
-	dataJSON, _ := json.Marshal(data)
-	_, err := db.Exec(`INSERT INTO dapr_events (pubsub, topic, data) VALUES ($1, $2, $3)`,
-		pubsub, topic, string(dataJSON))
-	if err != nil {
-		return fmt.Errorf("pg dapr publish: %w", err)
-	}
-	d.mu.RLock()
-	key := pubsub + "/" + topic
-	handlers := d.subs[key]
-	d.mu.RUnlock()
-	for _, h := range handlers {
-		go h(data)
-	}
-	return nil
-}
-
-func (d *pgDapr) InvokeService(_ context.Context, appID, method string, data interface{}) ([]byte, error) {
-	result, _ := json.Marshal(map[string]interface{}{
-		"status": "ok", "app_id": appID, "method": method,
-		"message": "handled by pg-backed Dapr",
-	})
-	return result, nil
-}
-
-func (d *pgDapr) GetState(_ context.Context, store, key string) ([]byte, error) {
-	var value string
-	err := db.QueryRow(`SELECT value FROM dapr_state WHERE store_name=$1 AND key=$2`, store, key).Scan(&value)
-	if err != nil {
-		return nil, fmt.Errorf("key not found")
-	}
-	return []byte(value), nil
-}
-
-func (d *pgDapr) SaveState(_ context.Context, store, key string, value interface{}) error {
-	data, _ := json.Marshal(value)
-	_, err := db.Exec(`INSERT INTO dapr_state (store_name, key, value, updated_at) VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (store_name, key) DO UPDATE SET value=$3, updated_at=NOW()`,
-		store, key, string(data))
-	return err
-}
-
-func (d *pgDapr) DeleteState(_ context.Context, store, key string) error {
-	_, err := db.Exec(`DELETE FROM dapr_state WHERE store_name=$1 AND key=$2`, store, key)
-	return err
-}
-
-
-func (d *pgDapr) InvokeServiceValidated(ctx context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
-	body, err := d.InvokeService(ctx, appID, method, data)
-	if err != nil {
-		return nil, nil, err
-	}
-	return body, &DaprValidationResult{Valid: true}, nil
-}
-func (d *pgDapr) Status() MWStatus {
-	var storeCount, keyCount int
-	db.QueryRow(`SELECT COUNT(DISTINCT store_name), COUNT(*) FROM dapr_state`).Scan(&storeCount, &keyCount)
-	return MWStatus{
-		Name: "Dapr", Connected: true, Mode: "pg-backed",
-		Latency: "< 1ms",
-		Details: fmt.Sprintf("PostgreSQL-persisted state/pubsub, %d stores, %d keys", storeCount, keyCount),
-	}
-}
-
-func (d *pgDapr) Close() error { return nil }
 
 // validateDaprResponse checks a JSON response against the given schema.
 func validateDaprResponse(raw []byte, schema DaprResponseSchema) *DaprValidationResult {
@@ -244,12 +157,12 @@ func validateDaprResponse(raw []byte, schema DaprResponseSchema) *DaprValidation
 	}
 	if !schema.AllowExtra {
 		requiredSet := make(map[string]bool, len(schema.RequiredFields))
-		for _, f := range schema.RequiredFields {
-			requiredSet[f] = true
+		for _, field := range schema.RequiredFields {
+			requiredSet[field] = true
 		}
-		for k := range parsed {
-			if !requiredSet[k] {
-				result.ExtraFields = append(result.ExtraFields, k)
+		for key := range parsed {
+			if !requiredSet[key] {
+				result.ExtraFields = append(result.ExtraFields, key)
 			}
 		}
 	}
@@ -257,25 +170,26 @@ func validateDaprResponse(raw []byte, schema DaprResponseSchema) *DaprValidation
 }
 
 func initDaprClient() DaprClient {
-	daprURL := envOrDefault("DAPR_HTTP_URL", "")
+	daprURL := strings.TrimRight(strings.TrimSpace(envOrDefault("DAPR_HTTP_URL", "")), "/")
 	if daprURL == "" {
-		daprPort := envOrDefault("DAPR_HTTP_PORT", "")
+		daprPort := strings.TrimSpace(envOrDefault("DAPR_HTTP_PORT", ""))
 		if daprPort != "" {
 			daprURL = "http://localhost:" + daprPort
 		}
 	}
-	if daprURL != "" {
-		client := &daprHTTPClient{
-			baseURL: daprURL,
-			client:  NewResilientHTTPClient("dapr"),
-		}
-		s := client.Status()
-		if s.Connected {
-			log.Info().Str("url", daprURL).Msg("Dapr connected")
-			return client
-		}
-		log.Warn().Msg("Dapr sidecar unreachable, falling back to embedded")
+	if daprURL == "" {
+		log.Fatal().Msg("Dapr is required: set DAPR_HTTP_URL or DAPR_HTTP_PORT and run the Dapr sidecar")
 	}
-	log.Info().Msg("Dapr using PostgreSQL-backed state/pubsub (persistent)")
-	return newPGDapr()
+
+	client := &daprHTTPClient{baseURL: daprURL, client: NewResilientHTTPClient("dapr")}
+	status := client.Status()
+	if !status.Connected {
+		// Compose launches a same-network Dapr sidecar after the application
+		// process exists. Keep the native client only; readiness and all Dapr
+		// operations remain unavailable until the real sidecar becomes healthy.
+		log.Warn().Str("url", daprURL).Str("details", status.Details).Msg("Dapr sidecar is not ready yet; no fallback is available")
+		return client
+	}
+	log.Info().Str("url", daprURL).Msg("Dapr sidecar connected")
+	return client
 }

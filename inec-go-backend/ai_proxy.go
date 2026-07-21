@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -265,8 +268,7 @@ func initAIProxy() {
 
 var aiProxyClient = NewResilientHTTPClient("ai-proxy")
 
-// callMLInference sends a request to the ML inference service (Python or Rust).
-// Falls back to rule-based analysis if the service is unavailable.
+// callMLInference sends a request to the configured trained ML inference service (Python or Rust).
 func callMLInference(ctx context.Context, service, path string, payload interface{}) (M, error) {
 	baseURL := aiServiceURL
 	if service == "rust" {
@@ -300,6 +302,9 @@ func callMLInference(ctx context.Context, service, path string, payload interfac
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB max response
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("ML service returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var result M
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
@@ -308,8 +313,7 @@ func callMLInference(ctx context.Context, service, path string, payload interfac
 }
 
 // handleAIAnomalies — real XGBoost model inference for anomaly detection.
-// Sends actual polling unit data to the ML service for scoring.
-// Falls back to rule-based detection if the ML service is unavailable.
+// Sends actual polling unit data to the trained CPU inference service for scoring.
 func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 	electionID := queryParamInt(r, "election_id", 1)
 
@@ -340,7 +344,9 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 
 	// Try ML inference service (XGBoost model)
 	anomalies := []M{}
-	mlAvailable := false
+	// A no-record election has a valid empty result; otherwise the trained model
+	// must return a successful batch response before this endpoint can respond.
+	mlAvailable := len(records) == 0
 
 	if len(records) > 0 {
 		// Fetch actual party-level vote counts from result_votes table.
@@ -463,32 +469,9 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fallback: rule-based anomaly detection
 	if !mlAvailable {
-		for _, rec := range records {
-			anomType, score := ruleBasedAnomalyScore(rec)
-			if score > 0.5 {
-				severity := "low"
-				if score > 0.9 {
-					severity = "critical"
-				} else if score > 0.8 {
-					severity = "high"
-				} else if score > 0.6 {
-					severity = "medium"
-				}
-				anomalies = append(anomalies, M{
-					"polling_unit_code": rec.code,
-					"pu_name":           rec.name,
-					"anomaly_type":      anomType,
-					"severity":          severity,
-					"score":             score,
-					"total_votes":       rec.valid + rec.rejected,
-					"registered_voters": rec.registered,
-					"model":             "rule-based-fallback",
-					"description":       fmt.Sprintf("Rule-based detection: %s (score: %.3f)", anomType, score),
-				})
-			}
-		}
+		writeError(w, http.StatusServiceUnavailable, "trained anomaly inference is unavailable")
+		return
 	}
 
 	summary := M{"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -504,7 +487,7 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 		"anomalies":       anomalies,
 		"total_analyzed":  len(records),
 		"total_anomalies": len(anomalies),
-		"model_used":      map[bool]string{true: "xgboost-v1.0", false: "rule-based-fallback"}[mlAvailable],
+		"model_used":      "xgboost-onnx-v1.0",
 		"summary":         summary,
 	})
 }
@@ -832,96 +815,11 @@ func statusFromErr(err error) string {
 	return "unavailable"
 }
 
+// handleAIFallbackAnomalies is retained only as a backward-compatible route.
+// It delegates to the trained CPU model endpoint and never manufactures
+// rule-based anomaly scores.
 func handleAIFallbackAnomalies(w http.ResponseWriter, r *http.Request) {
-	electionID := queryParamInt(r, "election_id", 1)
-
-	rows, err := db.Query(`SELECT r.polling_unit_code, pu.name, pu.registered_voters,
-		COALESCE(SUM(rv.votes),0) as total_votes, r.rejected_votes
-		FROM results r
-		JOIN polling_units pu ON r.polling_unit_code=pu.code
-		LEFT JOIN result_votes rv ON rv.result_id=r.id
-		WHERE r.election_id=?
-		GROUP BY r.id`, electionID)
-	if err != nil {
-		writeJSON(w, 200, M{"anomalies": []M{}, "summary": M{"total_analyzed": 0}, "fallback": true})
-		return
-	}
-	defer rows.Close()
-
-	type puData struct {
-		code, name                  string
-		registered, votes, rejected int
-		turnout                     float64
-	}
-	var data []puData
-	for rows.Next() {
-		var d puData
-		rows.Scan(&d.code, &d.name, &d.registered, &d.votes, &d.rejected)
-		if d.registered > 0 {
-			d.turnout = float64(d.votes+d.rejected) / float64(d.registered) * 100
-		}
-		data = append(data, d)
-	}
-
-	// Compute mean and std for z-score outlier detection
-	var sumTurnout, sumSq float64
-	for _, d := range data {
-		sumTurnout += d.turnout
-		sumSq += d.turnout * d.turnout
-	}
-	n := float64(len(data))
-	mean := sumTurnout / math.Max(n, 1)
-	stdDev := math.Sqrt(sumSq/math.Max(n, 1) - mean*mean)
-	if stdDev < 1 {
-		stdDev = 1
-	}
-
-	anomalies := []M{}
-	for _, d := range data {
-		anomType := ""
-		score := 0.0
-
-		// Overvoting
-		if d.registered > 0 && d.votes > d.registered {
-			anomType = "overvoting"
-			score = platformCfg.AnomalyHighScore
-		}
-
-		// Z-score outlier (>2 standard deviations from mean)
-		if anomType == "" && stdDev > 0 {
-			z := math.Abs(d.turnout-mean) / stdDev
-			if z > 3 {
-				anomType = "statistical_outlier"
-				score = math.Min(0.5+z*0.1, 1.0)
-			}
-		}
-
-		if anomType != "" {
-			severity := "low"
-			if score > 0.9 {
-				severity = "critical"
-			} else if score > 0.7 {
-				severity = "high"
-			} else if score > 0.5 {
-				severity = "medium"
-			}
-			anomalies = append(anomalies, M{
-				"polling_unit_code": d.code, "pu_name": d.name,
-				"anomaly_type": anomType, "severity": severity,
-				"score": score, "total_votes": d.votes,
-				"registered_voters": d.registered,
-				"model":             "rule-based-z-score",
-			})
-		}
-	}
-
-	writeJSON(w, 200, M{
-		"anomalies": anomalies, "total_analyzed": len(data),
-		"total_anomalies": len(anomalies), "fallback": true,
-		"mean_turnout": math.Round(mean*10) / 10,
-		"std_dev":      math.Round(stdDev*10) / 10,
-		"summary":      M{"critical": countBySeverity(anomalies, "critical"), "high": countBySeverity(anomalies, "high")},
-	})
+	handleAIAnomalies(w, r)
 }
 
 func countBySeverity(anomalies []M, sev string) int {
@@ -945,12 +843,12 @@ func handleAIProxy(w http.ResponseWriter, r *http.Request) {
 	url := aiServiceURL + path
 	proxyReq, err := http.NewRequestWithContext(r.Context(), "GET", url, nil)
 	if err != nil {
-		handleAIFallbackAnomalies(w, r)
+		writeError(w, http.StatusBadGateway, "analytics service request could not be created")
 		return
 	}
 	resp, err := aiProxyClient.Do(proxyReq)
 	if err != nil {
-		handleAIFallbackAnomalies(w, r)
+		writeError(w, http.StatusBadGateway, "analytics service is unavailable")
 		return
 	}
 	defer resp.Body.Close()
@@ -958,7 +856,7 @@ func handleAIProxy(w http.ResponseWriter, r *http.Request) {
 
 	var result M
 	if json.Unmarshal(body, &result) != nil {
-		handleAIFallbackAnomalies(w, r)
+		writeError(w, http.StatusBadGateway, "analytics service returned an invalid response")
 		return
 	}
 
@@ -1011,11 +909,8 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 
 	nodes, err := buildGNNNodes(recs, electionID)
 	if err != nil {
-		// If geographic enrichment fails, still produce results with minimal data
-		nodes = make([]GNNNode, len(recs))
-		for i, rec := range recs {
-			nodes[i] = GNNNode{Index: i, PUCode: rec.PUCode, VoteCount: rec.ValidVotes}
-		}
+		writeError(w, http.StatusUnprocessableEntity, "geographic feature enrichment failed: "+err.Error())
+		return
 	}
 
 	// Build real geographic adjacency matrix.
@@ -1072,37 +967,8 @@ func handleGNNScore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Go-native GNN fallback: neighborhood z-score anomaly detection ──
-	// Performs message-passing: each node aggregates neighbors' vote counts,
-	// then computes a z-score deviation from the neighborhood mean.
-	graphScores := computeGraphAnomalyScores(nodes, adj)
-
-	scored := []M{}
-	for i, score := range graphScores {
-		if score > 0.5 {
-			scored = append(scored, M{
-				"polling_unit_code": nodes[i].PUCode,
-				"anomaly_score":     math.Round(score*1000) / 1000,
-				"flagged":           true,
-				"neighbors":         countNeighbors(adj, i),
-				"ward":              nodes[i].Ward,
-				"method":            "graph_convolution_zscore",
-			})
-		}
-	}
-
-	persistAnomalyScores(electionID, scored)
-	writeJSON(w, 200, M{
-		"flagged_units": scored,
-		"total_nodes":   len(nodes),
-		"total_flagged": len(scored),
-		"model":         "graph-conv-zscore-fallback",
-		"n_anomalies":   len(scored),
-		"adjacency": M{
-			"type":        "geographic_administrative",
-			"distance_km": thresholdKm,
-		},
-	})
+	log.Error().Err(err).Int("election_id", electionID).Msg("trained GNN inference service unavailable")
+	writeError(w, http.StatusServiceUnavailable, "trained GNN inference service is unavailable; no heuristic fallback is enabled")
 }
 
 // nodesToFeatures converts GNNNode slice to feature matrices for the ML service.
@@ -1327,24 +1193,15 @@ func handleRayBatchPredict(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	resp, err := callMLInference(r.Context(), "python", "/ray/batch-predict", M{
+	resp, err := callMLInference(r.Context(), "rust", "/anomaly/batch", M{
 		"polling_units": puData,
-		"batch_size":    1000,
 	})
 	if err != nil {
-		// Fallback to direct inference
-		resp, err = callMLInference(r.Context(), "python", "/anomaly/batch", M{
-			"polling_units": puData,
-		})
-		if err != nil {
-			writeJSON(w, 200, M{"error": "ML service unavailable", "total": len(puData)})
-			return
-		}
-		if resp != nil {
-			resp["engine"] = "direct_fallback"
-		}
+		writeError(w, http.StatusServiceUnavailable, "trained CPU anomaly inference service unavailable: "+err.Error())
+		return
 	}
-	writeJSON(w, 200, resp)
+	resp["engine"] = "rust_cpu_onnx"
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleRayTrain(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,11 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-echo "Configuring PostgreSQL primary for streaming replication..."
+: "${POSTGRES_USER:?POSTGRES_USER must be set}"
+: "${POSTGRES_DB:?POSTGRES_DB must be set}"
+: "${REPLICATOR_PASSWORD:?REPLICATOR_PASSWORD must be set}"
+
+echo "Configuring PostgreSQL primary for streaming replication and Keycloak..."
 
 cat >> "$PGDATA/postgresql.conf" <<EOF
 
@@ -31,9 +35,15 @@ host replication replicator 0.0.0.0/0 md5
 host all all 0.0.0.0/0 md5
 EOF
 
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-    CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD '${REPLICATOR_PASSWORD:-changeme}';
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<EOSQL
+    CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD '${REPLICATOR_PASSWORD}';
     SELECT pg_create_physical_replication_slot('replica_slot_1');
 EOSQL
 
-echo "Primary configured for replication."
+for database in keycloak temporal temporal_visibility; do
+    if ! psql --username "$POSTGRES_USER" --dbname postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '${database}'" | grep -q 1; then
+        psql --username "$POSTGRES_USER" --dbname postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${database}\" OWNER \"${POSTGRES_USER}\";"
+    fi
+done
+
+echo "Primary configured for replication, Keycloak, and Temporal."

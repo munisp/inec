@@ -60,6 +60,10 @@ const NAV_ITEMS = [
   { label: 'TV Dashboard', icon: Tv, path: 'tv-dashboard' },
   { label: 'Compliance Report', icon: FileCheck, path: 'compliance-report' },
   { label: 'ML Dashboard', icon: Brain, path: 'ml-dashboard' },
+  { label: 'GOTV Portal', icon: Users, path: 'gotv-portal', section: 'Mobilization' },
+  { label: 'Party Primaries', icon: Landmark, path: 'party-primaries' },
+  { label: 'Enrollment Kiosk', icon: UserPlus, path: 'enrollment-kiosk' },
+  { label: 'Stakeholder Workflows', icon: GitBranch, path: 'stakeholder-workflows' },
   { label: 'GeoLibre GIS', icon: Cpu, path: 'geolibre-map', section: 'GeoSpatial' },
 ];
 

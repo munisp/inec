@@ -15,15 +15,15 @@ import (
 type State string
 
 const (
-	StateDraft       State = "draft"
-	StateScheduled   State = "scheduled"
-	StatePreparation State = "preparation"
+	StateDraft         State = "draft"
+	StateScheduled     State = "scheduled"
+	StatePreparation   State = "preparation"
 	StateAccreditation State = "accreditation"
-	StateVoting      State = "voting"
-	StateCollation   State = "collation"
-	StateDeclared    State = "declared"
-	StateSuspended   State = "suspended"
-	StateCancelled   State = "cancelled"
+	StateVoting        State = "voting"
+	StateCollation     State = "collation"
+	StateDeclared      State = "declared"
+	StateSuspended     State = "suspended"
+	StateCancelled     State = "cancelled"
 )
 
 // ValidTransitions defines the allowed state machine transitions.
@@ -39,48 +39,48 @@ var ValidTransitions = map[State][]State{
 
 // Election represents a single election.
 type Election struct {
-	ID           int       `json:"id"`
-	Title        string    `json:"title"`
-	Type         string    `json:"type"`
-	State        State     `json:"state"`
-	ScheduledAt  time.Time `json:"scheduled_at"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	DeclaredAt   *time.Time `json:"declared_at,omitempty"`
-	TotalPUs     int       `json:"total_polling_units"`
-	ResultsIn    int       `json:"results_received"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID          int        `json:"id"`
+	Title       string     `json:"title"`
+	Type        string     `json:"type"`
+	State       State      `json:"state"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	DeclaredAt  *time.Time `json:"declared_at,omitempty"`
+	TotalPUs    int        `json:"total_polling_units"`
+	ResultsIn   int        `json:"results_received"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // Result represents a polling unit result submission.
 type Result struct {
-	ID              int                    `json:"id"`
-	ElectionID      int                    `json:"election_id"`
-	PollingUnitCode string                 `json:"polling_unit_code"`
-	PollingUnitName string                 `json:"polling_unit_name"`
-	State           string                 `json:"state"`
-	LGA             string                 `json:"lga"`
-	Ward            string                 `json:"ward"`
-	PartyVotes      map[string]int         `json:"party_votes"`
-	TotalVotes      int                    `json:"total_votes"`
-	RejectedVotes   int                    `json:"rejected_votes"`
-	AccreditedVoters int                   `json:"accredited_voters"`
-	Status          string                 `json:"status"` // pending, validated, finalized, disputed
-	SubmittedBy     int                    `json:"submitted_by"`
-	SubmittedAt     time.Time              `json:"submitted_at"`
-	ValidatedAt     *time.Time             `json:"validated_at,omitempty"`
-	FinalizedAt     *time.Time             `json:"finalized_at,omitempty"`
+	ID               int            `json:"id"`
+	ElectionID       int            `json:"election_id"`
+	PollingUnitCode  string         `json:"polling_unit_code"`
+	PollingUnitName  string         `json:"polling_unit_name"`
+	State            string         `json:"state"`
+	LGA              string         `json:"lga"`
+	Ward             string         `json:"ward"`
+	PartyVotes       map[string]int `json:"party_votes"`
+	TotalVotes       int            `json:"total_votes"`
+	RejectedVotes    int            `json:"rejected_votes"`
+	AccreditedVoters int            `json:"accredited_voters"`
+	Status           string         `json:"status"` // pending, validated, finalized, disputed
+	SubmittedBy      int            `json:"submitted_by"`
+	SubmittedAt      time.Time      `json:"submitted_at"`
+	ValidatedAt      *time.Time     `json:"validated_at,omitempty"`
+	FinalizedAt      *time.Time     `json:"finalized_at,omitempty"`
 }
 
 // CollationSummary provides aggregated results.
 type CollationSummary struct {
-	ElectionID     int                   `json:"election_id"`
-	TotalPUs       int                   `json:"total_polling_units"`
-	ResultsIn      int                   `json:"results_received"`
-	TotalVotes     int                   `json:"total_votes"`
-	RejectedVotes  int                   `json:"rejected_votes"`
-	PartyTotals    map[string]int        `json:"party_totals"`
-	StateBreakdown []StateResult         `json:"state_breakdown"`
-	Completion     float64               `json:"completion_percentage"`
+	ElectionID     int            `json:"election_id"`
+	TotalPUs       int            `json:"total_polling_units"`
+	ResultsIn      int            `json:"results_received"`
+	TotalVotes     int            `json:"total_votes"`
+	RejectedVotes  int            `json:"rejected_votes"`
+	PartyTotals    map[string]int `json:"party_totals"`
+	StateBreakdown []StateResult  `json:"state_breakdown"`
+	Completion     float64        `json:"completion_percentage"`
 }
 
 // StateResult is collation per state.
@@ -255,11 +255,11 @@ func (s *Service) Stats(ctx context.Context, electionID int) (map[string]interfa
 		completion = float64(e.ResultsIn) / float64(e.TotalPUs) * 100
 	}
 	return map[string]interface{}{
-		"election_id":     electionID,
-		"state":           e.State,
-		"total_pus":       e.TotalPUs,
-		"results_in":      e.ResultsIn,
-		"completion_pct":  completion,
+		"election_id":    electionID,
+		"state":          e.State,
+		"total_pus":      e.TotalPUs,
+		"results_in":     e.ResultsIn,
+		"completion_pct": completion,
 	}, nil
 }
 
@@ -313,10 +313,16 @@ func (s *Service) Collate(ctx context.Context, electionID int) (*CollationSummar
 		return nil, err
 	}
 
-	// Party breakdown from result_parties table
+	// Party breakdown from the canonical result_party_scores relation.
+	// Election ownership lives on results, so aggregate through the result link
+	// instead of querying the retired result_parties table.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT party, COALESCE(SUM(votes), 0) FROM result_parties
-		 WHERE election_id = $1 GROUP BY party ORDER BY SUM(votes) DESC`, electionID)
+		`SELECT rps.party_code, COALESCE(SUM(rps.votes), 0)
+		 FROM result_party_scores rps
+		 JOIN results r ON r.id = rps.result_id
+		 WHERE r.election_id = $1
+		 GROUP BY rps.party_code
+		 ORDER BY SUM(rps.votes) DESC`, electionID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {

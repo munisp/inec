@@ -186,8 +186,7 @@ func initProductionUpgrades(database *sql.DB) {
 	prodFabric = NewProductionFabricEngine(database)
 	prodTB = NewProductionTBEngine(database)
 
-	seedProductionUpgrades(database)
-	log.Info().Msg("All production components initialized")
+	log.Info().Msg("Production component schemas and configured clients initialized")
 }
 
 type ProductionHSM struct {
@@ -204,22 +203,14 @@ type ProductionHSM struct {
 func NewProductionHSM(database *sql.DB) *ProductionHSM {
 	mk := make([]byte, 32)
 	envKey := os.Getenv("HSM_MASTER_KEY")
-	env := os.Getenv("APP_ENV")
-	if envKey != "" {
-		decoded, err := hex.DecodeString(envKey)
-		if err == nil && len(decoded) == 32 {
-			copy(mk, decoded)
-		} else {
-			log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key). Generate with: openssl rand -hex 32")
-		}
-	} else if env == "production" || env == "staging" {
-		log.Fatal().Msg("HSM_MASTER_KEY must be set in production/staging (64-char hex). Generate with: openssl rand -hex 32")
-	} else {
-		log.Warn().Msg("HSM_MASTER_KEY not set — using random ephemeral key (DEV ONLY)")
-		if _, err := io.ReadFull(rand.Reader, mk); err != nil {
-			log.Fatal().Err(err).Msg("failed to generate random HSM key")
-		}
+	if envKey == "" {
+		log.Fatal().Msg("HSM_MASTER_KEY must be set as a 64-character hex string (256-bit key)")
 	}
+	decoded, err := hex.DecodeString(envKey)
+	if err != nil || len(decoded) != 32 {
+		log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key)")
+	}
+	copy(mk, decoded)
 
 	// P-256 to match the PKCS#11 token curve so signatures verify across the
 	// hardware and software-fallback paths interchangeably.
@@ -497,47 +488,46 @@ type ProductionSMSGateway struct {
 	apiUser   string
 	shortCode string
 	baseURL   string
+	enabled   bool
 	mu        sync.Mutex
 	sentCount int64
 	failCount int64
 }
 
 func NewProductionSMSGateway(database *sql.DB) *ProductionSMSGateway {
-	provider := os.Getenv("SMS_PROVIDER")
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("SMS_PROVIDER")))
+	gw := &ProductionSMSGateway{db: database, provider: provider, shortCode: strings.TrimSpace(os.Getenv("SMS_SHORTCODE"))}
 	if provider == "" {
-		provider = "africastalking"
-	}
-
-	gw := &ProductionSMSGateway{
-		db:        database,
-		provider:  provider,
-		apiKey:    os.Getenv("AT_API_KEY"),
-		apiUser:   os.Getenv("AT_USERNAME"),
-		shortCode: os.Getenv("SMS_SHORTCODE"),
+		gw.provider = "disabled"
+		log.Warn().Msg("SMS gateway disabled: SMS_PROVIDER is not configured")
+		return gw
 	}
 
 	switch provider {
 	case "africastalking":
+		gw.apiKey = strings.TrimSpace(os.Getenv("AT_API_KEY"))
+		gw.apiUser = strings.TrimSpace(os.Getenv("AT_USERNAME"))
 		if os.Getenv("AT_ENVIRONMENT") == "production" {
 			gw.baseURL = "https://api.africastalking.com/version1"
 		} else {
 			gw.baseURL = "https://api.sandbox.africastalking.com/version1"
 		}
+		gw.enabled = gw.apiKey != "" && gw.apiUser != "" && gw.shortCode != ""
 	case "twilio":
+		gw.apiUser = strings.TrimSpace(os.Getenv("TWILIO_ACCOUNT_SID"))
+		gw.apiKey = strings.TrimSpace(os.Getenv("TWILIO_AUTH_TOKEN"))
 		gw.baseURL = "https://api.twilio.com/2010-04-01"
-	case "termii":
-		gw.baseURL = "https://api.ng.termii.com/api"
+		gw.enabled = gw.apiKey != "" && gw.apiUser != "" && gw.shortCode != ""
+	default:
+		gw.provider = "disabled"
+		log.Warn().Str("provider", provider).Msg("SMS gateway disabled: unsupported provider")
+		return gw
 	}
-
-	if gw.shortCode == "" {
-		gw.shortCode = "INEC"
+	if !gw.enabled {
+		log.Warn().Str("provider", provider).Msg("SMS gateway disabled: required provider credentials or sender are missing")
+		return gw
 	}
-
-	mode := "simulation"
-	if gw.apiKey != "" {
-		mode = "live (" + provider + ")"
-	}
-	log.Info().Str("provider", provider).Str("mode", mode).Msg("SMS gateway initialized")
+	log.Info().Str("provider", provider).Msg("SMS gateway initialized with configured live provider")
 	return gw
 }
 
@@ -545,12 +535,9 @@ func (g *ProductionSMSGateway) SendSMS(phone, message string) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if g.apiKey == "" {
-		msgID := fmt.Sprintf("SIM-%d", time.Now().UnixNano())
-		dbExecLog("sms_log", `INSERT INTO sms_delivery_log (provider, message_id, phone, message, direction, status) VALUES (?,?,?,?,?,?)`,
-			"simulation", msgID, phone, message, "outbound", "simulated")
-		g.sentCount++
-		return msgID, nil
+	if !g.enabled {
+		g.failCount++
+		return "", fmt.Errorf("SMS gateway is disabled; configure a supported provider and credentials")
 	}
 
 	var msgID string
@@ -610,10 +597,10 @@ func (g *ProductionSMSGateway) sendViaAfricasTalking(phone, message string) (str
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 
-	if len(result.SMSMessageData.Recipients) > 0 {
+	if len(result.SMSMessageData.Recipients) > 0 && result.SMSMessageData.Recipients[0].MessageID != "" {
 		return result.SMSMessageData.Recipients[0].MessageID, nil
 	}
-	return fmt.Sprintf("AT-%d", time.Now().UnixNano()), nil
+	return "", fmt.Errorf("Africa's Talking response did not contain a message ID")
 }
 
 func (g *ProductionSMSGateway) sendViaTwilio(phone, message string) (string, error) {
@@ -644,27 +631,25 @@ func (g *ProductionSMSGateway) sendViaTwilio(phone, message string) (string, err
 	if result.SID != "" {
 		return result.SID, nil
 	}
-	return fmt.Sprintf("TW-%d", time.Now().UnixNano()), nil
+	return "", fmt.Errorf("Twilio response did not contain a message SID")
 }
 
 func (g *ProductionSMSGateway) GetStats() M {
-	var total, delivered, failed, simulated int
+	var total, delivered, failed int
 	g.db.QueryRow(`SELECT COUNT(*) FROM sms_delivery_log`).Scan(&total)
 	g.db.QueryRow(`SELECT COUNT(*) FROM sms_delivery_log WHERE status='sent' OR status='delivered'`).Scan(&delivered)
 	g.db.QueryRow(`SELECT COUNT(*) FROM sms_delivery_log WHERE status='failed'`).Scan(&failed)
-	g.db.QueryRow(`SELECT COUNT(*) FROM sms_delivery_log WHERE status='simulated'`).Scan(&simulated)
 
 	return M{
 		"provider":     g.provider,
-		"mode":         map[bool]string{true: "live", false: "simulation"}[g.apiKey != ""],
+		"mode":         map[bool]string{true: "live", false: "disabled"}[g.enabled],
 		"shortcode":    g.shortCode,
 		"total_sent":   total,
 		"delivered":    delivered,
 		"failed":       failed,
-		"simulated":    simulated,
 		"session_sent": g.sentCount,
 		"session_fail": g.failCount,
-		"production":   g.apiKey != "",
+		"production":   g.enabled,
 	}
 }
 
@@ -831,7 +816,10 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 		decision = "spoof"
 		if len(model.AttackTypes) > 0 {
 			// Pick attack type based on the weakest analysis dimension
-			scores := []struct{ name string; score float64 }{
+			scores := []struct {
+				name  string
+				score float64
+			}{
 				{"texture", textureLBP},
 				{"frequency", frequencyScore},
 				{"gradient", gradientScore},
@@ -845,7 +833,7 @@ func (p *ProductionPADEngine) PerformPADCheck(modality, voterVIN string, sampleD
 					weakestIdx = i
 				}
 			}
-			attackType = model.AttackTypes[weakestIdx % len(model.AttackTypes)]
+			attackType = model.AttackTypes[weakestIdx%len(model.AttackTypes)]
 		}
 	} else if livenessScore < 0.75 {
 		decision = "uncertain"
@@ -902,13 +890,13 @@ func (p *ProductionPADEngine) computeTextureLBP(imageData []byte) float64 {
 			center := float64(gray.At(x, y).(color.Gray).Y)
 			// 8-neighbors in clockwise order starting from top
 			neighbors := [8]float64{
-				float64(gray.At(x, y-1).(color.Gray).Y), // top
+				float64(gray.At(x, y-1).(color.Gray).Y),   // top
 				float64(gray.At(x+1, y-1).(color.Gray).Y), // top-right
-				float64(gray.At(x+1, y).(color.Gray).Y), // right
+				float64(gray.At(x+1, y).(color.Gray).Y),   // right
 				float64(gray.At(x+1, y+1).(color.Gray).Y), // bottom-right
-				float64(gray.At(x, y+1).(color.Gray).Y), // bottom
+				float64(gray.At(x, y+1).(color.Gray).Y),   // bottom
 				float64(gray.At(x-1, y+1).(color.Gray).Y), // bottom-left
-				float64(gray.At(x-1, y).(color.Gray).Y), // left
+				float64(gray.At(x-1, y).(color.Gray).Y),   // left
 				float64(gray.At(x-1, y-1).(color.Gray).Y), // top-left
 			}
 
@@ -1983,11 +1971,22 @@ func (t *ProductionTBEngine) GetStats() M {
 	var journalEntries int
 	t.db.QueryRow(`SELECT COUNT(*) FROM tb_journal`).Scan(&journalEntries)
 
-	baseStats := persistentTB.GetStats()
-	baseStats["journal_entries"] = journalEntries
-	baseStats["idempotency"] = true
-	baseStats["double_entry_journal"] = true
-	baseStats["production_upgraded"] = true
+	baseStats := M{
+		"ledger_mode":          "native_tigerbeetle_go",
+		"journal_entries":      journalEntries,
+		"idempotency":          true,
+		"double_entry_journal": true,
+		"production_upgraded":  true,
+	}
+	if mwHub != nil && mwHub.TigerBeetle != nil {
+		status := mwHub.TigerBeetle.Status()
+		baseStats["connected"] = status.Connected
+		baseStats["latency"] = status.Latency
+		baseStats["details"] = status.Details
+	} else {
+		baseStats["connected"] = false
+		baseStats["details"] = "native TigerBeetle client is unavailable"
+	}
 	return baseStats
 }
 
@@ -2375,29 +2374,25 @@ func handleProductionUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 				"compliance": "FIPS 140-2 Level 1",
 			},
 			"sms_gateway": M{
-				"status":   "active",
+				"status":   map[bool]string{true: "active", false: "disabled"}[prodSMSGateway.enabled],
 				"provider": prodSMSGateway.provider,
-				"mode":     map[bool]string{true: "live", false: "simulation"}[prodSMSGateway.apiKey != ""],
+				"mode":     map[bool]string{true: "live", false: "disabled"}[prodSMSGateway.enabled],
 			},
 			"pad_engine": M{
-				"status":     "active",
-				"models":     3,
-				"compliance": "ISO/IEC 30107-3",
+				"status": "disabled",
+				"reason": "local static PAD model metadata is not used for production inference; use the configured CPU inference engine",
 			},
 			"ipfs": M{
-				"status":      "active",
-				"cid_version": "CIDv1",
-				"codecs":      []string{"dag-cbor", "dag-json", "raw"},
+				"status": "disabled",
+				"reason": "a real IPFS API integration has not been configured",
 			},
 			"fabric": M{
-				"status":    "active",
-				"consensus": "Raft",
-				"peers":     prodFabric.peers,
-				"signing":   "ECDSA P-256",
+				"status": "disabled",
+				"reason": "a real Hyperledger Fabric gateway integration has not been configured",
 			},
 			"tigerbeetle": M{
-				"status":      "active",
-				"journaling":  true,
+				"status":      "native_client_required",
+				"journaling":  false,
 				"idempotency": true,
 				"acid":        true,
 			},

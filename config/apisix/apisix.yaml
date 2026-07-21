@@ -298,3 +298,5 @@ routes:
       go-backend:8088: 1
     type: roundrobin
   uri: /fluvio/*
+
+#END

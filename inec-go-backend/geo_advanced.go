@@ -288,9 +288,9 @@ func handleTrackingHistoryReplay(w http.ResponseWriter, r *http.Request) {
 		"type":     "FeatureCollection",
 		"features": features,
 		"meta": M{
-			"hours_back":  hoursBack,
+			"hours_back":   hoursBack,
 			"total_points": len(points),
-			"staff_count": len(paths),
+			"staff_count":  len(paths),
 		},
 	})
 }
@@ -605,11 +605,11 @@ func checkCrowdThresholds(ctx context.Context, puCode string, headCount int, den
 
 func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		OriginLat  float64 `json:"origin_lat"`
-		OriginLng  float64 `json:"origin_lng"`
-		DestLat    float64 `json:"dest_lat"`
-		DestLng    float64 `json:"dest_lng"`
-		Profile    string  `json:"profile"` // driving, walking, cycling
+		OriginLat float64 `json:"origin_lat"`
+		OriginLng float64 `json:"origin_lng"`
+		DestLat   float64 `json:"dest_lat"`
+		DestLng   float64 `json:"dest_lng"`
+		Profile   string  `json:"profile"` // driving, walking, cycling
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, M{"error": "invalid body"})
@@ -654,9 +654,9 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, M{
 			"fallback": true,
 			"route": M{
-				"distance_km":    dist,
-				"duration_min":   dist / 40 * 60, // estimate 40km/h
-				"geometry":       M{"type": "LineString", "coordinates": [][]float64{{body.OriginLng, body.OriginLat}, {body.DestLng, body.DestLat}}},
+				"distance_km":  dist,
+				"duration_min": dist / 40 * 60, // estimate 40km/h
+				"geometry":     M{"type": "LineString", "coordinates": [][]float64{{body.OriginLng, body.OriginLat}, {body.DestLng, body.DestLat}}},
 			},
 		})
 		return
@@ -717,54 +717,62 @@ func handleWeatherOverlay(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(lngStr, 64)
 
 	if lat == 0 || lng == 0 {
-		// Return weather for all 6 zone capitals
-		zones := []struct{ Name string; Lat, Lng float64 }{
+		// Return weather for all six zone capitals only from the configured live provider.
+		zones := []struct {
+			Name     string
+			Lat, Lng float64
+		}{
 			{"Abuja", 9.0805, 7.4969}, {"Lagos", 6.5975, 3.3433}, {"Kano", 12.0001, 8.5167},
 			{"Port Harcourt", 4.7677, 7.0189}, {"Maiduguri", 11.8395, 13.1536}, {"Enugu", 6.5536, 7.4143},
 		}
 		results := make([]M, 0, len(zones))
 		for _, z := range zones {
-			results = append(results, M{
-				"name": z.Name, "lat": z.Lat, "lng": z.Lng,
-				"weather": fetchWeather(r.Context(), z.Lat, z.Lng),
-			})
+			weather, err := fetchWeather(r.Context(), z.Lat, z.Lng)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
+			results = append(results, M{"name": z.Name, "lat": z.Lat, "lng": z.Lng, "weather": weather})
 		}
-		writeJSON(w, 200, M{"zones": results})
+		writeJSON(w, http.StatusOK, M{"zones": results})
 		return
 	}
 
-	writeJSON(w, 200, M{"weather": fetchWeather(r.Context(), lat, lng)})
+	weather, err := fetchWeather(r.Context(), lat, lng)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, M{"weather": weather})
 }
 
-func fetchWeather(ctx context.Context, lat, lng float64) M {
-	apiKey := os.Getenv("OPENWEATHER_API_KEY")
+func fetchWeather(ctx context.Context, lat, lng float64) (M, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENWEATHER_API_KEY"))
 	if apiKey == "" {
-		// Return simulated weather data
-		return M{
-			"temp_c":      28 + int(lat*100)%8 - 4,
-			"humidity":    65 + int(lng*100)%20,
-			"description": "partly cloudy",
-			"wind_kmh":    12 + int(lat*10)%10,
-			"rain_mm":     0,
-			"simulated":   true,
-		}
+		return nil, fmt.Errorf("live weather provider is not configured: OPENWEATHER_API_KEY is required")
 	}
 
-	url := fmt.Sprintf("https://api.openweathermap.org/data/2.5/weather?lat=%.4f&lon=%.4f&appid=%s&units=metric",
-		lat, lng, apiKey)
-
+	url := fmt.Sprintf("https://api.openweathermap.org/data/2.5/weather?lat=%.4f&lon=%.4f&appid=%s&units=metric", lat, lng, apiKey)
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil) // #nosec G704 -- hardcoded host, lat/lng are float64
-	resp, err := geoHTTPClient.Do(req)                            // #nosec G704
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return M{"error": err.Error(), "simulated": true, "temp_c": 28, "description": "unknown"}
+		return nil, err
+	}
+	resp, err := geoHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("live weather provider request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("live weather provider returned HTTP %d", resp.StatusCode)
+	}
 
 	var data map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&data)
-	return M{"data": data, "simulated": false}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("decode live weather response: %w", err)
+	}
+	return M{"data": data, "provider": "openweathermap"}, nil
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1103,7 +1111,7 @@ func handleOfflineTile(w http.ResponseWriter, r *http.Request) {
 
 	// Cache locally (path already validated above)
 	os.MkdirAll(filepath.Join(cacheDir, z, x), 0750) // #nosec G703 -- z/x validated numeric above
-	os.WriteFile(cachePath, data, 0600)               // #nosec G703 -- cachePath validated above
+	os.WriteFile(cachePath, data, 0600)              // #nosec G703 -- cachePath validated above
 
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -1236,13 +1244,13 @@ func handleDronePositions(w http.ResponseWriter, r *http.Request) {
 	// Store drone positions (similar to official tracking but for drones)
 	if r.Method == "POST" {
 		var body struct {
-			DroneID  string  `json:"drone_id"`
-			Lat      float64 `json:"lat"`
-			Lng      float64 `json:"lng"`
-			Altitude float64 `json:"altitude_m"`
-			Battery  int     `json:"battery_pct"`
-			Status   string  `json:"status"`
-			StreamURL string `json:"stream_url"`
+			DroneID   string  `json:"drone_id"`
+			Lat       float64 `json:"lat"`
+			Lng       float64 `json:"lng"`
+			Altitude  float64 `json:"altitude_m"`
+			Battery   int     `json:"battery_pct"`
+			Status    string  `json:"status"`
+			StreamURL string  `json:"stream_url"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, 400, M{"error": "invalid body"})
@@ -1282,18 +1290,18 @@ func handleDigitalTwinSimulation(w http.ResponseWriter, r *http.Request) {
 	if scenarioType == "" {
 		scenarioType = "normal"
 	}
-	speed := queryParamInt(r, "speed", 1)    // simulation speed multiplier
+	speed := queryParamInt(r, "speed", 1)     // simulation speed multiplier
 	duration := queryParamInt(r, "hours", 12) // hours to simulate
 
 	// Generate simulated election timeline
 	type SimEvent struct {
-		Hour     int    `json:"hour"`
-		Minute   int    `json:"minute"`
-		Event    string `json:"event"`
-		PUCode   string `json:"pu_code"`
-		Lat      float64 `json:"lat"`
-		Lng      float64 `json:"lng"`
-		Details  M      `json:"details"`
+		Hour    int     `json:"hour"`
+		Minute  int     `json:"minute"`
+		Event   string  `json:"event"`
+		PUCode  string  `json:"pu_code"`
+		Lat     float64 `json:"lat"`
+		Lng     float64 `json:"lng"`
+		Details M       `json:"details"`
 	}
 
 	events := make([]SimEvent, 0)
@@ -1318,10 +1326,14 @@ func handleDigitalTwinSimulation(w http.ResponseWriter, r *http.Request) {
 			// Simulate crowd buildup
 			crowdPct := 0.0
 			switch {
-			case hour < 10: crowdPct = float64(hour-8) * 0.15
-			case hour < 14: crowdPct = 0.3 + float64(hour-10)*0.12
-			case hour < 16: crowdPct = 0.78 - float64(hour-14)*0.1
-			default:        crowdPct = 0.58 - float64(hour-16)*0.15
+			case hour < 10:
+				crowdPct = float64(hour-8) * 0.15
+			case hour < 14:
+				crowdPct = 0.3 + float64(hour-10)*0.12
+			case hour < 16:
+				crowdPct = 0.78 - float64(hour-14)*0.1
+			default:
+				crowdPct = 0.58 - float64(hour-16)*0.15
 			}
 			if scenarioType == "high_turnout" {
 				crowdPct *= 1.4
@@ -1363,21 +1375,25 @@ func handleDigitalTwinSimulation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"scenario":  scenarioType,
-		"speed":     speed,
-		"duration":  duration,
-		"events":    events,
-		"pu_count":  len(puList),
+		"scenario":     scenarioType,
+		"speed":        speed,
+		"duration":     duration,
+		"events":       events,
+		"pu_count":     len(puList),
 		"total_events": len(events),
 	})
 }
 
 func crowdDensityLevel(count int) string {
 	switch {
-	case count > 400: return "overcrowded"
-	case count > 200: return "high"
-	case count > 100: return "moderate"
-	default: return "low"
+	case count > 400:
+		return "overcrowded"
+	case count > 200:
+		return "high"
+	case count > 100:
+		return "moderate"
+	default:
+		return "low"
 	}
 }
 
@@ -1418,11 +1434,13 @@ func handleMeshNetworkStatus(w http.ResponseWriter, r *http.Request) {
 	for i, a := range nodes {
 		connected := false
 		for j, b := range nodes {
-			if i >= j { continue }
+			if i >= j {
+				continue
+			}
 			dist := haversineDistance(a.Lat, a.Lng, b.Lat, b.Lng)
 			if dist <= meshRadiusKm {
 				edges = append(edges, M{
-					"from": a.ID, "to": b.ID, "distance_km": math.Round(dist*100)/100,
+					"from": a.ID, "to": b.ID, "distance_km": math.Round(dist*100) / 100,
 					"coordinates": [][]float64{{a.Lng, a.Lat}, {b.Lng, b.Lat}},
 				})
 				connected = true
@@ -1450,12 +1468,14 @@ func handleMeshNetworkStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"nodes":    len(nodes),
-		"edges":    len(edges),
-		"isolated": isolated,
+		"nodes":          len(nodes),
+		"edges":          len(edges),
+		"isolated":       isolated,
 		"mesh_radius_km": meshRadiusKm,
 		"connectivity_pct": func() float64 {
-			if len(nodes) == 0 { return 0 }
+			if len(nodes) == 0 {
+				return 0
+			}
 			return float64(len(nodes)-isolated) / float64(len(nodes)) * 100
 		}(),
 		"edge_geojson": M{"type": "FeatureCollection", "features": edgeFeatures},

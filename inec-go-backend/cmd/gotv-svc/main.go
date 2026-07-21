@@ -3,7 +3,8 @@
 // Every endpoint is party-scoped with row-level isolation.
 //
 // Usage:
-//   go run ./cmd/gotv-svc --port=8097 --db=postgres://...
+//
+//	go run ./cmd/gotv-svc --port=8097 --db=postgres://...
 package main
 
 import (
@@ -107,11 +108,9 @@ func main() {
 	// Initialize subsystems
 	wsHub = gotv.NewWSHub(10000, 5)
 	go wsHub.Run()
-	go startRealtimeTicker(db)
 	go startCPIRecomputeTicker(db) // P2: auto-recompute CPI every 6 hours
 
 	dispatcher = gotv.NewDispatchEngine(db, svc, wsHub, 10)
-	dispatcher.RegisterAdapter(&gotv.LogAdapter{}) // default; real adapters configured via env
 	if smsKey := os.Getenv("AFRICASTALKING_API_KEY"); smsKey != "" {
 		dispatcher.RegisterAdapter(gotv.NewSMSAdapter("africastalking",
 			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER")))
@@ -183,7 +182,7 @@ func main() {
 	if err := initKOHIndicatorTables(db); err != nil {
 		log.Warn().Err(err).Msg("KOH indicator table init had issues (non-fatal)")
 	}
-	seedLGATiers(db, 1) // Seed Lagos LGA tiers
+	// LGA tier configuration is provisioned through administrative data workflows; no demo tiers are seeded at startup.
 
 	// V2: Kafka-backed dispatch queue (crash-resilient)
 	kafkaDisp = gotv.NewKafkaDispatcher(os.Getenv("KAFKA_BROKERS"))
@@ -230,9 +229,6 @@ func main() {
 		dispatcher.RegisterAdapter(gotv.NewWhatsAppAdapterV2(
 			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID"), db))
 	}
-
-	// Seed demo data if tables are empty
-	seedGOTVData(db)
 
 	authMid = gotv.NewAuthMiddleware(db, gotv.AuthConfig{
 		AuthServiceURL: *authURL,
@@ -802,15 +798,15 @@ func handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		campaigns = append(campaigns, map[string]interface{}{
-			"campaign_id":     cid,
-			"name":            name,
-			"campaign_type":   ctype,
-			"status":          cstatus,
-			"target_state":    nullVal(tState),
-			"total_contacts":  totalContacts,
+			"campaign_id":      cid,
+			"name":             name,
+			"campaign_type":    ctype,
+			"status":           cstatus,
+			"target_state":     nullVal(tState),
+			"total_contacts":   totalContacts,
 			"contacts_reached": reached,
-			"created_by":      createdBy,
-			"created_at":      createdAt,
+			"created_by":       createdBy,
+			"created_at":       createdAt,
 		})
 	}
 	jsonResp(w, map[string]interface{}{"campaigns": campaigns, "total": len(campaigns)})
@@ -907,20 +903,20 @@ func handleGetCampaign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResp(w, map[string]interface{}{
-		"campaign_id":       id,
-		"name":              name,
-		"description":       nullVal(desc),
-		"campaign_type":     ctype,
-		"status":            status,
-		"target_state":      nullVal(tState),
-		"target_lga":        nullVal(tLGA),
-		"message_template":  nullVal(msgTemplate),
-		"ab_split_pct":      abSplit,
-		"total_contacts":    totalContacts,
-		"contacts_reached":  reached,
+		"campaign_id":        id,
+		"name":               name,
+		"description":        nullVal(desc),
+		"campaign_type":      ctype,
+		"status":             status,
+		"target_state":       nullVal(tState),
+		"target_lga":         nullVal(tLGA),
+		"message_template":   nullVal(msgTemplate),
+		"ab_split_pct":       abSplit,
+		"total_contacts":     totalContacts,
+		"contacts_reached":   reached,
 		"contacts_responded": responded,
-		"created_by":        createdBy,
-		"created_at":        createdAt,
+		"created_by":         createdBy,
+		"created_at":         createdAt,
 	})
 }
 
@@ -1369,8 +1365,8 @@ func handleImportContacts(w http.ResponseWriter, r *http.Request) {
 
 	svc.Audit(pid, user, "import_contacts", "contacts", fmt.Sprintf("imported=%d,skipped=%d,anomaly=%d", imported, skipped, anomalyFlags))
 	jsonResp(w, map[string]interface{}{
-		"imported":       imported,
-		"skipped":        skipped,
+		"imported":        imported,
+		"skipped":         skipped,
 		"anomaly_flagged": anomalyFlags > 0,
 		"daily_remaining": remaining - imported,
 	})
@@ -1916,12 +1912,12 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	`, pid).Scan(&totalContacts, &totalVolunteers, &totalPledges, &activeCampaigns, &pendingRides)
 
 	result := map[string]interface{}{
-		"party_id":          pid,
-		"total_contacts":    totalContacts,
-		"total_volunteers":  totalVolunteers,
-		"total_pledges":     totalPledges,
-		"active_campaigns":  activeCampaigns,
-		"pending_rides":     pendingRides,
+		"party_id":         pid,
+		"total_contacts":   totalContacts,
+		"total_volunteers": totalVolunteers,
+		"total_pledges":    totalPledges,
+		"active_campaigns": activeCampaigns,
+		"pending_rides":    pendingRides,
 	}
 
 	// Cache for 30 seconds
@@ -2068,10 +2064,10 @@ func handleGeoCoverage(w http.ResponseWriter, r *http.Request) {
 
 	// H3-style hex coverage: count contacts and volunteers per state/lga
 	type coverageHex struct {
-		State      string `json:"state"`
-		LGA        string `json:"lga"`
-		Contacts   int    `json:"contacts"`
-		Volunteers int    `json:"volunteers"`
+		State      string  `json:"state"`
+		LGA        string  `json:"lga"`
+		Contacts   int     `json:"contacts"`
+		Volunteers int     `json:"volunteers"`
 		Score      float64 `json:"score"` // 0.0 (no coverage) to 1.0 (fully covered)
 	}
 
@@ -2783,11 +2779,11 @@ func handleMobileDashboard(w http.ResponseWriter, r *http.Request) {
 	svc.DB.QueryRow("SELECT shift_id FROM gotv_shifts WHERE party_id=$1 AND volunteer_id=$2 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1", pid, user).Scan(&activeShift)
 
 	jsonResp(w, map[string]interface{}{
-		"total_knocks":  totalKnocks,
-		"pledged":       pledged,
-		"not_home":      notHome,
-		"refused":       refused,
-		"active_shift":  activeShift.String,
+		"total_knocks":     totalKnocks,
+		"pledged":          pledged,
+		"not_home":         notHome,
+		"refused":          refused,
+		"active_shift":     activeShift.String,
 		"has_active_shift": activeShift.Valid,
 	})
 }
@@ -3036,12 +3032,12 @@ func handleScoringVotersBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type voter struct {
-		ID       int    `json:"id"`
-		State    string `json:"state"`
-		Status   string `json:"status"`
-		Score    int    `json:"score"`
-		Segment  string `json:"segment"`
-		Channel  string `json:"recommended_channel"`
+		ID      int    `json:"id"`
+		State   string `json:"state"`
+		Status  string `json:"status"`
+		Score   int    `json:"score"`
+		Segment string `json:"segment"`
+		Channel string `json:"recommended_channel"`
 	}
 	var voters []voter
 	i := 0
@@ -3049,8 +3045,20 @@ func handleScoringVotersBatch(w http.ResponseWriter, r *http.Request) {
 		var v voter
 		rows.Scan(&v.ID, &v.State, &v.Status)
 		v.Score = 30 + (i*7)%70
-		if v.Score >= 70 { v.Segment = "hot" } else if v.Score >= 50 { v.Segment = "warm" } else if v.Score >= 30 { v.Segment = "cool" } else { v.Segment = "cold" }
-		if v.Score >= 60 { v.Channel = "whatsapp" } else { v.Channel = "sms" }
+		if v.Score >= 70 {
+			v.Segment = "hot"
+		} else if v.Score >= 50 {
+			v.Segment = "warm"
+		} else if v.Score >= 30 {
+			v.Segment = "cool"
+		} else {
+			v.Segment = "cold"
+		}
+		if v.Score >= 60 {
+			v.Channel = "whatsapp"
+		} else {
+			v.Channel = "sms"
+		}
 		voters = append(voters, v)
 		i++
 	}
@@ -3067,9 +3075,15 @@ func handleScoringWinProbability(w http.ResponseWriter, r *http.Request) {
 		voteShare = float64(pledgeCount) / float64(contactCount) * 100
 	}
 	winProb := voteShare * 2.5
-	if winProb > 95 { winProb = 95 }
+	if winProb > 95 {
+		winProb = 95
+	}
 	scenario := "competitive"
-	if winProb > 65 { scenario = "winning" } else if winProb < 35 { scenario = "losing" }
+	if winProb > 65 {
+		scenario = "winning"
+	} else if winProb < 35 {
+		scenario = "losing"
+	}
 	jsonResp(w, map[string]interface{}{
 		"win_probability": winProb,
 		"vote_share_pct":  voteShare,
@@ -3100,9 +3114,13 @@ func handleScoringAllocation(w http.ResponseWriter, r *http.Request) {
 		var wrd ward
 		rows.Scan(&wrd.Name, &wrd.Contacts)
 		wrd.Priority = 0.9 - float64(i)*0.08
-		if wrd.Priority < 0.2 { wrd.Priority = 0.2 }
+		if wrd.Priority < 0.2 {
+			wrd.Priority = 0.2
+		}
 		wrd.Rec = "Deploy canvassers"
-		if i > 5 { wrd.Rec = "SMS outreach sufficient" }
+		if i > 5 {
+			wrd.Rec = "SMS outreach sufficient"
+		}
 		wards = append(wards, wrd)
 		i++
 	}
@@ -3111,12 +3129,12 @@ func handleScoringAllocation(w http.ResponseWriter, r *http.Request) {
 
 func handleScoringMessages(w http.ResponseWriter, r *http.Request) {
 	type arm struct {
-		ID      string  `json:"variant_id"`
-		Msg     string  `json:"message"`
-		Pulls   int     `json:"pulls"`
-		Reward  float64 `json:"avg_reward"`
-		UCB     float64 `json:"ucb_score"`
-		Active  bool    `json:"active"`
+		ID     string  `json:"variant_id"`
+		Msg    string  `json:"message"`
+		Pulls  int     `json:"pulls"`
+		Reward float64 `json:"avg_reward"`
+		UCB    float64 `json:"ucb_score"`
+		Active bool    `json:"active"`
 	}
 	arms := []arm{
 		{ID: "v1", Msg: "Your vote matters! Come out on election day.", Pulls: 1200, Reward: 0.34, UCB: 0.38, Active: true},

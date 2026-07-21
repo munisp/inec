@@ -44,6 +44,7 @@ ml/models/*.onnx
 ml/data/processed/
 *.onnx
 !ml/models/*.json
+!ml/models/*.onnx
 !ml/models/.gitkeep
 # Trained model weights are shipped via Git LFS (see .gitattributes)
 !services/ml-models/**/*.onnx
@@ -77,3 +78,10 @@ Thumbs.db
 *.swp
 *.swo
 inec-go-backend/inec-go-backend
+
+# Local validation and runtime artifacts
+.audit/
+data/
+logs/
+# OpenAppSec generated runtime state
+config/openappsec/agent-config/

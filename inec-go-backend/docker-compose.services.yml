@@ -5,11 +5,9 @@
 #   docker compose -f docker-compose.services.yml up
 #   docker compose -f docker-compose.services.yml up auth-svc election-svc
 
-version: "3.9"
-
 x-common-env: &common-env
-  DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
-  LOG_LEVEL: info
+  DATABASE_URL: postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@postgres:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+  LOG_LEVEL: ${LOG_LEVEL:-info}
 
 services:
   # --- Infrastructure ---
@@ -19,13 +17,13 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ngapp
-      POSTGRES_PASSWORD: ngapp123
-      POSTGRES_DB: ngapp
+      POSTGRES_USER: ${PG_USER:?PG_USER must be set}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
+      POSTGRES_DB: ${PG_DB:?PG_DB must be set}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ngapp"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -74,7 +72,7 @@ services:
     environment:
       <<: *common-env
       PORT: "8090"
-      JWT_SECRET: ${JWT_SECRET:-inec-dev-secret-change-in-production}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,7 +111,7 @@ services:
     environment:
       <<: *common-env
       PORT: "8092"
-      VAULT_KEY: ${VAULT_KEY:-00000000000000000000000000000000}
+      VAULT_KEY: ${VAULT_KEY:?VAULT_KEY must be set}
     depends_on:
       postgres:
         condition: service_healthy
@@ -198,14 +196,28 @@ services:
       PORT: "8097"
       MODELS_DIR: /app/models
 
+  fluvio-sc:
+    image: infinyon/fluvio:latest
+    command: run sc --local /fluvio/metadata
+    ports:
+      - "9003:9003"
+    volumes:
+      - fluvio-data:/fluvio
+
   fluvio-stream:
     build:
       context: ../services/fluvio-stream
       dockerfile: Dockerfile
     ports:
-      - "8098:8098"
+      - "8100:8100"
     environment:
-      PORT: "8098"
+      FLUVIO_ENDPOINT: fluvio-sc:9003
+      PORT: "8100"
+      CHECKPOINT_FILE: /data/fluvio_offsets.json
+    depends_on:
+      - fluvio-sc
+    volumes:
+      - fluvio-bridge-data:/data
 
   # --- Python Services ---
 
@@ -217,7 +229,7 @@ services:
       - "8099:8099"
     environment:
       PORT: "8099"
-      DATABASE_URL: postgres://ngapp:ngapp123@postgres:5432/ngapp?sslmode=disable
+      DATABASE_URL: postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@postgres:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
       BACKEND_URL: http://gateway:8088
     depends_on:
       postgres:
@@ -225,3 +237,5 @@ services:
 
 volumes:
   pgdata:
+  fluvio-data:
+  fluvio-bridge-data:

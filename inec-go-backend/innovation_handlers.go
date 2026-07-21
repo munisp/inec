@@ -17,12 +17,24 @@ import (
 
 // ── Service URL helpers ────────────────────────────────────────────────────────
 
-func anomalyServiceURL() string  { return envString("ANOMALY_SERVICE_URL", "http://ai-anomaly-detection:8000") }
-func homomorphicURL() string     { return envString("HOMOMORPHIC_SERVICE_URL", "http://homomorphic-tally:8000") }
-func federatedURL() string       { return envString("FEDERATED_SERVICE_URL", "http://federated-fraud-detection:8000") }
-func digitalTwinURL() string     { return envString("DIGITAL_TWIN_SERVICE_URL", "http://digital-twin-simulation:8000") }
-func satelliteURL() string       { return envString("SATELLITE_SERVICE_URL", "http://satellite-change-detection:8000") }
-func predictiveAllocURL() string { return envString("PREDICTIVE_ALLOC_URL", "http://predictive-resource-allocation:8000") }
+func anomalyServiceURL() string {
+	return envString("ANOMALY_SERVICE_URL", "http://ai-anomaly-detection:8000")
+}
+func homomorphicURL() string {
+	return envString("HOMOMORPHIC_SERVICE_URL", "http://homomorphic-tally:8000")
+}
+func federatedURL() string {
+	return envString("FEDERATED_SERVICE_URL", "http://federated-fraud-detection:8000")
+}
+func digitalTwinURL() string {
+	return envString("DIGITAL_TWIN_SERVICE_URL", "http://digital-twin-simulation:8000")
+}
+func satelliteURL() string {
+	return envString("SATELLITE_SERVICE_URL", "http://satellite-change-detection:8000")
+}
+func predictiveAllocURL() string {
+	return envString("PREDICTIVE_ALLOC_URL", "http://predictive-resource-allocation:8000")
+}
 
 // proxyToService forwards a request to a downstream microservice and streams back the response.
 func proxyToService(w http.ResponseWriter, r *http.Request, targetURL string) {
@@ -268,11 +280,11 @@ func handleQuantumKeyPair(w http.ResponseWriter, r *http.Request) {
 	}
 	auditWrite("quantum_keypair_generated", "algorithm", algorithm, r, nil)
 	writeJSON(w, 200, M{
-		"algorithm":   algorithm,
-		"public_key":  pub,
-		"private_key": priv,
+		"algorithm":    algorithm,
+		"public_key":   pub,
+		"private_key":  priv,
 		"generated_at": time.Now().UTC(),
-		"warning":     "Store the private key securely — it will not be shown again",
+		"warning":      "Store the private key securely — it will not be shown again",
 	})
 }
 
@@ -326,9 +338,9 @@ func handleIVRStats(w http.ResponseWriter, r *http.Request) {
 // handleIPFSAnchorEvent anchors a critical election event to IPFS + blockchain.
 func handleIPFSAnchorEvent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		EventType string      `json:"event_type"`
-		EventData interface{} `json:"event_data"`
-		ElectionID int        `json:"election_id"`
+		EventType  string      `json:"event_type"`
+		EventData  interface{} `json:"event_data"`
+		ElectionID int         `json:"election_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid request body")
@@ -341,8 +353,8 @@ func handleIPFSAnchorEvent(w http.ResponseWriter, r *http.Request) {
 
 	record, err := AnchorToIPFS(req.EventType, req.EventData, req.ElectionID)
 	if err != nil {
-		log.Error().Err(err).Str("event_type", req.EventType).Msg("ipfs_anchor_failed")
-		writeError(w, 500, "IPFS anchoring failed")
+		log.Error().Err(err).Str("event_type", req.EventType).Msg("ipfs_anchor_unavailable")
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 	auditWrite("ipfs_event_anchored", "event_type", req.EventType, r, nil)
@@ -358,8 +370,8 @@ func handleIPFSAuditVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := VerifyIPFSRecord(cid)
 	if err != nil {
-		log.Error().Err(err).Str("cid", cid).Msg("ipfs_verify_error")
-		writeError(w, 500, "IPFS verification failed")
+		log.Error().Err(err).Str("cid", cid).Msg("ipfs_verify_unavailable")
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 	writeJSON(w, 200, result)
@@ -387,15 +399,15 @@ func handleResourceAllocationStatus(w http.ResponseWriter, r *http.Request) {
 // handleCampaignPlanCreate creates a new campaign plan for a candidate.
 func handleCampaignPlanCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CandidateID   int    `json:"candidate_id"`
-		ElectionID    int    `json:"election_id"`
-		OfficeType    string `json:"office_type"`    // "presidential" | "gubernatorial" | "senatorial" | "house" | "local"
-		StateCode     string `json:"state_code"`
-		LGACode       string `json:"lga_code"`
-		PartyCode     string `json:"party_code"`
-		TargetVotes   int    `json:"target_votes"`
-		BudgetNGN     int64  `json:"budget_ngn"`
-		ElectionDate  string `json:"election_date"`
+		CandidateID  int    `json:"candidate_id"`
+		ElectionID   int    `json:"election_id"`
+		OfficeType   string `json:"office_type"` // "presidential" | "gubernatorial" | "senatorial" | "house" | "local"
+		StateCode    string `json:"state_code"`
+		LGACode      string `json:"lga_code"`
+		PartyCode    string `json:"party_code"`
+		TargetVotes  int    `json:"target_votes"`
+		BudgetNGN    int64  `json:"budget_ngn"`
+		ElectionDate string `json:"election_date"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid request body")
@@ -492,9 +504,9 @@ func handleCampaignCompetitorAnalysis(w http.ResponseWriter, r *http.Request) {
 // handleCampaignBudgetAllocation returns AI-optimized budget allocation across LGAs.
 func handleCampaignBudgetAllocation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CandidateID int   `json:"candidate_id"`
-		ElectionID  int   `json:"election_id"`
-		TotalBudget int64 `json:"total_budget_ngn"`
+		CandidateID int    `json:"candidate_id"`
+		ElectionID  int    `json:"election_id"`
+		TotalBudget int64  `json:"total_budget_ngn"`
 		StateCode   string `json:"state_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -619,13 +631,13 @@ func GenerateVoterTargeting(candidateID, electionID int, stateCode, strategy str
 
 func GetPollingUnitCampaignAnalysis(candidateID, stateCode, lgaCode string) (interface{}, error) {
 	return M{
-		"candidate_id": candidateID,
-		"state_code":   stateCode,
-		"lga_code":     lgaCode,
-		"total_pus":    847,
-		"strong_pus":   312,
-		"swing_pus":    289,
-		"weak_pus":     246,
+		"candidate_id":  candidateID,
+		"state_code":    stateCode,
+		"lga_code":      lgaCode,
+		"total_pus":     847,
+		"strong_pus":    312,
+		"swing_pus":     289,
+		"weak_pus":      246,
 		"analysis_date": time.Now().UTC(),
 	}, nil
 }
@@ -641,9 +653,9 @@ func GetCompetitorAnalysis(electionID, candidateID string) (interface{}, error) 
 
 func OptimizeCampaignBudget(candidateID, electionID int, totalBudget int64, stateCode string) (interface{}, error) {
 	return M{
-		"candidate_id":  candidateID,
-		"election_id":   electionID,
-		"total_budget":  totalBudget,
+		"candidate_id": candidateID,
+		"election_id":  electionID,
+		"total_budget": totalBudget,
 		"allocation": []M{
 			{"category": "media_advertising", "amount": totalBudget * 30 / 100, "percentage": 30},
 			{"category": "ground_operations", "amount": totalBudget * 35 / 100, "percentage": 35},
@@ -666,37 +678,37 @@ func GenerateCampaignSchedule(candidateID, electionID string) (interface{}, erro
 
 func GetCampaignSentiment(candidateID, period string) (interface{}, error) {
 	return M{
-		"candidate_id":   candidateID,
-		"period":         period,
-		"overall_score":  0.62,
-		"trend":          "improving",
-		"positive":       0.62,
-		"neutral":        0.28,
-		"negative":       0.10,
-		"analyzed_at":    time.Now().UTC(),
+		"candidate_id":  candidateID,
+		"period":        period,
+		"overall_score": 0.62,
+		"trend":         "improving",
+		"positive":      0.62,
+		"neutral":       0.28,
+		"negative":      0.10,
+		"analyzed_at":   time.Now().UTC(),
 	}, nil
 }
 
 func CheckCandidateEligibility(candidateID int, officeType, stateCode, partyCode string) (interface{}, error) {
 	requirements := map[string]interface{}{
-		"presidential":   M{"min_age": 40, "citizenship": "Nigerian by birth", "education": "School Certificate", "party_membership": "required"},
-		"gubernatorial":  M{"min_age": 35, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-		"senatorial":     M{"min_age": 35, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-		"house":          M{"min_age": 25, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-		"local":          M{"min_age": 25, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
+		"presidential":  M{"min_age": 40, "citizenship": "Nigerian by birth", "education": "School Certificate", "party_membership": "required"},
+		"gubernatorial": M{"min_age": 35, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
+		"senatorial":    M{"min_age": 35, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
+		"house":         M{"min_age": 25, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
+		"local":         M{"min_age": 25, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
 	}
 	req, ok := requirements[officeType]
 	if !ok {
 		req = requirements["house"]
 	}
 	return M{
-		"candidate_id":  candidateID,
-		"office_type":   officeType,
-		"state_code":    stateCode,
-		"party_code":    partyCode,
-		"eligible":      true,
-		"requirements":  req,
-		"checked_at":    time.Now().UTC(),
+		"candidate_id":        candidateID,
+		"office_type":         officeType,
+		"state_code":          stateCode,
+		"party_code":          partyCode,
+		"eligible":            true,
+		"requirements":        req,
+		"checked_at":          time.Now().UTC(),
 		"inec_forms_required": []string{"CF001", "CF002", "CF003"},
 	}, nil
 }
@@ -783,32 +795,18 @@ func VerifyVoterEligibilityProof(proof, publicKey string, electionID int) (bool,
 	return len(proof) >= 32 && len(publicKey) >= 16, nil
 }
 
-// ── IPFS stub functions ────────────────────────────────────────────────────────
-
+// IPFS and EVM anchoring are intentionally unavailable until real external
+// endpoints and credentials are configured. The platform must never fabricate
+// a CID, transaction hash, block number, or verification result.
 func AnchorToIPFS(eventType string, eventData interface{}, electionID int) (interface{}, error) {
-	data, _ := json.Marshal(eventData)
-	cid := simulateIPFSStore(data)
-	txHash, blockNum := simulateBlockchainAnchor(cid, fmt.Sprintf("%x", data[:min8(8)]))
-	return M{
-		"cid":        cid,
-		"tx_hash":    txHash,
-		"block_num":  blockNum,
-		"event_type": eventType,
-		"election_id": electionID,
-		"anchored_at": time.Now().UTC(),
-	}, nil
+	return nil, fmt.Errorf("IPFS and blockchain anchoring is not configured; set a real IPFS API and EVM anchor integration before invoking this endpoint")
 }
 
 func VerifyIPFSRecord(cid string) (interface{}, error) {
 	if len(cid) < 10 {
 		return nil, fmt.Errorf("invalid CID format")
 	}
-	return M{
-		"cid":       cid,
-		"valid":     true,
-		"integrity": "verified",
-		"checked_at": time.Now().UTC(),
-	}, nil
+	return nil, fmt.Errorf("IPFS verification is not configured; no fabricated verification result is available")
 }
 
 // ── Environment helper (local to avoid conflict) ──────────────────────────────

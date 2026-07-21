@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
 
-	"inec-go-backend/internal/auth"
+	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
+	"inec-go-backend/internal/auth"
 )
 
 var mfaService *auth.MFAService
@@ -174,6 +176,35 @@ func handleMFAWebAuthnList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]interface{}{"credentials": creds, "total": len(creds)})
+}
+
+// handleMFAWebAuthnDelete removes one of the authenticated user's registered
+// credentials. The user scope is always enforced by the MFA service.
+func handleMFAWebAuthnDelete(w http.ResponseWriter, r *http.Request) {
+	claims, err := getCurrentUser(r)
+	if err != nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	credentialID := mux.Vars(r)["credentialID"]
+	if credentialID == "" {
+		http.Error(w, `{"error":"credential ID is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	userID, _ := strconv.Atoi(claims["sub"].(string))
+	if err := mfaService.DeleteWebAuthnCredential(r.Context(), userID, credentialID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"credential not found"}`, http.StatusNotFound)
+			return
+		}
+		log.Error().Err(err).Int("user_id", userID).Msg("Failed to delete WebAuthn credential")
+		http.Error(w, `{"error":"failed to delete credential"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleMFABackupCodes regenerates backup codes (requires current code verification).

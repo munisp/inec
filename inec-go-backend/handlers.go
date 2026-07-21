@@ -483,23 +483,13 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tbTransfer := createTBTransfer(0, int64(totalCast), req.PollingUnitCode)
-	tbID := ""
-	if tbTransfer != nil {
-		tbID = tbTransfer.ID
+	tbTransfer, tbErr := createTBTransfer(0, int64(totalCast), req.PollingUnitCode)
+	if tbErr != nil {
+		log.Error().Err(tbErr).Str("pu_code", req.PollingUnitCode).Msg("Native TigerBeetle transfer creation failed")
+		writeError(w, http.StatusServiceUnavailable, "TigerBeetle ledger is unavailable; result submission was not recorded")
+		return
 	}
-
-	var ptbID string
-	if persistentTB != nil {
-		var tbErr error
-		ptbID, tbErr = persistentTB.CreateTransfer("inec-operational", "inec-official", int64(totalCast), 1, 1, req.PollingUnitCode)
-		if tbErr != nil {
-			log.Error().Err(tbErr).Str("pu_code", req.PollingUnitCode).Msg("TigerBeetle transfer failed")
-		}
-	}
-	if ptbID != "" {
-		tbID = ptbID
-	}
+	tbID := tbTransfer.ID
 
 	// Use transaction for atomic result + party scores insert
 	tx, txErr := db.BeginTx(r.Context(), nil)
@@ -637,52 +627,29 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	var tbTransferID sql.NullString
 	dbQueryRowCtx(r.Context(), "SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
-		postTBTransfer(tbTransferID.String)
-		if persistentTB != nil {
-			persistentTB.PostTransfer(tbTransferID.String)
+		if err := postTBTransfer(tbTransferID.String); err != nil {
+			log.Error().Err(err).Str("transfer_id", tbTransferID.String).Msg("Native TigerBeetle transfer posting failed")
+			writeError(w, http.StatusServiceUnavailable, "TigerBeetle ledger posting failed; result was not finalized")
+			return
 		}
 	}
 
-	var hlTx, ipfsCid string
 	idInt, _ := strconv.ParseInt(id, 10, 64)
-	var electionID, totalVotes, accredited int
-	dbQueryRowCtx(r.Context(), "SELECT election_id, total_votes_cast, accredited_voters FROM results WHERE id=?", id).Scan(&electionID, &totalVotes, &accredited)
 
-	if fabricNetwork != nil {
-		txID, _, _ := fabricNetwork.SubmitTransaction("inec-results", "result-validation-cc", "FinalizeResult",
-			[]string{id, puCode, fmt.Sprintf("%d", electionID)}, "INECMSP")
-		hlTx = txID
-	}
-	if hlTx == "" {
-		hlTx = fmt.Sprintf("TX-%x", sha256.Sum256([]byte(fmt.Sprintf("finalize-%s-%d", id, time.Now().UnixNano()))))
-		hlTx = hlTx[:26]
-	}
-
-	if ipfsStore != nil {
-		resultData := map[string]interface{}{"result_id": id, "pu_code": puCode, "election_id": electionID, "status": "finalized", "timestamp": time.Now().UTC().Format(time.RFC3339)}
-		cid, _ := ipfsStore.StoreJSON(resultData, "election/result-finalization")
-		ipfsCid = cid
-	}
-	if ipfsCid == "" {
-		h := sha256.Sum256([]byte(fmt.Sprintf("result-%s-%d", id, time.Now().UnixNano())))
-		ipfsCid = "Qm" + hex.EncodeToString(h[:])
-	}
-
-	if chaincodeEngine != nil {
-		chaincodeEngine.ExecuteResultValidation(int(idInt), puCode, electionID, totalVotes, accredited)
-	}
-
+	// External Fabric/IPFS anchoring is deliberately not fabricated. The
+	// election result is finalized only after its real TigerBeetle transfer is
+	// posted; external anchoring remains explicitly unconfigured.
 	dbExecCtx(r.Context(), `UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
-		tigerbeetle_status='POSTED', hyperledger_status='CONFIRMED', hyperledger_tx_id=?, ipfs_cid=? WHERE id=?`, hlTx, ipfsCid, id)
-	logAudit("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"phase": "Finalization", "polling_unit": puCode, "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
+		tigerbeetle_status='POSTED', hyperledger_status='NOT_CONFIGURED', hyperledger_tx_id=NULL, ipfs_cid=NULL WHERE id=?`, id)
+	logAudit("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"phase": "Finalization", "polling_unit": puCode, "external_anchoring": "not_configured"})
 
 	go publishResultEvent(TopicResultFinalized, idInt, puCode, 0, uid,
-		map[string]interface{}{"phase": "Finalization", "hyperledger_tx": hlTx, "ipfs_cid": ipfsCid})
+		map[string]interface{}{"phase": "Finalization", "external_anchoring": "not_configured"})
 	go publishAuditEvent("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
 
 	startResultWorkflow("ResultFinalizationWorkflow", idInt, map[string]interface{}{"result_id": id})
 
-	writeJSON(w, 200, M{"status": "finalized", "phase": "Finalization", "hyperledger_tx_id": hlTx, "ipfs_cid": ipfsCid, "tigerbeetle_status": "POSTED", "hyperledger_status": "CONFIRMED"})
+	writeJSON(w, 200, M{"status": "finalized", "phase": "Finalization", "tigerbeetle_status": "POSTED", "hyperledger_status": "NOT_CONFIGURED", "external_anchoring": "not_configured"})
 }
 
 func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
@@ -712,15 +679,11 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	var tbTransferID sql.NullString
 	dbQueryRowCtx(r.Context(), "SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
-		voidTBTransfer(tbTransferID.String)
-		if persistentTB != nil {
-			persistentTB.VoidTransfer(tbTransferID.String)
+		if err := voidTBTransfer(tbTransferID.String); err != nil {
+			log.Error().Err(err).Str("transfer_id", tbTransferID.String).Msg("Native TigerBeetle transfer voiding failed")
+			writeError(w, http.StatusServiceUnavailable, "TigerBeetle ledger void failed; result was not disputed")
+			return
 		}
-	}
-
-	if fabricNetwork != nil {
-		fabricNetwork.SubmitTransaction("inec-results", "dispute-resolution-cc", "DisputeResult",
-			[]string{id, puCode, fmt.Sprintf("%d", uid)}, "INECMSP")
 	}
 
 	dbExecCtx(r.Context(), "UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)

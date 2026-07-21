@@ -81,10 +81,10 @@ func handleMLMonitoring(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":           "operational",
+		"status":            "operational",
 		"total_predictions": len(preds),
-		"active_alerts":    len(alerts),
-		"monitoring_data":  monitor,
+		"active_alerts":     len(alerts),
+		"monitoring_data":   monitor,
 	})
 }
 
@@ -122,8 +122,8 @@ func handleMLWeights(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"weights": weights,
-		"total":   len(weights),
+		"weights":    weights,
+		"total":      len(weights),
 		"models_dir": mlModelsDir,
 	})
 }
@@ -142,14 +142,7 @@ func handleMLPredictFraud(w http.ResponseWriter, r *http.Request) {
 		"POST", pythonAnalyticsURL()+"/ml/predict/fraud", body)
 
 	if err != nil {
-		// Fallback: use Go-side heuristic scoring
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"model":    "heuristic-fallback",
-			"score":    0.0,
-			"is_fraud": false,
-			"note":     "Python analytics unavailable, using heuristic fallback",
-		})
+		http.Error(w, `{"error":"trained fraud analytics service unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -171,12 +164,7 @@ func handleMLPredictEngagement(w http.ResponseWriter, r *http.Request) {
 		"POST", pythonAnalyticsURL()+"/ml/predict/engagement", body)
 
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"model": "heuristic-fallback",
-			"score": 50.0,
-			"note":  "Python analytics unavailable",
-		})
+		http.Error(w, `{"error":"trained engagement analytics service unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 

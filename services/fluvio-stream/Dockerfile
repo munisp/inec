@@ -1,16 +1,24 @@
-FROM rust:1.77-alpine AS builder
+FROM rust:1.89-slim-trixie AS builder
 
-RUN apk add --no-cache musl-dev
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+ENV CARGO_HTTP_TIMEOUT=600 \
+    CARGO_NET_RETRY=10 \
+    CARGO_HTTP_MULTIPLEXING=false
 COPY Cargo.toml Cargo.lock* ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
+RUN mkdir src && printf 'fn main() {}\n' > src/main.rs && cargo build --release && rm -rf src
 
 COPY src ./src
 RUN cargo build --release
 
-FROM alpine:3.19
-RUN apk add --no-cache ca-certificates
-COPY --from=builder /app/target/release/fluvio-stream /fluvio-stream
-EXPOSE 8098
-ENTRYPOINT ["/fluvio-stream"]
+FROM debian:trixie-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/fluvio-stream /usr/local/bin/fluvio-stream
+
+EXPOSE 8100
+ENTRYPOINT ["/usr/local/bin/fluvio-stream"]

@@ -4,7 +4,6 @@ Provides typed Python clients for:
 - Auth service (token validation for protected endpoints)
 - Election service (form template lookup)
 - Compliance service (audit logging for document processing)
-- Middleware service (event publishing for processed documents)
 """
 
 import os
@@ -91,17 +90,6 @@ class ComplianceClient(ServiceClient):
         )
 
 
-class MiddlewareClient(ServiceClient):
-    def __init__(self, base_url: str | None = None):
-        url = base_url or os.getenv("MIDDLEWARE_URL", "http://localhost:8085")
-        super().__init__("middleware-svc", url)
-
-    async def publish_event(self, topic: str, key: str, value: Any) -> dict:
-        return await self.post(
-            "/kafka/publish", {"topic": topic, "key": key, "value": value}
-        )
-
-
 class ServiceRegistry:
     """Holds typed clients for all services Document AI talks to."""
 
@@ -109,10 +97,9 @@ class ServiceRegistry:
         self.auth = AuthServiceClient()
         self.election = ElectionServiceClient()
         self.compliance = ComplianceClient()
-        self.middleware = MiddlewareClient()
 
     async def close(self):
-        for client in [self.auth, self.election, self.compliance, self.middleware]:
+        for client in [self.auth, self.election, self.compliance]:
             await client.close()
 
     async def health_check(self) -> dict[str, bool]:
@@ -121,7 +108,6 @@ class ServiceRegistry:
             "auth": self.auth.health(),
             "election": self.election.health(),
             "compliance": self.compliance.health(),
-            "middleware": self.middleware.health(),
         }
         results = await asyncio.gather(*checks.values(), return_exceptions=True)
         return {name: (r is True) for name, r in zip(checks.keys(), results)}

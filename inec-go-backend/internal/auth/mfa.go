@@ -22,35 +22,35 @@ import (
 type MFAMethod string
 
 const (
-	MFAMethodTOTP    MFAMethod = "totp"
+	MFAMethodTOTP     MFAMethod = "totp"
 	MFAMethodWebAuthn MFAMethod = "webauthn"
 )
 
 // MFASetup contains the data needed to set up TOTP.
 type MFASetup struct {
-	Secret    string `json:"secret"`
-	URI       string `json:"uri"`
-	QRCode    string `json:"qr_code_data"` // Base64 PNG of QR code
+	Secret      string   `json:"secret"`
+	URI         string   `json:"uri"`
+	QRCode      string   `json:"qr_code_data"` // Base64 PNG of QR code
 	BackupCodes []string `json:"backup_codes"`
 }
 
 // WebAuthnCredential stores a registered WebAuthn credential.
 type WebAuthnCredential struct {
-	ID            string    `json:"id"`
-	PublicKey     []byte    `json:"public_key"`
-	CredentialID  []byte    `json:"credential_id"`
-	SignCount     uint32    `json:"sign_count"`
-	DeviceName    string    `json:"device_name"`
-	CreatedAt     time.Time `json:"created_at"`
-	LastUsed      time.Time `json:"last_used"`
+	ID           string    `json:"id"`
+	PublicKey    []byte    `json:"public_key"`
+	CredentialID []byte    `json:"credential_id"`
+	SignCount    uint32    `json:"sign_count"`
+	DeviceName   string    `json:"device_name"`
+	CreatedAt    time.Time `json:"created_at"`
+	LastUsed     time.Time `json:"last_used"`
 }
 
 // MFAService handles multi-factor authentication.
 type MFAService struct {
-	db      *sql.DB
-	issuer  string
-	digits  int
-	period  int
+	db     *sql.DB
+	issuer string
+	digits int
+	period int
 }
 
 // NewMFAService creates a new MFA service.
@@ -223,9 +223,11 @@ func (m *MFAService) DisableTOTP(ctx context.Context, userID int) error {
 // GetStatus returns MFA status for a user.
 func (m *MFAService) GetStatus(ctx context.Context, userID int) (map[string]interface{}, error) {
 	status := map[string]interface{}{
-		"totp_enabled":    false,
-		"totp_verified":   false,
-		"webauthn_count":  0,
+		"totp_enabled":           false,
+		"totp_verified":          false,
+		"webauthn_count":         0,
+		"webauthn_enabled":       false,
+		"webauthn_devices":       0,
 		"backup_codes_remaining": 0,
 	}
 
@@ -242,6 +244,10 @@ func (m *MFAService) GetStatus(ctx context.Context, userID int) (map[string]inte
 	m.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = $1`, userID).Scan(&webauthnCount)
 	status["webauthn_count"] = webauthnCount
+	// webauthn_enabled and webauthn_devices are the public web-client
+	// contract; retain webauthn_count for existing API consumers.
+	status["webauthn_enabled"] = webauthnCount > 0
+	status["webauthn_devices"] = webauthnCount
 
 	var backupRemaining int
 	m.db.QueryRowContext(ctx,
@@ -445,10 +451,20 @@ func (m *MFAService) DeleteWebAuthnCredential(ctx context.Context, userID int, c
 	if err != nil {
 		return fmt.Errorf("invalid credential ID")
 	}
-	_, err = m.db.ExecContext(ctx,
+	result, err := m.db.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id = $2`,
 		userID, decoded)
-	return err
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // RegenerateBackupCodes invalidates old codes and generates a fresh set.

@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strings"
 
 	tb "github.com/tigerbeetle/tigerbeetle-go"
 	tb_types "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
@@ -14,9 +18,12 @@ type tbNativeClient struct {
 	client tb.Client
 }
 
-func newTBNativeClient(address string) (TigerBeetleClient, error) {
+func newTBNativeClient(addresses []string) (TigerBeetleClient, error) {
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("at least one TigerBeetle address is required")
+	}
 	clusterID := tb_types.ToUint128(0)
-	client, err := tb.NewClient(clusterID, []string{address})
+	client, err := tb.NewClient(clusterID, addresses)
 	if err != nil {
 		return nil, err
 	}
@@ -35,17 +42,44 @@ func uint128ToInt64(v tb_types.Uint128) int64 {
 
 func stringToUint128(s string) tb_types.Uint128 {
 	v, err := tb_types.HexStringToUint128(s)
-	if err != nil {
-		b := big.NewInt(0)
-		for i, c := range s {
-			b.Add(b, big.NewInt(int64(c)*int64(i+1)))
-		}
-		return tb_types.BigIntToUint128(*b)
+	if err == nil {
+		return v
 	}
-	return v
+
+	// Platform identifiers are often UUIDs or opaque string keys. Map non-hex
+	// values deterministically through the first 128 bits of SHA-256 rather than
+	// using an arithmetic checksum that could collide across accounts.
+	digest := sha256.Sum256([]byte(s))
+	return tb_types.BigIntToUint128(*new(big.Int).SetBytes(digest[:16]))
+}
+
+func assignNativeTransferID(transfer *TBTransfer) error {
+	if strings.TrimSpace(transfer.ID) != "" {
+		return nil
+	}
+	if key := strings.TrimSpace(transfer.IdempotencyKey); key != "" {
+		transfer.ID = "tb-transfer:" + key
+		return nil
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Errorf("generate TigerBeetle transfer ID: %w", err)
+	}
+	transfer.ID = "tb-transfer:" + hex.EncodeToString(raw[:])
+	return nil
 }
 
 func (t *tbNativeClient) CreateTransfer(_ context.Context, transfer TBTransfer) (*TBTransfer, error) {
+	if strings.TrimSpace(transfer.DebitAccountID) == "" || strings.TrimSpace(transfer.CreditAccountID) == "" {
+		return nil, fmt.Errorf("TigerBeetle debit and credit account IDs are required")
+	}
+	if transfer.Amount <= 0 {
+		return nil, fmt.Errorf("TigerBeetle transfer amount must be positive")
+	}
+	if err := assignNativeTransferID(&transfer); err != nil {
+		return nil, err
+	}
+	pending := transfer.Status == "" || strings.EqualFold(transfer.Status, "PENDING")
 	tbTransfer := tb_types.Transfer{
 		ID:              stringToUint128(transfer.ID),
 		DebitAccountID:  stringToUint128(transfer.DebitAccountID),
@@ -53,6 +87,7 @@ func (t *tbNativeClient) CreateTransfer(_ context.Context, transfer TBTransfer) 
 		Amount:          int64ToUint128(transfer.Amount),
 		Ledger:          uint32(transfer.Ledger),
 		Code:            uint16(transfer.Code),
+		Flags:           tb_types.TransferFlags{Pending: pending}.ToUint16(),
 	}
 	results, err := t.client.CreateTransfers([]tb_types.Transfer{tbTransfer})
 	if err != nil {
@@ -61,7 +96,11 @@ func (t *tbNativeClient) CreateTransfer(_ context.Context, transfer TBTransfer) 
 	if len(results) > 0 {
 		return nil, fmt.Errorf("create transfer failed: %v", results[0].Result)
 	}
-	transfer.Status = "POSTED"
+	if pending {
+		transfer.Status = "PENDING"
+	} else {
+		transfer.Status = "POSTED"
+	}
 	return &transfer, nil
 }
 
@@ -91,8 +130,14 @@ func (t *tbNativeClient) VoidTransfer(_ context.Context, transferID string) erro
 		PendingID: stringToUint128(transferID),
 		Flags:     tb_types.TransferFlags{VoidPendingTransfer: true}.ToUint16(),
 	}
-	_, err := t.client.CreateTransfers([]tb_types.Transfer{voidTransfer})
-	return err
+	results, err := t.client.CreateTransfers([]tb_types.Transfer{voidTransfer})
+	if err != nil {
+		return fmt.Errorf("void transfer: %w", err)
+	}
+	if len(results) > 0 {
+		return fmt.Errorf("void transfer failed: %v", results[0].Result)
+	}
+	return nil
 }
 
 func (t *tbNativeClient) PostTransfer(_ context.Context, transferID string) error {
@@ -101,8 +146,14 @@ func (t *tbNativeClient) PostTransfer(_ context.Context, transferID string) erro
 		PendingID: stringToUint128(transferID),
 		Flags:     tb_types.TransferFlags{PostPendingTransfer: true}.ToUint16(),
 	}
-	_, err := t.client.CreateTransfers([]tb_types.Transfer{postTransfer})
-	return err
+	results, err := t.client.CreateTransfers([]tb_types.Transfer{postTransfer})
+	if err != nil {
+		return fmt.Errorf("post transfer: %w", err)
+	}
+	if len(results) > 0 {
+		return fmt.Errorf("post transfer failed: %v", results[0].Result)
+	}
+	return nil
 }
 
 func (t *tbNativeClient) CreateAccount(_ context.Context, account TBAccount) error {

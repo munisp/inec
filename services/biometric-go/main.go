@@ -39,10 +39,10 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	// Connect to PostgreSQL — required, no fallback to in-memory
+	// Connect to PostgreSQL — required; no local credentials or in-memory fallback.
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgresql://ngapp:ngapp123@localhost:5432/ngapp"
+		log.Fatal().Msg("DATABASE_URL is required for the PostgreSQL-backed ABIS pipeline")
 	}
 
 	ctx := context.Background()

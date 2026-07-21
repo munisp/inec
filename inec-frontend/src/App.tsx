@@ -55,6 +55,10 @@ const ComplianceReportPage = lazy(() => import('@/pages/ComplianceReportPage'));
 const IntegrityScorePage = lazy(() => import('@/pages/IntegrityScorePage'));
 const MLDashboardPage = lazy(() => import('@/pages/MLDashboardPage'));
 const GeoLibreMapPage = lazy(() => import('@/pages/GeoLibreMapPage'));
+const GOTVPortalPage = lazy(() => import('@/pages/GOTVPortalPage'));
+const PartyPrimariesPage = lazy(() => import('@/pages/PartyPrimariesPage'));
+const EnrollmentKioskPage = lazy(() => import('@/pages/EnrollmentKioskPage'));
+const StakeholderWorkflowPage = lazy(() => import('@/pages/StakeholderWorkflowPage'));
 
 function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
@@ -126,6 +130,10 @@ function AppContent() {
     'integrity-score': <IntegrityScorePage />,
     'ml-dashboard': <MLDashboardPage />,
     'geolibre-map': <GeoLibreMapPage />,
+    'gotv-portal': <GOTVPortalPage />,
+    'party-primaries': <PartyPrimariesPage />,
+    'enrollment-kiosk': <EnrollmentKioskPage />,
+    'stakeholder-workflows': <StakeholderWorkflowPage />,
   };
 
   return (

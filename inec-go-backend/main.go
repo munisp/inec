@@ -72,14 +72,9 @@ func main() {
 	// Initialize Prometheus metrics
 	initMetrics()
 
-	dsn := os.Getenv("DATABASE_URL")
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if dsn == "" {
-		if os.Getenv("INEC_ENV") == "development" || os.Getenv("INEC_ENV") == "" {
-			dsn = "postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable"
-			log.Warn().Msg("DATABASE_URL not set — using local dev default")
-		} else {
-			log.Fatal().Msg("DATABASE_URL environment variable is required in production")
-		}
+		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
 
 	db = openDatabase(dsn)
@@ -104,19 +99,13 @@ func main() {
 	initGORM(os.Getenv("DATABASE_URL"))
 
 	if err := runMigrations(db); err != nil {
-		log.Warn().Err(err).Msg("Migration runner encountered issues (non-fatal — initDB already created schema)")
+		log.Fatal().Err(err).Msg("Migration runner failed")
 	}
 
-	seedDatabase(db)
-	seedBVASDevices(db)
 	initEMSTables(db)
-	seedEMSData(db)
 	initPhase7Tables(db)
-	seedPhase7Data(db)
 	initBiometricEngine(db)
-	seedBiometricEngine(db)
 	initBiometricAdvanced(db)
-	seedBiometricAdvanced(db)
 	initAIProxy()
 	initBlockchainProduction(db)
 	initProductionUpgrades(db)
@@ -141,8 +130,6 @@ func main() {
 	initGOTVTables()
 	initGOTVEncryption()
 	initMFA()
-	seedComprehensive(db)
-	seedAllTables(db)
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
 	initSchemaCompatibility(db)
@@ -162,8 +149,6 @@ func main() {
 	// Initialize service-oriented architecture layer (circuit breakers, event bus, tracing)
 	initArchitecture()
 
-	// Seed search indices after hub is ready
-	go seedSearchIndices(db)
 	// Start background cache cleanup
 	go cleanupExpiredCache()
 
@@ -541,19 +526,20 @@ func main() {
 	r.HandleFunc("/blockchain/verify/{result_id}", readAuth(handleBlockchainVerifyResult)).Methods("GET")
 	r.HandleFunc("/blockchain/audit", readAuth(handleBlockchainAuditTrail)).Methods("GET")
 
-	// Production Blockchain & Ledger — auth required
-	r.HandleFunc("/blockchain/production/stats", readAuth(handleBlockchainProductionStats)).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/network", readAuth(handleFabricNetworkStats)).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/blocks", readAuth(handleFabricBlocks)).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/transactions", readAuth(handleFabricTransactions)).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/verify-chain", readAuth(handleFabricVerifyChain)).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/submit", adminOnly(handleFabricSubmitTx)).Methods("POST")
-	r.HandleFunc("/blockchain/chaincode/validate-result", writeAuth(handleChaincodeValidateResult)).Methods("POST")
-	r.HandleFunc("/blockchain/chaincode/aggregate", writeAuth(handleChaincodeAggregate)).Methods("POST")
-	r.HandleFunc("/blockchain/ipfs/stats", readAuth(handleIPFSStats)).Methods("GET")
-	r.HandleFunc("/blockchain/ipfs/store", writeAuth(handleIPFSStore)).Methods("POST")
-	r.HandleFunc("/blockchain/ipfs/verify", readAuth(handleIPFSVerify)).Methods("GET")
-	r.HandleFunc("/blockchain/ipfs/objects", readAuth(handleIPFSObjects)).Methods("GET")
+	// Native ledger and deterministic Merkle APIs. Fabric/IPFS routes are retained
+	// only as explicit unavailable responses until genuine external gateways are configured.
+	r.HandleFunc("/blockchain/production/stats", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/network", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/blocks", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/transactions", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/verify-chain", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/submit", adminOnly(handleExternalBlockchainUnavailable)).Methods("POST")
+	r.HandleFunc("/blockchain/chaincode/validate-result", writeAuth(handleExternalBlockchainUnavailable)).Methods("POST")
+	r.HandleFunc("/blockchain/chaincode/aggregate", writeAuth(handleExternalBlockchainUnavailable)).Methods("POST")
+	r.HandleFunc("/blockchain/ipfs/stats", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/ipfs/store", writeAuth(handleExternalBlockchainUnavailable)).Methods("POST")
+	r.HandleFunc("/blockchain/ipfs/verify", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
+	r.HandleFunc("/blockchain/ipfs/objects", readAuth(handleExternalBlockchainUnavailable)).Methods("GET")
 	r.HandleFunc("/blockchain/ledger/stats", readAuth(handlePersistentTBStats)).Methods("GET")
 	r.HandleFunc("/blockchain/ledger/accounts", readAuth(handlePersistentTBAccounts)).Methods("GET")
 	r.HandleFunc("/blockchain/ledger/transfers", readAuth(handlePersistentTBTransfers)).Methods("GET")
@@ -638,6 +624,7 @@ func main() {
 	r.HandleFunc("/admin/data-retention", readAuth(handleDataRetentionStatus)).Methods("GET")
 	r.HandleFunc("/middleware/kafka/topics", readAuth(handleKafkaTopics)).Methods("GET")
 	r.HandleFunc("/middleware/temporal/workflows", readAuth(handleTemporalWorkflows)).Methods("GET")
+	r.HandleFunc("/middleware/temporal/workflows", writeAuth(handleTemporalStartWorkflow)).Methods("POST")
 	r.HandleFunc("/middleware/temporal/workflows/{id}", readAuth(handleTemporalWorkflowStatus)).Methods("GET")
 	r.HandleFunc("/middleware/tigerbeetle/accounts", readAuth(handleTBAccounts)).Methods("GET")
 	r.HandleFunc("/middleware/tigerbeetle/transfers", readAuth(handleTBTransfers)).Methods("GET")
@@ -711,6 +698,7 @@ func main() {
 	r.HandleFunc("/auth/mfa/webauthn/begin", writeAuth(handleMFAWebAuthnBegin)).Methods("POST")
 	r.HandleFunc("/auth/mfa/webauthn/complete", writeAuth(handleMFAWebAuthnComplete)).Methods("POST")
 	r.HandleFunc("/auth/mfa/webauthn/list", readAuth(handleMFAWebAuthnList)).Methods("GET")
+	r.HandleFunc("/auth/mfa/webauthn/credentials/{credentialID}", writeAuth(handleMFAWebAuthnDelete)).Methods("DELETE")
 	r.HandleFunc("/auth/mfa/backup-codes", writeAuth(handleMFABackupCodes)).Methods("POST")
 
 	// Citizen Portal (#6) + Cryptographic Result Chain (#4)
@@ -1032,12 +1020,12 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 	}
 	limits := []rateRule{
 		// Auth endpoints: aggressive limits (brute-force protection)
-		{"/auth/login", limit("RATE_LIMIT_LOGIN", 5), time.Minute}, // 5 login attempts per minute per IP
-		{"/auth/register", limit("RATE_LIMIT_REGISTER", 3), time.Minute}, // 3 registrations per minute per IP
-		{"/auth/refresh", limit("RATE_LIMIT_REFRESH", 10), time.Minute}, // 10 token refreshes per minute
+		{"/auth/login", limit("RATE_LIMIT_LOGIN", 5), time.Minute},                     // 5 login attempts per minute per IP
+		{"/auth/register", limit("RATE_LIMIT_REGISTER", 3), time.Minute},               // 3 registrations per minute per IP
+		{"/auth/refresh", limit("RATE_LIMIT_REFRESH", 10), time.Minute},                // 10 token refreshes per minute
 		{"/auth/forgot-password", limit("RATE_LIMIT_FORGOT_PASSWORD", 2), time.Minute}, // 2 password reset requests per minute
-		{"/sms/send-otp", limit("RATE_LIMIT_SMS_OTP_SEND", 2), time.Minute}, // 2 OTP sends per minute
-		{"/sms/verify-otp", limit("RATE_LIMIT_SMS_OTP_VERIFY", 5), time.Minute}, // 5 OTP verifications per minute
+		{"/sms/send-otp", limit("RATE_LIMIT_SMS_OTP_SEND", 2), time.Minute},            // 2 OTP sends per minute
+		{"/sms/verify-otp", limit("RATE_LIMIT_SMS_OTP_VERIFY", 5), time.Minute},        // 5 OTP verifications per minute
 		// Data endpoints
 		{"/geo/tiles", limit("RATE_LIMIT_GEO_TILES", 120), time.Minute},
 		{"/dashboard/metrics", limit("RATE_LIMIT_DASHBOARD_METRICS", 30), time.Minute},
