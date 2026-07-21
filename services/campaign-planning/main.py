@@ -19,8 +19,6 @@ import asyncio
 import json
 import math
 import os
-import random
-import statistics
 import time
 import uuid
 from collections import defaultdict
@@ -262,445 +260,75 @@ def engine_eligibility(candidate_id: int, office_type: str, state_code: str, par
     }
 
 
-def engine_targeting(candidate_id: str, state_code: str, party_code: str,
-                      office_type: str, target_votes: int) -> Dict:
-    st = _state(state_code)
-    total_voters = st["voters"]
-    swing = st["swing"]
-    zone  = st["zone"]
-    num_lgas = st["lgas"]
+DISABLED_DATA_FEATURES = {
+    "campaign_plan": "authoritative polling, survey, media, donor, volunteer, and canvassing data",
+    "voter_targeting": "authoritative polling and voter-segmentation data",
+    "budget_allocation": "approved campaign cost, reach, and conversion data",
+    "campaign_schedule": "authoritative event, venue, and constituency data",
+    "sentiment_analysis": "authoritative social-listening and media-ingestion data",
+    "opponent_analysis": "authoritative public-record and polling data",
+    "canvassing_routes": "authoritative polling-unit geography and canvassing data",
+    "fundraising": "authoritative donor CRM and contribution data",
+    "media_buy": "approved media inventory, pricing, and reach data",
+    "policy_resonance": "authoritative constituency research and policy-response data",
+    "war_room": "authoritative live incident, agent, and results data",
+    "debate_tracker": "approved NLP model and verified debate transcript data",
+    "volunteer_network": "authoritative volunteer CRM and relationship data",
+    "stakeholder_recommendations": "authoritative stakeholder registry and engagement data",
+}
 
-    lga_data = []
-    for i in range(num_lgas):
-        lga_voters = total_voters // num_lgas
-        base_support = random.uniform(0.25, 0.65)
-        sw = random.uniform(0.10, swing)
-        priority = "high" if sw > 0.35 and base_support > 0.35 else "medium" if sw > 0.20 else "low"
-        lga_data.append({
-            "lga_index": i + 1,
-            "registered_voters": lga_voters,
-            "base_support_pct": round(base_support * 100, 1),
-            "swing_potential_pct": round(sw * 100, 1),
-            "target_priority": priority,
-            "recommended_visits": 3 if priority == "high" else 2 if priority == "medium" else 1,
-            "votes_available": int(lga_voters * sw * 0.6),
-        })
 
-    high_prio = [l for l in lga_data if l["target_priority"] == "high"]
-    targetable = sum(l["votes_available"] for l in lga_data)
-    gap = max(0, target_votes - int(total_voters * 0.25))
-    demo = {
-        "youth_18_35_pct": round(random.uniform(38, 48), 1),
-        "women_pct": round(random.uniform(44, 52), 1),
-        "urban_pct": round(random.uniform(35, 65), 1),
-        "first_time_voters_pct": round(random.uniform(15, 25), 1),
-    }
-
-    return {
-        "candidate_id": candidate_id,
-        "state_code": state_code,
-        "office_type": office_type,
-        "total_registered_voters": total_voters,
-        "target_votes": target_votes,
-        "votes_gap": gap,
-        "total_targetable_votes": targetable,
-        "feasibility_score_pct": round(min(1.0, targetable / max(gap, 1)) * 100, 1),
-        "zone": zone,
-        "demographics": demo,
-        "key_messages": {
-            "youth": ["Jobs & entrepreneurship", "Education reform", "Tech hubs"],
-            "women": ["Security & safety", "Maternal healthcare", "Economic empowerment"],
-            "rural": ["Agriculture & food security", "Rural roads", "Water & sanitation"],
-            "urban": ["Traffic & transport", "Power supply", "Business environment"],
+def campaign_data_unavailable(feature: str):
+    required = DISABLED_DATA_FEATURES[feature]
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "status": "disabled",
+            "feature": feature,
+            "reason": "authoritative data integration is not configured",
+            "required_data": required,
         },
-        "lga_targeting": lga_data,
-        "high_priority_lgas": len(high_prio),
-        "focus_lga_indices": [l["lga_index"] for l in high_prio[:5]],
-        "strategy_summary": (
-            f"Focus on {len(high_prio)} high-swing LGAs. "
-            f"Youth (18-35) = {demo['youth_18_35_pct']}% of voters — prioritise digital & radio. "
-            f"Need {gap:,} additional votes beyond base support."
-        ),
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    )
 
 
-def engine_budget(candidate_id: str, election_id: str, total: int,
-                   state_code: str, office_type: str) -> Dict:
-    st = _state(state_code)
-    total_voters = st["voters"]
+def engine_targeting(candidate_id: str, state_code: str, party_code: str, office_type: str, target_votes: int) -> Dict:
+    return campaign_data_unavailable("voter_targeting")
 
-    cpv = {"tv": 45, "radio": 12, "social": 8, "billboard": 25,
-           "rally": 18, "sms": 3, "newspaper": 30, "ground_ops": 15, "polling_agents": 20}
 
-    weights_by_office = {
-        "presidential":  {"tv":0.25,"radio":0.15,"social":0.15,"billboard":0.08,"rally":0.15,"sms":0.05,"newspaper":0.05,"ground_ops":0.07,"polling_agents":0.05},
-        "gubernatorial": {"tv":0.20,"radio":0.18,"social":0.12,"billboard":0.10,"rally":0.18,"sms":0.05,"newspaper":0.05,"ground_ops":0.07,"polling_agents":0.05},
-        "senatorial":    {"tv":0.10,"radio":0.20,"social":0.15,"billboard":0.10,"rally":0.20,"sms":0.07,"newspaper":0.05,"ground_ops":0.08,"polling_agents":0.05},
-        "house":         {"tv":0.05,"radio":0.18,"social":0.18,"billboard":0.08,"rally":0.22,"sms":0.08,"newspaper":0.04,"ground_ops":0.10,"polling_agents":0.07},
-        "local":         {"tv":0.02,"radio":0.15,"social":0.15,"billboard":0.08,"rally":0.30,"sms":0.10,"newspaper":0.03,"ground_ops":0.12,"polling_agents":0.05},
-    }
-    w = weights_by_office.get(office_type, weights_by_office["house"])
-
-    allocation, total_reach = [], 0
-    for ch, wt in w.items():
-        amt = int(total * wt)
-        reach = int(amt / cpv.get(ch, 20))
-        total_reach += reach
-        allocation.append({
-            "channel": ch, "amount_ngn": amt, "percentage": round(wt * 100, 1),
-            "estimated_reach": reach, "cost_per_voter_ngn": cpv.get(ch, 20),
-            "roi_score": round(1 / cpv.get(ch, 20) * 100, 2),
-        })
-    allocation.sort(key=lambda x: x["roi_score"], reverse=True)
-
-    phases = [
-        {"phase": "Brand Building",    "months": "1-3",  "pct": 15, "amount_ngn": int(total * 0.15), "focus": "Name recognition, social media"},
-        {"phase": "Issue Framing",     "months": "4-6",  "pct": 20, "amount_ngn": int(total * 0.20), "focus": "Policy rollout, media interviews"},
-        {"phase": "Voter Mobilisation","months": "7-9",  "pct": 30, "amount_ngn": int(total * 0.30), "focus": "Rallies, ground ops, LGA tours"},
-        {"phase": "Final Push",        "months": "10-11","pct": 25, "amount_ngn": int(total * 0.25), "focus": "TV blitz, SMS, polling agents"},
-        {"phase": "Election Day",      "months": "12",   "pct": 10, "amount_ngn": int(total * 0.10), "focus": "War room, legal team, monitoring"},
-    ]
-
-    req_min = ELIGIBILITY.get(office_type, ELIGIBILITY["house"])["fees_ngn"]
-    return {
-        "candidate_id": candidate_id, "election_id": election_id,
-        "total_budget_ngn": total, "office_type": office_type, "state_code": state_code,
-        "total_registered_voters": total_voters, "estimated_total_reach": total_reach,
-        "cost_per_voter_ngn": round(total / max(total_reach, 1), 2),
-        "channel_allocation": allocation, "campaign_phases": phases,
-        "budget_health": {
-            "is_competitive": total >= req_min * 3,
-            "recommended_minimum_ngn": req_min * 3,
-            "contingency_reserve_pct": 10,
-        },
-        "optimised_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+def engine_budget(candidate_id: str, election_id: str, total: int, state_code: str, office_type: str) -> Dict:
+    return campaign_data_unavailable("budget_allocation")
 
 
 def engine_schedule(candidate_id: str, election_id: str, state_code: str, office_type: str) -> Dict:
-    st = _state(state_code)
-    num_lgas = st["lgas"]
-    zone = st["zone"]
-
-    events = [
-        {"week": 1,  "type": "campaign_launch",    "title": "Official Campaign Launch Rally",
-         "location": f"{state_code} State Capital", "priority": "critical", "attendance_est": 5000, "media": "national"},
-        {"week": 2,  "type": "press_conference",   "title": "Policy Manifesto Presentation",
-         "location": "INEC Press Centre",           "priority": "high",     "attendance_est": 200,  "media": "national"},
-        {"week": 3,  "type": "social_media_launch","title": "Digital Campaign Kickoff",
-         "location": "Online",                      "priority": "high",     "attendance_est": 50000,"media": "digital"},
-    ]
-
-    for i in range(min(num_lgas, 26)):
-        events.append({
-            "week": 5 + i, "type": "lga_rally",
-            "title": f"LGA {i+1} Town Hall & Rally",
-            "location": f"{state_code}-LGA{i+1:02d}",
-            "priority": "high" if i < 10 else "medium",
-            "attendance_est": random.randint(500, 3000), "media": "local",
-        })
-
-    for i, issue in enumerate(["Education","Healthcare","Security","Infrastructure","Agriculture","Youth Employment"]):
-        events.append({
-            "week": 31 + i, "type": "policy_forum", "title": f"{issue} Policy Forum",
-            "location": f"{state_code} State Capital", "priority": "medium",
-            "attendance_est": 300, "media": "regional",
-        })
-
-    events += [
-        {"week": 41, "type": "mega_rally",   "title": f"Zonal Mega Rally — {zone}",
-         "location": f"{zone} Zone", "priority": "critical", "attendance_est": 50000, "media": "national"},
-        {"week": 48, "type": "final_rally",  "title": "Grand Finale Campaign Rally",
-         "location": f"{state_code} State Capital", "priority": "critical", "attendance_est": 100000, "media": "national"},
-        {"week": 51, "type": "election_ops", "title": "Election Day War Room Activation",
-         "location": "Campaign HQ", "priority": "critical", "attendance_est": 0, "media": "internal"},
-        {"week": 52, "type": "collation_monitor","title": "Result Collation Monitoring",
-         "location": "All Collation Centres", "priority": "critical", "attendance_est": 0, "media": "legal"},
-    ]
-
-    return {
-        "candidate_id": candidate_id, "election_id": election_id,
-        "state_code": state_code, "office_type": office_type,
-        "total_events": len(events), "lga_coverage": min(num_lgas, 26),
-        "events": events,
-        "summary": {
-            "critical_events": sum(1 for e in events if e["priority"] == "critical"),
-            "high_priority_events": sum(1 for e in events if e["priority"] == "high"),
-            "total_attendance_est": sum(e["attendance_est"] for e in events),
-        },
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("campaign_schedule")
 
 
 def engine_sentiment(candidate_id: str, period: str) -> Dict:
-    days = {"7d": 7, "30d": 30, "90d": 90}.get(period, 30)
-    base = random.uniform(0.45, 0.70)
-    trend = random.choice(["improving", "stable", "declining"])
-    delta = {"improving": 0.02, "stable": 0.0, "declining": -0.02}[trend]
-
-    daily, cur = [], base
-    for d in range(days):
-        cur = max(0.1, min(0.95, cur + delta + random.uniform(-0.03, 0.03)))
-        daily.append({
-            "day": d + 1,
-            "date": time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - d) * 86400)),
-            "positive_pct": round(cur * 100, 1),
-            "neutral_pct": round(random.uniform(20, 35), 1),
-            "negative_pct": round((1 - cur) * 40, 1),
-            "volume": random.randint(500, 5000),
-        })
-
-    platforms = {
-        "twitter_x":      {"positive_pct": round(base * 100 + random.uniform(-5, 5), 1), "volume": random.randint(2000, 10000)},
-        "facebook":       {"positive_pct": round(base * 100 + random.uniform(-3, 3), 1), "volume": random.randint(5000, 20000)},
-        "whatsapp":       {"positive_pct": round(base * 100 + random.uniform(-8, 8), 1), "volume": random.randint(1000, 5000)},
-        "tiktok":         {"positive_pct": round(base * 100 + random.uniform(-10,10), 1),"volume": random.randint(500,  3000)},
-        "radio_mentions": {"positive_pct": round(base * 100 + random.uniform(-5, 5), 1), "volume": random.randint(50,    200)},
-    }
-
-    return {
-        "candidate_id": candidate_id, "period": period,
-        "overall_score": round(base * 100, 1), "trend": trend,
-        "trend_delta_pct": round(delta * 100, 1),
-        "positive_pct": round(base * 100, 1),
-        "neutral_pct": round(random.uniform(20, 35), 1),
-        "negative_pct": round((1 - base) * 40, 1),
-        "daily_trend": daily, "platform_breakdown": platforms,
-        "top_positive_keywords": random.sample(["progress","development","change","youth","security","jobs"], 3),
-        "top_negative_keywords": random.sample(["corruption","delay","promise","failed","expensive"], 2),
-        "alerts": [{"type": "positive_spike", "message": "Sentiment improving — capitalise with increased posting", "severity": "info"}] if trend == "improving" else [],
-        "analysed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("sentiment_analysis")
 
 
 def engine_opponents(candidate_id: str, state_code: str, office_type: str) -> Dict:
-    opponents = []
-    for party in ["APC", "PDP", "LP", "NNPP"][:3]:
-        strength = random.uniform(0.30, 0.70)
-        vulns = random.sample([
-            "Inconsistent voting record on education bills",
-            "Weak presence in rural LGAs",
-            "Low youth engagement metrics",
-            "Controversial security statement",
-            "Funding source questions from previous campaign",
-            "No clear infrastructure policy",
-            "Low social media following relative to party base",
-        ], k=random.randint(1, 3))
-        strengths = random.sample([
-            "Strong incumbent advantage", "High name recognition",
-            "Well-funded campaign", "Ethnic bloc support",
-            "Religious leader endorsements", "Strong ground network",
-        ], k=random.randint(1, 2))
-        opponents.append({
-            "party": party,
-            "estimated_support_pct": round(strength * 100, 1),
-            "threat_level": "high" if strength > 0.55 else "medium" if strength > 0.40 else "low",
-            "key_strengths": strengths,
-            "vulnerabilities": vulns,
-            "counter_strategy": f"Target {party} swing voters in urban LGAs with economic messaging",
-        })
-    primary = max(opponents, key=lambda x: x["estimated_support_pct"])
-    return {
-        "candidate_id": candidate_id, "state_code": state_code, "office_type": office_type,
-        "opponents": opponents, "primary_threat": primary["party"],
-        "competitive_landscape": "highly_competitive" if primary["estimated_support_pct"] > 50 else "competitive",
-        "analysed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("opponent_analysis")
 
 
 def engine_canvassing(candidate_id: str, state_code: str, lga_codes: List[str]) -> Dict:
-    st = _state(state_code)
-    base_lat = 6.5 + random.uniform(-2, 4)
-    base_lon = 3.5 + random.uniform(-1, 8)
-
-    wards = []
-    for lga in lga_codes[:20]:
-        for w in range(3):
-            wards.append({
-                "ward_id": f"{lga}-W{w+1}",
-                "lat": base_lat + random.uniform(-0.3, 0.3),
-                "lon": base_lon + random.uniform(-0.3, 0.3),
-                "registered_voters": random.randint(500, 3000),
-                "swing_potential": random.uniform(0.10, 0.50),
-            })
-
-    if not wards:
-        return {"routes": [], "total_distance_km": 0}
-
-    # Greedy nearest-neighbour TSP
-    visited = [wards[0]]
-    remaining = wards[1:]
-    total_dist = 0.0
-    while remaining:
-        last = visited[-1]
-        nearest = min(remaining, key=lambda w: (w["lat"] - last["lat"])**2 + (w["lon"] - last["lon"])**2)
-        dist = math.sqrt((nearest["lat"] - last["lat"])**2 + (nearest["lon"] - last["lon"])**2) * 111
-        total_dist += dist
-        visited.append(nearest)
-        remaining.remove(nearest)
-
-    daily_routes = []
-    for i in range(0, len(visited), 8):
-        chunk = visited[i:i+8]
-        daily_routes.append({
-            "day": i // 8 + 1,
-            "wards": [w["ward_id"] for w in chunk],
-            "total_voters_reachable": sum(w["registered_voters"] for w in chunk),
-            "estimated_hours": len(chunk) * 1.5,
-        })
-
-    return {
-        "candidate_id": candidate_id, "state_code": state_code,
-        "total_wards": len(wards), "total_distance_km": round(total_dist, 1),
-        "estimated_days": len(daily_routes), "daily_routes": daily_routes,
-        "optimisation_method": "nearest_neighbour_tsp",
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("canvassing_routes")
 
 
 def engine_fundraising(candidate_id: str, office_type: str, target: int) -> Dict:
-    req = ELIGIBILITY.get(office_type, ELIGIBILITY["house"])
-    segments = [
-        {"segment": "Major Donors (₦5M+)",       "count": random.randint(5,  20),   "avg_ask_ngn": 10_000_000, "conversion": 0.15, "channels": ["Personal meeting", "Gala dinner"]},
-        {"segment": "Mid-tier (₦500K–5M)",        "count": random.randint(50, 150),  "avg_ask_ngn":  1_500_000, "conversion": 0.25, "channels": ["Small group events", "Phone calls"]},
-        {"segment": "Grassroots (₦10K–500K)",     "count": random.randint(500,2000), "avg_ask_ngn":     50_000, "conversion": 0.40, "channels": ["WhatsApp", "SMS", "Rallies"]},
-        {"segment": "Diaspora",                   "count": random.randint(100, 500), "avg_ask_ngn":    200_000, "conversion": 0.20, "channels": ["Online platform", "Diaspora associations"]},
-    ]
-    for s in segments:
-        s["estimated_yield_ngn"] = int(s["count"] * s["avg_ask_ngn"] * s["conversion"])
-
-    total_projected = sum(s["estimated_yield_ngn"] for s in segments)
-    return {
-        "candidate_id": candidate_id, "office_type": office_type,
-        "target_amount_ngn": target, "minimum_required_ngn": req["fees_ngn"],
-        "projected_total_ngn": total_projected,
-        "funding_gap_ngn": max(0, target - total_projected),
-        "funding_feasibility": "feasible" if total_projected >= target * 0.8 else "challenging",
-        "donor_segments": segments,
-        "fundraising_events": [
-            {"event": "Gala Dinner",             "target_ngn": int(target * 0.30), "timeline": "Month 2"},
-            {"event": "Online Crowdfunding",     "target_ngn": int(target * 0.15), "timeline": "Month 3-6"},
-            {"event": "LGA Fundraising Drives",  "target_ngn": int(target * 0.25), "timeline": "Month 4-8"},
-            {"event": "Diaspora Drive",          "target_ngn": int(target * 0.20), "timeline": "Month 5-9"},
-            {"event": "Final Push Telethon",     "target_ngn": int(target * 0.10), "timeline": "Month 10"},
-        ],
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("fundraising")
 
 
 def engine_media_buy(candidate_id: str, state_code: str, budget: int, office_type: str) -> Dict:
-    channels = [
-        {"channel": "NTA (National TV)",    "cpm_ngn": 15000, "reach_pct": 45, "grp": 144},
-        {"channel": "State TV",             "cpm_ngn":  3000, "reach_pct": 30, "grp": 123},
-        {"channel": "Radio (State)",        "cpm_ngn":   800, "reach_pct": 55, "grp": 358},
-        {"channel": "Facebook/Instagram",   "cpm_ngn":   500, "reach_pct": 35, "grp": 280},
-        {"channel": "Twitter/X",            "cpm_ngn":   600, "reach_pct": 20, "grp": 240},
-        {"channel": "WhatsApp Broadcast",   "cpm_ngn":   200, "reach_pct": 60, "grp": 300},
-        {"channel": "Newspaper (National)", "cpm_ngn":  8000, "reach_pct": 15, "grp":  30},
-        {"channel": "Billboard (State)",    "cpm_ngn":  5000, "reach_pct": 40, "grp": 600},
-        {"channel": "SMS Blast",            "cpm_ngn":   150, "reach_pct": 70, "grp": 210},
-    ]
-    for c in channels:
-        c["roi_score"] = round(c["grp"] / c["cpm_ngn"] * 1000, 3)
-    channels.sort(key=lambda x: x["roi_score"], reverse=True)
-
-    total_roi = sum(c["roi_score"] for c in channels)
-    remainder = budget
-    for c in channels:
-        alloc = int(budget * c["roi_score"] / total_roi)
-        c["budget_allocated_ngn"] = alloc
-        c["estimated_impressions"] = int(alloc / c["cpm_ngn"] * 1000)
-        remainder -= alloc
-    channels[0]["budget_allocated_ngn"] += remainder
-
-    return {
-        "candidate_id": candidate_id, "state_code": state_code,
-        "total_media_budget_ngn": budget,
-        "channels": channels,
-        "total_estimated_impressions": sum(c["estimated_impressions"] for c in channels),
-        "flight_schedule": [
-            {"phase": "Awareness",    "weeks": "1-8",   "budget_pct": 20, "channels": ["Billboard","Radio"]},
-            {"phase": "Persuasion",   "weeks": "9-20",  "budget_pct": 35, "channels": ["TV","Facebook","WhatsApp"]},
-            {"phase": "Mobilisation", "weeks": "21-48", "budget_pct": 35, "channels": ["Radio","SMS","WhatsApp","Rally"]},
-            {"phase": "GOTV",         "weeks": "49-52", "budget_pct": 10, "channels": ["SMS","WhatsApp","Radio"]},
-        ],
-        "optimised_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("media_buy")
 
 
 def engine_policy_resonance(candidate_id: str, state_code: str, policies: List[str]) -> Dict:
-    st = _state(state_code)
-    zone = st["zone"]
-    priorities = ZONE_PRIORITIES.get(zone, ZONE_PRIORITIES["NC"])
-
-    scored = []
-    for policy in policies:
-        pl = policy.lower()
-        score = 0.5
-        for kw, wt in priorities.items():
-            if kw in pl:
-                score = max(score, wt)
-        scored.append({
-            "policy": policy,
-            "resonance_score": round(score * 100, 1),
-            "primary_demographic": "Rural farmers" if "agri" in pl else "Youth" if "edu" in pl or "tech" in pl else "General",
-            "zone_alignment": zone,
-            "recommended_messaging": f"Frame '{policy}' around {zone} voters' top priority: {max(priorities, key=priorities.get)}",
-        })
-    scored.sort(key=lambda x: x["resonance_score"], reverse=True)
-
-    return {
-        "candidate_id": candidate_id, "state_code": state_code, "zone": zone,
-        "zone_top_priorities": sorted(priorities.items(), key=lambda x: x[1], reverse=True)[:3],
-        "policy_resonance": scored,
-        "top_policy": scored[0]["policy"] if scored else None,
-        "analysed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    return campaign_data_unavailable("policy_resonance")
 
 
 def engine_war_room(candidate_id: str, election_id: str) -> Dict:
-    agents_deployed = random.randint(100, 5000)
-    agents_reporting = int(agents_deployed * random.uniform(0.70, 0.95))
-    states_monitored = random.randint(5, 37)
-    lgas_reporting = random.randint(10, 200)
-
-    incidents = []
-    for _ in range(random.randint(0, 5)):
-        incidents.append({
-            "id": str(uuid.uuid4())[:8],
-            "type": random.choice(["ballot_snatching","intimidation","late_materials","bvas_failure","agent_ejection"]),
-            "location": f"LGA-{random.randint(1, 20)}",
-            "severity": random.choice(["low", "medium", "high"]),
-            "status": random.choice(["reported", "investigating", "resolved"]),
-            "reported_at": time.strftime("%H:%M", time.gmtime()),
-        })
-
-    return {
-        "candidate_id": candidate_id, "election_id": election_id,
-        "war_room_status": "active",
-        "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "coverage": {
-            "states_monitored": states_monitored,
-            "lgas_reporting": lgas_reporting,
-            "agents_deployed": agents_deployed,
-            "agents_reporting": agents_reporting,
-            "agent_coverage_pct": round(agents_reporting / max(agents_deployed, 1) * 100, 1),
-        },
-        "vote_tally_estimate": {
-            "our_candidate_pct": round(random.uniform(30, 55), 1),
-            "leading_opponent_pct": round(random.uniform(25, 45), 1),
-            "confidence": "preliminary",
-            "units_reporting": lgas_reporting * 3,
-        },
-        "incidents": incidents,
-        "alerts": [
-            {"type": "coverage_gap", "message": f"Only {states_monitored}/37 states covered — deploy more agents", "severity": "warning"}
-            if states_monitored < 30 else
-            {"type": "coverage_ok", "message": "Agent coverage nominal", "severity": "info"}
-        ],
-        "legal_team": {"on_standby": True, "petitions_filed": 0, "injunctions_ready": 2},
-    }
+    return campaign_data_unavailable("war_room")
 
 
 async def engine_speech(speech_type: str, name: str, office: str,
@@ -813,26 +441,8 @@ async def check_eligibility(req: EligibilityReq):
 
 @app.post("/api/v1/campaign/plan", tags=["Campaign Plan"])
 async def create_plan(req: PlanCreateReq):
-    """Create a comprehensive all-in-one campaign plan."""
-    plan_id = str(uuid.uuid4())
-    plan = {
-        "plan_id": plan_id,
-        "candidate_id": req.candidate_id, "election_id": req.election_id,
-        "office_type": req.office_type, "state_code": req.state_code, "party_code": req.party_code,
-        "target_votes": req.target_votes, "budget_ngn": req.budget_ngn,
-        "eligibility":       engine_eligibility(req.candidate_id, req.office_type, req.state_code,
-                                                 req.party_code, 35, True, True, False, False, 3),
-        "voter_targeting":   engine_targeting(str(req.candidate_id), req.state_code, req.party_code,
-                                               req.office_type, req.target_votes),
-        "budget_allocation": engine_budget(str(req.candidate_id), str(req.election_id),
-                                            req.budget_ngn, req.state_code, req.office_type),
-        "schedule":          engine_schedule(str(req.candidate_id), str(req.election_id),
-                                              req.state_code, req.office_type),
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    _plans[plan_id] = plan
-    log.info("campaign_plan_created", plan_id=plan_id, candidate_id=req.candidate_id)
-    return plan
+    """Disabled until the authorised campaign data integrations are configured."""
+    return campaign_data_unavailable("campaign_plan")
 
 
 @app.get("/api/v1/campaign/plan/{plan_id}", tags=["Campaign Plan"])
@@ -923,73 +533,14 @@ async def war_room_dashboard(req: WarRoomReq):
 
 @app.post("/api/v1/campaign/debate-tracker", tags=["Debate Tracker"])
 async def debate_tracker(req: DebateTrackerReq):
-    """Innovation 6: Real-time debate performance tracker — per-statement sentiment scoring."""
-    pos_words = ["develop","build","invest","create","improve","secure","educate","grow","promise","commit","achieve","deliver"]
-    neg_words = ["fail","corrupt","steal","lie","never","problem","crisis","blame","attack","weak","broken"]
-    scored = []
-    for stmt in req.statements:
-        sl = stmt.lower()
-        pos = sum(1 for w in pos_words if w in sl)
-        neg = sum(1 for w in neg_words if w in sl)
-        score = max(0, min(100, round((pos - neg * 1.5 + 5) / 10 * 100, 1)))
-        scored.append({
-            "statement": stmt[:120] + "..." if len(stmt) > 120 else stmt,
-            "sentiment_score": score,
-            "tone": "positive" if score > 60 else "neutral" if score > 40 else "negative",
-            "word_count": len(stmt.split()),
-            "key_themes": [w for w in ["security","education","economy","health","infrastructure","youth","agriculture"] if w in sl],
-        })
-    avg = round(statistics.mean(s["sentiment_score"] for s in scored), 1) if scored else 0
-    return {
-        "candidate_id": req.candidate_id,
-        "statements_analysed": len(scored),
-        "overall_performance_score": avg,
-        "performance_grade": "A" if avg > 80 else "B" if avg > 65 else "C" if avg > 50 else "D",
-        "statement_scores": scored,
-        "recommendations": [
-            "Lead with specific policy numbers and timelines",
-            "Avoid defensive language — pivot to solutions immediately",
-            "Reference local constituency-specific issues for authenticity",
-            "Close every answer with a clear, memorable call-to-action",
-        ],
-        "analysed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    """Disabled until verified transcripts and an approved NLP model are configured."""
+    return campaign_data_unavailable("debate_tracker")
 
 
 @app.post("/api/v1/campaign/volunteer-network", tags=["Volunteer Network"])
 async def volunteer_network(req: VolunteerGraphReq):
-    """Innovation 7: Volunteer network graph — social-network reach analysis."""
-    volunteers = []
-    total_reach = 0
-    for i in range(req.num_volunteers):
-        connections = random.randint(5, 50)
-        influence = random.uniform(0.1, 1.0)
-        reach = int(connections * influence * 10)
-        total_reach += reach
-        volunteers.append({
-            "volunteer_id": f"V{i+1:04d}",
-            "lga": f"LGA-{random.randint(1, 20)}",
-            "connections": connections,
-            "influence_score": round(influence, 3),
-            "estimated_voter_reach": reach,
-            "role": random.choice(["ward_coordinator","polling_agent","mobiliser","social_media","driver"]),
-        })
-
-    top = sorted(volunteers, key=lambda x: x["influence_score"], reverse=True)[:10]
-    avg_conn = statistics.mean(v["connections"] for v in volunteers)
-    density = round(avg_conn / req.num_volunteers, 4)
-
-    return {
-        "candidate_id": req.candidate_id, "state_code": req.state_code,
-        "total_volunteers": req.num_volunteers, "total_voter_reach": total_reach,
-        "avg_connections_per_volunteer": round(avg_conn, 1),
-        "network_density": density,
-        "network_health": "strong" if density > 0.10 else "moderate" if density > 0.05 else "weak",
-        "top_influencers": top,
-        "role_breakdown": {r: sum(1 for v in volunteers if v["role"] == r)
-                           for r in ["ward_coordinator","polling_agent","mobiliser","social_media","driver"]},
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    """Disabled until an authoritative volunteer CRM integration is configured."""
+    return campaign_data_unavailable("volunteer_network")
 
 
 @app.get("/api/v1/campaign/states", tags=["Reference Data"])
@@ -1021,11 +572,16 @@ async def campaign_ws(ws: WebSocket):
 
 @app.get("/api/v1/campaign/health", tags=["Health"])
 async def health():
-    return {"status": "healthy", "active_plans": len(_plans), "version": "2.0.0"}
+    return {
+        "status": "healthy",
+        "active_plans": len(_plans),
+        "version": "2.1.0",
+        "disabled_features": sorted(DISABLED_DATA_FEATURES),
+        "enabled_features": ["eligibility", "speech", "states", "offices"],
+    }
 
 
 # ─── Stakeholder Recommendation Engine ───────────────────────────────────────
-from stakeholder_engine import recommend_stakeholders as _recommend_stakeholders
 
 class StakeholderReq(BaseModel):
     candidate_name: str
@@ -1044,36 +600,16 @@ async def stakeholder_recommendations(req: StakeholderReq):
     Covers local leaders, youth groups, women associations, market unions, religious bodies,
     traditional rulers, civil society, and professional associations for all 36 states + FCT.
     """
-    result = _recommend_stakeholders(
-        state_code=req.state_code,
-        office_type=req.office_type,
-        candidate_name=req.candidate_name,
-        party_code=req.party_code,
-        religion=req.religion,
-        ethnicity=req.ethnicity,
-        gender=req.gender,
-        top_n=req.top_n,
-    )
-    return result
+    return campaign_data_unavailable("stakeholder_recommendations")
 
 @app.get("/api/v1/campaign/stakeholders/categories", tags=["Stakeholder Engagement"])
 async def stakeholder_categories():
-    """Returns all stakeholder categories and subcategories."""
-    from stakeholder_engine import UNIVERSAL_STAKEHOLDERS, ZONE_STAKEHOLDERS
-    categories = {}
-    for s in UNIVERSAL_STAKEHOLDERS:
-        cat = s["category"]
-        if cat not in categories:
-            categories[cat] = []
-        if s["subcategory"] not in categories[cat]:
-            categories[cat].append(s["subcategory"])
-    return {"categories": categories, "zone_specific_zones": list(ZONE_STAKEHOLDERS.keys())}
+    return campaign_data_unavailable("stakeholder_recommendations")
+
 
 @app.get("/api/v1/campaign/stakeholders/states", tags=["Stakeholder Engagement"])
 async def stakeholder_states():
-    """Returns all supported states with metadata."""
-    from stakeholder_engine import STATE_META
-    return {"states": STATE_META}
+    return campaign_data_unavailable("stakeholder_recommendations")
 
 
 if __name__ == "__main__":
