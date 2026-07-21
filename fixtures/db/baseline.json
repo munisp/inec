@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "profile": "baseline",
+  "source": "Nigerian states and Federal Capital Territory reference dataset; non-personal baseline only.",
+  "tables": [
+    {
+      "table": "states",
+      "conflict_columns": ["code"],
+      "rows": [
+        {"code": "AB", "name": "Abia", "geo_zone": "South East", "capital": "Umuahia"},
+        {"code": "AD", "name": "Adamawa", "geo_zone": "North East", "capital": "Yola"},
+        {"code": "AK", "name": "Akwa Ibom", "geo_zone": "South South", "capital": "Uyo"},
+        {"code": "AN", "name": "Anambra", "geo_zone": "South East", "capital": "Awka"},
+        {"code": "BA", "name": "Bauchi", "geo_zone": "North East", "capital": "Bauchi"},
+        {"code": "BY", "name": "Bayelsa", "geo_zone": "South South", "capital": "Yenagoa"},
+        {"code": "BE", "name": "Benue", "geo_zone": "North Central", "capital": "Makurdi"},
+        {"code": "BO", "name": "Borno", "geo_zone": "North East", "capital": "Maiduguri"},
+        {"code": "CR", "name": "Cross River", "geo_zone": "South South", "capital": "Calabar"},
+        {"code": "DE", "name": "Delta", "geo_zone": "South South", "capital": "Asaba"},
+        {"code": "EB", "name": "Ebonyi", "geo_zone": "South East", "capital": "Abakaliki"},
+        {"code": "ED", "name": "Edo", "geo_zone": "South South", "capital": "Benin City"},
+        {"code": "EK", "name": "Ekiti", "geo_zone": "South West", "capital": "Ado Ekiti"},
+        {"code": "EN", "name": "Enugu", "geo_zone": "South East", "capital": "Enugu"},
+        {"code": "FC", "name": "Federal Capital Territory", "geo_zone": "North Central", "capital": "Abuja"},
+        {"code": "GO", "name": "Gombe", "geo_zone": "North East", "capital": "Gombe"},
+        {"code": "IM", "name": "Imo", "geo_zone": "South East", "capital": "Owerri"},
+        {"code": "JI", "name": "Jigawa", "geo_zone": "North West", "capital": "Dutse"},
+        {"code": "KD", "name": "Kaduna", "geo_zone": "North West", "capital": "Kaduna"},
+        {"code": "KN", "name": "Kano", "geo_zone": "North West", "capital": "Kano"},
+        {"code": "KT", "name": "Katsina", "geo_zone": "North West", "capital": "Katsina"},
+        {"code": "KE", "name": "Kebbi", "geo_zone": "North West", "capital": "Birnin Kebbi"},
+        {"code": "KO", "name": "Kogi", "geo_zone": "North Central", "capital": "Lokoja"},
+        {"code": "KW", "name": "Kwara", "geo_zone": "North Central", "capital": "Ilorin"},
+        {"code": "LA", "name": "Lagos", "geo_zone": "South West", "capital": "Ikeja"},
+        {"code": "NA", "name": "Nasarawa", "geo_zone": "North Central", "capital": "Lafia"},
+        {"code": "NI", "name": "Niger", "geo_zone": "North Central", "capital": "Minna"},
+        {"code": "OG", "name": "Ogun", "geo_zone": "South West", "capital": "Abeokuta"},
+        {"code": "ON", "name": "Ondo", "geo_zone": "South West", "capital": "Akure"},
+        {"code": "OS", "name": "Osun", "geo_zone": "South West", "capital": "Osogbo"},
+        {"code": "OY", "name": "Oyo", "geo_zone": "South West", "capital": "Ibadan"},
+        {"code": "PL", "name": "Plateau", "geo_zone": "North Central", "capital": "Jos"},
+        {"code": "RI", "name": "Rivers", "geo_zone": "South South", "capital": "Port Harcourt"},
+        {"code": "SO", "name": "Sokoto", "geo_zone": "North West", "capital": "Sokoto"},
+        {"code": "TA", "name": "Taraba", "geo_zone": "North East", "capital": "Jalingo"},
+        {"code": "YO", "name": "Yobe", "geo_zone": "North East", "capital": "Damaturu"},
+        {"code": "ZA", "name": "Zamfara", "geo_zone": "North West", "capital": "Gusau"}
+      ]
+    }
+  ]
+}

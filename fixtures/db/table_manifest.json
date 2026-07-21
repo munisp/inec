@@ -1,0 +1,1584 @@
+{
+  "version": 1,
+  "generated_from": "inec-go-backend/migrations",
+  "tables": [
+    {
+      "table": "abis_duplicate_checks",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "abis_enrollment_pipeline",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "accreditation_records",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "active_sessions",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "ai_predictions",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "anomaly_escalations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "api_key_metadata",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "api_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "api_usage",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "apisix_route_audit",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "aspirants",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "audit_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "audit_trail",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ballots",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bio_audit_timeline",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "biometric_match_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "biometric_profiles",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "biometric_quality_scores",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "biometric_sdk_providers",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "biometric_templates",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "biometric_vault_audit",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "biometric_vault_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "biometric_verifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "blockchain_audit_trail",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "blockchain_results",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bvas_accreditations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bvas_capture_sessions",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "bvas_device_capabilities",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bvas_devices",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bvas_heartbeats",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bvas_location_logs",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "bvas_sync_queue",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "cancelable_transforms",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "candidate_registrations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "chaincode_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "citizen_verifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "collation_party_scores",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "collation_results",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "command_alerts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "command_center_config",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "compliance_records",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "convention_audit_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "convention_venues",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "crowd_alerts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "crowd_density",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "cv_monitoring",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "dapr_state_snapshots",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "data_classification",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "data_encryption_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "dead_letter_queue",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "dedup_candidates",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "dedup_jobs",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "dedup_resolutions",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "delegates",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "device_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "device_locations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "dispute_cases",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "dispute_comments",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "disputes",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "distributed_dedup_partitions",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "document_analyses",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_archive",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_collation_sheets",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_lifecycle",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_materials",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_staff_assignments",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_state_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "election_templates",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "elections",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ems_workflow_phases",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ems_workflows",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "encrypted_tallies",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "escalation_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "escalation_rules",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "event_bus",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "event_bus_topics",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "export_audit_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "fabric_blocks",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fabric_chaincode",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fabric_endorsement_log",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fabric_orderers",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fabric_peers",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fabric_signing_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "fabric_state_db",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fabric_transactions",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "fluvio_stream_offsets",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "geo_analytics_cache",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "geo_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "geofence_attestations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "geofence_zones",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "geofenced_submissions",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "geofences",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_ai_variants",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_alliances",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_audit_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_campaign_sequences",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_campaigns",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_canvass_logs",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_challenges",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_contact_scores",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_contacts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_cpi_history",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_crowd_estimates",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_dead_letter_queue",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_defections",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_door_knocks",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_endorsements",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_federated_participants",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_federated_rounds",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_field_reports",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_import_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_lga_tiers",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_mobile_users",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_outreach_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_party_access",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_platform_analytics",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_pledge_hashes",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_pledges",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_reports_generated",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_ride_requests",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_scoring_runs",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_segments",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_sentiment_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_shifts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_social_inbox",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_social_metrics",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_survey_responses",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_surveys",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_tasks",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_territories",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_user_preferences",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_voice_calls",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_volunteers",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gotv_whatsapp_inbound",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "gps_spoof_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "grievances",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "hsm_audit",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "hsm_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "hsm_operations",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "hsm_slot_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "incident_locations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "incidents",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ingestion_jobs",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ipfs_dag_nodes",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "ipfs_objects",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "ipfs_pins",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "keycloak_sessions",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "kiosk_sessions",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "kyb_verifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "kyc_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "kyc_verifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "landmarks",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "lgas",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "liveness_checks",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "media_api_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "merkle_trees",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "metrics_client",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mfa_settings",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "mfa_sms_otp",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "mfa_totp",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "mfa_webauthn",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "misinformation_alerts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "model_metrics",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mojaloop_transactions",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "multi_finger_enrollments",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_cache",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_circuit_breaker_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_consumer_offsets",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_ledger_accounts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_ledger_transfers",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_mojaloop_callbacks",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "mw_mojaloop_transactions",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "mw_pubsub",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_search_index",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_state",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_streams",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_waf_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "mw_workflows",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ndpr_breaches",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ndpr_consent",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ndpr_dsr_requests",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "nist_benchmark_results",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "observer_alert_rules",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "observer_check_ins",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "observer_photo_verifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "observer_reports",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "official_tracking",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "official_tracking_history",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "officials",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "offline_enrollment_queue",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "offline_sync_queue",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "openappsec_events",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "openappsec_threat_intelligence",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "opensearch_documents",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "pad_attack_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "pad_models",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "pad_results",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "parties",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "permify_audit_log",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "permify_policy_versions",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "polling_unit_locations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "polling_units",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "portal_connections",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "portal_sync_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "portal_webhooks",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "predictive_analytics",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "primary_disputes",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "privacy_preserving_ops",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "pu_photos",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "push_devices",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "push_notifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "quality_gateway_rejections",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "quorum_snapshots",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "redis_cache_invalidation_log",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "registration_centers",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "remote_voting_devices",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "result_party_scores",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "result_signatures",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "results",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "row_access_policies",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "score_normalization_cohorts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "search_documents",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "security_audit_events",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "security_threats",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "sentiment_analysis",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "shuffle_records",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "smart_contracts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "sms_delivery_log",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "sms_verifications",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "stablecoin_ledger",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "stablecoin_transactions",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "stablecoin_wallets",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "stakeholder_incidents",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "stakeholders",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "states",
+      "mode": "fixture",
+      "description": "Repository-approved immutable baseline reference data.",
+      "required": true
+    },
+    {
+      "table": "tb_accounts",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "tb_journal",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "tb_transfers",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "template_aging_records",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "temporal_workflow_history",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "threshold_tuning_runs",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "tigerbeetle_account_registry",
+      "mode": "external",
+      "description": "Owned or synchronized by an external integration; do not fabricate local rows.",
+      "required": false
+    },
+    {
+      "table": "token_blacklist",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "training_certificates",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "training_courses",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "training_enrollments",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "training_vr_scenarios",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "users",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "ussd_sessions",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "validation_results",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "validation_rules",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "video_analyses",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "vote_tallies",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "voter_registrations",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "voters",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "voting_crypto_keys",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "voting_rounds",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "voting_sessions",
+      "mode": "security",
+      "description": "Created by the security or identity subsystem; never seeded from repository fixtures.",
+      "required": false
+    },
+    {
+      "table": "waf_blocklist",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "wards",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "webhook_subscriptions",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    },
+    {
+      "table": "workflow_instances",
+      "mode": "live",
+      "description": "Populated only through approved operational APIs, imports, or event flows.",
+      "required": false
+    }
+  ]
+}
