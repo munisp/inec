@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,6 +63,9 @@ var (
 )
 
 func main() {
+	migrateOnly := flag.Bool("migrate-only", false, "initialize the database schema and exit")
+	flag.Parse()
+
 	// Initialize OpenTelemetry Tracing
 	_ = otel.Tracer("inec-backend")
 
@@ -84,6 +88,18 @@ func main() {
 		log.Fatal().Err(err).Msg("Database connection failed")
 	}
 	log.Info().Msg("Database connected")
+
+	if *migrateOnly {
+		initDB(db)
+		initGORM(os.Getenv("DATABASE_URL"))
+		if err := runMigrations(db); err != nil {
+			log.Fatal().Err(err).Msg("Migration runner failed")
+		}
+		initGOTVTables()
+		initSchemaCompatibility(db)
+		log.Info().Msg("Database schema initialization completed in migration-only mode")
+		return
+	}
 
 	initScaledDB(db)
 	initPgBouncerAwarePooling(db)

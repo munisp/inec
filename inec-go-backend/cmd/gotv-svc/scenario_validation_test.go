@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -30,16 +33,52 @@ func setAuth(req *http.Request) *http.Request {
 	return req
 }
 
+func migrateGOTVTestDatabase(dsn string) error {
+	cmd := exec.Command("go", "run", ".", "--migrate-only")
+	cmd.Dir = "../.."
+	cmd.Env = append(os.Environ(), "APP_ENV=test", "DATABASE_URL="+dsn)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("running migration-only bootstrap: %w: %s", err, output)
+	}
+	return nil
+}
+
 func TestMain(m *testing.M) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = os.Getenv("GOTV_TEST_DB")
 	}
 	if dsn != "" {
+		if err := migrateGOTVTestDatabase(dsn); err != nil {
+			fmt.Fprintf(os.Stderr, "initializing GOTV test database: %v\\n", err)
+			os.Exit(1)
+		}
 		db, err := sql.Open("postgres", dsn)
 		if err == nil && db.Ping() == nil {
 			dbConn = db
-			svc = gotv.NewService(db, "")
+			db.SetMaxOpenConns(25)
+			db.SetMaxIdleConns(10)
+			db.SetConnMaxLifetime(5 * time.Minute)
+			if _, err := db.Exec(`
+				INSERT INTO parties (id, code, name, abbreviation, is_active)
+				VALUES (1, 'TEST', 'Automated Test Party', 'TEST', 1)
+				ON CONFLICT (id) DO UPDATE
+				SET code = EXCLUDED.code,
+					name = EXCLUDED.name,
+					abbreviation = EXCLUDED.abbreviation,
+					is_active = EXCLUDED.is_active
+			`); err != nil {
+				fmt.Fprintf(os.Stderr, "initializing GOTV test tenant: %v\\n", err)
+				_ = db.Close()
+				os.Exit(1)
+			}
+			svc = gotv.NewService(db, os.Getenv("GOTV_ENCRYPTION_KEY"))
+			if err := svc.InitTables(context.Background()); err != nil {
+				fmt.Fprintf(os.Stderr, "initializing GOTV test schema: %v\\n", err)
+				_ = db.Close()
+				os.Exit(1)
+			}
 			wsHub = gotv.NewWSHub(100, 2)
 			go wsHub.Run()
 			dispatcher = gotv.NewDispatchEngine(db, svc, wsHub, 2)
@@ -47,7 +86,11 @@ func TestMain(m *testing.M) {
 			initGOTVLedgerAndBlockchain()
 		}
 	}
-	os.Exit(m.Run())
+	exitCode := m.Run()
+	if dbConn != nil {
+		_ = dbConn.Close()
+	}
+	os.Exit(exitCode)
 }
 
 // ─── Scenario 1: Election Day Result Submission & Collation ──────────
@@ -956,7 +999,7 @@ func TestCrossCutting_SecurityHeaders(t *testing.T) {
 
 	requiredHeaders := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
+		"X-Frame-Options":        "DENY",
 	}
 
 	for header, expected := range requiredHeaders {
