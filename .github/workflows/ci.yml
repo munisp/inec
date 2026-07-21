@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          go-version: '1.26.0'
           cache-dependency-path: inec-go-backend/go.sum
       - name: Vet
         working-directory: inec-go-backend
@@ -161,7 +161,7 @@ jobs:
           node-version: '20'
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          go-version: '1.26.0'
       - name: Build backend
         working-directory: inec-go-backend
         run: CGO_ENABLED=1 go build -o inec-server .
@@ -227,7 +227,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          go-version: '1.26.0'
       - name: Run integration tests
         working-directory: inec-go-backend
         env:
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          go-version: '1.26.0'
       - name: Build backend
         working-directory: inec-go-backend
         run: CGO_ENABLED=1 go build -o inec-server .
