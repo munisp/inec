@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import time
+
+import httpx
 from contextlib import asynccontextmanager
 
 import cv2
@@ -24,12 +27,6 @@ from starlette.responses import Response
 from facial_engine import FacialEngine, FacialMatcher
 from fingerprint_engine import FingerprintEngine, FingerprintMatcher
 from iris_engine import IrisEngine, IrisMatcher
-from ml_inference import (
-    MLPADInference,
-    MLQualityInference,
-    generate_all_models,
-    model_status,
-)
 from pad_engine import FacePADEngine, FingerprintPADEngine, PADLevel
 from quality_engine import (
     FaceQualityAssessor,
@@ -53,34 +50,34 @@ fingerprint_pad = FingerprintPADEngine()
 fp_quality = FingerprintQualityAssessor()
 face_quality = FaceQualityAssessor()
 iris_quality = IrisQualityAssessor()
-ml_pad = MLPADInference()
-ml_quality = MLQualityInference()
+INFERENCE_ENGINE_URL = os.getenv("INFERENCE_ENGINE_URL", "").strip().rstrip("/")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global facial_engine
+    if not INFERENCE_ENGINE_URL:
+        raise RuntimeError("INFERENCE_ENGINE_URL is required for trained biometric PAD")
     facial_engine = FacialEngine()
-    # Generate/load ML model weights
     try:
-        results = generate_all_models()
-        log.info("ml_models_initialized", results=results)
-    except Exception as e:
-        log.warning("ml_model_init_failed", error=str(e))
-    # Initialize PostgreSQL audit logging
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{INFERENCE_ENGINE_URL}/health")
+            response.raise_for_status()
+            health = response.json()
+        if not health.get("models", {}).get("liveness_cdcn", False):
+            raise RuntimeError("configured CPU inference service has no trained liveness model")
+    except httpx.HTTPError as exc:
+        raise RuntimeError("configured CPU inference service is unavailable") from exc
     try:
         from pg_audit import close_pool, init_pool
         await init_pool()
         log.info("pg_audit_connected")
-    except Exception as e:
-        log.warning("pg_audit_unavailable", error=str(e))
-    log.info("biometric_service_started", engines=["fingerprint", "facial", "iris", "pad", "quality"])
+    except Exception as exc:
+        raise RuntimeError("PostgreSQL audit logging is required") from exc
+    log.info("biometric_service_started", engines=["fingerprint", "facial", "iris", "trained_cpu_pad", "quality"])
     yield
-    try:
-        from pg_audit import close_pool
-        await close_pool()
-    except Exception:
-        pass
+    from pg_audit import close_pool
+    await close_pool()
     log.info("biometric_service_stopped")
 
 
@@ -395,42 +392,55 @@ async def multimodal_match(req: MultiModalMatchRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─── PAD ─────────────────────────────────────────────────────────
+# ─── Trained CPU Presentation-Attack Detection ───────────────────────────────
+
+async def trained_cpu_pad(req: PADRequest) -> dict:
+    """Run the deployed trained CPU ONNX PAD model; never synthesize scores."""
+    if req.modality != "face":
+        raise HTTPException(
+            status_code=503,
+            detail=f"no trained CPU PAD model is deployed for {req.modality}; biometric PAD is disabled for that modality",
+        )
+    if not INFERENCE_ENGINE_URL:
+        raise HTTPException(status_code=503, detail="INFERENCE_ENGINE_URL is required for trained biometric PAD")
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                f"{INFERENCE_ENGINE_URL}/liveness/predict",
+                json={"image_base64": req.image},
+            )
+            response.raise_for_status()
+        result = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=503, detail=f"trained biometric PAD returned HTTP {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="trained biometric PAD service is unavailable") from exc
+
+    score = float(result["liveness_score"])
+    passed = bool(result["liveness_pass"])
+    return {
+        "liveness_score": score,
+        "fused_liveness_score": score,
+        "decision": "live" if passed else "spoof",
+        "method": "trained_cpu_onnx_cdcn",
+        "model": result["model"],
+        "threshold": float(result["threshold"]),
+        "confidence": abs(score - float(result["threshold"])) * 2.0,
+        "processing_time_ms": float(result.get("inference_time_us", 0)) / 1000.0,
+    }
+
+
 @app.post("/pad/check")
 async def pad_check(req: PADRequest):
     start = time.monotonic()
     try:
-        img = decode_image(base64.b64decode(req.image))
-        level = PADLevel(req.pad_level)
-
-        if req.modality == "fingerprint":
-            result = fingerprint_pad.check(img)
-        else:
-            bbox = tuple(req.face_bbox) if req.face_bbox else None
-            result = face_pad.check(img, face_bbox=bbox, pad_level=level)
-
+        result = await trained_cpu_pad(req)
         REQUESTS.labels(endpoint="pad_check", status="success").inc()
         LATENCY.labels(endpoint="pad_check").observe(time.monotonic() - start)
-
-        return {
-            "liveness_score": result.liveness_score,
-            "decision": result.decision.value,
-            "pad_level": result.pad_level.value,
-            "attack_type": result.attack_type.value,
-            "confidence": result.confidence,
-            "iso_30107_compliant": result.iso_30107_compliant,
-            "scores": {
-                "texture": result.texture_score,
-                "color": result.color_score,
-                "moire": result.moire_score,
-                "specular": result.specular_score,
-                "frequency": result.frequency_score,
-            },
-            "processing_time_ms": result.processing_time_ms,
-        }
-    except Exception as e:
+        return result
+    except HTTPException:
         REQUESTS.labels(endpoint="pad_check", status="error").inc()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise
 
 
 # ─── Quality ─────────────────────────────────────────────────────
@@ -466,80 +476,26 @@ async def quality_assess(req: QualityRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─── ML Models ───────────────────────────────────────────────────
+# ─── Trained Model Status ──────────────────────────────────────────────────
+
 @app.get("/models/status")
 async def models_status():
-    return model_status()
-
-
-@app.post("/models/generate")
-async def models_generate(force: bool = False):
-    results = generate_all_models(force=force)
-    return {"generated": results}
+    if not INFERENCE_ENGINE_URL:
+        raise HTTPException(status_code=503, detail="INFERENCE_ENGINE_URL is required")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{INFERENCE_ENGINE_URL}/health")
+            response.raise_for_status()
+        health = response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="trained CPU inference service is unavailable") from exc
+    return {"inference": health, "runtime_model_generation": False}
 
 
 @app.post("/pad/ml-check")
 async def pad_ml_check(req: PADRequest):
-    """PAD check using ML model with handcrafted fallback."""
-    start = time.monotonic()
-    try:
-        img = decode_image(base64.b64decode(req.image))
-        level = PADLevel(req.pad_level)
-
-        ml_result = None
-        if req.modality == "fingerprint":
-            ml_result = ml_pad.predict_fingerprint_pad(img)
-        elif req.modality == "iris":
-            ml_result = ml_pad.predict_iris_pad(img)
-        else:
-            ml_result = ml_pad.predict_face_pad(img)
-
-        # Handcrafted fallback
-        if req.modality == "fingerprint":
-            hc_result = fingerprint_pad.check(img)
-        else:
-            bbox = tuple(req.face_bbox) if req.face_bbox else None
-            hc_result = face_pad.check(img, face_bbox=bbox, pad_level=level)
-
-        if ml_result is not None:
-            # Fuse ML and handcrafted: 60% ML, 40% handcrafted
-            fused_score = ml_result["liveness_score"] * 0.6 + hc_result.liveness_score * 0.4
-            method = "ml_fused"
-        else:
-            fused_score = hc_result.liveness_score
-            method = "handcrafted_only"
-
-        if fused_score >= 0.55:
-            decision = "live"
-        elif fused_score <= 0.35:
-            decision = "spoof"
-        else:
-            decision = "uncertain"
-
-        REQUESTS.labels(endpoint="pad_ml_check", status="success").inc()
-        LATENCY.labels(endpoint="pad_ml_check").observe(time.monotonic() - start)
-
-        return {
-            "fused_liveness_score": round(fused_score, 4),
-            "decision": decision,
-            "method": method,
-            "ml_result": ml_result,
-            "handcrafted_result": {
-                "liveness_score": hc_result.liveness_score,
-                "texture": hc_result.texture_score,
-                "color": hc_result.color_score,
-                "moire": hc_result.moire_score,
-                "specular": hc_result.specular_score,
-                "frequency": hc_result.frequency_score,
-            },
-            "pad_level": level.value,
-            "attack_type": hc_result.attack_type.value,
-            "confidence": round(abs(fused_score - 0.5) * 2, 4),
-            "processing_time_ms": round((time.monotonic() - start) * 1000, 2),
-        }
-    except Exception as e:
-        REQUESTS.labels(endpoint="pad_ml_check", status="error").inc()
-        raise HTTPException(status_code=400, detail=str(e))
+    # Compatibility route: scoring remains the same trained ONNX operation as /pad/check.
+    return await pad_check(req)
 
 
 if __name__ == "__main__":

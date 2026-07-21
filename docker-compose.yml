@@ -12,7 +12,7 @@ services:
     environment:
     - APISIX_STAND_ALONE=true
     - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY must be set}
-    image: ghcr.io/openappsec/apisix-attachment:${APPSEC_VERSION:-latest}
+    image: ghcr.io/openappsec/apisix-attachment:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     networks:
     - inec-network
     ports:
@@ -44,7 +44,7 @@ services:
       pgpool:
         condition: service_healthy
     environment:
-    - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - BIOMETRIC_PYTHON_URL=http://biometric-python:8090
     - BIOMETRIC_RUST_URL=http://biometric-rust:8091
     healthcheck:
@@ -64,8 +64,15 @@ services:
     build:
       context: ./services/biometric-python
       dockerfile: Dockerfile
+    depends_on:
+      inference-engine:
+        condition: service_healthy
+      pgpool:
+        condition: service_healthy
     environment:
     - WORKERS=4
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    - INFERENCE_ENGINE_URL=${INFERENCE_ENGINE_URL:?INFERENCE_ENGINE_URL must be set}
     healthcheck:
       interval: 10s
       retries: 3
@@ -188,10 +195,16 @@ services:
         condition: service_healthy
       fluvio-stream:
         condition: service_healthy
+      satellite-change-detection:
+        condition: service_started
+      document-ai:
+        condition: service_healthy
+      campaign-planning:
+        condition: service_healthy
     environment:
     - PORT=8088
-    - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
-    - DATABASE_REPLICA_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pg-replica:5432/${PG_DB:-inec_db}?sslmode=disable
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    - DATABASE_REPLICA_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pg-replica:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - PGPOOL_HOST=pgpool
     - PGPOOL_PORT=5432
     - PGPOOL_PCP_HOST=pgpool
@@ -215,12 +228,41 @@ services:
     - LAKEHOUSE_URL=http://lakehouse:8090
     - RUST_INFERENCE_URL=http://inference-engine:8091
     - BIOMETRIC_PIPELINE_URL=http://biometric-go:8092
+    - SATELLITE_SERVICE_URL=http://satellite-change-detection:8204
+    - DOCUMENT_AI_URL=http://document-ai:8089
+    - CAMPAIGN_PLANNING_URL=http://campaign-planning:8206
     networks:
     - inec-network
     ports:
     - 8088:8088
     volumes:
     - app-data:/data
+  document-ai:
+    build:
+      context: ./services/document-ai
+      dockerfile: Dockerfile
+    depends_on:
+      inference-engine:
+        condition: service_healthy
+    environment:
+    - VLM_ENDPOINT=${VLM_ENDPOINT:?VLM_ENDPOINT must be set}
+    - VLM_MODEL=${VLM_MODEL:?VLM_MODEL must be set}
+    - BIOMETRIC_LIVENESS_URL=http://inference-engine:8091/liveness/predict
+    - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
+    - UPLOAD_DIR=/tmp/document-ai-uploads
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 90s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8089/health')
+      timeout: 10s
+    networks:
+    - inec-network
+    restart: unless-stopped
   inference-engine:
     build:
       context: .
@@ -270,7 +312,7 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/bash", "/opt/keycloak/import-realm.sh"]
     environment:
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:?KEYCLOAK_ADMIN must be set}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD must be set}
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?KEYCLOAK_CLIENT_SECRET must be set}
       INEC_ADMIN_PASSWORD: ${INEC_ADMIN_PASSWORD:?INEC_ADMIN_PASSWORD must be set}
@@ -279,7 +321,7 @@ services:
       KC_DB: postgres
       KC_DB_URL_HOST: pg-primary
       KC_DB_URL_DATABASE: keycloak
-      KC_DB_USERNAME: ${PG_USER:-inec_admin}
+      KC_DB_USERNAME: ${PG_USER:?PG_USER must be set}
       KC_DB_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
       KC_HEALTH_ENABLED: "true"
     image: quay.io/keycloak/keycloak:23.0
@@ -298,7 +340,7 @@ services:
       pgpool:
         condition: service_healthy
     environment:
-    - DATABASE_URL=postgres://${PG_USER:-inec_admin}:${PG_PASSWORD}@pgpool:5432/${PG_DB:-inec_db}?sslmode=disable
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - DUCKDB_PATH=/data/inec_lakehouse.duckdb
     - MODEL_DIR=/data/models
     - PORT=8090
@@ -323,9 +365,9 @@ services:
       -c hot_standby=on -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=8MB
       -c log_min_duration_statement=100
     environment:
-      POSTGRES_DB: ${PG_DB:-inec_db}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_USER: ${PG_USER:-inec_admin}
+      POSTGRES_DB: ${PG_DB:?PG_DB must be set}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
+      POSTGRES_USER: ${PG_USER:?PG_USER must be set}
       REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
     healthcheck:
       interval: 5s
@@ -350,9 +392,9 @@ services:
     - /replica-entrypoint.sh
     environment:
       PGDATA: /var/lib/postgresql/data
-      POSTGRES_DB: ${PG_DB:-inec_db}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_USER: ${PG_USER:-inec_admin}
+      POSTGRES_DB: ${PG_DB:?PG_DB must be set}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
+      POSTGRES_USER: ${PG_USER:?PG_USER must be set}
       REPLICATOR_PASSWORD: ${REPLICATOR_PASSWORD}
     healthcheck:
       interval: 5s
@@ -374,7 +416,7 @@ services:
         condition: service_healthy
     environment:
       PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD}
-      PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USER:-pgpool_admin}
+      PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USER:?PGPOOL_ADMIN_USER must be set}
       PGPOOL_AUTO_FAILBACK: 'yes'
       PGPOOL_BACKEND_NODES: 0:pg-primary:5432,1:pg-replica:5432
       PGPOOL_CHILD_LIFE_TIME: '300'
@@ -384,8 +426,8 @@ services:
       PGPOOL_ENABLE_STATEMENT_LOAD_BALANCING: 'yes'
       PGPOOL_MAX_POOL: '4'
       PGPOOL_NUM_INIT_CHILDREN: '64'
-      PGPOOL_POSTGRES_PASSWORD: ${PG_PASSWORD}
-      PGPOOL_POSTGRES_USERNAME: ${PG_USER:-inec_admin}
+      PGPOOL_POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
+      PGPOOL_POSTGRES_USERNAME: ${PG_USER:?PG_USER must be set}
       PGPOOL_SR_CHECK_PASSWORD: ${REPLICATOR_PASSWORD}
       PGPOOL_SR_CHECK_USER: replicator
     healthcheck:
@@ -418,7 +460,7 @@ services:
     - DB=postgres12
     - POSTGRES_SEEDS=pg-primary
     - DB_PORT=5432
-    - POSTGRES_USER=${PG_USER:-inec_admin}
+    - POSTGRES_USER=${PG_USER:?PG_USER must be set}
     - POSTGRES_PWD=${PG_PASSWORD:?PG_PASSWORD must be set}
     - DBNAME=temporal
     - VISIBILITY_DBNAME=temporal_visibility
@@ -466,7 +508,7 @@ services:
     - TUNING_HOST=openappsec-tuning
     - autoPolicyLoad=true
     - registered_server=APISIX
-    image: ghcr.io/openappsec/agent:${APPSEC_VERSION:-latest}
+    image: ghcr.io/openappsec/agent:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     ipc: host
     networks:
     - inec-network
@@ -479,12 +521,12 @@ services:
   openappsec-smartsync:
     environment:
     - SHARED_STORAGE_HOST=openappsec-shared-storage
-    image: ghcr.io/openappsec/smartsync:${APPSEC_VERSION:-latest}
+    image: ghcr.io/openappsec/smartsync:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     networks:
     - inec-network
     restart: unless-stopped
   openappsec-shared-storage:
-    image: ghcr.io/openappsec/smartsync-shared-files:${APPSEC_VERSION:-latest}
+    image: ghcr.io/openappsec/smartsync-shared-files:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     ipc: host
     networks:
     - inec-network
@@ -501,7 +543,7 @@ services:
     - QUERY_DB_HOST=openappsec-db
     - QUERY_DB_USER=appsec
     - QUERY_DB_PASSWORD=${OPENAPPSEC_DB_PASSWORD:?set OPENAPPSEC_DB_PASSWORD}
-    image: ghcr.io/openappsec/smartsync-tuning:${APPSEC_VERSION:-latest}
+    image: ghcr.io/openappsec/smartsync-tuning:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     networks:
     - inec-network
     restart: unless-stopped
@@ -567,6 +609,11 @@ services:
       - inec-network
     environment:
       - PYTHONUNBUFFERED=1
+      - INFERENCE_ENGINE_URL=${INFERENCE_ENGINE_URL:?INFERENCE_ENGINE_URL must be set}
+      - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
+    depends_on:
+      inference-engine:
+        condition: service_healthy
 
   homomorphic-tally:
     build:
@@ -595,30 +642,67 @@ services:
     build:
       context: ./services/satellite-change-detection
     restart: always
+    environment:
+    - PORT=8204
+    - STAC_API_URL=${STAC_API_URL:?STAC_API_URL must be set}
+    - STAC_COLLECTION=${STAC_COLLECTION:?STAC_COLLECTION must be set}
+    - STAC_PREVIEW_ASSET=${STAC_PREVIEW_ASSET:?STAC_PREVIEW_ASSET must be set}
+    - STAC_MAX_CLOUD_COVER=${STAC_MAX_CLOUD_COVER:?STAC_MAX_CLOUD_COVER must be set}
     networks:
-      - inec-network
+    - inec-network
 
   predictive-resource-allocation:
     build:
       context: ./services/predictive-resource-allocation
+    depends_on:
+      pgpool:
+        condition: service_healthy
     restart: always
+    environment:
+    - PORT=8205
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    - MODEL_DIR=/data/models
+    - MIN_TRAINING_SAMPLES=${MIN_TRAINING_SAMPLES:?MIN_TRAINING_SAMPLES must be set}
+    - RESOURCE_BALLOT_BUFFER=${RESOURCE_BALLOT_BUFFER:?RESOURCE_BALLOT_BUFFER must be set}
+    - RESOURCE_VOTERS_PER_CLERK=${RESOURCE_VOTERS_PER_CLERK:?RESOURCE_VOTERS_PER_CLERK must be set}
+    - RESOURCE_MIN_POLL_CLERKS=${RESOURCE_MIN_POLL_CLERKS:?RESOURCE_MIN_POLL_CLERKS must be set}
+    - RESOURCE_MIN_SECURITY_PERSONNEL=${RESOURCE_MIN_SECURITY_PERSONNEL:?RESOURCE_MIN_SECURITY_PERSONNEL must be set}
+    - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8205/api/v1/allocation/health')
+      timeout: 10s
     networks:
       - inec-network
+    volumes:
+      - resource-allocation-data:/data
 
   campaign-planning:
     build: ./services/campaign-planning
     container_name: inec_campaign_planning
+    depends_on:
+      pgpool:
+        condition: service_healthy
     restart: unless-stopped
     ports:
-      - "8204:8204"
+      - "8206:8206"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
-      - INEC_API_URL=http://inec-backend:8088
+      - PORT=8206
+      - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?OPENAI_API_KEY must be set}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:?OPENAI_API_BASE must be set}
+      - OPENAI_MODEL=${OPENAI_MODEL:?OPENAI_MODEL must be set}
+      - INEC_API_URL=http://go-backend:8088
+      - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
     networks:
       - inec-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8204/api/v1/campaign/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8206/api/v1/campaign/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -639,3 +723,4 @@ volumes:
   etcd-data: null
   openappsec-shared-storage: null
   openappsec-db-data: null
+  resource-allocation-data: null

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -254,29 +253,6 @@ func enhancedSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// ── Rate Limiter with Redis fallback ──
-
-type redisRateLimiter struct {
-	mu       sync.Mutex
-	fallback *rateLimiterStore
-}
-func (rl *redisRateLimiter) allow(key string, limit int, window time.Duration) bool {
-	// Try Redis-based rate limiting if middleware hub has Redis
-	if mwHub != nil && mwHub.Redis != nil {
-		ctx := context.Background()
-		count, err := mwHub.Redis.Incr(ctx, key)
-		if err == nil {
-			if count == 1 {
-				mwHub.Redis.Set(ctx, key, "1", window)
-			}
-			return count <= int64(limit)
-		}
-		// Fall through to in-memory on Redis error
-		log.Debug().Err(err).Msg("Redis rate limiter fallback to in-memory")
-	}
-	return rl.fallback.allow(key, limit, window)
-}
-
 // stripPort removes :port from an IP address for rate limiting consistency.
 func stripPort(addr string) string {
 	if idx := strings.LastIndex(addr, ":"); idx > 0 {
@@ -345,7 +321,10 @@ func seedDataClassification() {
 	if count > 0 {
 		return
 	}
-	classifications := []struct{ table, column, class string; encrypted, pii int }{
+	classifications := []struct {
+		table, column, class string
+		encrypted, pii       int
+	}{
 		{"voters", "first_name", "confidential", 0, 1},
 		{"voters", "last_name", "confidential", 0, 1},
 		{"voters", "date_of_birth", "restricted", 0, 1},
@@ -377,25 +356,25 @@ func logSecurityEvent(eventType, severity, source string, userID int, ip string,
 
 func handleDataSecurityStatus(w http.ResponseWriter, r *http.Request) {
 	transitSecurity := M{
-		"tls_enforced":       true,
-		"tls_min_version":    "TLS 1.2",
-		"hsts_enabled":       true,
-		"hsts_max_age":       31536000,
-		"certificate_pinning": envOrDefault("CERT_PINNING", "enabled"),
-		"mtls_inter_service": true,
-		"cors_restricted":    envOrDefault("CORS_ORIGINS", "*") != "*",
+		"tls_enforced":                true,
+		"tls_min_version":             "TLS 1.2",
+		"hsts_enabled":                true,
+		"hsts_max_age":                31536000,
+		"certificate_pinning":         envOrDefault("CERT_PINNING", "enabled"),
+		"mtls_inter_service":          true,
+		"cors_restricted":             envOrDefault("CORS_ORIGINS", "*") != "*",
 		"websocket_origin_validation": true,
 	}
 
 	restSecurity := M{
-		"database_encryption":    envOrDefault("DB_ENCRYPTION", "AES-256"),
-		"backup_encryption":      true,
-		"biometric_vault":        "AES-256-GCM with HSM key wrapping",
-		"pii_field_encryption":   true,
-		"password_hashing":       "bcrypt (cost 10)",
-		"api_key_hashing":        "SHA-256",
-		"log_redaction":          true,
-		"data_classification":    true,
+		"database_encryption":  envOrDefault("DB_ENCRYPTION", "AES-256"),
+		"backup_encryption":    true,
+		"biometric_vault":      "AES-256-GCM with HSM key wrapping",
+		"pii_field_encryption": true,
+		"password_hashing":     "bcrypt (cost 10)",
+		"api_key_hashing":      "SHA-256",
+		"log_redaction":        true,
+		"data_classification":  true,
 	}
 
 	var totalFields, encryptedFields, piiFields int
@@ -408,12 +387,12 @@ func handleDataSecurityStatus(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COUNT(*) FROM security_audit_events WHERE severity IN ('high','critical') AND created_at > datetime('now','-24 hours')").Scan(&criticalEvents)
 
 	writeJSON(w, 200, M{
-		"data_in_transit":         transitSecurity,
-		"data_at_rest":            restSecurity,
-		"data_classification":     M{"total_fields_classified": totalFields, "encrypted_fields": encryptedFields, "pii_fields": piiFields},
-		"security_events_24h":     recentEvents,
-		"critical_events_24h":     criticalEvents,
-		"compliance":              M{"gdpr": true, "ndpr": true, "iso27001": true},
+		"data_in_transit":     transitSecurity,
+		"data_at_rest":        restSecurity,
+		"data_classification": M{"total_fields_classified": totalFields, "encrypted_fields": encryptedFields, "pii_fields": piiFields},
+		"security_events_24h": recentEvents,
+		"critical_events_24h": criticalEvents,
+		"compliance":          M{"gdpr": true, "ndpr": true, "iso27001": true},
 	})
 }
 

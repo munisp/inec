@@ -1,6 +1,6 @@
 //! ML Model wrappers for ONNX Runtime inference on CPU.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use std::sync::Mutex;
 use tracing::info;
@@ -153,45 +153,30 @@ impl LivenessModel {
         Ok(Self { session: Mutex::new(session) })
     }
 
-    /// Run liveness check on a face crop (256x256 RGB, normalized to [0,1]).
-    /// Returns (depth_map_quality, liveness_score).
-    pub fn predict(&self, face_crop: &[f32]) -> (f32, f32) {
-        let expected_size = 3 * 256 * 256;
+    /// Run liveness inference on the shipped CDCN classifier. The validated ONNX
+    /// graph accepts one 128×128 grayscale crop and returns one classifier score.
+    /// Errors are propagated; this path never converts a failed model call into a
+    /// synthetic score or decision.
+    pub fn predict(&self, face_crop: &[f32]) -> Result<f32> {
+        let expected_size = 128 * 128;
         if face_crop.len() != expected_size {
-            return (0.0, 0.0);
+            bail!("expected {expected_size} liveness tensor values, received {}", face_crop.len());
         }
 
-        let input_tensor = match ort::value::Tensor::from_array(
-            ([1_usize, 3, 256, 256], face_crop.to_vec())
-        ) {
-            Ok(t) => t,
-            Err(_) => return (0.0, 0.0),
-        };
+        let input_tensor = ort::value::Tensor::from_array(
+            ([1_usize, 1, 128, 128], face_crop.to_vec())
+        ).map_err(ort_err)?;
 
-        let mut session = self.session.lock().unwrap();
-        let outputs = match session.run(ort::inputs!["input" => input_tensor]) {
-            Ok(o) => o,
-            Err(_) => return (0.0, 0.0),
-        };
-
-        // Output 0: depth_map (1, 1, 32, 32)
-        let depth_quality = if let Ok((_shape, data)) = outputs[0].try_extract_tensor::<f32>() {
-            let total: f32 = data.iter().sum();
-            total / (32.0 * 32.0) // Average depth value as quality indicator
-        } else {
-            0.0
-        };
-
-        let liveness = if outputs.len() > 1 {
-            if let Ok((_shape, data)) = outputs[1].try_extract_tensor::<f32>() {
-                if !data.is_empty() { data[0] } else { 0.0 }
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
-
-        (depth_quality, liveness)
+        let mut session = self.session.lock().map_err(|_| anyhow::anyhow!("liveness model session lock poisoned"))?;
+        let outputs = session.run(ort::inputs!["input" => input_tensor]).map_err(ort_err)?;
+        if outputs.len() == 0 {
+            bail!("liveness model returned no outputs");
+        }
+        let (_shape, classifier_values) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+        let score = *classifier_values.first().ok_or_else(|| anyhow::anyhow!("liveness model returned an empty classifier output"))?;
+        if !score.is_finite() {
+            bail!("liveness model returned a non-finite classifier score");
+        }
+        Ok(score)
     }
 }

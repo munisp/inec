@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,13 +20,12 @@ import (
 // ── Document AI Integration ──
 // Calls the Python Document AI service for PaddleOCR, VLM, DocLing analysis.
 
-var documentAIURL = getEnvDefault("DOCUMENT_AI_URL", "http://localhost:8089")
-
-func getEnvDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func documentAIBaseURL() (string, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("DOCUMENT_AI_URL")), "/")
+	if baseURL == "" {
+		return "", fmt.Errorf("DOCUMENT_AI_URL must be configured")
 	}
-	return fallback
+	return baseURL, nil
 }
 
 // ── OCR Analysis Types ──
@@ -218,17 +217,10 @@ func handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Call Document AI service
+	// Call the configured Document AI service. Failed analysis must not be represented as queued success.
 	analysis, err := callDocumentAIAnalyze(fileBytes, filepath.Base(filePath), reportID)
 	if err != nil {
-		// Fallback: store pending analysis record
-		dbExecLog("doc_analysis", "INSERT INTO document_analyses (report_id, analysis_type, requires_review) VALUES (?, 'pending', 1)", reportID)
-		writeJSON(w, 202, M{
-			"report_id": reportID,
-			"status":    "queued",
-			"message":   "Document AI service unavailable, queued for later analysis",
-			"error":     err.Error(),
-		})
+		writeError(w, http.StatusServiceUnavailable, "document AI analysis unavailable: "+err.Error())
 		return
 	}
 
@@ -595,7 +587,14 @@ func callDocumentAIAnalyze(fileBytes []byte, filename string, reportID int) (*Fu
 	writer.WriteField("report_id", strconv.Itoa(reportID))
 	writer.Close()
 
-	req, _ := http.NewRequest("POST", documentAIURL+"/analyze/photo-report", body)
+	baseURL, err := documentAIBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", baseURL+"/analyze/photo-report", body)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := docAIClient.Do(req)
 	if err != nil {
@@ -625,7 +624,14 @@ func callVideoAnalyze(videoBytes []byte, filename string) (*VideoAnalysis, error
 	part.Write(videoBytes)
 	writer.Close()
 
-	req, _ := http.NewRequest("POST", documentAIURL+"/video/analyze", body)
+	baseURL, err := documentAIBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", baseURL+"/video/analyze", body)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := docAIClient.Do(req)
 	if err != nil {
@@ -668,7 +674,14 @@ func callKYCVerify(userID int, fullName, idType, idNumber, dob, phone string, id
 	}
 	writer.Close()
 
-	req, _ := http.NewRequest("POST", documentAIURL+"/kyc/verify", body)
+	baseURL, err := documentAIBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", baseURL+"/kyc/verify", body)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := docAIClient.Do(req)
 	if err != nil {
@@ -700,7 +713,14 @@ func callLivenessCheck(userID int, method string, videoBytes []byte) (*LivenessR
 	part.Write(videoBytes)
 	writer.Close()
 
-	req, _ := http.NewRequest("POST", documentAIURL+"/kyc/liveness", body)
+	baseURL, err := documentAIBaseURL()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", baseURL+"/kyc/liveness", body)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := docAIClient.Do(req)
 	if err != nil {
@@ -1015,10 +1035,9 @@ func performLocalKYCValidation(userID int, fullName, idType, idNumber, dob, phon
 	if idDocBytes != nil && len(idDocBytes) > 1000 {
 		checks = append(checks, "document_uploaded")
 		// Validate image format
-		isImage := len(idDocBytes) > 2 && (
-			(idDocBytes[0] == 0xFF && idDocBytes[1] == 0xD8) || // JPEG
-				(idDocBytes[0] == 0x89 && string(idDocBytes[1:4]) == "PNG") || // PNG
-				(len(idDocBytes) > 4 && string(idDocBytes[0:4]) == "%PDF")) // PDF
+		isImage := len(idDocBytes) > 2 && ((idDocBytes[0] == 0xFF && idDocBytes[1] == 0xD8) || // JPEG
+			(idDocBytes[0] == 0x89 && string(idDocBytes[1:4]) == "PNG") || // PNG
+			(len(idDocBytes) > 4 && string(idDocBytes[0:4]) == "%PDF")) // PDF
 		if isImage {
 			identityScore += 0.2
 		} else {
@@ -1158,9 +1177,9 @@ func performLocalLivenessCheck(userID int, method string, videoBytes []byte) *Li
 
 	// Active method checks (cannot perform without real video analysis)
 	checks = append(checks, M{
-		"name":    "active_liveness_" + method,
-		"passed":  false,
-		"note":    "Active liveness requires remote service — local fallback only provides format validation",
+		"name":   "active_liveness_" + method,
+		"passed": false,
+		"note":   "Active liveness requires remote service — local fallback only provides format validation",
 	})
 
 	return &LivenessResult{

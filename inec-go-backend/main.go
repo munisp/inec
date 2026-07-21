@@ -939,55 +939,36 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-type rateLimiterStore struct {
-	mu      sync.Mutex
-	entries map[string][]time.Time
-}
+type rateLimiterStore struct{}
 
 func newRateLimiter() *rateLimiterStore {
-	return &rateLimiterStore{entries: make(map[string][]time.Time)}
+	return &rateLimiterStore{}
 }
 
 func (rl *rateLimiterStore) allow(key string, limit int, window time.Duration) bool {
-	// Try Redis-backed rate limiting for multi-replica consistency
-	if mwHub != nil && mwHub.Redis != nil {
-		return rl.allowRedis(key, limit, window)
+	if mwHub == nil || mwHub.Redis == nil {
+		log.Error().Msg("native Redis rate limiter is unavailable; rejecting request")
+		return false
 	}
-	return rl.allowLocal(key, limit, window)
+	return rl.allowRedis(key, limit, window)
 }
 
 func (rl *rateLimiterStore) allowRedis(key string, limit int, window time.Duration) bool {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	redisKey := "ratelimit:" + key
 	count, err := mwHub.Redis.Incr(ctx, redisKey)
 	if err != nil {
-		// Fall back to local on Redis error
-		return rl.allowLocal(key, limit, window)
-	}
-	if count == 1 {
-		// First request in window — set expiry
-		mwHub.Redis.Expire(ctx, redisKey, window)
-	}
-	return int(count) <= limit
-}
-
-func (rl *rateLimiterStore) allowLocal(key string, limit int, window time.Duration) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	now := time.Now()
-	arr := rl.entries[key]
-	filtered := arr[:0]
-	for _, t := range arr {
-		if now.Sub(t) < window {
-			filtered = append(filtered, t)
-		}
-	}
-	if len(filtered) >= limit {
-		rl.entries[key] = filtered
+		log.Error().Err(err).Msg("native Redis rate limiter failed; rejecting request")
 		return false
 	}
-	rl.entries[key] = append(filtered, now)
-	return true
+	if count == 1 {
+		if err := mwHub.Redis.Expire(ctx, redisKey, window); err != nil {
+			log.Error().Err(err).Msg("native Redis rate-limit expiry failed; rejecting request")
+			return false
+		}
+	}
+	return int(count) <= limit
 }
 
 func requestSizeLimit(next http.Handler) http.Handler {

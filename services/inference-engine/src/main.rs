@@ -8,6 +8,7 @@
 //!
 //! Designed for CPU inference with <10ms latency per request.
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use axum::{
     extract::{Json, State},
     http::StatusCode,
@@ -124,10 +125,25 @@ struct FaceCompareRequest {
 
 #[derive(Serialize)]
 struct FaceCompareResponse {
-    similarity: f32,
-    verified: bool,
-    threshold: f32,
-    inference_time_us: u64,
+	similarity: f32,
+	verified: bool,
+	threshold: f32,
+	inference_time_us: u64,
+}
+
+#[derive(Deserialize)]
+struct LivenessRequest {
+	image_base64: String,
+	threshold: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct LivenessResponse {
+	liveness_score: f32,
+	liveness_pass: bool,
+	threshold: f32,
+	model: String,
+	inference_time_us: u64,
 }
 
 #[derive(Deserialize)]
@@ -544,6 +560,47 @@ async fn detect_gps_spoof(
     })
 }
 
+fn decode_liveness_face_crop(image_base64: &str) -> Result<Vec<f32>, StatusCode> {
+	let encoded = image_base64.split_once(',').map(|(_, data)| data).unwrap_or(image_base64);
+	let image_bytes = BASE64_STANDARD.decode(encoded).map_err(|_| StatusCode::BAD_REQUEST)?;
+	let decoded = image::load_from_memory(&image_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+	let grayscale = decoded.to_luma8();
+	let resized = image::imageops::resize(&grayscale, 128, 128, image::imageops::FilterType::Triangle);
+	let mut tensor = Vec::with_capacity(128 * 128);
+	for pixel in resized.pixels() {
+		tensor.push(pixel[0] as f32 / 255.0);
+	}
+	Ok(tensor)
+}
+
+async fn predict_liveness(
+	State(state): State<SharedState>,
+	Json(req): Json<LivenessRequest>,
+) -> Result<Json<LivenessResponse>, StatusCode> {
+	let start = std::time::Instant::now();
+	let face_crop = decode_liveness_face_crop(&req.image_base64)?;
+	let threshold = req.threshold.unwrap_or(0.85);
+	if !(0.0..=1.0).contains(&threshold) {
+		return Err(StatusCode::BAD_REQUEST);
+	}
+	let state = state.read().await;
+	let model = state.liveness_model.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+	let liveness_score = model.predict(&face_crop).map_err(|error| {
+		warn!(%error, "liveness ONNX inference failed");
+		StatusCode::UNPROCESSABLE_ENTITY
+	})?;
+	if !liveness_score.is_finite() {
+		return Err(StatusCode::INTERNAL_SERVER_ERROR);
+	}
+	Ok(Json(LivenessResponse {
+		liveness_score,
+		liveness_pass: liveness_score >= threshold,
+		threshold,
+		model: "CDCN ONNX CPU classifier".to_string(),
+		inference_time_us: start.elapsed().as_micros() as u64,
+	}))
+}
+
 async fn query_graph(
     State(state): State<SharedState>,
     Json(req): Json<GraphQueryRequest>,
@@ -601,6 +658,7 @@ async fn main() {
         .route("/anomaly/predict", post(predict_anomaly))
         .route("/anomaly/batch", post(batch_predict))
         .route("/face/compare", post(compare_faces))
+		.route("/liveness/predict", post(predict_liveness))
         .route("/graph/neighborhood", post(query_graph))
         .route("/gps/spoof-detect", post(detect_gps_spoof))
         .layer({

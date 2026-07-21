@@ -112,8 +112,11 @@ services:
       <<: *common-env
       PORT: "8092"
       VAULT_KEY: ${VAULT_KEY:?VAULT_KEY must be set}
+      INFERENCE_ENGINE_URL: http://inference-engine:8097
     depends_on:
       postgres:
+        condition: service_healthy
+      inference-engine:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8092/health"]
@@ -188,13 +191,18 @@ services:
 
   inference-engine:
     build:
-      context: ../services/inference-engine
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/inference-engine/Dockerfile
     ports:
       - "8097:8097"
     environment:
       PORT: "8097"
       MODELS_DIR: /app/models
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8097/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   fluvio-sc:
     image: infinyon/fluvio:latest

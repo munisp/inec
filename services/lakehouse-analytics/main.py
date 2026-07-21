@@ -787,10 +787,10 @@ async def _spatial_hotspot_analysis(query: SpatialQuery) -> list:
     if SEDONA_URL:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SEDONA_URL}/analyze/hotspot", json=query.model_dump())
-            if resp.status_code == 200:
-                return resp.json().get("results", [])
+            resp.raise_for_status()
+            return resp.json().get("results", [])
 
-    # Local DuckDB spatial fallback
+    # DuckDB is the configured local spatial engine when Sedona is not selected.
     conn = duckdb.connect(DUCKDB_PATH, read_only=True)
     try:
         sql = """
@@ -806,9 +806,9 @@ async def _spatial_hotspot_analysis(query: SpatialQuery) -> list:
         rows = conn.execute(sql, [query.limit]).fetchall()
         return [{"state": r[0], "lga": r[1], "pu_count": r[2],
                  "avg_votes": r[3], "stddev_votes": r[4]} for r in rows]
-    except Exception as e:
-        log.warning("spatial_hotspot_fallback", error=str(e))
-        return []
+    except Exception as exc:
+        log.error("spatial_hotspot_query_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="DuckDB spatial hotspot query failed") from exc
     finally:
         conn.close()
 
@@ -818,8 +818,8 @@ async def _spatial_coverage_analysis(query: SpatialQuery) -> list:
     if SEDONA_URL:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SEDONA_URL}/analyze/coverage", json=query.model_dump())
-            if resp.status_code == 200:
-                return resp.json().get("results", [])
+            resp.raise_for_status()
+            return resp.json().get("results", [])
 
     conn = duckdb.connect(DUCKDB_PATH, read_only=True)
     try:
@@ -835,9 +835,9 @@ async def _spatial_coverage_analysis(query: SpatialQuery) -> list:
         rows = conn.execute(sql, [query.limit]).fetchall()
         return [{"state": r[0], "pu_count": r[1],
                  "total_registered": r[2], "voters_per_pu": r[3]} for r in rows]
-    except Exception as e:
-        log.warning("spatial_coverage_fallback", error=str(e))
-        return []
+    except Exception as exc:
+        log.error("spatial_coverage_query_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="DuckDB spatial coverage query failed") from exc
     finally:
         conn.close()
 
@@ -847,8 +847,8 @@ async def _spatial_clustering(query: SpatialQuery) -> list:
     if SEDONA_URL:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SEDONA_URL}/analyze/clustering", json=query.model_dump())
-            if resp.status_code == 200:
-                return resp.json().get("results", [])
+            resp.raise_for_status()
+            return resp.json().get("results", [])
 
     conn = duckdb.connect(DUCKDB_PATH, read_only=True)
     try:
@@ -864,9 +864,9 @@ async def _spatial_clustering(query: SpatialQuery) -> list:
         rows = conn.execute(sql, [query.limit]).fetchall()
         return [{"lga": r[0], "state": r[1], "cluster_size": r[2],
                  "total_votes": r[3], "avg_votes": r[4]} for r in rows]
-    except Exception as e:
-        log.warning("spatial_clustering_fallback", error=str(e))
-        return []
+    except Exception as exc:
+        log.error("spatial_clustering_query_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="DuckDB spatial clustering query failed") from exc
     finally:
         conn.close()
 
@@ -876,12 +876,10 @@ async def _spatial_distance_matrix(query: SpatialQuery) -> list:
     if SEDONA_URL:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SEDONA_URL}/analyze/distance", json=query.model_dump())
-            if resp.status_code == 200:
-                return resp.json().get("results", [])
+            resp.raise_for_status()
+            return resp.json().get("results", [])
 
-    # Simplified haversine-based computation
-    return [{"note": "Distance matrix requires SEDONA_URL for distributed computation",
-             "engine": "duckdb_spatial", "status": "limited"}]
+    raise HTTPException(status_code=503, detail="SEDONA_URL is required for distributed spatial distance-matrix analysis")
 
 
 @app.get("/spatial/capabilities")

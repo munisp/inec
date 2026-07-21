@@ -22,7 +22,8 @@ NIN_API_URL = os.getenv("NIN_API_URL", "")
 NIN_API_KEY = os.getenv("NIN_API_KEY", "")
 
 import structlog
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -49,6 +50,11 @@ VLM_ENDPOINT = os.getenv("VLM_ENDPOINT", "")  # e.g. ollama or vLLM endpoint
 DOCLING_MODEL = os.getenv("DOCLING_MODEL", "docling-v2")
 
 Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+
+
+@app.exception_handler(RuntimeError)
+async def runtime_dependency_error(_: Request, exc: RuntimeError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 # ─── PaddleOCR Integration ─────────────────────────────────────────────────
@@ -101,17 +107,16 @@ class OCREngine:
             )
             self._initialized = True
             log.info("PaddleOCR initialized with local models")
-        except ImportError:
-            log.warn("PaddleOCR not installed, using fallback extraction")
-            self._initialized = True
+        except ImportError as exc:
+            raise RuntimeError("PaddleOCR is required for document extraction") from exc
 
     def extract_text(self, image_bytes: bytes) -> list[OCRResult]:
         """Run OCR on image bytes, return structured text regions."""
         self._ensure_initialized()
 
-        if self._paddle_ocr is not None:
-            return self._extract_with_paddle(image_bytes)
-        return self._extract_fallback(image_bytes)
+        if self._paddle_ocr is None:
+            raise RuntimeError("PaddleOCR failed to initialize")
+        return self._extract_with_paddle(image_bytes)
 
     def _extract_with_paddle(self, image_bytes: bytes) -> list[OCRResult]:
         """Real PaddleOCR extraction."""
@@ -134,15 +139,6 @@ class OCREngine:
                 ))
 
         return ocr_results
-
-    def _extract_fallback(self, image_bytes: bytes) -> list[OCRResult]:
-        """Fallback: extract metadata from image without PaddleOCR installed."""
-        file_hash = hashlib.sha256(image_bytes).hexdigest()[:16]
-        return [OCRResult(
-            text=f"[OCR_PENDING:{file_hash}]",
-            confidence=0.0,
-            bbox=[[0, 0], [0, 0], [0, 0], [0, 0]],
-        )]
 
     def extract_ec8a(self, image_bytes: bytes) -> EC8AExtraction:
         """Extract structured EC8A form data from image."""
@@ -255,16 +251,16 @@ class VLMEngine:
     def analyze_document(self, image_bytes: bytes, document_type: str = "ec8a") -> VLMResult:
         """Analyze document for authenticity, tampering, and completeness."""
 
-        if VLM_ENDPOINT:
-            return self._analyze_with_vlm(image_bytes, document_type)
-        return self._analyze_heuristic(image_bytes, document_type)
+        if not VLM_ENDPOINT:
+            raise RuntimeError("VLM_ENDPOINT is required for document authenticity analysis")
+        return self._analyze_with_vlm(image_bytes, document_type)
 
     def _analyze_with_vlm(self, image_bytes: bytes, document_type: str) -> VLMResult:
         """Call external VLM endpoint (Ollama, vLLM, or OpenAI-compatible)."""
         import base64
         client = self._get_client()
         if not client:
-            return self._analyze_heuristic(image_bytes, document_type)
+            raise RuntimeError("VLM HTTP client could not initialize")
 
         img_b64 = base64.b64encode(image_bytes).decode()
 
@@ -320,86 +316,10 @@ Respond in JSON format:
                 completeness_score=data.get("completeness", 0.0),
                 analysis_summary=data.get("summary", ""),
             )
-        except Exception as e:
-            log.error("VLM analysis failed", error=str(e))
-            return self._analyze_heuristic(image_bytes, document_type)
+        except Exception as exc:
+            log.error("VLM analysis failed", error=str(exc))
+            raise RuntimeError("configured VLM analysis failed") from exc
 
-    def _analyze_heuristic(self, image_bytes: bytes, document_type: str) -> VLMResult:
-        """Heuristic-based analysis when VLM is unavailable.
-        
-        Computes completeness from actual OCR field extraction results
-        rather than returning a fixed arbitrary value.
-        """
-        file_size = len(image_bytes)
-
-        # Run OCR to extract fields and compute completeness from actual extraction
-        ocr_results = ocr_engine.extract_text(image_bytes)
-        raw_text = "\n".join(r.text for r in ocr_results)
-
-        # Define expected fields for document completeness calculation
-        expected_fields = {
-            "ec8a": [
-                (r"EC8A[/\-]?\w{2,4}[/\-]?\d{4}", "serial_number"),
-                (r"(?:PU|Polling Unit)[:\s]*([A-Z0-9\-/]+)", "polling_unit_code"),
-                (r"(?:Total Valid|Valid Votes)[:\s]*(\d+)", "total_valid"),
-                (r"(?:Rejected|Void)[:\s]*(\d+)", "rejected"),
-                (r"(?:Total Votes? Cast|Total Cast)[:\s]*(\d+)", "total_cast"),
-            ],
-            "form": [
-                (r"(?:Name)[:\s]*(\S+)", "name"),
-                (r"(?:Date)[:\s]*(\d{4}[-/]\d{2})", "date"),
-                (r"(?:ID|Number)[:\s]*(\S+)", "id_number"),
-            ],
-        }
-
-        field_patterns = expected_fields.get(document_type, expected_fields["ec8a"])
-        fields_found = 0
-        fields_total = len(field_patterns)
-
-        for pattern, _ in field_patterns:
-            if re.search(pattern, raw_text, re.IGNORECASE):
-                fields_found += 1
-
-        # Completeness is based on actual field extraction rate
-        completeness = fields_found / max(fields_total, 1)
-
-        # Adjust for OCR confidence if we have results
-        if ocr_results:
-            avg_confidence = sum(r.confidence for r in ocr_results) / len(ocr_results)
-            # Blend OCR confidence with field completeness
-            completeness = completeness * 0.7 + avg_confidence * 0.3
-        else:
-            # No OCR results at all — zero completeness
-            completeness = 0.0
-
-        # Check for obvious issues
-        indicators = []
-        if file_size < 10_000:
-            indicators.append("Image file suspiciously small")
-        if file_size > 15_000_000:
-            indicators.append("Image file unusually large")
-
-        # Check magic bytes for valid image
-        is_jpeg = image_bytes[:2] == b'\xff\xd8'
-        is_png = image_bytes[:4] == b'\x89PNG'
-        is_pdf = image_bytes[:4] == b'%PDF'
-
-        if not (is_jpeg or is_png or is_pdf):
-            indicators.append("Invalid image format detected")
-            completeness *= 0.5
-
-        quality = "good" if file_size > 100_000 else "fair" if file_size > 50_000 else "poor"
-
-        return VLMResult(
-            is_valid_ec8a=fields_found > 0 and len(indicators) == 0,
-            tampering_detected=len(indicators) > 0,
-            tampering_confidence=0.3 if indicators else 0.0,
-            tampering_indicators=indicators,
-            document_quality=quality,
-            orientation_correct=True,
-            completeness_score=round(completeness, 3),
-            analysis_summary=f"Heuristic analysis: {quality} quality, {fields_found}/{fields_total} fields extracted. Completeness based on OCR field presence. VLM endpoint not configured for deep analysis.",
-        )
 
 
 vlm_engine = VLMEngine()
@@ -442,17 +362,16 @@ class DocLingEngine:
             self._converter = DocumentConverter()
             self._initialized = True
             log.info("DocLing initialized")
-        except ImportError:
-            log.warn("DocLing not installed, using fallback table extraction")
-            self._initialized = True
+        except ImportError as exc:
+            raise RuntimeError("DocLing is required for structured table extraction") from exc
 
     def extract_tables(self, file_bytes: bytes, filename: str) -> DocLingResult:
         """Extract structured tables from document."""
         self._ensure_initialized()
 
-        if self._converter is not None:
-            return self._extract_with_docling(file_bytes, filename)
-        return self._extract_fallback(file_bytes, filename)
+        if self._converter is None:
+            raise RuntimeError("DocLing failed to initialize")
+        return self._extract_with_docling(file_bytes, filename)
 
     def _extract_with_docling(self, file_bytes: bytes, filename: str) -> DocLingResult:
         """Real DocLing extraction."""
@@ -491,14 +410,7 @@ class DocLingEngine:
         finally:
             os.unlink(tmp_path)
 
-    def _extract_fallback(self, file_bytes: bytes, filename: str) -> DocLingResult:
-        """Fallback when DocLing is not available."""
-        return DocLingResult(
-            tables=[],
-            metadata={"note": "DocLing not installed — install with: pip install docling"},
-            page_count=1,
-            extraction_method="fallback",
-        )
+
 
 
 docling_engine = DocLingEngine()
@@ -529,16 +441,16 @@ class VideoAnalyzer:
             try:
                 import cv2
                 self._cv2 = cv2
-            except ImportError:
-                log.warn("OpenCV not installed — video analysis unavailable")
+            except ImportError as exc:
+                raise RuntimeError("OpenCV is required for video analysis") from exc
 
     def analyze_video(self, video_bytes: bytes, filename: str) -> VideoAnalysisResult:
         """Analyze video for ballot counting events and anomalies."""
         self._ensure_cv2()
 
-        if self._cv2 is not None:
-            return self._analyze_with_opencv(video_bytes, filename)
-        return self._analyze_fallback(video_bytes, filename)
+        if self._cv2 is None:
+            raise RuntimeError("OpenCV failed to initialize")
+        return self._analyze_with_opencv(video_bytes, filename)
 
     def _analyze_with_opencv(self, video_bytes: bytes, filename: str) -> VideoAnalysisResult:
         """Full video analysis with OpenCV."""
@@ -643,23 +555,7 @@ class VideoAnalyzer:
         finally:
             os.unlink(tmp_path)
 
-    def _analyze_fallback(self, video_bytes: bytes, filename: str) -> VideoAnalysisResult:
-        """Minimal analysis when OpenCV is unavailable."""
-        file_size = len(video_bytes)
-        # Estimate duration from file size (rough: ~1MB per 10s at 720p)
-        est_duration = file_size / 100_000
 
-        return VideoAnalysisResult(
-            duration_seconds=round(est_duration, 2),
-            frame_count=0,
-            fps=0,
-            resolution={"width": 0, "height": 0},
-            key_frames_extracted=0,
-            anomalies_detected=[],
-            ballot_counting_events=[],
-            integrity_score=0.5,
-            analysis_summary=f"OpenCV not installed — install with: pip install opencv-python. File size: {file_size} bytes.",
-        )
 
 
 video_analyzer = VideoAnalyzer()
@@ -717,7 +613,7 @@ class KYCEngine:
         except (ImportError, Exception):
             return False
 
-    def verify_identity(
+    async def verify_identity(
         self,
         request: KYCVerificationRequest,
         id_document_bytes: Optional[bytes] = None,
@@ -805,169 +701,59 @@ class KYCEngine:
             verification_timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    def liveness_check(self, video_bytes: bytes, user_id: int, method: str = "passive") -> LivenessCheckResult:
-        """Perform liveness detection to prevent spoofing."""
-        checks = []
-
-        if not self._ensure_face_detection():
-            # Fallback without OpenCV
-            return LivenessCheckResult(
-                user_id=user_id,
-                passed=False,
-                confidence=0.0,
-                method=method,
-                anti_spoofing_score=0.0,
-                checks=[{"name": "opencv_unavailable", "passed": False, "note": "Install opencv-python for liveness detection"}],
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            )
-
-        import cv2
-        import numpy as np
-
-        # Write video to temp file
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            f.write(video_bytes)
-            tmp_path = f.name
-
+    async def liveness_check(self, video_bytes: bytes, user_id: int, method: str = "passive") -> LivenessCheckResult:
+        """Evaluate a real video frame through the configured CPU ONNX PAD service."""
+        if method != "passive":
+            raise RuntimeError("only passive liveness is supported by the configured CPU ONNX PAD model")
+        endpoint = os.getenv("BIOMETRIC_LIVENESS_URL", "").rstrip("/")
+        if not endpoint:
+            raise RuntimeError("BIOMETRIC_LIVENESS_URL is required for liveness analysis")
         try:
-            cap = cv2.VideoCapture(tmp_path)
-            if not cap.isOpened():
-                return LivenessCheckResult(
-                    user_id=user_id, passed=False, confidence=0.0,
-                    method=method, anti_spoofing_score=0.0,
-                    checks=[{"name": "video_open", "passed": False}],
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                )
+            import cv2
+            import httpx
+            import base64
+            import numpy as np
+        except ImportError as exc:
+            raise RuntimeError("OpenCV, HTTPX, and the configured biometric inference service are required for liveness analysis") from exc
 
-            face_sizes = []
-            face_positions = []
-            frame_count = 0
-            faces_detected_count = 0
-            texture_scores = []
-
-            while frame_count < 90:  # Analyze up to 3 seconds at 30fps
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self._face_detector.detectMultiScale(gray, 1.3, 5)
-
-                if len(faces) == 1:
-                    faces_detected_count += 1
-                    x, y, w, h = faces[0]
-                    face_sizes.append(w * h)
-                    face_positions.append((x + w // 2, y + h // 2))
-
-                    # Texture analysis (LBP-based anti-spoofing)
-                    face_roi = gray[y:y+h, x:x+w]
-                    if face_roi.size > 0:
-                        laplacian_var = cv2.Laplacian(face_roi, cv2.CV_64F).var()
-                        texture_scores.append(laplacian_var)
-
-                frame_count += 1
-
-            cap.release()
-
-            # Check 1: Consistent face detection (at least 60% of frames)
-            face_ratio = faces_detected_count / max(frame_count, 1)
-            checks.append({
-                "name": "face_presence",
-                "passed": face_ratio > 0.6,
-                "value": round(face_ratio, 3),
-                "threshold": 0.6,
-            })
-
-            # Check 2: Natural face size variation (not a flat photo)
-            size_variation = 0.0
-            if len(face_sizes) > 5:
-                mean_size = sum(face_sizes) / len(face_sizes)
-                size_variation = (max(face_sizes) - min(face_sizes)) / max(mean_size, 1)
-            checks.append({
-                "name": "size_variation",
-                "passed": size_variation > 0.02,
-                "value": round(size_variation, 4),
-                "threshold": 0.02,
-                "note": "Flat photos have near-zero size variation",
-            })
-
-            # Check 3: Natural position movement
-            position_movement = 0.0
-            if len(face_positions) > 5:
-                dx = [abs(face_positions[i][0] - face_positions[i-1][0]) for i in range(1, len(face_positions))]
-                dy = [abs(face_positions[i][1] - face_positions[i-1][1]) for i in range(1, len(face_positions))]
-                position_movement = (sum(dx) + sum(dy)) / len(dx)
-            checks.append({
-                "name": "natural_movement",
-                "passed": position_movement > 1.0,
-                "value": round(position_movement, 3),
-                "threshold": 1.0,
-                "note": "Real faces have micro-movements",
-            })
-
-            # Check 4: Texture analysis (screens/prints have different texture)
-            avg_texture = sum(texture_scores) / max(len(texture_scores), 1) if texture_scores else 0
-            checks.append({
-                "name": "texture_liveness",
-                "passed": avg_texture > 50.0,
-                "value": round(avg_texture, 2),
-                "threshold": 50.0,
-                "note": "Low texture variance suggests screen/print attack",
-            })
-
-            # Check 5: Temporal consistency (same person throughout)
-            if len(face_sizes) > 10:
-                size_std = (sum((s - sum(face_sizes)/len(face_sizes))**2 for s in face_sizes) / len(face_sizes)) ** 0.5
-                consistency = 1.0 - min(1.0, size_std / (sum(face_sizes)/len(face_sizes)))
-            else:
-                consistency = 0.0
-            checks.append({
-                "name": "temporal_consistency",
-                "passed": consistency > 0.8,
-                "value": round(consistency, 3),
-                "threshold": 0.8,
-            })
-
-            # Active liveness checks
-            if method == "active_blink":
-                # Detect blink: face area should show eye-region changes
-                checks.append({
-                    "name": "blink_detection",
-                    "passed": face_ratio > 0.6 and size_variation > 0.01,
-                    "note": "Blink detection requires eye landmark model",
-                })
-            elif method == "active_head_turn":
-                checks.append({
-                    "name": "head_turn",
-                    "passed": position_movement > 5.0,
-                    "value": round(position_movement, 3),
-                    "note": "Head turn requires significant lateral movement",
-                })
-
-            # Calculate final scores
-            passed_checks = sum(1 for c in checks if c.get("passed", False))
-            total_checks = len(checks)
-            confidence = passed_checks / max(total_checks, 1)
-
-            # Anti-spoofing score (weighted)
-            anti_spoof = (
-                (0.3 * (1 if size_variation > 0.02 else 0)) +
-                (0.3 * (1 if avg_texture > 50 else 0)) +
-                (0.2 * (1 if position_movement > 1.0 else 0)) +
-                (0.2 * (1 if consistency > 0.8 else 0))
-            )
-
-            passed = confidence >= 0.7 and anti_spoof >= 0.6
-
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as file_handle:
+            file_handle.write(video_bytes)
+            tmp_path = file_handle.name
+        try:
+            capture = cv2.VideoCapture(tmp_path)
+            if not capture.isOpened():
+                raise RuntimeError("unable to decode submitted liveness video")
+            ok, frame = capture.read()
+            capture.release()
+            if not ok or frame is None:
+                raise RuntimeError("submitted liveness video contains no decodable frame")
+            encoded, image = cv2.imencode(".jpg", frame)
+            if not encoded:
+                raise RuntimeError("unable to encode liveness video frame")
+            payload = {"image_base64": base64.b64encode(image.tobytes()).decode("ascii")}
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(endpoint, json=payload)
+                response.raise_for_status()
+            result = response.json()
+            score = float(result["liveness_score"])
+            passed = bool(result["liveness_pass"])
             return LivenessCheckResult(
                 user_id=user_id,
                 passed=passed,
-                confidence=round(confidence, 3),
+                confidence=score,
                 method=method,
-                anti_spoofing_score=round(anti_spoof, 3),
-                checks=checks,
+                anti_spoofing_score=score,
+                checks=[{
+                    "name": "cpu_onnx_presentation_attack_detection",
+                    "passed": passed,
+                    "score": score,
+                    "model": result.get("model", "configured CPU ONNX PAD"),
+                    "threshold": result.get("threshold"),
+                }],
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
+        except Exception as exc:
+            raise RuntimeError("configured biometric liveness inference failed") from exc
         finally:
             os.unlink(tmp_path)
 
@@ -1113,13 +899,19 @@ kyc_engine = KYCEngine()
 
 @app.get("/health")
 async def health():
+    if not VLM_ENDPOINT:
+        raise HTTPException(status_code=503, detail="VLM_ENDPOINT is required")
+    ocr_engine._ensure_initialized()
+    docling_engine._ensure_initialized()
+    video_analyzer._ensure_cv2()
     return {
         "status": "healthy",
         "services": {
-            "paddleocr": "available" if ocr_engine._paddle_ocr is not None else "fallback",
-            "vlm": "available" if VLM_ENDPOINT else "heuristic_only",
-            "docling": "available" if docling_engine._converter is not None else "fallback",
-            "video": "available" if video_analyzer._cv2 is not None else "fallback",
+            "paddleocr": "available",
+            "vlm": "configured",
+            "docling": "available",
+            "video": "available",
+            "biometric_liveness": "configured" if os.getenv("BIOMETRIC_LIVENESS_URL", "").strip() else "not_configured",
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -1198,7 +990,7 @@ async def kyc_verify(
     id_doc_bytes = await id_document.read() if id_document else None
     selfie_bytes = await selfie.read() if selfie else None
 
-    result = kyc_engine.verify_identity(request, id_doc_bytes, selfie_bytes)
+    result = await kyc_engine.verify_identity(request, id_doc_bytes, selfie_bytes)
     return result.model_dump()
 
 
@@ -1212,7 +1004,7 @@ async def kyc_liveness(
     video_bytes = await video.read()
     if len(video_bytes) > 50_000_000:  # 50MB limit for liveness video
         raise HTTPException(status_code=413, detail="Liveness video exceeds 50MB limit")
-    result = kyc_engine.liveness_check(video_bytes, user_id, method)
+    result = await kyc_engine.liveness_check(video_bytes, user_id, method)
     return result.model_dump()
 
 

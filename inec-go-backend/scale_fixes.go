@@ -175,7 +175,7 @@ func initRingBufferQueue() {
 type ShardedWSHub struct {
 	mu     sync.RWMutex
 	shards map[string]map[*websocket.Conn]bool // key = "state:KN" or "all"
-	global map[*websocket.Conn]bool             // fallback for unsharded clients
+	global map[*websocket.Conn]bool            // fallback for unsharded clients
 }
 
 func newShardedWSHub() *ShardedWSHub {
@@ -306,7 +306,7 @@ func initPgBouncerAwarePooling(primary *sql.DB) {
 		maxIdle := envInt("DB_MAX_IDLE_CONNS", 5)
 		primary.SetMaxOpenConns(maxOpen)
 		primary.SetMaxIdleConns(maxIdle)
-		primary.SetConnMaxLifetime(10 * time.Minute)  // Longer lifetime — PgBouncer manages actual connections
+		primary.SetConnMaxLifetime(10 * time.Minute) // Longer lifetime — PgBouncer manages actual connections
 		primary.SetConnMaxIdleTime(2 * time.Minute)
 		log.Info().
 			Int("max_open", maxOpen).
@@ -432,9 +432,9 @@ func handleMiddlewareModes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, M{
-		"modes":          modes,
-		"real_count":     realCount,
-		"embedded_count": embeddedCount,
+		"modes":            modes,
+		"real_count":       realCount,
+		"embedded_count":   embeddedCount,
 		"production_ready": embeddedCount == 0,
 		"warning": map[bool]string{
 			true:  "",
@@ -480,46 +480,13 @@ func dbReadQueryRow(ctx context.Context, query string, args ...interface{}) *sql
 // This enhancement adds: cleanup goroutine for local entries + configurable limits.
 
 func initDistributedRateLimiter() {
-	// Start background cleanup for local rate limiter entries
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			cleanupLocalRateLimiter()
-		}
-	}()
-
-	mode := "local (in-memory)"
+	mode := "native Redis unavailable"
 	if mwHub != nil && mwHub.Redis != nil {
-		// Test Redis connectivity for rate limiting
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, err := mwHub.Redis.Get(ctx, "ratelimit:__ping__")
-		if err == nil || strings.Contains(fmt.Sprint(err), "not found") || strings.Contains(fmt.Sprint(err), "nil") {
-			mode = "distributed (Redis-backed)"
+		if status := mwHub.Redis.Ping(); status.Connected {
+			mode = "native Redis distributed enforcement"
 		}
 	}
 	log.Info().Str("mode", mode).Msg("Rate limiter initialized")
-}
-
-func cleanupLocalRateLimiter() {
-	rateLimiter.mu.Lock()
-	defer rateLimiter.mu.Unlock()
-	now := time.Now()
-	for key, times := range rateLimiter.entries {
-		// Remove entries older than 60 seconds
-		filtered := times[:0]
-		for _, t := range times {
-			if now.Sub(t) < 60*time.Second {
-				filtered = append(filtered, t)
-			}
-		}
-		if len(filtered) == 0 {
-			delete(rateLimiter.entries, key)
-		} else {
-			rateLimiter.entries[key] = filtered
-		}
-	}
 }
 
 // ── Scale Health Endpoint ──
@@ -552,15 +519,10 @@ func handleScaleHealth(w http.ResponseWriter, r *http.Request) {
 		}(),
 		"rate_limiter": M{
 			"mode": func() string {
-				if mwHub != nil && mwHub.Redis != nil {
-					return "redis"
+				if mwHub != nil && mwHub.Redis != nil && mwHub.Redis.Ping().Connected {
+					return "native_redis"
 				}
-				return "local"
-			}(),
-			"local_entries": func() int {
-				rateLimiter.mu.Lock()
-				defer rateLimiter.mu.Unlock()
-				return len(rateLimiter.entries)
+				return "unavailable"
 			}(),
 		},
 		"collation_cache_ttl_sec": collationCacheTTL.Seconds(),

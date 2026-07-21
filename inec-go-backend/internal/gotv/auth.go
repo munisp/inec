@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 // AuthConfig holds authentication configuration.
@@ -26,12 +24,12 @@ type AuthConfig struct {
 
 // AuthMiddleware validates requests via JWT or API key.
 type AuthMiddleware struct {
-	db       *sql.DB
-	config   AuthConfig
-	client   *http.Client
+	db     *sql.DB
+	config AuthConfig
+	client *http.Client
 	// Rate limiter: party_id -> (count, window_start)
-	rateMap  map[int]*rateEntry
-	rateMu   sync.RWMutex
+	rateMap map[int]*rateEntry
+	rateMu  sync.RWMutex
 }
 
 type rateEntry struct {
@@ -112,12 +110,6 @@ func (am *AuthMiddleware) authenticate(r *http.Request) (int, string, error) {
 			}
 			return partyID, user, nil
 		}
-	}
-
-	// Dev mode fallback
-	if am.config.DevMode {
-		log.Warn().Msg("GOTV auth: dev mode, using party_id=1")
-		return 1, "dev-user", nil
 	}
 
 	return 0, "", fmt.Errorf("unauthorized: provide Bearer token or X-API-Key")

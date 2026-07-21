@@ -36,8 +36,9 @@ INEC_API_URL   = os.getenv("INEC_API_URL", "http://localhost:8088")
 MONTE_CARLO_N  = int(os.getenv("MONTE_CARLO_RUNS", "200"))
 TICK_SECONDS   = float(os.getenv("SIMULATION_TICK_SECONDS", "60"))
 MAX_SIMS       = int(os.getenv("MAX_CONCURRENT_SIMULATIONS", "10"))
-OPENAI_KEY     = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE    = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+OPENAI_KEY     = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_BASE    = os.getenv("OPENAI_API_BASE", "").strip().rstrip("/")
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "").strip()
 
 app = FastAPI(title="INEC Digital Twin v2", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -377,28 +378,25 @@ async def monte_carlo(eid, sc, ns, pps, parties, pw, wsev, n=MONTE_CARLO_N) -> D
 
 # ── AI What-If ────────────────────────────────────────────────────────────────
 async def ai_scenario(prompt: str, base: Dict) -> Dict:
-    if not OPENAI_KEY: return _rule_scenario(prompt)
-    sys = ("You are an election simulation expert. Given a what-if scenario prompt, return JSON with: "
-           "scenario_type, weather_severity (0-1), disruption_probability (0-1), turnout_modifier (0.5-1.5), description.")
+    if not OPENAI_KEY or not OPENAI_BASE or not OPENAI_MODEL:
+        raise RuntimeError("OPENAI_API_KEY, OPENAI_API_BASE, and OPENAI_MODEL are required for AI scenario generation")
+    system_prompt = ("You are an election simulation expert. Given a what-if scenario prompt, return JSON with: "
+                     "scenario_type, weather_severity (0-1), disruption_probability (0-1), turnout_modifier (0.5-1.5), description.")
     try:
-        async with httpx.AsyncClient() as c:
-            r = await c.post(f"{OPENAI_BASE}/chat/completions",
-                headers={"Authorization":f"Bearer {OPENAI_KEY}"},
-                json={"model":"gpt-4o-mini","messages":[{"role":"system","content":sys},
-                      {"role":"user","content":f"Scenario: {prompt}"}],
-                      "response_format":{"type":"json_object"},"max_tokens":400},timeout=15.0)
-            return json.loads(r.json()["choices"][0]["message"]["content"])
-    except Exception as e:
-        log.warning("ai_scenario_fallback", error=str(e)); return _rule_scenario(prompt)
-
-def _rule_scenario(p: str) -> Dict:
-    pl = p.lower()
-    if any(w in pl for w in ["rain","flood","storm"]): return {"scenario_type":"weather_disruption","weather_severity":0.7,"turnout_modifier":0.75,"description":"Heavy rainfall scenario"}
-    if any(w in pl for w in ["attack","fraud","rig","stuff"]): return {"scenario_type":"adversarial","weather_severity":0.0,"turnout_modifier":1.0,"description":"Adversarial interference"}
-    if any(w in pl for w in ["best","optimistic","smooth"]): return {"scenario_type":"optimistic","weather_severity":0.0,"turnout_modifier":1.2,"description":"Best-case scenario"}
-    if any(w in pl for w in ["logistics","delay","supply"]): return {"scenario_type":"logistics_failure","weather_severity":0.0,"turnout_modifier":0.9,"description":"Logistics failure"}
-    if any(w in pl for w in ["cyber","hack","ddos","network"]): return {"scenario_type":"cyber_attack","weather_severity":0.0,"turnout_modifier":1.0,"description":"Cyber attack scenario"}
-    return {"scenario_type":"baseline","weather_severity":0.0,"turnout_modifier":1.0,"description":"Baseline scenario"}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{OPENAI_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                json={"model": OPENAI_MODEL, "messages": [{"role": "system", "content": system_prompt},
+                      {"role": "user", "content": f"Scenario: {prompt}"}],
+                      "response_format": {"type": "json_object"}, "max_tokens": 400},
+            )
+            response.raise_for_status()
+            data = response.json()
+            return json.loads(data["choices"][0]["message"]["content"])
+    except Exception as exc:
+        log.error("ai_scenario_failed", error=str(exc))
+        raise RuntimeError("configured AI scenario service failed") from exc
 
 # ── State ─────────────────────────────────────────────────────────────────────
 _sims: Dict[str, ElectionTwin] = {}

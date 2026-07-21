@@ -38,12 +38,20 @@ structlog.configure(
 )
 log = structlog.get_logger()
 
-OPENAI_KEY  = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
-INEC_API    = os.getenv("INEC_API_URL", "http://localhost:8088")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_BASE = os.getenv("OPENAI_API_BASE", "").strip().rstrip("/")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
+INEC_API = os.getenv("INEC_API_URL", "").strip().rstrip("/")
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
 
-app = FastAPI(title="INEC Campaign Planning Service", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="INEC Campaign Planning Service", version="2.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    allow_credentials=True,
+)
 
 # ── INEC Eligibility Requirements (1999 Constitution as amended) ──────────────
 ELIGIBILITY: Dict[str, Dict] = {
@@ -713,32 +721,27 @@ async def engine_speech(speech_type: str, name: str, office: str,
     }
     prompt = prompts.get(speech_type, prompts["rally"])
 
-    if OPENAI_KEY:
-        try:
-            async with httpx.AsyncClient() as c:
-                r = await c.post(
-                    f"{OPENAI_BASE}/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_KEY}"},
-                    json={"model": "gpt-4o-mini",
-                          "messages": [{"role": "user", "content": prompt}],
-                          "max_tokens": 800},
-                    timeout=20.0,
-                )
-                return r.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            log.warning("speech_llm_fallback", error=str(e))
-
-    # Template fallback
-    if speech_type == "rally":
-        return (f"Fellow citizens of {state_name}!\n\n"
-                f"I am {name}, and I am running for {office} because I believe in a better future for our people. "
-                f"My campaign is built on: {', '.join(policies[:3])}.\n\n"
-                f"Together, we will build the {state_name} we deserve. Vote {name}! Vote for change!")
-    elif speech_type == "manifesto":
-        pts = "\n".join(f"{i+1}. {p}" for i, p in enumerate(policies[:5]))
-        return f"MANIFESTO — {name.upper()} FOR {office.upper()}\n\n{pts}\n\nI pledge to serve with integrity."
-    else:
-        return f"[{speech_type.upper()}]\nCandidate: {name} | Office: {office} | State: {state_name}\nPolicies: {', '.join(policies)}"
+    if not OPENAI_KEY or not OPENAI_BASE or not OPENAI_MODEL:
+        raise HTTPException(status_code=503, detail="configured campaign language model is unavailable")
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                f"{OPENAI_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 800,
+                },
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"].strip()
+        if not content:
+            raise ValueError("campaign model returned empty content")
+        return content
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+        log.error("campaign_speech_model_unavailable", error=str(exc))
+        raise HTTPException(status_code=503, detail="configured campaign language model is unavailable") from exc
 
 
 # ── Request Models ────────────────────────────────────────────────────────────
@@ -1021,9 +1024,6 @@ async def health():
     return {"status": "healthy", "active_plans": len(_plans), "version": "2.0.0"}
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8204, log_level="info")
-
 # ─── Stakeholder Recommendation Engine ───────────────────────────────────────
 from stakeholder_engine import recommend_stakeholders as _recommend_stakeholders
 
@@ -1074,3 +1074,8 @@ async def stakeholder_states():
     """Returns all supported states with metadata."""
     from stakeholder_engine import STATE_META
     return {"states": STATE_META}
+
+
+if __name__ == "__main__":
+    port = int(os.environ["PORT"])
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

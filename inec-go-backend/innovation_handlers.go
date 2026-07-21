@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -30,7 +31,7 @@ func digitalTwinURL() string {
 	return envString("DIGITAL_TWIN_SERVICE_URL", "http://digital-twin-simulation:8000")
 }
 func satelliteURL() string {
-	return envString("SATELLITE_SERVICE_URL", "http://satellite-change-detection:8000")
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("SATELLITE_SERVICE_URL")), "/")
 }
 func predictiveAllocURL() string {
 	return envString("PREDICTIVE_ALLOC_URL", "http://predictive-resource-allocation:8000")
@@ -228,18 +229,26 @@ func handleQuantumSign(w http.ResponseWriter, r *http.Request) {
 		req.Algorithm = "dilithium3"
 	}
 
-	sig, err := QuantumSign([]byte(req.Content), req.Algorithm)
+	kp, err := GeneratePQKeyPair(PQSignatureScheme(req.Algorithm))
+	if err != nil {
+		log.Error().Err(err).Str("doc_id", req.DocumentID).Msg("quantum_keygen_failed")
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sig, err := signDocument(kp, []byte(req.Content))
 	if err != nil {
 		log.Error().Err(err).Str("doc_id", req.DocumentID).Msg("quantum_sign_failed")
-		writeError(w, 500, "quantum signing failed")
+		writeError(w, http.StatusInternalServerError, "ML-DSA-65 signing failed")
 		return
 	}
 	auditWrite("quantum_document_signed", "document_id", req.DocumentID, r, nil)
-	writeJSON(w, 200, M{
-		"document_id": req.DocumentID,
-		"algorithm":   req.Algorithm,
-		"signature":   sig,
-		"signed_at":   time.Now().UTC(),
+	writeJSON(w, http.StatusOK, M{
+		"document_id":   req.DocumentID,
+		"algorithm":     kp.Scheme,
+		"signature":     sig,
+		"public_key":    kp.PublicKey,
+		"public_key_id": pqKeyID(kp.PublicKey),
+		"signed_at":     time.Now().UTC(),
 	})
 }
 
@@ -257,10 +266,14 @@ func handleQuantumVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	valid, err := QuantumVerify([]byte(req.Content), req.Signature, req.PublicKey, req.Algorithm)
+	if _, err := normalizePQScheme(PQSignatureScheme(req.Algorithm)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	valid, err := verifyDocumentSignature([]byte(req.Content), req.Signature, req.PublicKey)
 	if err != nil {
 		log.Error().Err(err).Str("doc_id", req.DocumentID).Msg("quantum_verify_failed")
-		writeError(w, 500, "quantum verification failed")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, 200, M{"valid": valid, "document_id": req.DocumentID, "verified_at": time.Now().UTC()})
@@ -290,19 +303,31 @@ func handleQuantumKeyPair(w http.ResponseWriter, r *http.Request) {
 
 // ── Innovation 7: Satellite Imagery Change Detection ──────────────────────────
 
-// handleSatelliteAnalyze submits a polling unit for satellite imagery analysis.
+// handleSatelliteAnalyze submits a polling unit to the configured real STAC analysis service.
 func handleSatelliteAnalyze(w http.ResponseWriter, r *http.Request) {
-	proxyToService(w, r, satelliteURL()+"/analyze")
+	url := satelliteURL()
+	if url == "" {
+		writeError(w, http.StatusServiceUnavailable, "SATELLITE_SERVICE_URL is not configured")
+		return
+	}
+	proxyToService(w, r, url+"/analyze")
 }
 
-// handleSatelliteAlerts returns satellite-detected anomalies near polling units.
-func handleSatelliteAlerts(w http.ResponseWriter, r *http.Request) {
-	proxyToService(w, r, satelliteURL()+"/alerts")
+// handleSatelliteAlerts intentionally rejects the retired unbacked alerts surface.
+// Alerting must be driven by persisted, real STAC analysis records rather than a
+// fabricated stateless response.
+func handleSatelliteAlerts(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusNotImplemented, "satellite alerts require a persisted real-analysis workflow and are not enabled")
 }
 
-// handleSatelliteStatus returns the satellite imagery processing queue status.
+// handleSatelliteStatus returns real STAC-service readiness.
 func handleSatelliteStatus(w http.ResponseWriter, r *http.Request) {
-	proxyToService(w, r, satelliteURL()+"/status")
+	url := satelliteURL()
+	if url == "" {
+		writeError(w, http.StatusServiceUnavailable, "SATELLITE_SERVICE_URL is not configured")
+		return
+	}
+	proxyToService(w, r, url+"/status")
 }
 
 // ── Innovation 8: Voice IVR Voter Assistance (extended) ───────────────────────
@@ -723,33 +748,25 @@ func GetIVRStats() (interface{}, error) {
 	return M{"total_calls": 0, "active_sessions": 0, "languages": []string{"en", "ha", "yo", "ig"}}, nil
 }
 
-// ── Quantum stub functions ─────────────────────────────────────────────────────
+// ── Quantum ML-DSA-65 compatibility helpers ───────────────────────────────────
 
 func QuantumSign(content []byte, algorithm string) (string, error) {
-	scheme := PQSignatureScheme(algorithm)
-	kp, err := GeneratePQKeyPair(scheme)
+	kp, err := GeneratePQKeyPair(PQSignatureScheme(algorithm))
 	if err != nil {
-		return "", fmt.Errorf("key generation failed: %w", err)
+		return "", fmt.Errorf("ML-DSA-65 key generation failed: %w", err)
 	}
-	signed, err := SignElectionResult(kp, "quantum-sign", "inline", content)
-	if err != nil {
-		return "", fmt.Errorf("signing failed: %w", err)
-	}
-	return signed.Signature, nil
+	return signDocument(kp, content)
 }
 
 func QuantumVerify(content []byte, signature, publicKey, algorithm string) (bool, error) {
-	signed := &PQSignedResult{
-		Signature:   signature,
-		PublicKeyID: publicKey,
-		Scheme:      PQSignatureScheme(algorithm),
+	if _, err := normalizePQScheme(PQSignatureScheme(algorithm)); err != nil {
+		return false, err
 	}
-	return VerifyPQSignature(signed, publicKey, content), nil
+	return verifyDocumentSignature(content, signature, publicKey)
 }
 
 func GenerateQuantumKeyPair(algorithm string) (string, string, error) {
-	scheme := PQSignatureScheme(algorithm)
-	kp, err := GeneratePQKeyPair(scheme)
+	kp, err := GeneratePQKeyPair(PQSignatureScheme(algorithm))
 	if err != nil {
 		return "", "", err
 	}

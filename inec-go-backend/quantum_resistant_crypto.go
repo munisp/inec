@@ -1,201 +1,292 @@
 package main
 
-// quantum_resistant_crypto.go
-//
-// Innovation 6: Quantum-Resistant Cryptography Upgrade
-// ====================================================
-// Implements NIST-standardised post-quantum cryptographic primitives
-// as a drop-in replacement for classical RSA/ECDSA signatures used
-// in election result signing and voter credential issuance.
-//
-// Algorithms implemented:
-//   - CRYSTALS-Dilithium (ML-DSA): Digital signatures for result signing
-//   - CRYSTALS-Kyber (ML-KEM): Key encapsulation for secure channel setup
-//   - SHAKE-256: Quantum-resistant hashing (XOF variant of SHA-3)
-//
-// These algorithms are resistant to Grover's and Shor's quantum algorithms,
-// ensuring the platform remains secure in a post-quantum threat landscape.
-//
-// Note: This implementation uses Go's standard library SHA-3/SHAKE and
-// provides the API surface. Full Dilithium/Kyber would use circl or liboqs.
+// quantum_resistant_crypto.go implements NIST FIPS 204 ML-DSA-65 signatures
+// for election-result and document signing. It intentionally exposes no
+// synthetic or hash-chain-only signature path.
 
 import (
 	"crypto/rand"
-	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/sha3"
 )
 
-// PQSignatureScheme identifies the post-quantum signature algorithm in use.
+// PQSignatureScheme identifies a supported post-quantum signature scheme.
 type PQSignatureScheme string
 
 const (
-	SchemeDilithium3 PQSignatureScheme = "ML-DSA-65"  // NIST FIPS 204 (Dilithium3)
-	SchemeEd25519PQ  PQSignatureScheme = "Ed25519-PQ"  // Hybrid classical+PQ
+	// SchemeMLDSA65 is the FIPS 204 ML-DSA-65 parameter set.
+	SchemeMLDSA65 PQSignatureScheme = "ML-DSA-65"
+	// SchemeDilithium3 is retained as a compatibility alias for callers that
+	// used the pre-standardized Dilithium3 name.
+	SchemeDilithium3 PQSignatureScheme = SchemeMLDSA65
+	// SchemeEd25519PQ is intentionally unsupported until a real hybrid scheme
+	// is provisioned; callers receive a validation error rather than a fallback.
+	SchemeEd25519PQ PQSignatureScheme = "Ed25519-PQ"
 )
 
-// PQKeyPair holds a post-quantum keypair for result signing.
+const (
+	pqElectionContext = "inec-election-result-v1"
+	pqDocumentContext = "inec-document-v1"
+)
+
+// PQKeyPair contains encoded ML-DSA-65 keys. PrivateKey must be stored in an
+// HSM or equivalent secret store in production and is never serialized.
 type PQKeyPair struct {
 	Scheme     PQSignatureScheme `json:"scheme"`
-	PublicKey  string            `json:"public_key"`  // hex-encoded
-	PrivateKey string            `json:"-"`            // never serialised
+	PublicKey  string            `json:"public_key"`
+	PrivateKey string            `json:"-"`
 	CreatedAt  time.Time         `json:"created_at"`
 	ExpiresAt  time.Time         `json:"expires_at"`
 }
 
-// PQSignedResult is an election result with a post-quantum signature.
+// PQSignedResult is an election result signed with ML-DSA-65.
 type PQSignedResult struct {
-	ElectionID   string            `json:"election_id"`
-	PollingUnit  string            `json:"polling_unit"`
-	ResultHash   string            `json:"result_hash"`   // SHAKE-256 of result data
-	Signature    string            `json:"signature"`     // hex-encoded PQ signature
-	Scheme       PQSignatureScheme `json:"scheme"`
-	SignedAt     time.Time         `json:"signed_at"`
-	PublicKeyID  string            `json:"public_key_id"`
+	ElectionID  string            `json:"election_id"`
+	PollingUnit string            `json:"polling_unit"`
+	ResultHash  string            `json:"result_hash"`
+	Signature   string            `json:"signature"`
+	Scheme      PQSignatureScheme `json:"scheme"`
+	SignedAt    time.Time         `json:"signed_at"`
+	PublicKeyID string            `json:"public_key_id"`
 }
 
-// SHAKE256Hash computes a SHAKE-256 (SHA-3 XOF) hash of the input data.
-// SHAKE-256 is quantum-resistant and produces variable-length output.
+// SHAKE256Hash computes a SHAKE-256 extendable-output hash.
 func SHAKE256Hash(data []byte, outputLen int) []byte {
 	h := sha3.NewShake256()
-	h.Write(data)
+	_, _ = h.Write(data)
 	out := make([]byte, outputLen)
-	h.Read(out)
+	_, _ = h.Read(out)
 	return out
 }
 
-// GeneratePQKeyPair generates a simulated post-quantum keypair.
-// In production, this would call the circl library's Dilithium3.GenerateKey().
+func normalizePQScheme(scheme PQSignatureScheme) (PQSignatureScheme, error) {
+	switch strings.ToLower(strings.TrimSpace(string(scheme))) {
+	case "", "ml-dsa-65", "mldsa65", "dilithium3":
+		return SchemeMLDSA65, nil
+	default:
+		return "", fmt.Errorf("unsupported post-quantum signature scheme %q; only ML-DSA-65 is enabled", scheme)
+	}
+}
+
+func pqElectionMessage(resultHash []byte, electionID, pollingUnit string, signedAt time.Time) []byte {
+	return []byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", pqElectionContext, hex.EncodeToString(resultHash), electionID, pollingUnit+"\x00"+signedAt.UTC().Format(time.RFC3339Nano)))
+}
+
+func pqKeyID(publicKey string) string {
+	return hex.EncodeToString(SHAKE256Hash([]byte(publicKey), 16))
+}
+
+func decodeMLDSAPrivateKey(encoded string) (*mldsa65.PrivateKey, error) {
+	keyBytes, err := hex.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode ML-DSA private key: %w", err)
+	}
+	key := new(mldsa65.PrivateKey)
+	if err := key.UnmarshalBinary(keyBytes); err != nil {
+		return nil, fmt.Errorf("unmarshal ML-DSA private key: %w", err)
+	}
+	return key, nil
+}
+
+func decodeMLDSAPublicKey(encoded string) (*mldsa65.PublicKey, error) {
+	keyBytes, err := hex.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode ML-DSA public key: %w", err)
+	}
+	key := new(mldsa65.PublicKey)
+	if err := key.UnmarshalBinary(keyBytes); err != nil {
+		return nil, fmt.Errorf("unmarshal ML-DSA public key: %w", err)
+	}
+	return key, nil
+}
+
+// GeneratePQKeyPair generates a genuine ML-DSA-65 key pair using crypto/rand.
 func GeneratePQKeyPair(scheme PQSignatureScheme) (*PQKeyPair, error) {
-	// Generate 2592-byte Dilithium3 public key (simulated with random bytes)
-	pubKeyBytes := make([]byte, 1952) // Dilithium3 public key size
-	if _, err := rand.Read(pubKeyBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate PQ keypair: %w", err)
+	normalized, err := normalizePQScheme(scheme)
+	if err != nil {
+		return nil, err
 	}
-
-	privKeyBytes := make([]byte, 4000) // Dilithium3 private key size
-	if _, err := rand.Read(privKeyBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate PQ private key: %w", err)
+	publicKey, privateKey, err := mldsa65.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate ML-DSA-65 keypair: %w", err)
 	}
-
 	kp := &PQKeyPair{
-		Scheme:     scheme,
-		PublicKey:  hex.EncodeToString(pubKeyBytes),
-		PrivateKey: hex.EncodeToString(privKeyBytes),
-		CreatedAt:  time.Now(),
-		ExpiresAt:  time.Now().Add(365 * 24 * time.Hour),
+		Scheme:     normalized,
+		PublicKey:  hex.EncodeToString(publicKey.Bytes()),
+		PrivateKey: hex.EncodeToString(privateKey.Bytes()),
+		CreatedAt:  time.Now().UTC(),
+		ExpiresAt:  time.Now().UTC().Add(365 * 24 * time.Hour),
 	}
-
-	log.Info().Str("scheme", string(scheme)).Msg("Post-quantum keypair generated")
+	log.Info().Str("scheme", string(normalized)).Msg("ML-DSA-65 keypair generated")
 	return kp, nil
 }
 
-// SignElectionResult signs an election result using SHAKE-256 hashing
-// and a simulated Dilithium3 signature.
+// SignElectionResult signs canonical result metadata with ML-DSA-65.
 func SignElectionResult(kp *PQKeyPair, electionID, pollingUnit string, resultData []byte) (*PQSignedResult, error) {
-	// Compute SHAKE-256 hash of result data
-	resultHash := SHAKE256Hash(resultData, 64) // 512-bit output
-
-	// Construct the message to sign: hash || election_id || polling_unit || timestamp
-	msg := append(resultHash, []byte(electionID+pollingUnit+time.Now().UTC().Format(time.RFC3339))...)
-
-	// Simulate Dilithium3 signature (production: circl.Sign(privKey, msg))
-	// Here we use HMAC-SHA512 as a placeholder with the same API surface
-	privKeyBytes, err := hex.DecodeString(kp.PrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
+	if kp == nil {
+		return nil, fmt.Errorf("post-quantum keypair is required")
 	}
-
-	// Deterministic signature using SHA-512 of (privkey || msg)
-	h := sha512.New()
-	h.Write(privKeyBytes[:64])
-	h.Write(msg)
-	sig := h.Sum(nil)
-
-	// Extend to Dilithium3 signature size (2420 bytes) for API compatibility
-	fullSig := make([]byte, 2420)
-	copy(fullSig, sig)
-	rand.Read(fullSig[len(sig):]) // pad with random bytes (production: actual signature)
-
-	pubKeyHash := SHAKE256Hash([]byte(kp.PublicKey), 16)
-
+	if _, err := normalizePQScheme(kp.Scheme); err != nil {
+		return nil, err
+	}
+	privateKey, err := decodeMLDSAPrivateKey(kp.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	resultHash := SHAKE256Hash(resultData, 64)
+	signedAt := time.Now().UTC()
+	signature := make([]byte, mldsa65.SignatureSize)
+	if err := mldsa65.SignTo(privateKey, pqElectionMessage(resultHash, electionID, pollingUnit, signedAt), []byte(pqElectionContext), true, signature); err != nil {
+		return nil, fmt.Errorf("sign ML-DSA-65 election result: %w", err)
+	}
 	return &PQSignedResult{
 		ElectionID:  electionID,
 		PollingUnit: pollingUnit,
 		ResultHash:  hex.EncodeToString(resultHash),
-		Signature:   hex.EncodeToString(fullSig),
-		Scheme:      kp.Scheme,
-		SignedAt:    time.Now(),
-		PublicKeyID: hex.EncodeToString(pubKeyHash),
+		Signature:   hex.EncodeToString(signature),
+		Scheme:      SchemeMLDSA65,
+		SignedAt:    signedAt,
+		PublicKeyID: pqKeyID(kp.PublicKey),
 	}, nil
 }
 
-// VerifyPQSignature verifies a post-quantum signed result.
-func VerifyPQSignature(signed *PQSignedResult, pubKey string, resultData []byte) bool {
-	// Recompute result hash
-	expectedHash := hex.EncodeToString(SHAKE256Hash(resultData, 64))
-	if expectedHash != signed.ResultHash {
-		log.Warn().Str("election", signed.ElectionID).Msg("PQ signature: result hash mismatch")
+// VerifyPQSignature cryptographically verifies an ML-DSA-65 election signature.
+func VerifyPQSignature(signed *PQSignedResult, publicKey string, resultData []byte) bool {
+	if signed == nil {
 		return false
 	}
-	// In production: circl.Verify(pubKey, msg, signature)
-	// Here we verify the hash chain integrity
-	log.Info().Str("election", signed.ElectionID).Str("scheme", string(signed.Scheme)).Msg("PQ signature verified")
-	return true
+	if _, err := normalizePQScheme(signed.Scheme); err != nil {
+		log.Warn().Err(err).Msg("unsupported PQ signature scheme")
+		return false
+	}
+	if signed.SignedAt.IsZero() {
+		log.Warn().Msg("PQ signature has no signing timestamp")
+		return false
+	}
+	resultHash := SHAKE256Hash(resultData, 64)
+	if hex.EncodeToString(resultHash) != signed.ResultHash {
+		log.Warn().Str("election", signed.ElectionID).Msg("PQ signature result hash mismatch")
+		return false
+	}
+	if signed.PublicKeyID != "" && signed.PublicKeyID != pqKeyID(publicKey) {
+		log.Warn().Str("election", signed.ElectionID).Msg("PQ signature public-key identifier mismatch")
+		return false
+	}
+	key, err := decodeMLDSAPublicKey(publicKey)
+	if err != nil {
+		log.Warn().Err(err).Msg("PQ signature public-key decode failed")
+		return false
+	}
+	signature, err := hex.DecodeString(signed.Signature)
+	if err != nil || len(signature) != mldsa65.SignatureSize {
+		log.Warn().Msg("PQ signature encoding or length invalid")
+		return false
+	}
+	return mldsa65.Verify(key, pqElectionMessage(resultHash, signed.ElectionID, signed.PollingUnit, signed.SignedAt), []byte(pqElectionContext), signature)
 }
 
-// ── HTTP Handlers ─────────────────────────────────────────────────────────────
+func signDocument(kp *PQKeyPair, content []byte) (string, error) {
+	if kp == nil {
+		return "", fmt.Errorf("post-quantum keypair is required")
+	}
+	privateKey, err := decodeMLDSAPrivateKey(kp.PrivateKey)
+	if err != nil {
+		return "", err
+	}
+	signature := make([]byte, mldsa65.SignatureSize)
+	if err := mldsa65.SignTo(privateKey, content, []byte(pqDocumentContext), true, signature); err != nil {
+		return "", fmt.Errorf("sign ML-DSA-65 document: %w", err)
+	}
+	return hex.EncodeToString(signature), nil
+}
 
-var pqKeyStore = make(map[string]*PQKeyPair)
+func verifyDocumentSignature(content []byte, signature, publicKey string) (bool, error) {
+	key, err := decodeMLDSAPublicKey(publicKey)
+	if err != nil {
+		return false, err
+	}
+	signatureBytes, err := hex.DecodeString(signature)
+	if err != nil {
+		return false, fmt.Errorf("decode ML-DSA signature: %w", err)
+	}
+	if len(signatureBytes) != mldsa65.SignatureSize {
+		return false, fmt.Errorf("invalid ML-DSA-65 signature length")
+	}
+	return mldsa65.Verify(key, content, []byte(pqDocumentContext), signatureBytes), nil
+}
 
+var pqKeyStore = struct {
+	sync.RWMutex
+	keys map[string]*PQKeyPair
+}{keys: make(map[string]*PQKeyPair)}
+
+func storePQKey(kp *PQKeyPair) string {
+	keyID := pqKeyID(kp.PublicKey)
+	pqKeyStore.Lock()
+	pqKeyStore.keys[keyID] = kp
+	pqKeyStore.Unlock()
+	return keyID
+}
+
+func loadPQKey(keyID string) (*PQKeyPair, bool) {
+	pqKeyStore.RLock()
+	kp, ok := pqKeyStore.keys[keyID]
+	pqKeyStore.RUnlock()
+	return kp, ok
+}
+
+// PQGenerateKeyHandler creates an in-memory keypair for the legacy result-signing API.
 func PQGenerateKeyHandler(w http.ResponseWriter, r *http.Request) {
-	kp, err := GeneratePQKeyPair(SchemeDilithium3)
+	kp, err := GeneratePQKeyPair(SchemeMLDSA65)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	keyID := hex.EncodeToString(SHAKE256Hash([]byte(kp.PublicKey), 8))
-	pqKeyStore[keyID] = kp
-
+	keyID := storePQKey(kp)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"key_id":     keyID,
 		"scheme":     kp.Scheme,
-		"public_key": kp.PublicKey[:64] + "...", // truncated for display
+		"public_key": kp.PublicKey,
 		"expires_at": kp.ExpiresAt,
 	})
 }
 
+// PQSignResultHandler signs an election result using an in-memory ML-DSA-65 key.
 func PQSignResultHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		KeyID      string `json:"key_id"`
-		ElectionID string `json:"election_id"`
+		KeyID       string `json:"key_id"`
+		ElectionID  string `json:"election_id"`
 		PollingUnit string `json:"polling_unit"`
-		ResultData string `json:"result_data"` // base64 or JSON string
+		ResultData  string `json:"result_data"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-
-	kp, ok := pqKeyStore[req.KeyID]
+	if req.KeyID == "" || req.ElectionID == "" || req.PollingUnit == "" || req.ResultData == "" {
+		http.Error(w, "key_id, election_id, polling_unit, and result_data are required", http.StatusBadRequest)
+		return
+	}
+	kp, ok := loadPQKey(req.KeyID)
 	if !ok {
 		http.Error(w, "key not found", http.StatusNotFound)
 		return
 	}
-
 	signed, err := SignElectionResult(kp, req.ElectionID, req.PollingUnit, []byte(req.ResultData))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(signed)
+	_ = json.NewEncoder(w).Encode(signed)
 }

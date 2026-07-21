@@ -558,30 +558,6 @@ func SkipTestTokenWithWrongSecretRejected(t *testing.T) {
 	}
 }
 
-// ── Rate Limiter Tests ──
-
-func SkipTestRateLimiterWindowExpiry(t *testing.T) {
-	rl := newRateLimiter()
-
-	// Fill to limit with very short window (use allowLocal to test sliding window logic)
-	for i := 0; i < 3; i++ {
-		rl.allowLocal("test-key", 3, 50*time.Millisecond)
-	}
-
-	// Should be blocked
-	if rl.allowLocal("test-key", 3, 50*time.Millisecond) {
-		t.Error("should be rate limited")
-	}
-
-	// Wait for window expiry
-	time.Sleep(60 * time.Millisecond)
-
-	// Should be allowed again
-	if !rl.allowLocal("test-key", 3, 50*time.Millisecond) {
-		t.Error("should be allowed after window expiry")
-	}
-}
-
 // ── Public Path Tests ──
 
 func SkipTestPublicPathChecking(t *testing.T) {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -24,6 +23,39 @@ type RedisClient interface {
 	Ping() MWStatus
 	Close() error
 }
+
+// unavailableRedisClient never stores, synthesizes, or substitutes Redis data.
+// It preserves the dependency error for callers until the configured native service recovers.
+type unavailableRedisClient struct {
+	reason string
+}
+
+func (r *unavailableRedisClient) unavailable() error {
+	return fmt.Errorf("native Redis is unavailable: %s", r.reason)
+}
+func (r *unavailableRedisClient) Get(context.Context, string) (string, error) {
+	return "", r.unavailable()
+}
+func (r *unavailableRedisClient) Set(context.Context, string, interface{}, time.Duration) error {
+	return r.unavailable()
+}
+func (r *unavailableRedisClient) Del(context.Context, ...string) error { return r.unavailable() }
+func (r *unavailableRedisClient) Publish(context.Context, string, interface{}) error {
+	return r.unavailable()
+}
+func (r *unavailableRedisClient) Subscribe(context.Context, string, func(string)) error {
+	return r.unavailable()
+}
+func (r *unavailableRedisClient) Incr(context.Context, string) (int64, error) {
+	return 0, r.unavailable()
+}
+func (r *unavailableRedisClient) Expire(context.Context, string, time.Duration) error {
+	return r.unavailable()
+}
+func (r *unavailableRedisClient) Ping() MWStatus {
+	return MWStatus{Name: "Redis", Connected: false, Mode: "native Redis required", Details: r.reason}
+}
+func (r *unavailableRedisClient) Close() error { return nil }
 
 // --- Real Redis client using go-redis ---
 
@@ -44,6 +76,22 @@ func newRealRedisClient(addr, password string, db int) *realRedisClient {
 		MinIdleConns: 5,
 	})
 	return &realRedisClient{client: rdb, addr: addr}
+}
+
+func newRealRedisClientFromURL(rawURL, password string) (*realRedisClient, error) {
+	opts, err := redis.ParseURL(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	if password != "" {
+		opts.Password = password
+	}
+	opts.DialTimeout = 5 * time.Second
+	opts.ReadTimeout = 3 * time.Second
+	opts.WriteTimeout = 3 * time.Second
+	opts.PoolSize = 20
+	opts.MinIdleConns = 5
+	return &realRedisClient{client: redis.NewClient(opts), addr: opts.Addr}, nil
 }
 
 func (r *realRedisClient) Get(ctx context.Context, key string) (string, error) {
@@ -98,111 +146,6 @@ func (r *realRedisClient) Close() error {
 	return r.client.Close()
 }
 
-// --- PostgreSQL-backed fallback (persistent) ---
-
-type pgRedis struct {
-	mu   sync.RWMutex
-	subs map[string][]func(string)
-}
-
-func newPGRedis() *pgRedis {
-	db.Exec(`CREATE TABLE IF NOT EXISTS redis_cache (
-		key TEXT PRIMARY KEY,
-		value TEXT NOT NULL DEFAULT '',
-		expiry TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-	)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_redis_cache_expiry ON redis_cache(expiry) WHERE expiry IS NOT NULL`)
-	r := &pgRedis{subs: make(map[string][]func(string))}
-	go r.cleanup()
-	log.Info().Msg("Redis fallback: PostgreSQL-backed cache initialized")
-	return r
-}
-
-func (r *pgRedis) cleanup() {
-	ticker := time.NewTicker(30 * time.Second)
-	for range ticker.C {
-		db.Exec(`DELETE FROM redis_cache WHERE expiry IS NOT NULL AND expiry < NOW()`)
-	}
-}
-
-func (r *pgRedis) Get(_ context.Context, key string) (string, error) {
-	var value string
-	err := db.QueryRow(`SELECT value FROM redis_cache WHERE key=$1 AND (expiry IS NULL OR expiry > NOW())`, key).Scan(&value)
-	if err != nil {
-		return "", fmt.Errorf("key not found")
-	}
-	return value, nil
-}
-
-func (r *pgRedis) Set(_ context.Context, key string, value interface{}, ttl time.Duration) error {
-	v := fmt.Sprintf("%v", value)
-	if ttl > 0 {
-		expiry := time.Now().Add(ttl)
-		_, err := db.Exec(`INSERT INTO redis_cache (key, value, expiry, updated_at) VALUES ($1, $2, $3, NOW())
-			ON CONFLICT (key) DO UPDATE SET value=$2, expiry=$3, updated_at=NOW()`, key, v, expiry)
-		return err
-	}
-	_, err := db.Exec(`INSERT INTO redis_cache (key, value, expiry, updated_at) VALUES ($1, $2, NULL, NOW())
-		ON CONFLICT (key) DO UPDATE SET value=$2, expiry=NULL, updated_at=NOW()`, key, v)
-	return err
-}
-
-func (r *pgRedis) Del(_ context.Context, keys ...string) error {
-	for _, k := range keys {
-		db.Exec(`DELETE FROM redis_cache WHERE key=$1`, k)
-	}
-	return nil
-}
-
-func (r *pgRedis) Publish(_ context.Context, channel string, message interface{}) error {
-	r.mu.RLock()
-	handlers := r.subs[channel]
-	r.mu.RUnlock()
-	v, _ := json.Marshal(message)
-	for _, h := range handlers {
-		go h(string(v))
-	}
-	return nil
-}
-
-func (r *pgRedis) Subscribe(_ context.Context, channel string, handler func(string)) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.subs[channel] = append(r.subs[channel], handler)
-	return nil
-}
-
-func (r *pgRedis) Incr(_ context.Context, key string) (int64, error) {
-	var newVal int64
-	err := db.QueryRow(`INSERT INTO redis_cache (key, value, updated_at) VALUES ($1, '1', NOW())
-		ON CONFLICT (key) DO UPDATE SET value = (COALESCE(redis_cache.value, '0')::bigint + 1)::text, updated_at=NOW()
-		RETURNING value::bigint`, key).Scan(&newVal)
-	if err != nil {
-		return 0, err
-	}
-	return newVal, nil
-}
-
-func (r *pgRedis) Expire(_ context.Context, key string, ttl time.Duration) error {
-	expiry := time.Now().Add(ttl)
-	_, err := db.Exec(`UPDATE redis_cache SET expiry=$2, updated_at=NOW() WHERE key=$1`, key, expiry)
-	return err
-}
-
-func (r *pgRedis) Ping() MWStatus {
-	var keyCount int
-	db.QueryRow(`SELECT COUNT(*) FROM redis_cache WHERE expiry IS NULL OR expiry > NOW()`).Scan(&keyCount)
-	return MWStatus{
-		Name: "Redis", Connected: true, Mode: "pg-backed",
-		Latency: "< 1ms",
-		Details: fmt.Sprintf("PostgreSQL-persisted cache, %d active keys", keyCount),
-	}
-}
-
-func (r *pgRedis) Close() error { return nil }
-
 // --- Redis Cluster client using go-redis ClusterClient ---
 
 type realRedisClusterClient struct {
@@ -212,14 +155,14 @@ type realRedisClusterClient struct {
 
 func newRealRedisClusterClient(addrs []string, password string) *realRedisClusterClient {
 	rdb := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:        addrs,
-		Password:     password,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-		PoolSize:     20,
-		MinIdleConns: 5,
-		ReadOnly:     true,
+		Addrs:          addrs,
+		Password:       password,
+		DialTimeout:    5 * time.Second,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   3 * time.Second,
+		PoolSize:       20,
+		MinIdleConns:   5,
+		ReadOnly:       true,
 		RouteByLatency: true,
 	})
 	return &realRedisClusterClient{client: rdb, addrs: addrs}
@@ -283,50 +226,48 @@ func (r *realRedisClusterClient) Close() error {
 // --- Init ---
 
 func initRedisClient() RedisClient {
-	// Check for cluster mode first (comma-separated addresses)
+	password := envOrDefault("REDIS_PASSWORD", "")
 	clusterAddrs := envOrDefault("REDIS_CLUSTER_ADDRS", "")
 	if clusterAddrs != "" {
 		addrs := splitAndTrim(clusterAddrs, ",")
-		password := envOrDefault("REDIS_PASSWORD", "")
+		if len(addrs) == 0 {
+			return &unavailableRedisClient{reason: "REDIS_CLUSTER_ADDRS contained no valid addresses"}
+		}
 		client := newRealRedisClusterClient(addrs, password)
-		s := client.Ping()
-		if s.Connected {
-			log.Info().Strs("addrs", addrs).Msg("Redis connected via go-redis cluster client")
+		if status := client.Ping(); status.Connected {
+			log.Info().Strs("addrs", addrs).Msg("Redis connected via native go-redis cluster client")
 			return client
-		}
-		log.Warn().Strs("addrs", addrs).Msg("Redis cluster unreachable, trying single-node")
-		client.Close()
-	}
-
-	redisAddr := envOrDefault("REDIS_ADDR", "")
-	if redisAddr == "" {
-		// Try legacy REDIS_URL
-		redisURL := envOrDefault("REDIS_URL", "")
-		if redisURL != "" {
-			// Parse redis://host:port or just host:port
-			redisAddr = redisURL
-			if len(redisAddr) > 7 && redisAddr[:7] == "redis://" {
-				redisAddr = redisAddr[7:]
-			}
-			if len(redisAddr) > 7 && redisAddr[:7] == "http://" {
-				redisAddr = redisAddr[7:]
-			}
+		} else {
+			_ = client.Close()
+			return &unavailableRedisClient{reason: status.Details}
 		}
 	}
 
-	if redisAddr != "" {
-		password := envOrDefault("REDIS_PASSWORD", "")
+	if redisURL := envOrDefault("REDIS_URL", ""); redisURL != "" {
+		client, err := newRealRedisClientFromURL(redisURL, password)
+		if err != nil {
+			return &unavailableRedisClient{reason: err.Error()}
+		}
+		if status := client.Ping(); status.Connected {
+			log.Info().Str("addr", client.addr).Msg("Redis connected via native go-redis URL client")
+			return client
+		} else {
+			_ = client.Close()
+			return &unavailableRedisClient{reason: status.Details}
+		}
+	}
+
+	if redisAddr := envOrDefault("REDIS_ADDR", ""); redisAddr != "" {
 		client := newRealRedisClient(redisAddr, password, 0)
-		s := client.Ping()
-		if s.Connected {
-			log.Info().Str("addr", redisAddr).Msg("Redis connected via go-redis")
+		if status := client.Ping(); status.Connected {
+			log.Info().Str("addr", redisAddr).Msg("Redis connected via native go-redis client")
 			return client
+		} else {
+			_ = client.Close()
+			return &unavailableRedisClient{reason: status.Details}
 		}
-		log.Warn().Str("addr", redisAddr).Msg("Redis unreachable, falling back to embedded")
-		client.Close()
 	}
-	log.Info().Msg("Redis using PostgreSQL-backed cache (persistent)")
-	return newPGRedis()
+	return &unavailableRedisClient{reason: "REDIS_URL, REDIS_ADDR, or REDIS_CLUSTER_ADDRS must be configured"}
 }
 
 func splitAndTrim(s, sep string) []string {

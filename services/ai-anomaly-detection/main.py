@@ -1,79 +1,57 @@
-"""
-INEC Innovation 1: AI-Powered Real-Time Election Anomaly Detection
-==================================================================
-Uses Isolation Forest and statistical Z-score analysis to detect
-irregularities in voting patterns as results stream in. Alerts are
-published to Fluvio for immediate downstream consumption.
+"""INEC real-time anomaly API backed by the trained CPU ONNX inference service.
 
-Architecture:
-  - FastAPI HTTP server for REST queries
-  - Background worker polling the results stream
-  - Isolation Forest model trained on historical baselines
-  - WebSocket endpoint for real-time alert push to the frontend
+This service validates election-result features, delegates all scoring to the
+versioned XGBoost ONNX model in ``inference-engine``, and broadcasts only real
+model outputs. It does not train from synthetic data or fabricate baseline
+statistics at runtime.
 """
+
+from __future__ import annotations
 
 import asyncio
-import json
 import os
-import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-import numpy as np
+import httpx
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+from pydantic import BaseModel, Field
+
+INFERENCE_ENGINE_URL = os.getenv("INFERENCE_ENGINE_URL", "").strip().rstrip("/")
+CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
 
 app = FastAPI(
     title="INEC AI Anomaly Detection Service",
-    description="Real-time election irregularity detection using Isolation Forest",
-    version="1.0.0",
+    description="Real-time election irregularity detection using the trained CPU ONNX model",
+    version="2.0.0",
 )
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    allow_credentials=True,
 )
 
-# ── Model State ──────────────────────────────────────────────────────────────
-
-scaler = StandardScaler()
-model = IsolationForest(
-    n_estimators=200,
-    contamination=0.05,  # expect ~5% anomalous polling units
-    random_state=42,
-    n_jobs=-1,
-)
-model_trained = False
 connected_clients: list[WebSocket] = []
-
-# Feature vector: [votes_cast, accredited_voters, turnout_pct, result_submission_delay_min,
-#                  party_vote_share_variance, sequential_number_pattern_score]
-FEATURE_NAMES = [
-    "votes_cast",
-    "accredited_voters",
-    "turnout_pct",
-    "submission_delay_min",
-    "vote_share_variance",
-    "sequential_score",
-]
 
 
 class VotingRecord(BaseModel):
-    polling_unit_id: str
-    state: str
-    lga: str
-    ward: str
-    votes_cast: int
-    accredited_voters: int
-    submission_delay_min: float
+    polling_unit_id: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    lga: str = Field(min_length=1)
+    ward: str = Field(min_length=1)
+    registered_voters: int = Field(gt=0)
+    accredited_voters: int = Field(ge=0)
+    votes_cast: int = Field(ge=0)
+    rejected_votes: int = Field(ge=0)
+    submission_delay_min: float = Field(ge=0)
+    benford_deviation: float = Field(ge=0)
+    regional_mean_turnout: float = Field(ge=0, le=1)
     party_results: dict[str, int]
-    timestamp: str = datetime.utcnow().isoformat()
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AnomalyAlert(BaseModel):
@@ -84,149 +62,153 @@ class AnomalyAlert(BaseModel):
     confidence: float
     features: dict[str, float]
     explanation: str
-    severity: str  # low | medium | high | critical
-    timestamp: str
+    severity: str
+    timestamp: datetime
+    model: str
+    inference_time_us: int
 
 
-def extract_features(record: VotingRecord) -> np.ndarray:
-    """Extract a fixed-length feature vector from a voting record."""
-    total_votes = sum(record.party_results.values())
-    turnout = (record.votes_cast / max(record.accredited_voters, 1)) * 100
-
-    # Detect sequential number patterns (e.g., 100, 200, 300 — suspiciously round)
-    values = list(record.party_results.values())
-    sequential_score = sum(1 for v in values if v % 100 == 0) / max(len(values), 1)
-
-    # Variance in vote share distribution
-    if total_votes > 0:
-        shares = [v / total_votes for v in values]
-        variance = float(np.var(shares))
-    else:
-        variance = 0.0
-
-    return np.array([
-        record.votes_cast,
-        record.accredited_voters,
-        turnout,
-        record.submission_delay_min,
-        variance,
-        sequential_score,
-    ])
+def require_inference_url() -> str:
+    if not INFERENCE_ENGINE_URL:
+        raise HTTPException(status_code=503, detail="INFERENCE_ENGINE_URL is required for trained anomaly inference")
+    return INFERENCE_ENGINE_URL
 
 
-def train_baseline_model():
-    """Train the Isolation Forest on synthetic baseline data representing normal elections."""
-    global model_trained
-    np.random.seed(42)
-    n_samples = 5000
+def inference_payload(record: VotingRecord) -> tuple[dict[str, Any], dict[str, float]]:
+    if len(record.party_results) < 2:
+        raise HTTPException(status_code=422, detail="party_results must contain at least two actual party totals")
+    if any(v < 0 for v in record.party_results.values()):
+        raise HTTPException(status_code=422, detail="party_results must not contain negative values")
 
-    # Simulate realistic Nigerian polling unit data
-    normal_data = np.column_stack([
-        np.random.randint(50, 500, n_samples),          # votes_cast
-        np.random.randint(200, 800, n_samples),          # accredited_voters
-        np.random.uniform(30, 85, n_samples),            # turnout_pct
-        np.random.exponential(15, n_samples),            # submission_delay_min
-        np.random.beta(2, 5, n_samples),                 # vote_share_variance
-        np.random.beta(1, 10, n_samples),                # sequential_score
-    ])
+    ordered_party_totals = sorted(record.party_results.values(), reverse=True)
+    total_valid_votes = sum(record.party_results.values())
+    if total_valid_votes <= 0:
+        raise HTTPException(status_code=422, detail="party_results must contain at least one valid vote")
 
-    scaler.fit(normal_data)
-    scaled = scaler.transform(normal_data)
-    model.fit(scaled)
-    model_trained = True
-    print("[AnomalyDetection] Isolation Forest trained on baseline data")
+    turnout = record.accredited_voters / record.registered_voters
+    payload = {
+        "polling_unit_code": record.polling_unit_id,
+        "registered_voters": record.registered_voters,
+        "accredited_voters": record.accredited_voters,
+        "total_valid_votes": total_valid_votes,
+        "rejected_votes": record.rejected_votes,
+        "party_a_votes": ordered_party_totals[0],
+        "party_b_votes": ordered_party_totals[1],
+        "benford_deviation": record.benford_deviation,
+        "submission_delay_hours": record.submission_delay_min / 60.0,
+        "regional_mean_turnout": record.regional_mean_turnout,
+    }
+    features = {
+        "votes_cast": float(record.votes_cast),
+        "registered_voters": float(record.registered_voters),
+        "accredited_voters": float(record.accredited_voters),
+        "turnout_pct": turnout * 100.0,
+        "submission_delay_min": record.submission_delay_min,
+        "rejected_votes": float(record.rejected_votes),
+        "benford_deviation": record.benford_deviation,
+        "regional_mean_turnout": record.regional_mean_turnout,
+    }
+    return payload, features
 
 
-def score_record(record: VotingRecord) -> AnomalyAlert:
-    """Score a single voting record and return an anomaly alert."""
-    features = extract_features(record)
-    feature_dict = dict(zip(FEATURE_NAMES, features.tolist()))
+def severity_for_score(score: float) -> str:
+    if score >= 0.85:
+        return "critical"
+    if score >= 0.65:
+        return "high"
+    if score >= 0.40:
+        return "medium"
+    return "low"
 
-    if not model_trained:
-        train_baseline_model()
 
-    scaled = scaler.transform(features.reshape(1, -1))
-    raw_score = model.score_samples(scaled)[0]
-    prediction = model.predict(scaled)[0]  # -1 = anomaly, 1 = normal
+def explanation_for_result(result: dict[str, Any]) -> str:
+    factors = result.get("risk_factors", [])
+    if factors:
+        return "; ".join(str(factor.get("factor", "model risk factor")) for factor in factors)
+    return "trained CPU ONNX model found no named risk factor"
 
-    # Convert to 0-1 confidence score (higher = more anomalous)
-    anomaly_confidence = max(0.0, min(1.0, (-raw_score - 0.1) * 2))
-    is_anomaly = prediction == -1
 
-    # Determine severity
-    if anomaly_confidence > 0.85:
-        severity = "critical"
-    elif anomaly_confidence > 0.65:
-        severity = "high"
-    elif anomaly_confidence > 0.40:
-        severity = "medium"
-    else:
-        severity = "low"
-
-    # Generate human-readable explanation
-    explanations = []
-    if feature_dict["turnout_pct"] > 90:
-        explanations.append(f"unusually high turnout ({feature_dict['turnout_pct']:.1f}%)")
-    if feature_dict["sequential_score"] > 0.5:
-        explanations.append("suspicious round-number vote patterns detected")
-    if feature_dict["submission_delay_min"] > 120:
-        explanations.append(f"late result submission ({feature_dict['submission_delay_min']:.0f} min delay)")
-    if feature_dict["vote_share_variance"] < 0.01:
-        explanations.append("abnormally uniform vote distribution across parties")
-
-    explanation = "; ".join(explanations) if explanations else "statistical deviation from baseline"
-
+def alert_from_result(record: VotingRecord, features: dict[str, float], result: dict[str, Any]) -> AnomalyAlert:
+    score = float(result["anomaly_score"])
     return AnomalyAlert(
         polling_unit_id=record.polling_unit_id,
         state=record.state,
-        anomaly_score=float(anomaly_confidence),
-        is_anomaly=is_anomaly,
-        confidence=float(anomaly_confidence),
-        features=feature_dict,
-        explanation=explanation,
-        severity=severity,
-        timestamp=datetime.utcnow().isoformat(),
+        anomaly_score=score,
+        is_anomaly=bool(result["is_anomaly"]),
+        confidence=float(result["confidence"]),
+        features=features,
+        explanation=explanation_for_result(result),
+        severity=severity_for_score(score),
+        timestamp=datetime.now(timezone.utc),
+        model=str(result["model"]),
+        inference_time_us=int(result.get("inference_time_us", 0)),
     )
 
 
-# ── API Endpoints ────────────────────────────────────────────────────────────
+async def call_inference(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    base_url = require_inference_url()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(f"{base_url}{path}", json=payload)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=503, detail=f"trained anomaly inference returned HTTP {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="trained anomaly inference service is unavailable") from exc
 
-@app.on_event("startup")
-async def startup():
-    train_baseline_model()
+
+async def score_record(record: VotingRecord) -> AnomalyAlert:
+    payload, features = inference_payload(record)
+    result = await call_inference("/anomaly/predict", payload)
+    return alert_from_result(record, features, result)
 
 
 @app.post("/api/v1/anomaly/score", response_model=AnomalyAlert)
 async def score_voting_record(record: VotingRecord):
-    """Score a single voting record for anomalies."""
-    alert = score_record(record)
+    alert = await score_record(record)
     if alert.is_anomaly:
-        await broadcast_alert(alert.dict())
+        await broadcast_alert(alert.model_dump(mode="json"))
     return alert
 
 
 @app.post("/api/v1/anomaly/batch")
 async def score_batch(records: list[VotingRecord]):
-    """Score a batch of voting records and return only anomalies."""
-    alerts = [score_record(r) for r in records]
-    anomalies = [a for a in alerts if a.is_anomaly]
-    for a in anomalies:
-        await broadcast_alert(a.dict())
-    return {
-        "total": len(records),
-        "anomalies": len(anomalies),
-        "alerts": anomalies,
-    }
+    if not records:
+        raise HTTPException(status_code=422, detail="at least one voting record is required")
+    if len(records) > 50_000:
+        raise HTTPException(status_code=413, detail="batch exceeds trained inference service limit")
+
+    mapped = [inference_payload(record) for record in records]
+    result = await call_inference("/anomaly/batch", {"polling_units": [payload for payload, _ in mapped]})
+    model_results = result.get("results", [])
+    if len(model_results) != len(records):
+        raise HTTPException(status_code=503, detail="trained anomaly inference returned an incomplete batch")
+    alerts = [alert_from_result(record, features, model_result)
+              for record, (_, features), model_result in zip(records, mapped, model_results)]
+    anomalies = [alert for alert in alerts if alert.is_anomaly]
+    for alert in anomalies:
+        await broadcast_alert(alert.model_dump(mode="json"))
+    return {"total": len(records), "anomalies": len(anomalies), "alerts": anomalies}
 
 
 @app.get("/api/v1/anomaly/health")
 async def health():
-    return {"status": "healthy", "model_trained": model_trained}
+    base_url = require_inference_url()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{base_url}/health")
+            response.raise_for_status()
+            inference_health = response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="trained anomaly inference service is unavailable") from exc
+    if not inference_health.get("models", {}).get("anomaly_xgboost", False):
+        raise HTTPException(status_code=503, detail="trained anomaly ONNX model is unavailable")
+    return {"status": "healthy", "model_trained": True, "inference": inference_health}
 
 
 @app.websocket("/ws/anomalies")
 async def websocket_anomalies(websocket: WebSocket):
-    """WebSocket endpoint — pushes anomaly alerts to connected clients in real time."""
     await websocket.accept()
     connected_clients.append(websocket)
     try:
@@ -234,20 +216,21 @@ async def websocket_anomalies(websocket: WebSocket):
             await asyncio.sleep(30)
             await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
 
 
 async def broadcast_alert(alert: dict[str, Any]):
-    """Broadcast an anomaly alert to all connected WebSocket clients."""
-    disconnected = []
+    disconnected: list[WebSocket] = []
     for client in connected_clients:
         try:
             await client.send_json({"type": "anomaly_alert", "data": alert})
         except Exception:
             disconnected.append(client)
-    for c in disconnected:
-        connected_clients.remove(c)
+    for client in disconnected:
+        if client in connected_clients:
+            connected_clients.remove(client)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8200, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8200")), log_level="info")
