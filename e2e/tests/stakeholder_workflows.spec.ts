@@ -34,62 +34,62 @@ test.describe('Stakeholder Workflows', () => {
   });
 
   test('Admin can view dashboard and command center', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('input[name="username"]', 'admin');
     await page.fill('input[name="password"]', 'password');
     await page.click('button[type="submit"]');
     
-    await expect(page).toHaveURL('/dashboard');
+    await expect(page).toHaveURL(/#\/dashboard$/);
     await page.click('text=Command Center');
-    await expect(page).toHaveURL('/command-center');
+    await expect(page).toHaveURL(/#\/command-center$/);
   });
 
   test('Presiding Officer can submit results', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('input[name="username"]', 'po_lagos_01');
     await page.fill('input[name="password"]', 'password');
     await page.click('button[type="submit"]');
     
-    await expect(page).toHaveURL('/dashboard');
+    await expect(page).toHaveURL(/#\/dashboard$/);
     await page.getByRole('button', { name: 'Navigate to Results' }).click();
-    await expect(page).toHaveURL('/results');
+    await expect(page).toHaveURL(/#\/results$/);
   });
 
   test('Observer can report incidents', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('input[name="username"]', 'observer1');
     await page.fill('input[name="password"]', 'password');
     await page.click('button[type="submit"]');
     
-    await expect(page).toHaveURL('/dashboard');
+    await expect(page).toHaveURL(/#\/dashboard$/);
     await page.click('text=Incidents');
-    await expect(page).toHaveURL('/incidents');
+    await expect(page).toHaveURL(/#\/incidents$/);
   });
 
   test('Returning Officer can view collation', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('input[name="username"]', 'ro_lagos');
     await page.fill('input[name="password"]', 'password');
     await page.click('button[type="submit"]');
     
-    await expect(page).toHaveURL('/dashboard');
+    await expect(page).toHaveURL(/#\/dashboard$/);
     await page.click('text=Collation');
-    await expect(page).toHaveURL('/collation');
+    await expect(page).toHaveURL(/#\/collation$/);
   });
 
   test('Citizen can view public API and TV dashboard', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('input[name="username"]', 'citizen');
     await page.fill('input[name="password"]', 'password');
     await page.click('button[type="submit"]');
-    await expect(page).toHaveURL('/dashboard');
+    await expect(page).toHaveURL(/#\/dashboard$/);
 
-    await page.goto('/public-api');
-    await expect(page).toHaveURL('/public-api');
+    await page.goto('/#/public-api');
+    await expect(page).toHaveURL(/#\/public-api$/);
     await expect(page.locator('[role="main"]')).toBeVisible();
 
-    await page.goto('/tv-dashboard');
-    await expect(page).toHaveURL('/tv-dashboard');
+    await page.goto('/#/tv-dashboard');
+    await expect(page).toHaveURL(/#\/tv-dashboard$/);
     await expect(page.locator('[role="main"]')).toBeVisible();
   });
 });

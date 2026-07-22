@@ -14,7 +14,7 @@ const ROLES = [
 
 // Helper to login as a specific role
 async function loginAsRole(page: any, role: string) {
-  await page.goto('/login', { timeout: 30000 });
+  await page.goto('/#/login', { timeout: 30000 });
   
   // Wait for login form
   await page.waitForSelector('input[name="username"]');
@@ -27,7 +27,7 @@ async function loginAsRole(page: any, role: string) {
   await page.click('button[type="submit"]');
   
   // Wait for dashboard
-  await page.waitForURL('/dashboard', { timeout: 30000 });
+  await page.waitForURL('**/#/dashboard', { timeout: 30000 });
 }
 
 // Helper to mock API responses
@@ -64,7 +64,7 @@ test.describe('Comprehensive Stakeholder Workflows', () => {
         await expect(page.locator('header')).toContainText(role.replace(/_/g, ' '));
 
         // Navigate to Stakeholder Workflow Center
-        await page.goto('/stakeholder-workflows');
+        await page.goto('/#/stakeholder-workflows');
         await expect(page.getByRole('heading', { name: 'Stakeholder Workflow Center' })).toBeVisible();
 
         // Check if Available Workflows section exists

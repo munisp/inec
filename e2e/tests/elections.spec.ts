@@ -14,13 +14,13 @@ test.describe('Election Management', () => {
   });
 
   test('should list elections', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('#username', 'admin');
     await page.fill('#password', 'admin123');
     await page.click('button[type="submit"]');
-    await page.waitForURL(/dashboard|\/$/);
+    await page.waitForURL(/#\/dashboard$/);
 
-    await page.goto('/elections');
+    await page.goto('/#/elections');
     await expect(page.getByText(/election/i)).toBeVisible();
   });
 

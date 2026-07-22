@@ -11,15 +11,15 @@ test.describe('Authentication Flows', () => {
   });
 
   test('should login with valid credentials', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('#username', 'admin');
     await page.fill('#password', 'admin123');
     await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/dashboard|\/$/);
+    await expect(page).toHaveURL(/#\/dashboard$/);
   });
 
   test('should reject invalid credentials', async ({ page }) => {
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('#username', 'invalid');
     await page.fill('#password', 'wrong');
     await page.click('button[type="submit"]');
@@ -28,17 +28,17 @@ test.describe('Authentication Flows', () => {
 
   test('should redirect to login after logout', async ({ page }) => {
     // Login first
-    await page.goto('/login');
+    await page.goto('/#/login');
     await page.fill('#username', 'admin');
     await page.fill('#password', 'admin123');
     await page.click('button[type="submit"]');
-    await page.waitForURL(/dashboard|\/$/);
+    await page.waitForURL(/#\/dashboard$/);
 
     // Logout
     const logoutBtn = page.getByRole('button', { name: /logout|sign out/i });
     if (await logoutBtn.isVisible()) {
       await logoutBtn.click();
-      await expect(page).toHaveURL(/login/);
+      await expect(page).toHaveURL(/#\/login$/);
     }
   });
 
