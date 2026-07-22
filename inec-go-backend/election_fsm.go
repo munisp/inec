@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -451,10 +450,6 @@ type GPSTrackPoint struct {
 	Accuracy  float64   `json:"accuracy"`
 }
 
-// nonProductionGPSLastPositions preserves short-lived device continuity only
-// for isolated test and CI processes where Redis is deliberately absent.
-var nonProductionGPSLastPositions sync.Map
-
 type SpoofingAnalysis struct {
 	IsSpoofed     bool     `json:"is_spoofed"`
 	Confidence    float64  `json:"confidence"`
@@ -561,36 +556,22 @@ func handleGPSSpoofCheck(w http.ResponseWriter, r *http.Request) {
 
 	current := &GPSTrackPoint{Lat: req.Lat, Lng: req.Lng, Timestamp: ts, Accuracy: req.Accuracy}
 
-	// Get the previous position from Redis. Isolated CI and E2E processes use a
-	// process-local fallback so sequential checks still exercise the detector.
+	// Get previous position from Redis or DB
 	var previous *GPSTrackPoint
 	if mwHub != nil && mwHub.Redis != nil {
 		prevJSON, err := mwHub.Redis.Get(r.Context(), "gps:last:"+req.DeviceID)
 		if err == nil && prevJSON != "" {
 			previous = &GPSTrackPoint{}
-			_ = json.Unmarshal([]byte(prevJSON), previous)
-		}
-	}
-	if previous == nil && shouldSeedE2EFixtures() {
-		if stored, ok := nonProductionGPSLastPositions.Load(req.DeviceID); ok {
-			point := stored.(GPSTrackPoint)
-			previous = &point
+			json.Unmarshal([]byte(prevJSON), previous)
 		}
 	}
 
 	analysis := analyzeGPSSpoofing(current, previous, req.Meta)
 
-	// Store the current point in the native shared store when available. The
-	// in-process fallback is never selected in production or staging.
-	storedInRedis := false
+	// Store current position
 	if mwHub != nil && mwHub.Redis != nil {
 		data, _ := json.Marshal(current)
-		if err := mwHub.Redis.Set(r.Context(), "gps:last:"+req.DeviceID, string(data), 1*time.Hour); err == nil {
-			storedInRedis = true
-		}
-	}
-	if !storedInRedis && shouldSeedE2EFixtures() {
-		nonProductionGPSLastPositions.Store(req.DeviceID, *current)
+		mwHub.Redis.Set(r.Context(), "gps:last:"+req.DeviceID, string(data), 1*time.Hour)
 	}
 
 	// Log spoofing attempts
@@ -779,13 +760,8 @@ func handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Fallback: return config for client-side exchange
 	writeJSON(w, 200, M{
-		"message": "OAuth2 callback received",
-		"code": code[:func() int {
-			if len(code) < 8 {
-				return len(code)
-			}
-			return 8
-		}()] + "...",
+		"message":   "OAuth2 callback received",
+		"code":      code[:func() int { if len(code) < 8 { return len(code) }; return 8 }()] + "...",
 		"token_url": cfg.TokenURL,
 		"client_id": cfg.ClientID,
 	})

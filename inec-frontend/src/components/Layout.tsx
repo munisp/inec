@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { useI18n } from '@/lib/i18n';
 import { useTheme } from '@/components/ThemeProvider';
@@ -81,16 +81,8 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
 
   const ThemeIcon = resolved === 'dark' ? Moon : Sun;
 
-  const NavContent = () => {
-    const navRef = useRef<HTMLElement | null>(null);
-
-    useEffect(() => {
-      const activeItem = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
-      activeItem?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }, [currentPage, sidebarOpen]);
-
-    return (
-    <div className="flex h-full min-h-0 flex-col">
+  const NavContent = () => (
+    <div className="flex flex-col h-full">
       <div className="p-4 border-b border-zinc-200 dark:border-zinc-700">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-green-700 flex items-center justify-center">
@@ -102,7 +94,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
         </div>
       </div>
-      <nav ref={navRef} tabIndex={0} className="sidebar-navigation flex min-h-0 flex-1 flex-col space-y-0.5 overflow-y-auto overscroll-contain p-2 scrollbar-thin touch-pan-y" aria-label="Main navigation" role="navigation">
+      <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto scrollbar-thin" aria-label="Main navigation" role="navigation">
         {NAV_ITEMS.map((item: typeof NAV_ITEMS[number]) => {
           const isActive = currentPage === item.path;
           return (
@@ -158,27 +150,26 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium text-zinc-900 dark:text-zinc-100 truncate">{user?.full_name}</p>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 capitalize">{user?.role?.replace(/_/g, ' ')}</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 capitalize">{user?.role?.replace('_', ' ')}</p>
           </div>
         </div>
       </div>
     </div>
-    );
-  };
+  );
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-900 transition-colors duration-200">
-      <aside className="hidden overflow-hidden border-r border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-800/50 lg:fixed lg:inset-y-0 lg:flex lg:w-56 lg:flex-col">
+      <aside className="hidden lg:flex lg:fixed lg:inset-y-0 lg:w-56 lg:flex-col border-r border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/50">
         <NavContent />
       </aside>
 
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-white dark:bg-zinc-800 border px-2 py-1 rounded text-sm z-[100]">Skip to content</a>
-      <div className="lg:hidden sticky top-0 z-50 flex items-center justify-between px-4 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700" role="banner">
+      <header className="lg:hidden sticky top-0 z-50 flex items-center justify-between px-4 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700" role="banner">
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon"><Menu className="h-5 w-5" /></Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-56 overflow-hidden p-0">
+          <SheetContent side="left" className="p-0 w-56">
             <NavContent />
           </SheetContent>
         </Sheet>
@@ -213,7 +204,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-      </div>
+      </header>
 
       <div className="lg:pl-56">
         <header className="hidden lg:flex items-center justify-between px-6 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700 sticky top-0 z-40" role="banner">
@@ -239,7 +230,6 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
                     </AvatarFallback>
                   </Avatar>
                   <span className="text-sm text-zinc-900 dark:text-zinc-100">{user?.full_name}</span>
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400 capitalize" data-testid="authenticated-role">{user?.role?.replace(/_/g, ' ')}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">

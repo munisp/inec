@@ -39,12 +39,12 @@ const NIGERIAN_STATES = [
 // ─── Types ─────────────────────────────────────────────────────────────────
 
 interface DashboardData {
-  party_id: number;
-  total_contacts: number;
-  total_volunteers: number;
-  total_pledges: number;
-  active_campaigns: number;
-  pending_rides: number;
+  party_name: string;
+  contacts: { total: number; pledged: number; confirmed: number; opted_out: number };
+  volunteers: { total: number; active: number };
+  campaigns: { total: number; active: number };
+  rides: { total: number; pending: number; completed: number };
+  geo_breakdown: { state: string; contacts: number }[];
 }
 
 interface Campaign {
@@ -367,11 +367,11 @@ export default function GOTVPortalPage() {
     if (!dashboard) return <div className="text-center py-8 text-muted-foreground">No data available</div>;
 
     const stats = [
-      { label: 'Contacts', value: dashboard.total_contacts, icon: Users, color: 'text-blue-600' },
-      { label: 'Volunteers', value: dashboard.total_volunteers, icon: HandHeart, color: 'text-green-600' },
-      { label: 'Pledges', value: dashboard.total_pledges, icon: TrendingUp, color: 'text-purple-600' },
-      { label: 'Active Campaigns', value: dashboard.active_campaigns, icon: Megaphone, color: 'text-orange-600' },
-      { label: 'Pending Rides', value: dashboard.pending_rides, icon: Car, color: 'text-indigo-600' },
+      { label: 'Contacts', value: dashboard.contacts.total, icon: Users, color: 'text-blue-600' },
+      { label: 'Volunteers', value: dashboard.volunteers.total, icon: HandHeart, color: 'text-green-600' },
+      { label: 'Pledges', value: dashboard.contacts.pledged, icon: TrendingUp, color: 'text-purple-600' },
+      { label: 'Active Campaigns', value: dashboard.campaigns.active, icon: Megaphone, color: 'text-orange-600' },
+      { label: 'Pending Rides', value: dashboard.rides.pending, icon: Car, color: 'text-indigo-600' },
     ];
 
     const pledgeData = [

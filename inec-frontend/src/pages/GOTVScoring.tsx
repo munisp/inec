@@ -88,7 +88,7 @@ export default function GOTVScoring() {
     'X-GOTV-Party-ID': partyId,
     'Content-Type': 'application/json',
   };
-  const BASE = `${window.location.protocol}//${window.location.hostname}:8103`;
+  const BASE = '';
 
   useEffect(() => {
     loadData();

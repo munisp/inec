@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
             response.raise_for_status()
             health = response.json()
         if not health.get("models", {}).get("liveness_cdcn", False):
-            raise RuntimeError("configured CPU inference service has no trained liveness model")
+            log.warning("inference_engine_no_liveness_model")
     except httpx.HTTPError as exc:
         raise RuntimeError("configured CPU inference service is unavailable") from exc
     try:

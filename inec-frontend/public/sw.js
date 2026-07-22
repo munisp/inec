@@ -12,7 +12,7 @@ const STATIC_ASSETS = [];
 // Install — skip waiting to activate immediately
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(STATIC_CACHE).then((cache) => cache.addAll(PRECACHE_URLS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
   );
   self.skipWaiting();
 });
@@ -41,6 +41,7 @@ self.addEventListener('activate', (event) => {
 // - Hashed assets (/assets/*): cache-first (filename contains content hash)
 // - API requests: pass through (no interception)
 self.addEventListener('fetch', (event) => {
+  const request = event.request;
   const url = new URL(event.request.url);
 
   // API requests — pass through without interception

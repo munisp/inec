@@ -45,19 +45,13 @@ pub struct FraudRing {
 impl Neo4jClient {
     /// Connect to Neo4j using environment variables.
     pub async fn connect() -> Result<Self> {
-        let raw_uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".into());
+        let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".into());
         let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".into());
         let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| String::new());
 
         if password.is_empty() {
             anyhow::bail!("NEO4J_PASSWORD not set");
         }
-
-        // neo4rs expects host:port without scheme
-        let uri = raw_uri
-            .trim_start_matches("bolt://")
-            .trim_start_matches("neo4j://")
-            .to_string();
 
         let config = ConfigBuilder::default()
             .uri(&uri)
@@ -181,19 +175,22 @@ impl Neo4jClient {
 
     /// Store anomaly scores from GNN inference back to Neo4j.
     pub async fn store_anomaly_scores(&self, scores: &[(String, f64)]) -> Result<()> {
-        // Store scores one at a time (neo4rs does not support complex BoltType lists)
-        for (code, score) in scores {
-            let single_cypher = r#"
-                MATCH (p:PollingUnit {code: $code})
-                SET p.anomaly_score = $score,
-                    p.flagged = CASE WHEN $score >= 0.7 THEN true ELSE false END,
-                    p.scored_at = datetime()
-            "#;
-            self.graph
-                .run(query(single_cypher).param("code", code.as_str()).param("score", *score))
-                .await
-                .context("Failed to store anomaly score")?;
-        }
+        let cypher = r#"
+            UNWIND $scores AS s
+            MATCH (p:PollingUnit {code: s.code})
+            SET p.anomaly_score = s.score,
+                p.flagged = CASE WHEN s.score >= 0.7 THEN true ELSE false END,
+                p.scored_at = datetime()
+        "#;
+
+        let scores_param: Vec<serde_json::Value> = scores.iter()
+            .map(|(code, score)| serde_json::json!({"code": code, "score": score}))
+            .collect();
+
+        self.graph
+            .run(query(cypher).param("scores", scores_param))
+            .await
+            .context("Failed to store anomaly scores")?;
 
         info!(n_scores = scores.len(), "Stored GNN anomaly scores in Neo4j");
         Ok(())

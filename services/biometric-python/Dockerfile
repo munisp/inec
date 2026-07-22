@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
-RUN pip install --no-cache-dir --prefix=/install .
+RUN pip install --no-cache-dir --prefix=/install . \
+    && pip install --no-cache-dir --prefix=/install --force-reinstall --no-deps "opencv-python-headless==4.10.0.84"
 
 FROM python:3.12-slim
 

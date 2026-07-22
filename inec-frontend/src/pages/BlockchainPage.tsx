@@ -22,34 +22,23 @@ export default function BlockchainPage() {
   const [ledgerTransfers, setLedgerTransfers] = useState<any>(null);
   const [merkleTrees, setMerkleTrees] = useState<any>(null);
   const [tab, setTab] = useState('production');
-  const [integrationErrors, setIntegrationErrors] = useState<string[]>([]);
 
   useEffect(() => {
-    let active = true;
-    const load = async (name: string, request: () => Promise<any>, setter: (value: any) => void) => {
-      try {
-        const value = await request();
-        if (active) setter(value);
-      } catch {
-        if (active) setIntegrationErrors(previous => previous.includes(name) ? previous : [...previous, name]);
-      }
-    };
-    void load('Blockchain core', api.getBlockchainStats, setStats);
-    void load('Result chain', () => api.getBlockchainChain(50), setChain);
-    void load('Smart contracts', api.getSmartContracts, setContracts);
-    void load('Blockchain audit', () => api.getBlockchainAudit(50), setAudit);
-    void load('Production integration', api.getBlockchainProductionStats, setProdStats);
-    void load('Hyperledger Fabric', api.getFabricNetwork, setFabricNet);
-    void load('Fabric blocks', () => api.getFabricBlocks(20), setFabricBlocks);
-    void load('Fabric transactions', () => api.getFabricTransactions(50), setFabricTxs);
-    void load('Fabric verification', () => api.verifyFabricChain(100), setChainVerify);
-    void load('IPFS', api.getIPFSStats, setIpfsStats);
-    void load('IPFS objects', () => api.getIPFSObjects(50), setIpfsObjects);
-    void load('TigerBeetle ledger', api.getLedgerStats, setLedgerStats);
-    void load('TigerBeetle accounts', api.getLedgerAccounts, setLedgerAccounts);
-    void load('TigerBeetle transfers', () => api.getLedgerTransfers('inec-operational', 50), setLedgerTransfers);
-    void load('Merkle trees', () => api.getMerkleTrees(20), setMerkleTrees);
-    return () => { active = false; };
+    api.getBlockchainStats().then(setStats).catch(err => console.error("API error:", err));
+    api.getBlockchainChain(50).then(setChain).catch(err => console.error("API error:", err));
+    api.getSmartContracts().then(setContracts).catch(err => console.error("API error:", err));
+    api.getBlockchainAudit(50).then(setAudit).catch(err => console.error("API error:", err));
+    api.getBlockchainProductionStats().then(setProdStats).catch(err => console.error("API error:", err));
+    api.getFabricNetwork().then(setFabricNet).catch(err => console.error("API error:", err));
+    api.getFabricBlocks(20).then(setFabricBlocks).catch(err => console.error("API error:", err));
+    api.getFabricTransactions(50).then(setFabricTxs).catch(err => console.error("API error:", err));
+    api.verifyFabricChain(100).then(setChainVerify).catch(err => console.error("API error:", err));
+    api.getIPFSStats().then(setIpfsStats).catch(err => console.error("API error:", err));
+    api.getIPFSObjects(50).then(setIpfsObjects).catch(err => console.error("API error:", err));
+    api.getLedgerStats().then(setLedgerStats).catch(err => console.error("API error:", err));
+    api.getLedgerAccounts().then(setLedgerAccounts).catch(err => console.error("API error:", err));
+    api.getLedgerTransfers('inec-operational', 50).then(setLedgerTransfers).catch(err => console.error("API error:", err));
+    api.getMerkleTrees(20).then(setMerkleTrees).catch(err => console.error("API error:", err));
   }, []);
 
   return (
@@ -58,8 +47,6 @@ export default function BlockchainPage() {
         <h2 className="text-2xl font-bold">Blockchain & Distributed Ledger</h2>
         <p className="text-zinc-500 text-sm">Production-grade Hyperledger Fabric, TigerBeetle Ledger, IPFS Content Store & Merkle Trees</p>
       </div>
-
-      {integrationErrors.length > 0 && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">The following integrations are currently unavailable: {integrationErrors.join(', ')}. Their status is not represented as healthy or zero data.</div>}
 
       {prodStats && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">

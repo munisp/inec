@@ -178,6 +178,10 @@ func main() {
 		log.Warn().Err(err).Msg("V2 table init had issues (non-fatal)")
 	}
 
+	if *devMode {
+		seedGOTVData(db)
+	}
+
 	// KOH 2027 Indicators tables
 	if err := initKOHIndicatorTables(db); err != nil {
 		log.Warn().Err(err).Msg("KOH indicator table init had issues (non-fatal)")

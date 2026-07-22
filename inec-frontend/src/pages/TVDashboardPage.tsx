@@ -30,7 +30,7 @@ export default function TVDashboardPage() {
     const load = () => {
       const apiUrl = import.meta.env.VITE_API_URL ?? '';
       const token = localStorage.getItem('token') || localStorage.getItem('inec_token') || '';
-      fetch(`${apiUrl}/api/public/tv-dashboard?election_id=1`, {
+      fetch(`${apiUrl}/public/tv-dashboard?election_id=1`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))

@@ -213,8 +213,160 @@ func initGOTVTables() {
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_audit_party ON gotv_audit_log(party_id);
 	CREATE INDEX IF NOT EXISTS idx_gotv_audit_action ON gotv_audit_log(action);
+
+	CREATE TABLE IF NOT EXISTS gotv_door_knocks (
+		id SERIAL PRIMARY KEY,
+		knock_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		volunteer_id TEXT NOT NULL REFERENCES gotv_volunteers(volunteer_id),
+		contact_id TEXT REFERENCES gotv_contacts(contact_id),
+		latitude REAL NOT NULL,
+		longitude REAL NOT NULL,
+		result TEXT NOT NULL DEFAULT 'not_home' CHECK(result IN ('not_home','refused','pledged','confirmed','needs_ride','moved','deceased')),
+		notes TEXT,
+		knocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_party ON gotv_door_knocks(party_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_knocks_volunteer ON gotv_door_knocks(volunteer_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_shifts (
+		id SERIAL PRIMARY KEY,
+		shift_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		volunteer_id TEXT NOT NULL REFERENCES gotv_volunteers(volunteer_id),
+		start_latitude REAL,
+		start_longitude REAL,
+		end_latitude REAL,
+		end_longitude REAL,
+		started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		ended_at TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_shifts_volunteer ON gotv_shifts(volunteer_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_shifts_open ON gotv_shifts(volunteer_id, ended_at);
+
+	CREATE TABLE IF NOT EXISTS gotv_webhooks (
+		id SERIAL PRIMARY KEY,
+		webhook_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		url TEXT NOT NULL,
+		events TEXT[] DEFAULT '{}',
+		secret TEXT NOT NULL,
+		is_active BOOLEAN DEFAULT TRUE,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_webhooks_party ON gotv_webhooks(party_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_tasks (
+		id SERIAL PRIMARY KEY,
+		task_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		volunteer_id TEXT REFERENCES gotv_volunteers(volunteer_id),
+		task_type TEXT NOT NULL DEFAULT 'canvass' CHECK(task_type IN ('canvass','phone_bank','ride','data_entry','training','other')),
+		description TEXT,
+		target_state TEXT,
+		target_lga TEXT,
+		target_ward TEXT,
+		target_count INTEGER DEFAULT 0,
+		completed_count INTEGER DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'unassigned' CHECK(status IN ('unassigned','assigned','in_progress','completed','cancelled')),
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_tasks_party ON gotv_tasks(party_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_tasks_volunteer ON gotv_tasks(volunteer_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_tasks_status ON gotv_tasks(status);
+
+	CREATE TABLE IF NOT EXISTS gotv_aspirants (
+		id SERIAL PRIMARY KEY,
+		aspirant_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		election_id INTEGER NOT NULL,
+		full_name TEXT NOT NULL,
+		position TEXT,
+		state_of_origin TEXT,
+		screening_status TEXT NOT NULL DEFAULT 'pending' CHECK(screening_status IN ('pending','cleared','disqualified')),
+		status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','withdrawn')),
+		manifesto_url TEXT,
+		deposit_amount NUMERIC DEFAULT 0,
+		deposit_paid BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_aspirants_election ON gotv_aspirants(election_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_delegates (
+		id SERIAL PRIMARY KEY,
+		delegate_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		election_id INTEGER NOT NULL,
+		full_name TEXT NOT NULL,
+		delegate_type TEXT NOT NULL DEFAULT 'ward' CHECK(delegate_type IN ('ward','statutory','ex_officio')),
+		state_code TEXT,
+		accreditation_status TEXT NOT NULL DEFAULT 'pending' CHECK(accreditation_status IN ('pending','accredited')),
+		is_checked_in BOOLEAN DEFAULT FALSE,
+		has_voted BOOLEAN DEFAULT FALSE,
+		is_remote BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_delegates_election ON gotv_delegates(election_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_primary_rounds (
+		id SERIAL PRIMARY KEY,
+		round_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		election_id INTEGER NOT NULL,
+		round_number INTEGER NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','closed','certified')),
+		voting_method TEXT NOT NULL DEFAULT 'in_person' CHECK(voting_method IN ('in_person','remote','hybrid')),
+		total_votes INTEGER DEFAULT 0,
+		total_eligible INTEGER DEFAULT 0,
+		started_at TIMESTAMP,
+		ended_at TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_rounds_election ON gotv_primary_rounds(election_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_segments (
+		id SERIAL PRIMARY KEY,
+		segment_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		name TEXT NOT NULL,
+		filters JSONB DEFAULT '[]',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_segments_party ON gotv_segments(party_id);
+
+	CREATE TABLE IF NOT EXISTS gotv_ai_variants (
+		id SERIAL PRIMARY KEY,
+		variant_id TEXT UNIQUE NOT NULL,
+		party_id INTEGER NOT NULL REFERENCES parties(id),
+		campaign_id TEXT,
+		base_message TEXT,
+		variant_text TEXT,
+		target_state TEXT,
+		channel TEXT,
+		variant_index INTEGER DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_ai_variants_party ON gotv_ai_variants(party_id);
 	`
 	dbExecLog("gotv-schema", tables)
+
+	// handleScoringMessageOptimize/handleScoringSelectVariant (gotv_scoring.go)
+	// join outreach_log to gotv_ai_variants via a column the base schema never had.
+	dbExecLog("gotv-schema-outreach-variant", "ALTER TABLE gotv_outreach_log ADD COLUMN message_variant_id TEXT")
+
+	// gotvAuthMiddleware resolves a user's party via users.party_id when no
+	// X-Party-ID header is sent; the column was never added to the base schema.
+	dbExecLog("gotv-schema-users", "ALTER TABLE users ADD COLUMN party_id INTEGER REFERENCES parties(id)")
+
+	// Volunteer vetting pipeline columns — added post-launch, not in the
+	// original gotv_volunteers CREATE TABLE above.
+	dbExecLog("gotv-schema-vetting-1", "ALTER TABLE gotv_volunteers ADD COLUMN vetting_status TEXT NOT NULL DEFAULT 'pending' CHECK(vetting_status IN ('pending','nin_verified','trained','approved','rejected','suspended'))")
+	dbExecLog("gotv-schema-vetting-2", "ALTER TABLE gotv_volunteers ADD COLUMN nin_encrypted TEXT")
+	dbExecLog("gotv-schema-vetting-3", "ALTER TABLE gotv_volunteers ADD COLUMN nin_verified_at TIMESTAMP")
+	dbExecLog("gotv-schema-vetting-4", "ALTER TABLE gotv_volunteers ADD COLUMN training_completed_at TIMESTAMP")
+	dbExecLog("gotv-schema-vetting-5", "ALTER TABLE gotv_volunteers ADD COLUMN approved_at TIMESTAMP")
+	dbExecLog("gotv-schema-vetting-6", "ALTER TABLE gotv_volunteers ADD COLUMN rejected_reason TEXT")
+	dbExecLog("gotv-schema-vetting-7", "ALTER TABLE gotv_volunteers ADD COLUMN suspended_reason TEXT")
 
 	// Register GOTV in data processing register for NDPR compliance
 	dbExecLog("gotv-ndpr", `
@@ -415,8 +567,10 @@ func registerGOTVRoutes(r *mux.Router) {
 	gotv.HandleFunc("/campaigns", gotvAuthMiddleware(handleGOTVCreateCampaign)).Methods("POST")
 	gotv.HandleFunc("/campaigns/{id}", gotvAuthMiddleware(handleGOTVGetCampaign)).Methods("GET")
 	gotv.HandleFunc("/campaigns/{id}", gotvAuthMiddleware(handleGOTVUpdateCampaign)).Methods("PUT")
+	gotv.HandleFunc("/campaigns/{id}", gotvAuthMiddleware(handleGOTVDeleteCampaign)).Methods("DELETE")
 	gotv.HandleFunc("/campaigns/{id}/launch", gotvAuthMiddleware(handleGOTVLaunchCampaign)).Methods("POST")
 	gotv.HandleFunc("/campaigns/{id}/pause", gotvAuthMiddleware(handleGOTVPauseCampaign)).Methods("POST")
+	gotv.HandleFunc("/campaigns/{id}/resume", gotvAuthMiddleware(handleGOTVResumeCampaign)).Methods("POST")
 	gotv.HandleFunc("/campaigns/{id}/stats", gotvAuthMiddleware(handleGOTVCampaignStats)).Methods("GET")
 
 	// Contacts
@@ -432,22 +586,114 @@ func registerGOTVRoutes(r *mux.Router) {
 	gotv.HandleFunc("/volunteers", gotvAuthMiddleware(handleGOTVCreateVolunteer)).Methods("POST")
 	gotv.HandleFunc("/volunteers/{id}", gotvAuthMiddleware(handleGOTVUpdateVolunteer)).Methods("PUT")
 	gotv.HandleFunc("/volunteers/{id}/checkin", gotvAuthMiddleware(handleGOTVVolunteerCheckin)).Methods("POST")
+	gotv.HandleFunc("/volunteers/{id}/location", gotvAuthMiddleware(handleGOTVVolunteerCheckin)).Methods("POST")
 
 	// Pledges
 	gotv.HandleFunc("/pledges", gotvAuthMiddleware(handleGOTVListPledges)).Methods("GET")
 	gotv.HandleFunc("/pledges", gotvAuthMiddleware(handleGOTVCreatePledge)).Methods("POST")
+	gotv.HandleFunc("/pledges/{id}", gotvAuthMiddleware(handleGOTVUpdatePledgeStatus)).Methods("PATCH")
 	gotv.HandleFunc("/pledges/{id}/remind", gotvAuthMiddleware(handleGOTVRemindPledge)).Methods("POST")
 
 	// Ride-to-Polls
 	gotv.HandleFunc("/rides", gotvAuthMiddleware(handleGOTVListRides)).Methods("GET")
 	gotv.HandleFunc("/rides", gotvAuthMiddleware(handleGOTVRequestRide)).Methods("POST")
 	gotv.HandleFunc("/rides/{id}/match", gotvAuthMiddleware(handleGOTVMatchRide)).Methods("POST")
-	gotv.HandleFunc("/rides/{id}/status", gotvAuthMiddleware(handleGOTVUpdateRideStatus)).Methods("PUT")
+	gotv.HandleFunc("/rides/{id}/status", gotvAuthMiddleware(handleGOTVUpdateRideStatus)).Methods("PUT", "PATCH")
 
 	// Dashboard / Analytics
 	gotv.HandleFunc("/dashboard", gotvAuthMiddleware(handleGOTVDashboard)).Methods("GET")
 	gotv.HandleFunc("/analytics/outreach", gotvAuthMiddleware(handleGOTVOutreachAnalytics)).Methods("GET")
 	gotv.HandleFunc("/analytics/geo", gotvAuthMiddleware(handleGOTVGeoAnalytics)).Methods("GET")
+
+	// Geo map layers
+	gotv.HandleFunc("/geo/volunteers", gotvAuthMiddleware(handleGOTVGeoVolunteers)).Methods("GET")
+	gotv.HandleFunc("/geo/rides", gotvAuthMiddleware(handleGOTVGeoRides)).Methods("GET")
+	gotv.HandleFunc("/geo/coverage", gotvAuthMiddleware(handleGOTVGeoCoverage)).Methods("GET")
+	gotv.HandleFunc("/geo/canvass-trails", gotvAuthMiddleware(handleGOTVGeoTrails)).Methods("GET")
+
+	// Canvass workflow
+	gotv.HandleFunc("/canvass/walklist", gotvAuthMiddleware(handleGOTVWalklist)).Methods("GET")
+	gotv.HandleFunc("/canvass/knock", gotvAuthMiddleware(handleGOTVRecordDoorKnock)).Methods("POST")
+	gotv.HandleFunc("/canvass/shift/start", gotvAuthMiddleware(handleGOTVStartShift)).Methods("POST")
+	gotv.HandleFunc("/canvass/shift/end", gotvAuthMiddleware(handleGOTVEndShift)).Methods("POST")
+
+	// Volunteer vetting
+	gotv.HandleFunc("/volunteers/vetting", gotvAuthMiddleware(handleGOTVVettingPipeline)).Methods("GET")
+	gotv.HandleFunc("/volunteers/{id}/vetting", gotvAuthMiddleware(handleGOTVGetVolunteerVetting)).Methods("GET")
+	gotv.HandleFunc("/volunteers/{id}/verify-nin", gotvAuthMiddleware(handleGOTVVerifyVolunteerNIN)).Methods("POST")
+	gotv.HandleFunc("/volunteers/{id}/training", gotvAuthMiddleware(handleGOTVCompleteVolunteerTraining)).Methods("POST")
+	gotv.HandleFunc("/volunteers/{id}/approve", gotvAuthMiddleware(handleGOTVApproveVolunteer)).Methods("POST")
+	gotv.HandleFunc("/volunteers/{id}/reject", gotvAuthMiddleware(handleGOTVRejectVolunteer)).Methods("POST")
+	gotv.HandleFunc("/volunteers/{id}/suspend", gotvAuthMiddleware(handleGOTVSuspendVolunteer)).Methods("POST")
+
+	// Location assignment
+	gotv.HandleFunc("/volunteers/{id}/assign-location", gotvAuthMiddleware(handleGOTVAssignVolunteerLocation)).Methods("POST")
+	gotv.HandleFunc("/volunteers/bulk-assign-locations", gotvAuthMiddleware(handleGOTVBulkAssignLocations)).Methods("POST")
+	gotv.HandleFunc("/volunteers/auto-assign-locations", gotvAuthMiddleware(handleGOTVAutoAssignLocations)).Methods("POST")
+	gotv.HandleFunc("/locations/capacity", gotvAuthMiddleware(handleGOTVLocationCapacity)).Methods("GET")
+
+	// Tasks
+	gotv.HandleFunc("/tasks", gotvAuthMiddleware(handleGOTVListTasks)).Methods("GET")
+	gotv.HandleFunc("/tasks", gotvAuthMiddleware(handleGOTVCreateTask)).Methods("POST")
+	gotv.HandleFunc("/tasks/auto-assign", gotvAuthMiddleware(handleGOTVAutoAssignTasks)).Methods("POST")
+	gotv.HandleFunc("/tasks/{id}/assign", gotvAuthMiddleware(handleGOTVAssignTask)).Methods("POST")
+	gotv.HandleFunc("/tasks/{id}/status", gotvAuthMiddleware(handleGOTVUpdateTaskStatus)).Methods("PATCH")
+
+	// Webhooks
+	gotv.HandleFunc("/webhooks", gotvAuthMiddleware(handleGOTVListWebhooks)).Methods("GET")
+	gotv.HandleFunc("/webhooks", gotvAuthMiddleware(handleGOTVCreateWebhook)).Methods("POST")
+	gotv.HandleFunc("/webhooks/{id}", gotvAuthMiddleware(handleGOTVDeleteWebhook)).Methods("DELETE")
+
+	// Party Primaries (lightweight)
+	gotv.HandleFunc("/primaries/elections/{election_id}/dashboard", gotvAuthMiddleware(handleGOTVPrimariesDashboard)).Methods("GET")
+	gotv.HandleFunc("/primaries/aspirants", gotvAuthMiddleware(handleGOTVPrimariesAspirants)).Methods("GET")
+	gotv.HandleFunc("/primaries/delegates", gotvAuthMiddleware(handleGOTVPrimariesDelegates)).Methods("GET")
+	gotv.HandleFunc("/primaries/elections/{election_id}/rounds", gotvAuthMiddleware(handleGOTVPrimariesRounds)).Methods("GET")
+	gotv.HandleFunc("/primaries/elections/{election_id}/crypto/audit", gotvAuthMiddleware(handleGOTVPrimariesCryptoAudit)).Methods("GET")
+	gotv.HandleFunc("/primaries/remote/verify", gotvAuthMiddleware(handleGOTVPrimariesRemoteVerify)).Methods("GET")
+
+	// Leaderboard / Segments / War Room
+	gotv.HandleFunc("/leaderboard", gotvAuthMiddleware(handleGOTVLeaderboard)).Methods("GET")
+	gotv.HandleFunc("/segments", gotvAuthMiddleware(handleGOTVListSegments)).Methods("GET")
+	gotv.HandleFunc("/segments", gotvAuthMiddleware(handleGOTVCreateSegment)).Methods("POST")
+	gotv.HandleFunc("/segments/{id}", gotvAuthMiddleware(handleGOTVDeleteSegment)).Methods("DELETE")
+	gotv.HandleFunc("/warroom/summary", gotvAuthMiddleware(handleGOTVWarRoomSummary)).Methods("GET")
+	gotv.HandleFunc("/warroom/stream", gotvAuthMiddleware(handleGOTVWarRoomStream)).Methods("GET")
+	gotv.HandleFunc("/warroom/ai-alerts", gotvAuthMiddleware(handleGOTVWarRoomAIAlerts)).Methods("GET")
+
+	// Analytics extras
+	gotv.HandleFunc("/ai/variants", gotvAuthMiddleware(handleGOTVAIVariants)).Methods("GET")
+	gotv.HandleFunc("/roi/channels", gotvAuthMiddleware(handleGOTVROIChannels)).Methods("GET")
+	gotv.HandleFunc("/turnout/predict", gotvAuthMiddleware(handleGOTVTurnoutPredict)).Methods("GET")
+
+	// GOTV-scoped ledger/blockchain (placeholders)
+	gotv.HandleFunc("/ledger/accounts", gotvAuthMiddleware(handleGOTVLedgerAccounts)).Methods("GET")
+	gotv.HandleFunc("/ledger/history", gotvAuthMiddleware(handleGOTVLedgerHistory)).Methods("GET")
+	gotv.HandleFunc("/ledger/reconcile", gotvAuthMiddleware(handleGOTVLedgerReconcile)).Methods("GET")
+	gotv.HandleFunc("/blockchain/status", gotvAuthMiddleware(handleGOTVBlockchainStatus)).Methods("GET")
+	gotv.HandleFunc("/blockchain/blocks", gotvAuthMiddleware(handleGOTVBlockchainBlocks)).Methods("GET")
+	gotv.HandleFunc("/blockchain/anchor", gotvAuthMiddleware(handleGOTVBlockchainAnchor)).Methods("POST")
+
+	// Platform tab
+	gotv.HandleFunc("/teams/leaderboard", gotvAuthMiddleware(handleGOTVTeamsLeaderboard)).Methods("GET")
+	gotv.HandleFunc("/experiments", gotvAuthMiddleware(handleGOTVExperiments)).Methods("GET")
+	gotv.HandleFunc("/nl/query", gotvAuthMiddleware(handleGOTVNLQuery)).Methods("POST")
+	gotv.HandleFunc("/simulation", gotvAuthMiddleware(handleGOTVSimulation)).Methods("POST")
+
+	// KOH indicators (placeholders)
+	gotv.HandleFunc("/koh/cpi/compute", gotvAuthMiddleware(handleGOTVKOHCPICompute)).Methods("GET")
+	gotv.HandleFunc("/koh/cpi/history", gotvAuthMiddleware(gotvKOHEmpty("history"))).Methods("GET")
+	gotv.HandleFunc("/koh/demographics", gotvAuthMiddleware(handleGOTVKOHDemographics)).Methods("GET")
+	gotv.HandleFunc("/koh/lga/dashboard", gotvAuthMiddleware(handleGOTVKOHLGADashboard)).Methods("GET")
+	gotv.HandleFunc("/koh/social/sentiment", gotvAuthMiddleware(handleGOTVKOHSocialSentiment)).Methods("GET")
+	gotv.HandleFunc("/koh/social/share-of-voice", gotvAuthMiddleware(handleGOTVKOHShareOfVoice)).Methods("GET")
+	gotv.HandleFunc("/koh/endorsements", gotvAuthMiddleware(gotvKOHEmpty("endorsements"))).Methods("GET")
+	gotv.HandleFunc("/koh/endorsements/score", gotvAuthMiddleware(handleGOTVKOHEndorsementScore)).Methods("GET")
+	gotv.HandleFunc("/koh/reports", gotvAuthMiddleware(gotvKOHEmpty("reports"))).Methods("GET")
+	gotv.HandleFunc("/koh/reports/generate/{type}", gotvAuthMiddleware(handleGOTVKOHReportGenerate)).Methods("POST")
+	gotv.HandleFunc("/koh/surveys", gotvAuthMiddleware(gotvKOHEmpty("surveys"))).Methods("GET")
+	gotv.HandleFunc("/koh/surveys/trend", gotvAuthMiddleware(gotvKOHEmpty("trend"))).Methods("GET")
+	gotv.HandleFunc("/koh/analytics/summary", gotvAuthMiddleware(handleGOTVKOHAnalyticsSummary)).Methods("GET")
 
 	// Scoring Engine (Cambridge Analytica-grade analytics)
 	gotv.HandleFunc("/scoring/voter/{contactID}", gotvAuthMiddleware(handleScoringVoter)).Methods("GET")
@@ -1932,6 +2178,1207 @@ func handleGOTVGeoAnalytics(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"geo_analytics": geoStats})
 }
 
+// ─── Campaign lifecycle: delete / resume ──────────────────────────────────
+
+func handleGOTVDeleteCampaign(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	db.Exec("DELETE FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2", id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+func handleGOTVResumeCampaign(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	db.Exec("UPDATE gotv_campaigns SET status='active', updated_at=NOW() WHERE campaign_id=$1 AND party_id=$2 AND status='paused'", id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "active"})
+}
+
+// ─── Pledge status update ──────────────────────────────────────────────────
+
+func handleGOTVUpdatePledgeStatus(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+
+	var req struct {
+		Status string `json:"status"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Status == "" {
+		http.Error(w, `{"error":"status required"}`, http.StatusBadRequest)
+		return
+	}
+	db.Exec("UPDATE gotv_pledges SET status=$1 WHERE pledge_id=$2 AND party_id=$3", req.Status, id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": req.Status})
+}
+
+// ─── Geo map layers ────────────────────────────────────────────────────────
+
+func handleGOTVGeoVolunteers(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query("SELECT volunteer_id, full_name, role, latitude, longitude, is_active FROM gotv_volunteers WHERE party_id=$1 AND latitude IS NOT NULL", partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var vid, name, role string
+			var lat, lng float64
+			var active bool
+			if rows.Scan(&vid, &name, &role, &lat, &lng, &active) == nil {
+				out = append(out, map[string]interface{}{
+					"volunteer_id": vid, "full_name": name, "role": role,
+					"latitude": lat, "longitude": lng, "is_active": active,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"volunteers": out})
+}
+
+func handleGOTVGeoRides(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query("SELECT request_id, pickup_latitude, pickup_longitude, status FROM gotv_ride_requests WHERE party_id=$1", partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var rid, status string
+			var lat, lng float64
+			if rows.Scan(&rid, &lat, &lng, &status) == nil {
+				out = append(out, map[string]interface{}{
+					"request_id": rid, "latitude": lat, "longitude": lng, "status": status,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"rides": out})
+}
+
+func handleGOTVGeoCoverage(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query(`
+		SELECT c.ward_code, COUNT(DISTINCT c.contact_id) as contacts, COUNT(DISTINCT v.volunteer_id) as volunteers
+		FROM gotv_contacts c
+		LEFT JOIN gotv_volunteers v ON v.assigned_ward = c.ward_code AND v.party_id = c.party_id
+		WHERE c.party_id=$1 AND c.ward_code IS NOT NULL
+		GROUP BY c.ward_code`, partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ward string
+			var contacts, volunteers int
+			if rows.Scan(&ward, &contacts, &volunteers) == nil {
+				out = append(out, map[string]interface{}{
+					"ward_code": ward, "contacts": contacts, "volunteers": volunteers,
+					"coverage_ratio": gotvSafeDiv(float64(volunteers), float64(contacts)),
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"coverage": out})
+}
+
+func handleGOTVGeoTrails(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	volunteerID := r.URL.Query().Get("volunteer_id")
+	query := "SELECT knock_id, volunteer_id, latitude, longitude, result, knocked_at FROM gotv_door_knocks WHERE party_id=$1"
+	args := []interface{}{partyID}
+	if volunteerID != "" {
+		query += " AND volunteer_id=$2"
+		args = append(args, volunteerID)
+	}
+	query += " ORDER BY knocked_at DESC LIMIT 500"
+	rows, _ := db.Query(query, args...)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var kid, vid, result string
+			var lat, lng float64
+			var knockedAt time.Time
+			if rows.Scan(&kid, &vid, &lat, &lng, &result, &knockedAt) == nil {
+				out = append(out, map[string]interface{}{
+					"knock_id": kid, "volunteer_id": vid, "latitude": lat, "longitude": lng,
+					"result": result, "knocked_at": knockedAt,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"trails": out})
+}
+
+// ─── Canvass workflow ──────────────────────────────────────────────────────
+
+func handleGOTVWalklist(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	volunteerID := r.URL.Query().Get("volunteer_id")
+
+	var ward sql.NullString
+	db.QueryRow("SELECT assigned_ward FROM gotv_volunteers WHERE volunteer_id=$1 AND party_id=$2", volunteerID, partyID).Scan(&ward)
+
+	query := `SELECT contact_id, state_code, lga_code, ward_code, polling_unit_code, voter_status
+		FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE`
+	args := []interface{}{partyID}
+	if ward.Valid {
+		query += " AND ward_code=$2"
+		args = append(args, ward.String)
+	}
+	query += " ORDER BY contact_id LIMIT 50"
+
+	rows, _ := db.Query(query, args...)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var cid, status string
+			var state, lga, wcode, pu sql.NullString
+			if rows.Scan(&cid, &state, &lga, &wcode, &pu, &status) == nil {
+				out = append(out, map[string]interface{}{
+					"contact_id": cid, "state_code": gotvNullStr(state), "lga_code": gotvNullStr(lga),
+					"ward_code": gotvNullStr(wcode), "polling_unit_code": gotvNullStr(pu), "voter_status": status,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"walklist": out})
+}
+
+func handleGOTVRecordDoorKnock(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+
+	var req struct {
+		VolunteerID string  `json:"volunteer_id"`
+		ContactID   string  `json:"contact_id"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+		Result      string  `json:"result"`
+		Notes       string  `json:"notes"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Result == "" {
+		req.Result = "not_home"
+	}
+
+	knockID := "gotv-knock-" + uuid.New().String()[:8]
+	db.Exec(`INSERT INTO gotv_door_knocks (knock_id, party_id, volunteer_id, contact_id, latitude, longitude, result, notes)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		knockID, partyID, req.VolunteerID, gotvNullIfEmpty(req.ContactID), req.Latitude, req.Longitude, req.Result, gotvNullIfEmpty(req.Notes))
+	db.Exec("UPDATE gotv_volunteers SET doors_knocked=doors_knocked+1 WHERE volunteer_id=$1", req.VolunteerID)
+	if req.ContactID != "" && (req.Result == "pledged" || req.Result == "confirmed") {
+		db.Exec("UPDATE gotv_contacts SET voter_status=$1, updated_at=NOW() WHERE contact_id=$2 AND party_id=$3", req.Result, req.ContactID, partyID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"knock_id": knockID})
+}
+
+func handleGOTVStartShift(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	var req struct {
+		VolunteerID string  `json:"volunteer_id"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	shiftID := "gotv-shift-" + uuid.New().String()[:8]
+	db.Exec(`INSERT INTO gotv_shifts (shift_id, party_id, volunteer_id, start_latitude, start_longitude) VALUES ($1,$2,$3,$4,$5)`,
+		shiftID, partyID, req.VolunteerID, req.Latitude, req.Longitude)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"shift_id": shiftID})
+}
+
+func handleGOTVEndShift(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	var req struct {
+		VolunteerID string  `json:"volunteer_id"`
+		Latitude    float64 `json:"latitude"`
+		Longitude   float64 `json:"longitude"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	db.Exec(`UPDATE gotv_shifts SET ended_at=NOW(), end_latitude=$1, end_longitude=$2
+		WHERE volunteer_id=$3 AND party_id=$4 AND ended_at IS NULL`,
+		req.Latitude, req.Longitude, req.VolunteerID, partyID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "shift_ended"})
+}
+
+// ─── Volunteer vetting pipeline ────────────────────────────────────────────
+
+func handleGOTVVettingPipeline(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	status := r.URL.Query().Get("status")
+	query := "SELECT volunteer_id, full_name, role, vetting_status, created_at FROM gotv_volunteers WHERE party_id=$1"
+	args := []interface{}{partyID}
+	if status != "" {
+		query += " AND vetting_status=$2"
+		args = append(args, status)
+	}
+	query += " ORDER BY created_at DESC LIMIT 200"
+	rows, _ := db.Query(query, args...)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var vid, name, role, vstatus string
+			var createdAt time.Time
+			if rows.Scan(&vid, &name, &role, &vstatus, &createdAt) == nil {
+				out = append(out, map[string]interface{}{
+					"volunteer_id": vid, "full_name": name, "role": role,
+					"vetting_status": vstatus, "created_at": createdAt,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"pipeline": out})
+}
+
+func handleGOTVGetVolunteerVetting(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+
+	var vstatus string
+	var ninVerifiedAt, trainingAt, approvedAt sql.NullTime
+	var rejectedReason, suspendedReason sql.NullString
+	err := db.QueryRow(`SELECT vetting_status, nin_verified_at, training_completed_at, approved_at, rejected_reason, suspended_reason
+		FROM gotv_volunteers WHERE volunteer_id=$1 AND party_id=$2`, id, partyID).
+		Scan(&vstatus, &ninVerifiedAt, &trainingAt, &approvedAt, &rejectedReason, &suspendedReason)
+	if err != nil {
+		http.Error(w, `{"error":"volunteer not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"volunteer_id": id, "vetting_status": vstatus,
+		"nin_verified_at": gotvNullTime(ninVerifiedAt), "training_completed_at": gotvNullTime(trainingAt),
+		"approved_at": gotvNullTime(approvedAt), "rejected_reason": gotvNullStr(rejectedReason),
+		"suspended_reason": gotvNullStr(suspendedReason),
+	})
+}
+
+func handleGOTVVerifyVolunteerNIN(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		NIN    string `json:"nin"`
+		Result string `json:"result"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	ninEnc, err := gotvEncrypt(req.NIN)
+	if err == nil {
+		db.Exec("UPDATE gotv_volunteers SET nin_encrypted=$1 WHERE volunteer_id=$2 AND party_id=$3", ninEnc, id, partyID)
+	}
+	if req.Result == "verified" {
+		db.Exec("UPDATE gotv_volunteers SET vetting_status='nin_verified', nin_verified_at=NOW() WHERE volunteer_id=$1 AND party_id=$2", id, partyID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "nin_checked"})
+}
+
+func handleGOTVCompleteVolunteerTraining(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	db.Exec("UPDATE gotv_volunteers SET vetting_status='trained', training_completed_at=NOW() WHERE volunteer_id=$1 AND party_id=$2", id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "trained"})
+}
+
+func handleGOTVApproveVolunteer(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	db.Exec("UPDATE gotv_volunteers SET vetting_status='approved', approved_at=NOW() WHERE volunteer_id=$1 AND party_id=$2", id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "approved"})
+}
+
+func handleGOTVRejectVolunteer(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	db.Exec("UPDATE gotv_volunteers SET vetting_status='rejected', rejected_reason=$1 WHERE volunteer_id=$2 AND party_id=$3", req.Reason, id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "rejected"})
+}
+
+func handleGOTVSuspendVolunteer(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	db.Exec("UPDATE gotv_volunteers SET vetting_status='suspended', suspended_reason=$1, is_active=FALSE WHERE volunteer_id=$2 AND party_id=$3", req.Reason, id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "suspended"})
+}
+
+// ─── Location assignment ───────────────────────────────────────────────────
+
+func handleGOTVAssignVolunteerLocation(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		State string `json:"assigned_state"`
+		LGA   string `json:"assigned_lga"`
+		Ward  string `json:"assigned_ward"`
+		PU    string `json:"assigned_polling_unit"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	db.Exec(`UPDATE gotv_volunteers SET assigned_state=$1, assigned_lga=$2, assigned_ward=$3, assigned_polling_unit=$4
+		WHERE volunteer_id=$5 AND party_id=$6`,
+		gotvNullIfEmpty(req.State), gotvNullIfEmpty(req.LGA), gotvNullIfEmpty(req.Ward), gotvNullIfEmpty(req.PU), id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "assigned"})
+}
+
+func handleGOTVBulkAssignLocations(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	var req struct {
+		Assignments []struct {
+			VolunteerID string `json:"volunteer_id"`
+			State       string `json:"assigned_state"`
+			LGA         string `json:"assigned_lga"`
+			Ward        string `json:"assigned_ward"`
+			PU          string `json:"assigned_polling_unit"`
+		} `json:"assignments"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	for _, a := range req.Assignments {
+		db.Exec(`UPDATE gotv_volunteers SET assigned_state=$1, assigned_lga=$2, assigned_ward=$3, assigned_polling_unit=$4
+			WHERE volunteer_id=$5 AND party_id=$6`,
+			gotvNullIfEmpty(a.State), gotvNullIfEmpty(a.LGA), gotvNullIfEmpty(a.Ward), gotvNullIfEmpty(a.PU), a.VolunteerID, partyID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"assigned": len(req.Assignments)})
+}
+
+func handleGOTVAutoAssignLocations(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+
+	rows, _ := db.Query("SELECT DISTINCT ward_code, state_code, lga_code FROM gotv_contacts WHERE party_id=$1 AND ward_code IS NOT NULL LIMIT 100", partyID)
+	type wardRef struct{ Ward, State, LGA string }
+	var wards []wardRef
+	if rows != nil {
+		for rows.Next() {
+			var wref wardRef
+			if rows.Scan(&wref.Ward, &wref.State, &wref.LGA) == nil {
+				wards = append(wards, wref)
+			}
+		}
+		rows.Close()
+	}
+
+	volRows, _ := db.Query("SELECT volunteer_id FROM gotv_volunteers WHERE party_id=$1 AND assigned_ward IS NULL AND is_active=TRUE", partyID)
+	var volunteerIDs []string
+	if volRows != nil {
+		for volRows.Next() {
+			var vid string
+			if volRows.Scan(&vid) == nil {
+				volunteerIDs = append(volunteerIDs, vid)
+			}
+		}
+		volRows.Close()
+	}
+
+	assigned := 0
+	for i, vid := range volunteerIDs {
+		if len(wards) == 0 {
+			break
+		}
+		w := wards[i%len(wards)]
+		db.Exec("UPDATE gotv_volunteers SET assigned_state=$1, assigned_lga=$2, assigned_ward=$3 WHERE volunteer_id=$4 AND party_id=$5",
+			w.State, w.LGA, w.Ward, vid, partyID)
+		assigned++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"assigned": assigned})
+}
+
+func handleGOTVLocationCapacity(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	state := r.URL.Query().Get("state")
+
+	query := `SELECT c.state_code, COUNT(DISTINCT c.contact_id) as contacts, COUNT(DISTINCT v.volunteer_id) as volunteers
+		FROM gotv_contacts c
+		LEFT JOIN gotv_volunteers v ON v.assigned_state = c.state_code AND v.party_id = c.party_id
+		WHERE c.party_id=$1 AND c.state_code IS NOT NULL`
+	args := []interface{}{partyID}
+	if state != "" {
+		query += " AND c.state_code=$2"
+		args = append(args, state)
+	}
+	query += " GROUP BY c.state_code"
+
+	rows, _ := db.Query(query, args...)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var st string
+			var contacts, volunteers int
+			if rows.Scan(&st, &contacts, &volunteers) == nil {
+				out = append(out, map[string]interface{}{
+					"state_code": st, "contacts": contacts, "volunteers": volunteers,
+					"contacts_per_volunteer": gotvSafeDiv(float64(contacts), float64(volunteers)),
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"capacity": out})
+}
+
+// ─── Tasks ──────────────────────────────────────────────────────────────────
+
+func handleGOTVListTasks(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	status := r.URL.Query().Get("status")
+	volunteerID := r.URL.Query().Get("volunteer_id")
+
+	query := "SELECT task_id, volunteer_id, task_type, description, target_count, completed_count, status, created_at FROM gotv_tasks WHERE party_id=$1"
+	args := []interface{}{partyID}
+	idx := 2
+	if status != "" {
+		query += fmt.Sprintf(" AND status=$%d", idx)
+		args = append(args, status)
+		idx++
+	}
+	if volunteerID != "" {
+		query += fmt.Sprintf(" AND volunteer_id=$%d", idx)
+		args = append(args, volunteerID)
+		idx++
+	}
+	query += " ORDER BY created_at DESC LIMIT 200"
+
+	rows, _ := db.Query(query, args...)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var tid, ttype, tstatus string
+			var vid sql.NullString
+			var desc sql.NullString
+			var target, completed int
+			var createdAt time.Time
+			if rows.Scan(&tid, &vid, &ttype, &desc, &target, &completed, &tstatus, &createdAt) == nil {
+				out = append(out, map[string]interface{}{
+					"task_id": tid, "volunteer_id": gotvNullStr(vid), "task_type": ttype,
+					"description": gotvNullStr(desc), "target_count": target, "completed_count": completed,
+					"status": tstatus, "created_at": createdAt,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"tasks": out})
+}
+
+func handleGOTVCreateTask(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	var req struct {
+		TaskType    string `json:"task_type"`
+		Description string `json:"description"`
+		State       string `json:"target_state"`
+		LGA         string `json:"target_lga"`
+		Ward        string `json:"target_ward"`
+		TargetCount int    `json:"target_count"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.TaskType == "" {
+		req.TaskType = "canvass"
+	}
+	taskID := "gotv-task-" + uuid.New().String()[:8]
+	db.Exec(`INSERT INTO gotv_tasks (task_id, party_id, task_type, description, target_state, target_lga, target_ward, target_count)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		taskID, partyID, req.TaskType, gotvNullIfEmpty(req.Description), gotvNullIfEmpty(req.State), gotvNullIfEmpty(req.LGA), gotvNullIfEmpty(req.Ward), req.TargetCount)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"task_id": taskID})
+}
+
+func handleGOTVAssignTask(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		VolunteerID string `json:"volunteer_id"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	db.Exec("UPDATE gotv_tasks SET volunteer_id=$1, status='assigned', updated_at=NOW() WHERE task_id=$2 AND party_id=$3", req.VolunteerID, id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "assigned"})
+}
+
+func handleGOTVUpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Status         string `json:"status"`
+		CompletedCount int    `json:"completed_count"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	db.Exec("UPDATE gotv_tasks SET status=$1, completed_count=$2, updated_at=NOW() WHERE task_id=$3 AND party_id=$4",
+		req.Status, req.CompletedCount, id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": req.Status})
+}
+
+func handleGOTVAutoAssignTasks(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+
+	taskRows, _ := db.Query("SELECT task_id FROM gotv_tasks WHERE party_id=$1 AND status='unassigned'", partyID)
+	var taskIDs []string
+	if taskRows != nil {
+		for taskRows.Next() {
+			var tid string
+			if taskRows.Scan(&tid) == nil {
+				taskIDs = append(taskIDs, tid)
+			}
+		}
+		taskRows.Close()
+	}
+
+	volRows, _ := db.Query("SELECT volunteer_id FROM gotv_volunteers WHERE party_id=$1 AND is_active=TRUE", partyID)
+	var volunteerIDs []string
+	if volRows != nil {
+		for volRows.Next() {
+			var vid string
+			if volRows.Scan(&vid) == nil {
+				volunteerIDs = append(volunteerIDs, vid)
+			}
+		}
+		volRows.Close()
+	}
+
+	assigned := 0
+	for i, tid := range taskIDs {
+		if len(volunteerIDs) == 0 {
+			break
+		}
+		vid := volunteerIDs[i%len(volunteerIDs)]
+		db.Exec("UPDATE gotv_tasks SET volunteer_id=$1, status='assigned', updated_at=NOW() WHERE task_id=$2 AND party_id=$3", vid, tid, partyID)
+		assigned++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"assigned": assigned})
+}
+
+// ─── Webhooks ───────────────────────────────────────────────────────────────
+
+func handleGOTVListWebhooks(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query("SELECT webhook_id, url, events, is_active, created_at FROM gotv_webhooks WHERE party_id=$1", partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var wid, url string
+			var events pq.StringArray
+			var active bool
+			var createdAt time.Time
+			if rows.Scan(&wid, &url, &events, &active, &createdAt) == nil {
+				out = append(out, map[string]interface{}{
+					"webhook_id": wid, "url": url, "events": []string(events),
+					"is_active": active, "created_at": createdAt,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"webhooks": out})
+}
+
+func handleGOTVCreateWebhook(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	var req struct {
+		URL    string   `json:"url"`
+		Events []string `json:"events"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.URL == "" {
+		http.Error(w, `{"error":"url required"}`, http.StatusBadRequest)
+		return
+	}
+
+	secretBytes := make([]byte, 24)
+	rand.Read(secretBytes)
+	secret := hex.EncodeToString(secretBytes)
+
+	webhookID := "gotv-webhook-" + uuid.New().String()[:8]
+	db.Exec("INSERT INTO gotv_webhooks (webhook_id, party_id, url, events, secret) VALUES ($1,$2,$3,$4,$5)",
+		webhookID, partyID, req.URL, pq.Array(req.Events), secret)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"webhook_id": webhookID, "secret": secret})
+}
+
+func handleGOTVDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	db.Exec("DELETE FROM gotv_webhooks WHERE webhook_id=$1 AND party_id=$2", id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+// ─── Party Primaries (lightweight — no crypto/mix-net; see cmd/gotv-svc for that) ──
+
+func handleGOTVPrimariesDashboard(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	electionID := mux.Vars(r)["election_id"]
+
+	var totalDelegates, accredited, checkedIn, votedCount, aspirantsCleared int
+	db.QueryRow("SELECT COUNT(*) FROM gotv_delegates WHERE party_id=$1 AND election_id=$2", partyID, electionID).Scan(&totalDelegates)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 AND accreditation_status='accredited'", partyID, electionID).Scan(&accredited)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 AND is_checked_in=TRUE", partyID, electionID).Scan(&checkedIn)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 AND has_voted=TRUE", partyID, electionID).Scan(&votedCount)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_aspirants WHERE party_id=$1 AND election_id=$2 AND screening_status='cleared'", partyID, electionID).Scan(&aspirantsCleared)
+
+	var currentRound sql.NullInt64
+	db.QueryRow("SELECT round_number FROM gotv_primary_rounds WHERE party_id=$1 AND election_id=$2 AND status='active' ORDER BY round_number DESC LIMIT 1", partyID, electionID).Scan(&currentRound)
+
+	rows, _ := db.Query(`SELECT state_code, COUNT(*), SUM(CASE WHEN accreditation_status='accredited' THEN 1 ELSE 0 END)
+		FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 AND state_code IS NOT NULL GROUP BY state_code`, partyID, electionID)
+	var stateBreakdown []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var state string
+			var cnt, acc int
+			if rows.Scan(&state, &cnt, &acc) == nil {
+				stateBreakdown = append(stateBreakdown, map[string]interface{}{"state": state, "count": cnt, "accredited": acc})
+			}
+		}
+	}
+	if stateBreakdown == nil {
+		stateBreakdown = []map[string]interface{}{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_delegates": totalDelegates, "accredited": accredited, "checked_in": checkedIn,
+		"turnout_pct": gotvSafeDiv(float64(votedCount), float64(totalDelegates)) * 100,
+		"quorum_met": totalDelegates > 0 && checkedIn >= totalDelegates/2,
+		"current_round": gotvNullInt(currentRound), "aspirants_cleared": aspirantsCleared,
+		"state_breakdown": stateBreakdown,
+	})
+}
+
+func handleGOTVPrimariesAspirants(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	electionID := r.URL.Query().Get("election_id")
+	rows, _ := db.Query(`SELECT aspirant_id, full_name, position, state_of_origin, screening_status, status, manifesto_url, deposit_amount, deposit_paid
+		FROM gotv_aspirants WHERE party_id=$1 AND election_id=$2 ORDER BY created_at`, partyID, electionID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var aid, name, position, state, screening, status string
+			var manifesto sql.NullString
+			var deposit float64
+			var depositPaid bool
+			if rows.Scan(&aid, &name, &position, &state, &screening, &status, &manifesto, &deposit, &depositPaid) == nil {
+				out = append(out, map[string]interface{}{
+					"aspirant_id": aid, "full_name": name, "position": position, "state_of_origin": state,
+					"screening_status": screening, "status": status, "manifesto_url": gotvNullStr(manifesto),
+					"deposit_amount": deposit, "deposit_paid": depositPaid,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"aspirants": out})
+}
+
+func handleGOTVPrimariesDelegates(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	electionID := r.URL.Query().Get("election_id")
+	rows, _ := db.Query(`SELECT delegate_id, full_name, delegate_type, state_code, accreditation_status, has_voted, is_remote
+		FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 ORDER BY created_at`, partyID, electionID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var did, name, dtype, state, accStatus string
+			var hasVoted, isRemote bool
+			if rows.Scan(&did, &name, &dtype, &state, &accStatus, &hasVoted, &isRemote) == nil {
+				out = append(out, map[string]interface{}{
+					"delegate_id": did, "full_name": name, "delegate_type": dtype, "state_code": state,
+					"accreditation_status": accStatus, "has_voted": hasVoted, "is_remote": isRemote,
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"delegates": out})
+}
+
+func handleGOTVPrimariesRounds(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	electionID := mux.Vars(r)["election_id"]
+	rows, _ := db.Query(`SELECT round_id, round_number, status, voting_method, total_votes, total_eligible, started_at, ended_at
+		FROM gotv_primary_rounds WHERE party_id=$1 AND election_id=$2 ORDER BY round_number`, partyID, electionID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var rid, status, method string
+			var num, votes, eligible int
+			var startedAt, endedAt sql.NullTime
+			if rows.Scan(&rid, &num, &status, &method, &votes, &eligible, &startedAt, &endedAt) == nil {
+				out = append(out, map[string]interface{}{
+					"round_id": rid, "round_number": num, "status": status, "voting_method": method,
+					"total_votes": votes, "total_eligible": eligible,
+					"started_at": gotvNullTime(startedAt), "ended_at": gotvNullTime(endedAt),
+				})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"rounds": out})
+}
+
+func handleGOTVPrimariesCryptoAudit(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	electionID := mux.Vars(r)["election_id"]
+
+	var totalBallots, remoteBallots int
+	db.QueryRow("SELECT COUNT(*) FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 AND has_voted=TRUE", partyID, electionID).Scan(&totalBallots)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_delegates WHERE party_id=$1 AND election_id=$2 AND has_voted=TRUE AND is_remote=TRUE", partyID, electionID).Scan(&remoteBallots)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_keys": 0, "total_shuffles": 0, "total_ballots": totalBallots,
+		"remote_ballots": remoteBallots, "decoy_ballots": 0, "verified_decryptions": 0,
+	})
+}
+
+func handleGOTVPrimariesRemoteVerify(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("confirmation_code")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"verified": false, "confirmation_code": code, "message": "remote ballot verification is not enabled for this demo",
+	})
+}
+
+// ─── Leaderboard ────────────────────────────────────────────────────────────
+
+func handleGOTVLeaderboard(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	rows, _ := db.Query(`SELECT volunteer_id, full_name, role, doors_knocked, calls_made, rides_given
+		FROM gotv_volunteers WHERE party_id=$1
+		ORDER BY (doors_knocked + calls_made*2 + rides_given*3) DESC LIMIT $2`, partyID, limit)
+	var out []map[string]interface{}
+	rank := 0
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var vid, name, role string
+			var doors, calls, rides int
+			if rows.Scan(&vid, &name, &role, &doors, &calls, &rides) == nil {
+				rank++
+				badge := "bronze"
+				if rank == 1 {
+					badge = "gold"
+				} else if rank <= 3 {
+					badge = "silver"
+				}
+				out = append(out, map[string]interface{}{
+					"volunteer_id": vid, "full_name": name, "role": role,
+					"score": doors + calls*2 + rides*3, "rank": rank, "badge": badge,
+					"doors_knocked": doors, "calls_made": calls, "rides_given": rides,
+				})
+			}
+		}
+	}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"leaderboard": out})
+}
+
+// ─── Segments ───────────────────────────────────────────────────────────────
+
+func handleGOTVListSegments(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query("SELECT segment_id, name, filters, created_at FROM gotv_segments WHERE party_id=$1 ORDER BY created_at DESC", partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var sid, name string
+			var filtersRaw []byte
+			var createdAt time.Time
+			if rows.Scan(&sid, &name, &filtersRaw, &createdAt) == nil {
+				var filters interface{}
+				json.Unmarshal(filtersRaw, &filters)
+				out = append(out, map[string]interface{}{"segment_id": sid, "name": name, "filters": filters, "created_at": createdAt})
+			}
+		}
+	}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"segments": out})
+}
+
+func handleGOTVCreateSegment(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	var req struct {
+		Name    string      `json:"name"`
+		Filters interface{} `json:"filters"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	filtersJSON, _ := json.Marshal(req.Filters)
+	segID := "gotv-segment-" + uuid.New().String()[:8]
+	db.Exec("INSERT INTO gotv_segments (segment_id, party_id, name, filters) VALUES ($1,$2,$3,$4)", segID, partyID, req.Name, filtersJSON)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"segment_id": segID})
+}
+
+func handleGOTVDeleteSegment(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	id := mux.Vars(r)["id"]
+	db.Exec("DELETE FROM gotv_segments WHERE segment_id=$1 AND party_id=$2", id, partyID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+
+// ─── War Room ───────────────────────────────────────────────────────────────
+
+func handleGOTVWarRoomSummary(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+
+	var activeCampaigns, activeVolunteers, pendingRides, dispatchesLastHour, pledgesToday int
+	db.QueryRow("SELECT COUNT(*) FROM gotv_campaigns WHERE party_id=$1 AND status='active'", partyID).Scan(&activeCampaigns)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_volunteers WHERE party_id=$1 AND is_active=TRUE", partyID).Scan(&activeVolunteers)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_ride_requests WHERE party_id=$1 AND status='pending'", partyID).Scan(&pendingRides)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_outreach_log WHERE party_id=$1 AND sent_at > NOW() - interval '1 hour'", partyID).Scan(&dispatchesLastHour)
+	db.QueryRow("SELECT COUNT(*) FROM gotv_pledges WHERE party_id=$1 AND created_at::date = CURRENT_DATE", partyID).Scan(&pledgesToday)
+
+	rows, _ := db.Query(`SELECT c.state_code, COUNT(DISTINCT v.volunteer_id), COUNT(DISTINCT c.contact_id),
+			SUM(CASE WHEN c.voter_status='pledged' THEN 1 ELSE 0 END)
+		FROM gotv_contacts c
+		LEFT JOIN gotv_volunteers v ON v.assigned_state = c.state_code AND v.party_id = c.party_id
+		WHERE c.party_id=$1 AND c.state_code IS NOT NULL GROUP BY c.state_code`, partyID)
+	var coverage []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var state string
+			var volunteers, contacts, pledges int
+			if rows.Scan(&state, &volunteers, &contacts, &pledges) == nil {
+				coverage = append(coverage, map[string]interface{}{
+					"state_code": state, "volunteers": volunteers, "contacts": contacts, "pledges": pledges,
+					"coverage_pct": gotvSafeDiv(float64(volunteers), float64(contacts)) * 100,
+				})
+			}
+		}
+	}
+	if coverage == nil {
+		coverage = []map[string]interface{}{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"timestamp": time.Now(),
+		"ops": map[string]interface{}{
+			"active_campaigns": activeCampaigns, "active_volunteers": activeVolunteers, "pending_rides": pendingRides,
+			"dispatches_last_hour": dispatchesLastHour, "pledges_today": pledgesToday,
+		},
+		"alerts":   []map[string]interface{}{},
+		"coverage": coverage,
+	})
+}
+
+func handleGOTVWarRoomStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming unsupported"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, "data: {}\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func handleGOTVWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"alerts": []map[string]interface{}{}})
+}
+
+// ─── Analytics extras ────────────────────────────────────────────────────────
+
+func handleGOTVAIVariants(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query(`SELECT variant_id, base_message, variant_text, target_state, channel, variant_index
+		FROM gotv_ai_variants WHERE party_id=$1 ORDER BY created_at DESC LIMIT 100`, partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var vid, baseMsg, text, state, channel string
+			var idx int
+			if rows.Scan(&vid, &baseMsg, &text, &state, &channel, &idx) == nil {
+				out = append(out, map[string]interface{}{
+					"variant_id": vid, "base_message": baseMsg, "variant_text": text,
+					"target_state": state, "channel": channel, "variant_index": idx,
+				})
+			}
+		}
+	}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"variants": out})
+}
+
+func handleGOTVROIChannels(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query(`SELECT channel,
+			SUM(CASE WHEN status IN ('sent','delivered','read','responded') THEN 1 ELSE 0 END),
+			SUM(CASE WHEN status IN ('delivered','read','responded') THEN 1 ELSE 0 END),
+			SUM(CASE WHEN status='responded' THEN 1 ELSE 0 END)
+		FROM gotv_outreach_log WHERE party_id=$1 GROUP BY channel`, partyID)
+	var out []map[string]interface{}
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var channel string
+			var sent, delivered, responded int
+			if rows.Scan(&channel, &sent, &delivered, &responded) == nil {
+				responseRate := gotvSafeDiv(float64(responded), float64(delivered))
+				recommendation := "INSUFFICIENT_DATA: not enough outreach volume yet"
+				if sent >= 10 {
+					switch {
+					case responseRate >= 0.2:
+						recommendation = "SCALE_UP: response rate is strong, increase volume"
+					case responseRate >= 0.05:
+						recommendation = "OPTIMIZE: response rate is average, test new messaging"
+					default:
+						recommendation = "REDUCE: response rate is low, reallocate budget"
+					}
+				}
+				out = append(out, map[string]interface{}{
+					"channel": channel, "total_sent": sent, "total_delivered": delivered, "total_responded": responded,
+					"total_pledged": 0, "total_cost_kobo": 0, "cost_per_send": 0, "cost_per_deliver": 0,
+					"cost_per_respond": 0, "cost_per_pledge": 0,
+					"delivery_rate":  gotvSafeDiv(float64(delivered), float64(sent)),
+					"response_rate":  responseRate,
+					"recommendation": recommendation,
+				})
+			}
+		}
+	}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"channels": out})
+}
+
+func handleGOTVTurnoutPredict(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"predictions": []map[string]interface{}{}})
+}
+
+// ─── GOTV Ledger (placeholder — no real financial ledger wired up for GOTV) ──
+
+func handleGOTVLedgerAccounts(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"accounts": []map[string]interface{}{}})
+}
+
+func handleGOTVLedgerHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"transfers": []map[string]interface{}{}})
+}
+
+func handleGOTVLedgerReconcile(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"party_id": partyID, "account_count": 0, "transfer_count": 0, "posted": 0, "pending": 0, "voided": 0,
+		"total_posted_ngn": 0, "balanced": true, "variance": 0,
+	})
+}
+
+// ─── GOTV Blockchain (placeholder — no real chain wired up for GOTV) ────────
+
+func handleGOTVBlockchainStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_blocks": 0, "total_transactions": 0, "verified_tx": 0, "merkle_anchors": 0,
+		"latest_block_hash": "", "latest_block_time": nil, "chain_integrity": true,
+	})
+}
+
+func handleGOTVBlockchainBlocks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"blocks": []map[string]interface{}{}})
+}
+
+func handleGOTVBlockchainAnchor(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "anchored", "block_hash": ""})
+}
+
+// ─── Platform tab: teams, experiments, NL query, simulation ────────────────
+
+func handleGOTVTeamsLeaderboard(w http.ResponseWriter, r *http.Request) {
+	partyID, _, _ := getGOTVParty(r)
+	rows, _ := db.Query(`SELECT COALESCE(assigned_ward,'Unassigned'), COUNT(*), SUM(doors_knocked), SUM(calls_made), SUM(rides_given)
+		FROM gotv_volunteers WHERE party_id=$1 GROUP BY COALESCE(assigned_ward,'Unassigned')`, partyID)
+	var out []map[string]interface{}
+	rank := 0
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ward string
+			var members, doors, calls, rides int
+			if rows.Scan(&ward, &members, &doors, &calls, &rides) == nil {
+				rank++
+				out = append(out, map[string]interface{}{
+					"name": ward, "members": members, "total_doors": doors, "total_calls": calls,
+					"total_rides": rides, "points": doors + calls*2 + rides*3, "rank": rank,
+				})
+			}
+		}
+	}
+	if out == nil {
+		out = []map[string]interface{}{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"teams": out})
+}
+
+func handleGOTVExperiments(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"variants": []map[string]interface{}{}})
+}
+
+func handleGOTVNLQuery(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"answer": "Natural-language querying isn't enabled in this demo environment yet.",
+	})
+}
+
+func handleGOTVSimulation(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Scenario        string `json:"scenario"`
+		AdditionalCount int    `json:"additional_count"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"scenario": req.Scenario, "additional_count": req.AdditionalCount,
+		"message": "Simulation modeling isn't enabled in this demo environment yet.",
+	})
+}
+
+// ─── KOH (Key Opinion Holder) indicators — placeholder, no real data model ──
+
+func gotvKOHEmpty(key string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{key: []map[string]interface{}{}})
+	}
+}
+
+func handleGOTVKOHCPICompute(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"cpi": 0, "components": []map[string]interface{}{}})
+}
+
+func handleGOTVKOHDemographics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"demographics": []map[string]interface{}{}})
+}
+
+func handleGOTVKOHLGADashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"tiers": []map[string]interface{}{}})
+}
+
+func handleGOTVKOHSocialSentiment(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"positive": 0, "neutral": 0, "negative": 0, "trend": []map[string]interface{}{}})
+}
+
+func handleGOTVKOHShareOfVoice(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"share_pct": 0, "by_platform": []map[string]interface{}{}})
+}
+
+func handleGOTVKOHEndorsementScore(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"score": 0, "total_endorsements": 0})
+}
+
+func handleGOTVKOHReportGenerate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
+}
+
+func handleGOTVKOHAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"cpi": 0, "sentiment_score": 0, "share_of_voice_pct": 0, "endorsement_score": 0,
+	})
+}
+
 // ─── Campaign Dispatch Engine ──────────────────────────────────────────────
 
 func dispatchCampaignOutreach(partyID int, campaignID, channelType, messageTemplate, messageVariantB string) {
@@ -2071,4 +3518,250 @@ func gotvNullIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// seedGOTVData populates the GOTV module with realistic demo data for every
+// existing party, reusing the same encryption/hashing path as the real API
+// (handleGOTVCreateContact) so the rows are indistinguishable from live data.
+func seedGOTVData() {
+	type partyRef struct {
+		ID   int
+		Code string
+	}
+	partyRows, err := db.Query("SELECT id, code FROM parties")
+	if err != nil {
+		log.Warn().Err(err).Msg("seedGOTVData: parties query failed")
+		return
+	}
+	var partyRefs []partyRef
+	for partyRows.Next() {
+		var p partyRef
+		if partyRows.Scan(&p.ID, &p.Code) == nil {
+			partyRefs = append(partyRefs, p)
+		}
+	}
+	partyRows.Close()
+	if len(partyRefs) == 0 {
+		return
+	}
+
+	// Give the seeded admin account a party so gotvAuthMiddleware's
+	// header-less fallback (users.party_id) resolves for the demo login.
+	// Runs every boot regardless of the bulk-seed gate below.
+	db.Exec("UPDATE users SET party_id=$1 WHERE username='admin' AND party_id IS NULL", partyRefs[0].ID)
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM gotv_campaigns").Scan(&count); err != nil {
+		log.Warn().Err(err).Msg("seedGOTVData: gotv_campaigns query failed")
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	type geoRef struct {
+		PU, Ward, LGA, State string
+	}
+	geoRows, err := db.Query(`
+		SELECT p.code, w.code, w.lga_code, l.state_code
+		FROM polling_units p
+		JOIN wards w ON p.ward_code = w.code
+		JOIN lgas l ON w.lga_code = l.code
+		LIMIT 100
+	`)
+	if err != nil {
+		log.Warn().Err(err).Msg("seedGOTVData: geo query failed")
+		return
+	}
+	var geoRefs []geoRef
+	for geoRows.Next() {
+		var g geoRef
+		if geoRows.Scan(&g.PU, &g.Ward, &g.LGA, &g.State) == nil {
+			geoRefs = append(geoRefs, g)
+		}
+	}
+	geoRows.Close()
+	if len(geoRefs) == 0 {
+		return
+	}
+
+	var electionID int
+	_ = db.QueryRow("SELECT id FROM elections ORDER BY id LIMIT 1").Scan(&electionID)
+
+	rng := NewSecureRng()
+	campaignTypes := []string{"sms", "whatsapp", "door_to_door", "phone_bank"}
+	campaignStatuses := []string{"active", "scheduled", "draft"}
+	voterStatuses := []string{"unknown", "pledged", "confirmed", "declined"}
+	volunteerRoles := []string{"canvasser", "coordinator", "phone_banker", "team_lead"}
+
+	for _, party := range partyRefs {
+		db.Exec(`INSERT INTO gotv_party_access (party_id, api_key_hash, created_by) VALUES ($1,$2,'seed') ON CONFLICT (party_id) DO NOTHING`,
+			party.ID, gotvPhoneHash(fmt.Sprintf("seed-api-key-%d", party.ID)))
+
+		numCampaigns := 2 + rng.Intn(2)
+		campaignIDs := make([]string, 0, numCampaigns)
+		for i := 0; i < numCampaigns; i++ {
+			cID := "gotv-camp-" + uuid.New().String()[:8]
+			campaignIDs = append(campaignIDs, cID)
+			geo := geoRefs[rng.Intn(len(geoRefs))]
+			db.Exec(`INSERT INTO gotv_campaigns (campaign_id, party_id, name, description, campaign_type, status, target_state, target_lga, target_ward, message_template, created_by)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'seed')`,
+				cID, party.ID, fmt.Sprintf("%s Voter Outreach %d", party.Code, i+1),
+				"Seeded demo campaign", campaignTypes[rng.Intn(len(campaignTypes))], campaignStatuses[rng.Intn(len(campaignStatuses))],
+				geo.State, geo.LGA, geo.Ward, "Hi {{first_name}}, remember to vote on election day!")
+		}
+
+		vettingStatuses := []string{"pending", "nin_verified", "trained", "approved", "rejected"}
+		numVolunteers := 3 + rng.Intn(3)
+		volunteerIDs := make([]string, 0, numVolunteers)
+		for i := 0; i < numVolunteers; i++ {
+			vID := "gotv-vol-" + uuid.New().String()[:8]
+			volunteerIDs = append(volunteerIDs, vID)
+			geo := geoRefs[rng.Intn(len(geoRefs))]
+			name := nigerianFirstNames[rng.Intn(len(nigerianFirstNames))] + " " + nigerianLastNames[rng.Intn(len(nigerianLastNames))]
+			phone := fmt.Sprintf("080%08d", rng.Intn(100000000))
+			db.Exec(`INSERT INTO gotv_volunteers (volunteer_id, party_id, full_name, phone, role, assigned_state, assigned_lga, assigned_ward, is_active, latitude, longitude, vetting_status)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11)`,
+				vID, party.ID, name, phone, volunteerRoles[rng.Intn(len(volunteerRoles))], geo.State, geo.LGA, geo.Ward,
+				4.0+rng.Float64()*10, 2.5+rng.Float64()*12, vettingStatuses[rng.Intn(len(vettingStatuses))])
+
+			shiftID := "gotv-shift-" + uuid.New().String()[:8]
+			db.Exec(`INSERT INTO gotv_shifts (shift_id, party_id, volunteer_id, start_latitude, start_longitude, end_latitude, end_longitude, started_at, ended_at)
+				VALUES ($1,$2,$3,$4,$5,$4,$5,NOW() - interval '1 day', NOW() - interval '1 day' + interval '4 hours')`,
+				shiftID, party.ID, vID, 4.0+rng.Float64()*10, 2.5+rng.Float64()*12)
+		}
+
+		numTasks := 2 + rng.Intn(3)
+		for i := 0; i < numTasks; i++ {
+			taskID := "gotv-task-" + uuid.New().String()[:8]
+			geo := geoRefs[rng.Intn(len(geoRefs))]
+			status := "unassigned"
+			var assignedVol interface{}
+			if len(volunteerIDs) > 0 && rng.Intn(2) == 0 {
+				status = "assigned"
+				assignedVol = volunteerIDs[rng.Intn(len(volunteerIDs))]
+			}
+			db.Exec(`INSERT INTO gotv_tasks (task_id, party_id, volunteer_id, task_type, description, target_state, target_lga, target_ward, target_count, status)
+				VALUES ($1,$2,$3,'canvass','Seeded demo canvass task',$4,$5,$6,50,$7)`,
+				taskID, party.ID, assignedVol, geo.State, geo.LGA, geo.Ward, status)
+		}
+
+		webhookID := "gotv-webhook-" + uuid.New().String()[:8]
+		db.Exec(`INSERT INTO gotv_webhooks (webhook_id, party_id, url, events, secret) VALUES ($1,$2,$3,$4,$5)`,
+			webhookID, party.ID, "https://example.com/gotv-webhook", pq.Array([]string{"pledge.created", "campaign.launched"}), gotvPhoneHash(webhookID))
+
+		if electionID > 0 {
+			positions := []string{"presidential", "gubernatorial", "senatorial"}
+			screeningStatuses := []string{"pending", "cleared", "cleared", "disqualified"}
+			numAspirants := 2 + rng.Intn(3)
+			for i := 0; i < numAspirants; i++ {
+				aID := "gotv-aspirant-" + uuid.New().String()[:8]
+				name := nigerianFirstNames[rng.Intn(len(nigerianFirstNames))] + " " + nigerianLastNames[rng.Intn(len(nigerianLastNames))]
+				geo := geoRefs[rng.Intn(len(geoRefs))]
+				db.Exec(`INSERT INTO gotv_aspirants (aspirant_id, party_id, election_id, full_name, position, state_of_origin, screening_status, deposit_amount, deposit_paid)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+					aID, party.ID, electionID, name, positions[rng.Intn(len(positions))], geo.State,
+					screeningStatuses[rng.Intn(len(screeningStatuses))], 5000000, rng.Intn(2) == 0)
+			}
+
+			delegateTypes := []string{"ward", "statutory", "ex_officio"}
+			numDelegates := 20 + rng.Intn(20)
+			for i := 0; i < numDelegates; i++ {
+				dID := "gotv-delegate-" + uuid.New().String()[:8]
+				name := nigerianFirstNames[rng.Intn(len(nigerianFirstNames))] + " " + nigerianLastNames[rng.Intn(len(nigerianLastNames))]
+				geo := geoRefs[rng.Intn(len(geoRefs))]
+				accredited := rng.Intn(3) != 0
+				checkedIn := accredited && rng.Intn(2) == 0
+				voted := checkedIn && rng.Intn(2) == 0
+				accStatus := "pending"
+				if accredited {
+					accStatus = "accredited"
+				}
+				db.Exec(`INSERT INTO gotv_delegates (delegate_id, party_id, election_id, full_name, delegate_type, state_code, accreditation_status, is_checked_in, has_voted, is_remote)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+					dID, party.ID, electionID, name, delegateTypes[rng.Intn(len(delegateTypes))], geo.State,
+					accStatus, checkedIn, voted, rng.Intn(5) == 0)
+			}
+
+			roundID := "gotv-round-" + uuid.New().String()[:8]
+			db.Exec(`INSERT INTO gotv_primary_rounds (round_id, party_id, election_id, round_number, status, voting_method, total_votes, total_eligible, started_at)
+				VALUES ($1,$2,$3,1,'active','in_person',$4,$5,NOW() - interval '2 hours')`,
+				roundID, party.ID, electionID, numDelegates/3, numDelegates)
+		}
+
+		numContacts := 15 + rng.Intn(6)
+		contactIDs := make([]string, 0, numContacts)
+		for i := 0; i < numContacts; i++ {
+			geo := geoRefs[rng.Intn(len(geoRefs))]
+			name := nigerianFirstNames[rng.Intn(len(nigerianFirstNames))] + " " + nigerianLastNames[rng.Intn(len(nigerianLastNames))]
+			phone := fmt.Sprintf("081%08d", rng.Intn(100000000))
+
+			consentID := "gotv-consent-" + uuid.New().String()[:8]
+			db.Exec(`INSERT INTO consent_records (consent_id, subject_id, purpose, legal_basis, granted_at) VALUES ($1,$2,'communication','consent',NOW())`,
+				consentID, normalizePhone(phone))
+
+			phoneEnc, err := gotvEncrypt(normalizePhone(phone))
+			if err != nil {
+				continue
+			}
+			var nameVal interface{}
+			if nameEnc, err := gotvEncrypt(name); err == nil {
+				nameVal = nameEnc
+			}
+			contactID := "gotv-contact-" + uuid.New().String()[:8]
+
+			_, err = db.Exec(`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, ward_code, polling_unit_code, voter_status, consent_id)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+				contactID, party.ID, phoneEnc, gotvPhoneHash(phone), nameVal, geo.State, geo.LGA, geo.Ward, geo.PU,
+				voterStatuses[rng.Intn(len(voterStatuses))], consentID)
+			if err != nil {
+				continue
+			}
+
+			if rng.Intn(2) == 0 {
+				pledgeID := "gotv-pledge-" + uuid.New().String()[:8]
+				db.Exec(`INSERT INTO gotv_pledges (pledge_id, party_id, contact_id, election_id, pledge_type, status)
+					VALUES ($1,$2,$3,$4,'will_vote','pledged')`,
+					pledgeID, party.ID, contactID, electionID)
+			}
+
+			if len(campaignIDs) > 0 && len(volunteerIDs) > 0 && rng.Intn(2) == 0 {
+				logID := "gotv-log-" + uuid.New().String()[:8]
+				db.Exec(`INSERT INTO gotv_outreach_log (log_id, campaign_id, party_id, contact_id, volunteer_id, channel, direction, message_text, status)
+					VALUES ($1,$2,$3,$4,$5,'sms','outbound','Reminder: Election day is coming up!','delivered')`,
+					logID, campaignIDs[rng.Intn(len(campaignIDs))], party.ID, contactID, volunteerIDs[rng.Intn(len(volunteerIDs))])
+			}
+
+			contactIDs = append(contactIDs, contactID)
+		}
+
+		knockResults := []string{"not_home", "refused", "pledged", "confirmed", "needs_ride"}
+		if len(volunteerIDs) > 0 && len(contactIDs) > 0 {
+			numKnocks := 10 + rng.Intn(10)
+			for i := 0; i < numKnocks; i++ {
+				knockID := "gotv-knock-" + uuid.New().String()[:8]
+				db.Exec(`INSERT INTO gotv_door_knocks (knock_id, party_id, volunteer_id, contact_id, latitude, longitude, result, knocked_at)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,NOW() - ($8::text || ' hours')::interval)`,
+					knockID, party.ID, volunteerIDs[rng.Intn(len(volunteerIDs))], contactIDs[rng.Intn(len(contactIDs))],
+					4.0+rng.Float64()*10, 2.5+rng.Float64()*12, knockResults[rng.Intn(len(knockResults))], rng.Intn(72))
+			}
+		}
+	}
+
+	if electionID > 0 {
+		for _, geo := range geoRefs {
+			var registered int
+			db.QueryRow("SELECT registered_voters FROM polling_units WHERE code=$1", geo.PU).Scan(&registered)
+			accredited := 0
+			turnoutPct := 0.0
+			if registered > 0 {
+				accredited = rng.Intn(registered)
+				turnoutPct = float64(accredited) / float64(registered) * 100
+			}
+			db.Exec(`INSERT INTO gotv_turnout_snapshots (election_id, polling_unit_code, accredited_count, registered_voters, turnout_pct) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+				electionID, geo.PU, accredited, registered, turnoutPct)
+		}
+	}
+
+	log.Info().Int("parties", len(partyRefs)).Int("contacts_per_party", 15).Msg("GOTV demo data seeded")
 }

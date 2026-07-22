@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -28,10 +26,9 @@ type DaprValidationResult struct {
 	ExtraFields   []string `json:"extra_fields,omitempty"`
 }
 
-// DaprClient is implemented by the configured Dapr sidecar in production. Test
-// and development runtimes may use the explicit in-memory implementation below
-// for state and event paths; service invocation remains unavailable without a
-// real sidecar and APP_ENV=production never selects the local implementation.
+// DaprClient is implemented exclusively by the Dapr sidecar HTTP client. State,
+// pub/sub, and service invocation must retain Dapr's component semantics and
+// cannot silently be emulated through PostgreSQL or in-process handlers.
 type DaprClient interface {
 	PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error
 	InvokeService(ctx context.Context, appID, method string, data interface{}) ([]byte, error)
@@ -43,97 +40,42 @@ type DaprClient interface {
 	Close() error
 }
 
-// localDaprClient is an explicit non-production transport for isolated tests
-// and local development. It intentionally does not emulate cross-service
-// invocation: callers receive an error until a real Dapr sidecar is configured.
-type localDaprClient struct {
-	mu    sync.RWMutex
-	state map[string][]byte
-}
-
-func newLocalDaprClient() *localDaprClient {
-	return &localDaprClient{state: make(map[string][]byte)}
-}
-
-func localDaprStateKey(store, key string) string {
-	return store + "\x00" + key
-}
-
-func (d *localDaprClient) PublishEvent(ctx context.Context, pubsub, topic string, data interface{}) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(pubsub) == "" || strings.TrimSpace(topic) == "" {
-		return fmt.Errorf("pubsub and topic are required for a local Dapr event")
-	}
-	if _, err := json.Marshal(data); err != nil {
-		return fmt.Errorf("marshal local Dapr event: %w", err)
-	}
-	return nil
-}
-
-func (d *localDaprClient) InvokeService(ctx context.Context, appID, method string, data interface{}) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return nil, fmt.Errorf("Dapr service invocation is unavailable without a configured sidecar")
-}
-
-func (d *localDaprClient) InvokeServiceValidated(ctx context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
-	raw, err := d.InvokeService(ctx, appID, method, data)
-	if err != nil {
-		return nil, nil, err
-	}
-	return raw, validateDaprResponse(raw, schema), nil
-}
-
-func (d *localDaprClient) GetState(ctx context.Context, store, key string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	d.mu.RLock()
-	value := append([]byte(nil), d.state[localDaprStateKey(store, key)]...)
-	d.mu.RUnlock()
-	return value, nil
-}
-
-func (d *localDaprClient) SaveState(ctx context.Context, store, key string, value interface{}) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(store) == "" || strings.TrimSpace(key) == "" {
-		return fmt.Errorf("store and key are required for local Dapr state")
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal local Dapr state: %w", err)
-	}
-	d.mu.Lock()
-	d.state[localDaprStateKey(store, key)] = append([]byte(nil), raw...)
-	d.mu.Unlock()
-	return nil
-}
-
-func (d *localDaprClient) DeleteState(ctx context.Context, store, key string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	d.mu.Lock()
-	delete(d.state, localDaprStateKey(store, key))
-	d.mu.Unlock()
-	return nil
-}
-
-func (d *localDaprClient) Status() MWStatus {
-	return MWStatus{Name: "Dapr", Connected: true, Mode: "in-memory (non-production)", Details: "ephemeral local state and event transport"}
-}
-
-func (d *localDaprClient) Close() error { return nil }
-
 type daprHTTPClient struct {
 	baseURL string
 	client  *ResilientHTTPClient
 }
+
+// unavailableDaprClient never stores, synthesizes, or substitutes Dapr operations.
+// It preserves the dependency error for callers until the sidecar is configured.
+type unavailableDaprClient struct {
+	reason string
+}
+
+func (d *unavailableDaprClient) unavailable() error {
+	return fmt.Errorf("Dapr sidecar is unavailable: %s", d.reason)
+}
+func (d *unavailableDaprClient) PublishEvent(context.Context, string, string, interface{}) error {
+	return d.unavailable()
+}
+func (d *unavailableDaprClient) InvokeService(context.Context, string, string, interface{}) ([]byte, error) {
+	return nil, d.unavailable()
+}
+func (d *unavailableDaprClient) InvokeServiceValidated(context.Context, string, string, interface{}, DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
+	return nil, nil, d.unavailable()
+}
+func (d *unavailableDaprClient) GetState(context.Context, string, string) ([]byte, error) {
+	return nil, d.unavailable()
+}
+func (d *unavailableDaprClient) SaveState(context.Context, string, string, interface{}) error {
+	return d.unavailable()
+}
+func (d *unavailableDaprClient) DeleteState(context.Context, string, string) error {
+	return d.unavailable()
+}
+func (d *unavailableDaprClient) Status() MWStatus {
+	return MWStatus{Name: "Dapr", Connected: false, Mode: "Dapr sidecar required", Details: d.reason}
+}
+func (d *unavailableDaprClient) Close() error { return nil }
 
 func (d *daprHTTPClient) do(ctx context.Context, method, url string, payload []byte) ([]byte, error) {
 	var body io.Reader
@@ -268,12 +210,8 @@ func initDaprClient() DaprClient {
 		}
 	}
 	if daprURL == "" {
-		isProduction := strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production")
-		if !isProduction {
-			log.Warn().Msg("Dapr is not configured — using the explicit in-memory non-production transport")
-			return newLocalDaprClient()
-		}
-		log.Fatal().Msg("Dapr is required: set DAPR_HTTP_URL or DAPR_HTTP_PORT and run the Dapr sidecar")
+		log.Warn().Msg("Dapr unavailable: set DAPR_HTTP_URL or DAPR_HTTP_PORT and run the Dapr sidecar")
+		return &unavailableDaprClient{reason: "DAPR_HTTP_URL or DAPR_HTTP_PORT must be configured"}
 	}
 
 	client := &daprHTTPClient{baseURL: daprURL, client: NewResilientHTTPClient("dapr")}

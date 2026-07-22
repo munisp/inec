@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +20,10 @@ type KafkaMessage struct {
 	Timestamp time.Time              `json:"timestamp"`
 }
 
-// KafkaClient is backed by configured Kafka brokers in production. Non-production
-// runtimes may use the explicit in-memory implementation below for isolated tests
-// and local development; it is never selected when APP_ENV=production.
+// KafkaClient is backed exclusively by the configured Kafka brokers. Platform
+// events must not be silently written to PostgreSQL or an in-process queue,
+// because those substitutes do not provide Kafka partitioning or consumer-group
+// delivery semantics.
 type KafkaClient interface {
 	Produce(ctx context.Context, msg KafkaMessage) error
 	Subscribe(topic string, handler func(KafkaMessage)) error
@@ -31,57 +31,6 @@ type KafkaClient interface {
 	Status() MWStatus
 	Close() error
 }
-
-// inMemoryKafkaClient is an explicit non-production event transport. It keeps
-// test and local-development flows runnable without implying Kafka durability,
-// partitioning, or consumer-group semantics.
-type inMemoryKafkaClient struct {
-	mu          sync.RWMutex
-	subscribers map[string][]func(KafkaMessage)
-}
-
-func newInMemoryKafkaClient() *inMemoryKafkaClient {
-	return &inMemoryKafkaClient{subscribers: make(map[string][]func(KafkaMessage))}
-}
-
-func (k *inMemoryKafkaClient) Produce(ctx context.Context, msg KafkaMessage) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if msg.Timestamp.IsZero() {
-		msg.Timestamp = time.Now().UTC()
-	}
-	k.mu.RLock()
-	handlers := append([]func(KafkaMessage){}, k.subscribers[msg.Topic]...)
-	k.mu.RUnlock()
-	for _, handler := range handlers {
-		handler(msg)
-	}
-	return nil
-}
-
-func (k *inMemoryKafkaClient) Subscribe(topic string, handler func(KafkaMessage)) error {
-	if strings.TrimSpace(topic) == "" || handler == nil {
-		return fmt.Errorf("topic and handler are required for an in-memory Kafka subscription")
-	}
-	k.mu.Lock()
-	k.subscribers[topic] = append(k.subscribers[topic], handler)
-	k.mu.Unlock()
-	return nil
-}
-
-func (k *inMemoryKafkaClient) SubscribeGroup(topic, groupID string, handler func(KafkaMessage)) error {
-	if strings.TrimSpace(groupID) == "" {
-		return fmt.Errorf("group ID is required for an in-memory Kafka group subscription")
-	}
-	return k.Subscribe(topic, handler)
-}
-
-func (k *inMemoryKafkaClient) Status() MWStatus {
-	return MWStatus{Name: "Kafka", Connected: true, Mode: "in-memory (non-production)", Details: "ephemeral local event transport"}
-}
-
-func (k *inMemoryKafkaClient) Close() error { return nil }
 
 const (
 	TopicResultSubmitted = "inec.results.submitted"
@@ -92,6 +41,25 @@ const (
 	TopicIncidentReport  = "inec.incidents.reported"
 	TopicFluvioIngest    = "inec.fluvio.ingest"
 )
+
+// unavailableKafkaClient never stores, synthesizes, or substitutes Kafka delivery.
+// It preserves the dependency error for callers until the configured native brokers recover.
+type unavailableKafkaClient struct {
+	reason string
+}
+
+func (k *unavailableKafkaClient) unavailable() error {
+	return fmt.Errorf("native Kafka is unavailable: %s", k.reason)
+}
+func (k *unavailableKafkaClient) Produce(context.Context, KafkaMessage) error { return k.unavailable() }
+func (k *unavailableKafkaClient) Subscribe(string, func(KafkaMessage)) error  { return k.unavailable() }
+func (k *unavailableKafkaClient) SubscribeGroup(string, string, func(KafkaMessage)) error {
+	return k.unavailable()
+}
+func (k *unavailableKafkaClient) Status() MWStatus {
+	return MWStatus{Name: "Kafka", Connected: false, Mode: "native kafka-go required", Details: k.reason}
+}
+func (k *unavailableKafkaClient) Close() error { return nil }
 
 type realKafkaClient struct {
 	brokers []string
@@ -246,21 +214,19 @@ func parseKafkaBrokers(raw string) []string {
 
 func initKafkaClient() KafkaClient {
 	brokers := parseKafkaBrokers(envOrDefault("KAFKA_BROKERS", ""))
-	isProduction := strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production")
 	if len(brokers) == 0 {
-		if !isProduction {
-			log.Warn().Msg("Kafka is not configured — using the explicit in-memory non-production event transport")
-			return newInMemoryKafkaClient()
-		}
-		log.Fatal().Msg("Kafka is required: set KAFKA_BROKERS to one or more native broker addresses")
+		log.Warn().Msg("Kafka unavailable: KAFKA_BROKERS not set")
+		return &unavailableKafkaClient{reason: "KAFKA_BROKERS must be configured"}
 	}
 	client := newRealKafkaClient(brokers)
 	status := client.Status()
 	if !status.Connected {
-		log.Fatal().Strs("brokers", brokers).Str("details", status.Details).Msg("Kafka is required but unavailable")
+		log.Warn().Strs("brokers", brokers).Str("details", status.Details).Msg("Kafka unavailable")
+		return &unavailableKafkaClient{reason: status.Details}
 	}
 	if err := client.ensureTopics(); err != nil {
-		log.Fatal().Strs("brokers", brokers).Err(err).Msg("Kafka topic provisioning failed")
+		log.Warn().Strs("brokers", brokers).Err(err).Msg("Kafka topic provisioning failed")
+		return &unavailableKafkaClient{reason: err.Error()}
 	}
 	log.Info().Strs("brokers", brokers).Msg("Kafka native client connected")
 	return client

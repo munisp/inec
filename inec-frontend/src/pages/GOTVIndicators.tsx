@@ -14,7 +14,7 @@ import {
   Award, FileText, BarChart3, Activity, AlertTriangle,
 } from 'lucide-react';
 
-const BASE_URL = `${window.location.protocol}//${window.location.hostname}:8103`;
+const BASE_URL = '';
 
 function getAuthHeaders() {
   const token = localStorage.getItem('auth_token') || '';

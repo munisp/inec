@@ -1,0 +1,792 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: campaign-planning
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: campaign-planning
+spec:
+  selector:
+    app.kubernetes.io/name: campaign-planning
+  ports:
+    - name: http
+      port: 8206
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: campaign-planning
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: campaign-planning
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: campaign-planning
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: campaign-planning
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: campaign-planning
+          image: registry.digitalocean.com/talentgraph-auth/campaign-planning:archive-20260722-010210
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8206
+          env:
+            - name: PORT
+              value: "8206"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/campaign/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/campaign/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-anomaly-detection
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: ai-anomaly-detection
+spec:
+  selector:
+    app.kubernetes.io/name: ai-anomaly-detection
+  ports:
+    - name: http
+      port: 8200
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-anomaly-detection
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: ai-anomaly-detection
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-anomaly-detection
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ai-anomaly-detection
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: ai-anomaly-detection
+          image: registry.digitalocean.com/talentgraph-auth/ai-anomaly-detection:archive-20260722-012330
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8200
+          env:
+            - name: INFERENCE_ENGINE_URL
+              value: http://inference-engine:8091
+          readinessProbe:
+            httpGet:
+              path: /api/v1/anomaly/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: biometric-go
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: biometric-go
+spec:
+  selector:
+    app.kubernetes.io/name: biometric-go
+  ports:
+    - name: http
+      port: 8092
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: biometric-go
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: biometric-go
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: biometric-go
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: biometric-go
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: biometric-go
+          image: registry.digitalocean.com/talentgraph-auth/biometric-go:archive-20260722-011124
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8092
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: database-url
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: biometric-python
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: biometric-python
+spec:
+  selector:
+    app.kubernetes.io/name: biometric-python
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: biometric-python
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: biometric-python
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: biometric-python
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: biometric-python
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: biometric-python
+          image: registry.digitalocean.com/talentgraph-auth/biometric-python:archive-20260722-023305
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: INFERENCE_ENGINE_URL
+              value: http://inference-engine:8091
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: database-url
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: satellite-change-detection
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: satellite-change-detection
+spec:
+  selector:
+    app.kubernetes.io/name: satellite-change-detection
+  ports:
+    - name: http
+      port: 8204
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: satellite-change-detection
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: satellite-change-detection
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: satellite-change-detection
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: satellite-change-detection
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: satellite-change-detection
+          image: registry.digitalocean.com/talentgraph-auth/satellite-change-detection:archive-20260722-013956
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8204
+          readinessProbe:
+            httpGet:
+              path: /api/v1/satellite/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homomorphic-tally
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: homomorphic-tally
+spec:
+  selector:
+    app.kubernetes.io/name: homomorphic-tally
+  ports:
+    - name: http
+      port: 8201
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homomorphic-tally
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: homomorphic-tally
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: homomorphic-tally
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: homomorphic-tally
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: homomorphic-tally
+          image: registry.digitalocean.com/talentgraph-auth/homomorphic-tally:archive-20260722-014109
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8201
+          readinessProbe:
+            httpGet:
+              path: /api/v1/tally/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/tally/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: federated-fraud-detection
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: federated-fraud-detection
+spec:
+  selector:
+    app.kubernetes.io/name: federated-fraud-detection
+  ports:
+    - name: http
+      port: 8202
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federated-fraud-detection
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: federated-fraud-detection
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: federated-fraud-detection
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: federated-fraud-detection
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: federated-fraud-detection
+          image: registry.digitalocean.com/talentgraph-auth/federated-fraud-detection:archive-20260722-014152
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8202
+          readinessProbe:
+            httpGet:
+              path: /api/v1/federated/status
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/federated/status
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: digital-twin-simulation
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: digital-twin-simulation
+spec:
+  selector:
+    app.kubernetes.io/name: digital-twin-simulation
+  ports:
+    - name: http
+      port: 8203
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digital-twin-simulation
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: digital-twin-simulation
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: digital-twin-simulation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: digital-twin-simulation
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: digital-twin-simulation
+          image: registry.digitalocean.com/talentgraph-auth/digital-twin-simulation:archive-20260722-021154
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8203
+          readinessProbe:
+            httpGet:
+              path: /api/v1/twin/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/twin/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: predictive-resource-allocation
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: predictive-resource-allocation
+spec:
+  selector:
+    app.kubernetes.io/name: predictive-resource-allocation
+  ports:
+    - name: http
+      port: 8205
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictive-resource-allocation
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: predictive-resource-allocation
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: predictive-resource-allocation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: predictive-resource-allocation
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: predictive-resource-allocation
+          image: registry.digitalocean.com/talentgraph-auth/predictive-resource-allocation:archive-20260722-014352
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8205
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: database-url
+            - name: MODEL_DIR
+              value: /app/models
+            - name: MIN_TRAINING_SAMPLES
+              value: "10"
+            - name: RESOURCE_BALLOT_BUFFER
+              value: "0.1"
+            - name: RESOURCE_VOTERS_PER_CLERK
+              value: "500"
+            - name: RESOURCE_MIN_POLL_CLERKS
+              value: "3"
+            - name: RESOURCE_MIN_SECURITY_PERSONNEL
+              value: "2"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/allocation/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/allocation/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-engine
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: inference-engine
+spec:
+  selector:
+    app.kubernetes.io/name: inference-engine
+  ports:
+    - name: http
+      port: 8091
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-engine
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: inference-engine
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inference-engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inference-engine
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: inference-engine
+          image: registry.digitalocean.com/talentgraph-auth/inference-engine:archive-20260722-015433
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8091
+          env:
+            - name: NEO4J_URI
+              value: bolt://neo4j.neo4j.svc.cluster.local:7687
+            - name: NEO4J_USER
+              value: neo4j
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inec-neo4j-secrets
+                  key: neo4j-password
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-ai
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: document-ai
+spec:
+  selector:
+    app.kubernetes.io/name: document-ai
+  ports:
+    - name: http
+      port: 8089
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: document-ai
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: document-ai
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: document-ai
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: document-ai
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: document-ai
+          image: registry.digitalocean.com/talentgraph-auth/document-ai:archive-20260722-024227
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8089
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

@@ -76,51 +76,14 @@ function PageTransition({ page, children }: { page: string; children: React.Reac
   );
 }
 
-function pageFromLocation() {
-  const hashPage = window.location.hash.replace(/^#\/?/, '');
-  if (hashPage) return hashPage;
-  const params = new URLSearchParams(window.location.search);
-  const pathPage = window.location.pathname.replace(/^\/+/, '');
-  return pathPage && pathPage !== 'login' ? pathPage : params.get('page') || 'dashboard';
-}
-
 function AppContent() {
   const { isAuthenticated } = useAuth();
-  const [currentPage, setCurrentPage] = useState(pageFromLocation);
+  const [currentPage, setCurrentPage] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('page') || 'dashboard';
+  });
 
-  useEffect(() => {
-    const syncPageFromHistory = () => setCurrentPage(pageFromLocation());
-    window.addEventListener('hashchange', syncPageFromHistory);
-    window.addEventListener('popstate', syncPageFromHistory);
-    return () => {
-      window.removeEventListener('hashchange', syncPageFromHistory);
-      window.removeEventListener('popstate', syncPageFromHistory);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isAuthenticated && currentPage === 'login') {
-      setCurrentPage('dashboard');
-    }
-  }, [currentPage, isAuthenticated]);
-
-  useEffect(() => {
-    const resolvedPage = isAuthenticated && currentPage === 'login' ? 'dashboard' : currentPage;
-    const targetHash = isAuthenticated ? `#/${resolvedPage}` : '#/login';
-    if (window.location.hash !== targetHash) {
-      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${targetHash}`);
-    }
-  }, [currentPage, isAuthenticated]);
-
-  const navigate = (page: string) => {
-    const targetHash = `#/${page}`;
-    if (window.location.hash !== targetHash) {
-      window.history.pushState(null, '', `${window.location.pathname}${window.location.search}${targetHash}`);
-    }
-    setCurrentPage(page);
-  };
-
-	if (!isAuthenticated) return <LoginPage />;
+  if (!isAuthenticated) return <LoginPage />;
 
   const pages: Record<string, React.ReactNode> = {
     dashboard: <DashboardPage />,
@@ -174,7 +137,7 @@ function AppContent() {
   };
 
   return (
-    <Layout currentPage={currentPage} onNavigate={navigate}>
+    <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
       <ErrorBoundary key={currentPage}>
         <PageTransition page={currentPage}>
           <Suspense fallback={<DashboardSkeleton />}>
@@ -182,7 +145,7 @@ function AppContent() {
               <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
                 <h1 className="text-6xl font-bold text-gray-300 dark:text-gray-600">404</h1>
                 <p className="mt-4 text-lg text-gray-600 dark:text-gray-400">Page not found</p>
-                <button onClick={() => navigate('dashboard')} className="mt-6 px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 transition">
+                <button onClick={() => setCurrentPage('dashboard')} className="mt-6 px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 transition">
                   Back to Dashboard
                 </button>
               </div>

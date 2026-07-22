@@ -1,0 +1,389 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inec
+  labels:
+    app.kubernetes.io/part-of: inec-platform
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inec-postgres-data
+  namespace: inec
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: rook-ceph-block
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inec-postgres
+  namespace: inec
+spec:
+  selector:
+    app.kubernetes.io/name: inec-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: inec-postgres
+  namespace: inec
+spec:
+  serviceName: inec-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inec-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inec-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis:16-3.4
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: inec
+            - name: POSTGRES_USER
+              value: inec
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: postgres-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U inec -d inec"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U inec -d inec"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: inec-postgres-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inec-uploads
+  namespace: inec
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: rook-ceph-block
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inec-backend
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: inec-backend
+spec:
+  selector:
+    app.kubernetes.io/name: inec-backend
+  ports:
+    - name: http
+      port: 8088
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inec-backend
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: inec-backend
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inec-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inec-backend
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: backend
+          image: registry.digitalocean.com/talentgraph-auth/inec-backend:archive-20260722-112511
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8088
+          env:
+            - name: PORT
+              value: "8088"
+            - name: APP_ENV
+              value: demo
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: database-url
+            - name: CORS_ORIGINS
+              value: https://inec.servers.upi.dev
+            - name: ALLOWED_ORIGINS
+              value: https://inec.servers.upi.dev
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: jwt-secret
+            - name: SEED_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: seed-admin-password
+            - name: SEED_OBSERVER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: seed-observer-password
+            - name: BIOMETRIC_VAULT_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: biometric-vault-master-key
+            - name: HSM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: hsm-master-key
+            - name: GOTV_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: gotv-encryption-key
+            - name: REDIS_ADDR
+              value: redis-master.redis.svc.cluster.local:6379
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inec-redis-secrets
+                  key: redis-password
+            - name: CAMPAIGN_PLANNING_URL
+              value: http://campaign-planning:8206
+            - name: ANOMALY_SERVICE_URL
+              value: http://ai-anomaly-detection:8200
+            - name: BIOMETRIC_PIPELINE_URL
+              value: http://biometric-go:8092
+            - name: BIOMETRIC_SERVICE_URL
+              value: http://biometric-python:8090
+            - name: HOMOMORPHIC_SERVICE_URL
+              value: http://homomorphic-tally:8201
+            - name: FEDERATED_SERVICE_URL
+              value: http://federated-fraud-detection:8202
+            - name: DIGITAL_TWIN_SERVICE_URL
+              value: http://digital-twin-simulation:8203
+            - name: PREDICTIVE_ALLOC_URL
+              value: http://predictive-resource-allocation:8205
+            - name: RUST_INFERENCE_URL
+              value: http://inference-engine:8091
+            - name: DOCUMENT_AI_URL
+              value: http://document-ai:8089
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: uploads
+              mountPath: /app/uploads
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: inec-uploads
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inec-frontend
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: inec-frontend
+spec:
+  selector:
+    app.kubernetes.io/name: inec-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inec-frontend
+  namespace: inec
+  labels:
+    app.kubernetes.io/name: inec-frontend
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inec-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inec-frontend
+    spec:
+      imagePullSecrets:
+        - name: talentgraph-auth-pull
+      containers:
+        - name: frontend
+          image: registry.digitalocean.com/talentgraph-auth/inec-frontend:archive-20260722-112655
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - NET_BIND_SERVICE
+                - SETGID
+                - SETUID
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inec-frontend
+  namespace: inec
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inec-frontend
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: inec-tls
+  namespace: inec
+spec:
+  secretName: inec-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+  dnsNames:
+    - inec.servers.upi.dev
+---
+apiVersion: apisix.apache.org/v2
+kind: ApisixTls
+metadata:
+  name: inec-tls
+  namespace: inec
+spec:
+  hosts:
+    - inec.servers.upi.dev
+  secret:
+    name: inec-tls
+    namespace: inec
+---
+apiVersion: apisix.apache.org/v2
+kind: ApisixRoute
+metadata:
+  name: inec
+  namespace: inec
+spec:
+  ingressClassName: apisix
+  http:
+    - name: inec
+      match:
+        hosts:
+          - inec.servers.upi.dev
+        paths:
+          - /*
+      backends:
+        - serviceName: inec-frontend
+          servicePort: 80
+      websocket: true
