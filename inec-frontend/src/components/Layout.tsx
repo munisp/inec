@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import { useI18n } from '@/lib/i18n';
 import { useTheme } from '@/components/ThemeProvider';
@@ -81,8 +81,16 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
 
   const ThemeIcon = resolved === 'dark' ? Moon : Sun;
 
-  const NavContent = () => (
-    <div className="flex flex-col h-full">
+  const NavContent = () => {
+    const navRef = useRef<HTMLElement | null>(null);
+
+    useEffect(() => {
+      const activeItem = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
+      activeItem?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }, [currentPage, sidebarOpen]);
+
+    return (
+    <div className="flex h-full min-h-0 flex-col">
       <div className="p-4 border-b border-zinc-200 dark:border-zinc-700">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-green-700 flex items-center justify-center">
@@ -94,7 +102,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
         </div>
       </div>
-      <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto scrollbar-thin" aria-label="Main navigation" role="navigation">
+      <nav ref={navRef} tabIndex={0} className="sidebar-navigation flex min-h-0 flex-1 flex-col space-y-0.5 overflow-y-auto overscroll-contain p-2 scrollbar-thin touch-pan-y" aria-label="Main navigation" role="navigation">
         {NAV_ITEMS.map((item: typeof NAV_ITEMS[number]) => {
           const isActive = currentPage === item.path;
           return (
@@ -155,11 +163,12 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-900 transition-colors duration-200">
-      <aside className="hidden lg:flex lg:fixed lg:inset-y-0 lg:w-56 lg:flex-col border-r border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/50">
+      <aside className="hidden overflow-hidden border-r border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-800/50 lg:fixed lg:inset-y-0 lg:flex lg:w-56 lg:flex-col">
         <NavContent />
       </aside>
 
@@ -169,7 +178,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon"><Menu className="h-5 w-5" /></Button>
           </SheetTrigger>
-          <SheetContent side="left" className="p-0 w-56">
+          <SheetContent side="left" className="w-56 overflow-hidden p-0">
             <NavContent />
           </SheetContent>
         </Sheet>

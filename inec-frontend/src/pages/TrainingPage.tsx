@@ -19,13 +19,26 @@ export default function TrainingPage() {
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [courseForm, setCourseForm] = useState({ title: '', course_type: 'interactive', target_role: 'presiding_officer', duration_hours: 4, is_mandatory: false });
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getTrainingStats().then(setStats).catch(e => console.error('training stats:', e));
-    api.getTrainingCourses().then(setCourses).catch(e => console.error('courses:', e));
-    api.getTrainingCertificates().then(setCerts).catch(e => console.error('certificates:', e));
-    api.getVRScenarios().then(setScenarios).catch(e => console.error('vr scenarios:', e));
-    api.getTrainingEnrollments().then(setEnrollments).catch(e => console.error('enrollments:', e));
+    let active = true;
+    const load = async () => {
+      const [statsResult, coursesResult, certsResult, scenariosResult, enrollmentsResult] = await Promise.allSettled([
+        api.getTrainingStats(), api.getTrainingCourses(), api.getTrainingCertificates(), api.getVRScenarios(), api.getTrainingEnrollments(),
+      ]);
+      if (!active) return;
+      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
+      if (coursesResult.status === 'fulfilled') setCourses(coursesResult.value);
+      if (certsResult.status === 'fulfilled') setCerts(certsResult.value);
+      if (scenariosResult.status === 'fulfilled') setScenarios(scenariosResult.value);
+      if (enrollmentsResult.status === 'fulfilled') setEnrollments(enrollmentsResult.value);
+      if ([statsResult, coursesResult, certsResult, scenariosResult, enrollmentsResult].some(result => result.status === 'rejected')) {
+        setLoadError('Some training integrations are temporarily unavailable. Available course and enrollment information remains visible.');
+      }
+    };
+    void load();
+    return () => { active = false; };
   }, []);
 
   const [enrolling, setEnrolling] = useState<number | null>(null);
@@ -38,7 +51,7 @@ export default function TrainingPage() {
       setCourseForm({ title: '', course_type: 'interactive', target_role: 'presiding_officer', duration_hours: 4, is_mandatory: false });
       api.getTrainingCourses().then(setCourses);
       api.getTrainingStats().then(setStats);
-    } catch { void 0; }
+    } catch { setLoadError('The course could not be created. Please check the form and try again.'); }
   };
 
   const handleEnroll = async (courseId: number) => {
@@ -47,7 +60,7 @@ export default function TrainingPage() {
       await api.enrollInCourse(courseId);
       api.getTrainingEnrollments().then(setEnrollments);
       api.getTrainingStats().then(setStats);
-    } catch { /* handled by api */ }
+    } catch { setLoadError('Enrollment could not be completed. Please try again when the training service is available.'); }
     setEnrolling(null);
   };
 
@@ -109,6 +122,8 @@ export default function TrainingPage() {
           </Dialog>
         </div>
       </div>
+
+      {loadError && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{loadError}</div>}
 
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">

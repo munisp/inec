@@ -1,7 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
 import { Eye, Radio, Upload, Bell, MapPin, Activity, Users, FileText, AlertTriangle } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8088';
+const API = import.meta.env.VITE_API_URL ?? '';
+
+async function observerRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = localStorage.getItem('auth_token');
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(body.detail || body.error || `Request failed (${response.status})`);
+  }
+  return response.json() as Promise<T>;
+}
 
 interface ResultEvent {
   type: string;
@@ -48,6 +65,7 @@ export default function ObserverMonitoringPage() {
   const [partyData, setPartyData] = useState<PartyDashboard | null>(null);
   const [selectedParty, setSelectedParty] = useState('APC');
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // SSE Connection for live updates
@@ -82,31 +100,35 @@ export default function ObserverMonitoringPage() {
 
   // Fetch observer stats
   useEffect(() => {
-    fetch(`${API}/observer/stats`, { credentials: 'include' })
-      .then(r => r.json()).then(setStats).catch(e => console.error('observer stats:', e));
+    observerRequest<Record<string, number>>('/observer/stats')
+      .then(data => { setStats(data); setLoadError(null); })
+      .catch(() => setLoadError('Observer statistics are temporarily unavailable. Live operational data will appear when the service reconnects.'));
   }, []);
 
   // Fetch reports
   useEffect(() => {
     if (tab === 'reports') {
-      fetch(`${API}/observer/reports`, { credentials: 'include' })
-        .then(r => r.json()).then(d => setReports(Array.isArray(d) ? d : [])).catch(e => console.error('observer reports:', e));
+      observerRequest<ObserverReport[]>('/observer/reports')
+        .then(data => { setReports(Array.isArray(data) ? data : []); setLoadError(null); })
+        .catch(() => setLoadError('Observer reports are temporarily unavailable.'));
     }
   }, [tab]);
 
   // Fetch alert rules
   useEffect(() => {
     if (tab === 'alerts') {
-      fetch(`${API}/observer/alerts`, { credentials: 'include' })
-        .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert rules:', e));
+      observerRequest<AlertRule[]>('/observer/alerts')
+        .then(data => { setAlertRules(Array.isArray(data) ? data : []); setLoadError(null); })
+        .catch(() => setLoadError('Observer alert rules are temporarily unavailable.'));
     }
   }, [tab]);
 
   // Fetch party dashboard
   useEffect(() => {
     if (tab === 'party') {
-      fetch(`${API}/observer/party-dashboard?party=${selectedParty}`, { credentials: 'include' })
-        .then(r => r.json()).then(setPartyData).catch(e => console.error('party data:', e));
+      observerRequest<PartyDashboard>(`/observer/party-dashboard?party=${encodeURIComponent(selectedParty)}`)
+        .then(data => { setPartyData(data); setLoadError(null); })
+        .catch(() => setLoadError('Party dashboard data is temporarily unavailable.'));
     }
   }, [tab, selectedParty]);
 
@@ -149,9 +171,11 @@ export default function ObserverMonitoringPage() {
       {/* Tab Content */}
       {tab === 'live' && <LiveFeedTab events={events} connected={connected} />}
       {tab === 'reports' && <ReportsTab reports={reports} />}
+      {loadError && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{loadError}</div>}
       {tab === 'alerts' && <AlertsTab rules={alertRules} onRefresh={() => {
-        fetch(`${API}/observer/alerts`, { credentials: 'include' })
-          .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert refresh:', e));
+        observerRequest<AlertRule[]>('/observer/alerts')
+          .then(data => { setAlertRules(Array.isArray(data) ? data : []); setLoadError(null); })
+          .catch(() => setLoadError('Observer alert rules are temporarily unavailable.'));
       }} />}
       {tab === 'party' && <PartyTab data={partyData} party={selectedParty} onPartyChange={setSelectedParty} />}
     </div>

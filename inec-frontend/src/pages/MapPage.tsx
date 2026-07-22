@@ -41,6 +41,11 @@ const STATUS_COLORS: Record<string, string> = {
   no_result: '#9ca3af',
 };
 
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
+const websocketBase = () => API_BASE
+  ? API_BASE.replace(/^http/, 'ws')
+  : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
+
 export default function MapPage() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -105,7 +110,7 @@ export default function MapPage() {
 
   function sendMetric(event: string, data: any) {
     try {
-      fetch(`${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/dashboard/metrics/client`, {
+      fetch(`${API_BASE}/dashboard/metrics/client`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event, data })
       });
     } catch {}
@@ -189,8 +194,7 @@ export default function MapPage() {
       loadOfficials();
       // Open SSE stream for real-time updates
       try {
-        const base = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
-        const es = new EventSource(`${base}/geo/tracking/stream`, { withCredentials: true });
+        const es = new EventSource(`${API_BASE}/geo/tracking/stream`, { withCredentials: true });
         sseRef.current = es;
         es.addEventListener('tracking_snapshot', (e) => {
           try {
@@ -794,7 +798,7 @@ export default function MapPage() {
       if (showPUs) {
         map.addSource('pu-tiles', {
           type: 'vector',
-          tiles: [`${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/tiles/pus/{z}/{x}/{y}.mvt?v=${tileVersion}`],
+          tiles: [`${API_BASE}/geo/tiles/pus/{z}/{x}/{y}.mvt?v=${tileVersion}`],
           maxzoom: 14,
         });
 
@@ -973,7 +977,7 @@ export default function MapPage() {
       mapB.addLayer({ id: 'state-labels-b', type: 'symbol', source: 'states-b', layout: { 'text-field': ['get', 'code'], 'text-size': 11, 'text-font': ['Open Sans Regular'], 'text-allow-overlap': true }, paint: { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
       if (showPUs) {
-        mapB.addSource('pu-tiles-b', { type: 'vector', tiles: [`${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/tiles/pus/{z}/{x}/{y}.mvt?v=${tileVersion}`], maxzoom: 14 });
+        mapB.addSource('pu-tiles-b', { type: 'vector', tiles: [`${API_BASE}/geo/tiles/pus/{z}/{x}/{y}.mvt?v=${tileVersion}`], maxzoom: 14 });
         mapB.addLayer({ id: 'pu-markers-b', type: 'circle', source: 'pu-tiles-b', filter: puFilterB as any, paint: {
           'circle-radius': ['interpolate', ['linear'], ['zoom'], 5, 4, 8, 6, 12, 10, 15, 14],
           'circle-color': ['match', ['get', 'status'], 'finalized', '#16a34a', 'validated', '#2563eb', 'pending', '#f59e0b', 'disputed', '#dc2626', '#9ca3af'],
@@ -1045,8 +1049,7 @@ export default function MapPage() {
 
   useEffect(() => {
     try {
-      const base = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
-      const wsUrl = base.replace(/^http/, 'ws') + '/results/ws/updates';
+      const wsUrl = `${websocketBase()}/results/ws/updates`;
       const ws = new WebSocket(wsUrl);
       ws.onmessage = (ev) => {
         try {
@@ -1155,13 +1158,13 @@ export default function MapPage() {
             Box Select
           </Button>
           <Button variant="outline" size="sm" onClick={() => {
-            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.csv?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
+            const base = `${API_BASE}/geo/reports/polling-units.csv?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
             window.open(base, '_blank');
           }} className="gap-1 h-8" aria-label="Export polling units CSV">
             Export CSV
           </Button>
           <Button variant="outline" size="sm" onClick={() => {
-            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.geojson?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
+            const base = `${API_BASE}/geo/reports/polling-units.geojson?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
             window.open(base, '_blank');
           }} className="gap-1 h-8" aria-label="Export polling units GeoJSON">
             Export GeoJSON

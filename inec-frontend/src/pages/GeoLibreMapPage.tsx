@@ -57,7 +57,8 @@ import { NIGERIA_CENTER } from '@/lib/geolibre/types';
 
 type TabId = 'live-map' | 'spatial' | 'geolibre' | 'field-kit';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
+const GEOLIBRE_VIEWER_URL = import.meta.env.VITE_GEOLIBRE_URL ?? '';
 
 const LAYER_CONFIG: { id: INECLayerType; label: string; icon: typeof MapPin; color: string }[] = [
   { id: 'polling-units', label: 'Polling Units', icon: MapPin, color: 'text-blue-500' },
@@ -1369,12 +1370,14 @@ function SpatialAnalysisTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function GeoLibreViewerTab() {
-  const [viewerUrl, setViewerUrl] = useState(import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090');
+  const [viewerUrl, setViewerUrl] = useState(GEOLIBRE_VIEWER_URL);
   const [urlInput, setUrlInput] = useState('');
   const store = useGeoLibreStore();
 
   const loadProject = useCallback((url: string) => {
-    if (url) setViewerUrl(`import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090'/?url=${encodeURIComponent(url)}`);
+    if (url && GEOLIBRE_VIEWER_URL) {
+      setViewerUrl(`${GEOLIBRE_VIEWER_URL.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`);
+    }
   }, []);
 
   const exportToGeoLibre = useCallback(async () => {
@@ -1397,27 +1400,34 @@ function GeoLibreViewerTab() {
       <div className="flex items-center gap-2 p-2 border-b bg-white shrink-0">
         <Badge variant="secondary" className="text-xs">GeoLibre Viewer</Badge>
         <Input placeholder="Load .geolibre.json project URL..." value={urlInput}
+          disabled={!GEOLIBRE_VIEWER_URL}
           onChange={e => setUrlInput(e.target.value)} className="flex-1 h-8 text-xs"
           onKeyDown={e => e.key === 'Enter' && loadProject(urlInput)} />
-        <Button variant="outline" size="sm" onClick={() => loadProject(urlInput)}>
+        <Button variant="outline" size="sm" disabled={!GEOLIBRE_VIEWER_URL} onClick={() => loadProject(urlInput)}>
           <Globe className="w-3.5 h-3.5 mr-1" /> Load
         </Button>
         <Button variant="outline" size="sm" onClick={exportToGeoLibre}>
           <Download className="w-3.5 h-3.5 mr-1" /> Export to GeoLibre
         </Button>
-        <Button variant="outline" size="sm" onClick={() => setViewerUrl(import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090')}>
+        <Button variant="outline" size="sm" disabled={!GEOLIBRE_VIEWER_URL} onClick={() => setViewerUrl(GEOLIBRE_VIEWER_URL)}>
           <RefreshCw className="w-3.5 h-3.5 mr-1" /> Reset
         </Button>
-        <a href="import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090'" target="_blank" rel="noopener noreferrer">
+        {GEOLIBRE_VIEWER_URL && <a href={GEOLIBRE_VIEWER_URL} target="_blank" rel="noopener noreferrer">
           <Button variant="ghost" size="sm" className="text-xs">
             <Satellite className="w-3.5 h-3.5 mr-1" /> Open Full
           </Button>
-        </a>
+        </a>}
       </div>
       <div className="flex-1">
-        <iframe src={viewerUrl} className="w-full h-full border-0" title="GeoLibre Viewer"
-          allow="geolocation; fullscreen"
-          sandbox="allow-scripts allow-same-origin allow-popups allow-forms" />
+        {viewerUrl ? (
+          <iframe src={viewerUrl} className="h-full w-full border-0" title="GeoLibre Viewer"
+            allow="geolocation; fullscreen"
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms" />
+        ) : (
+          <div role="status" className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
+            GeoLibre Viewer is not configured for this environment. Map analysis and export remain available; configure <code className="mx-1">VITE_GEOLIBRE_URL</code> to enable the embedded viewer.
+          </div>
+        )}
       </div>
     </div>
   );

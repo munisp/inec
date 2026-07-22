@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -52,30 +52,35 @@ export default function AnomalyDetectionPage() {
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [gnnScore, setGnnScore] = useState<Record<string, unknown> | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
-    try {
-      const [anomalyRes, integrityRes, benfordRes, methodsRes, gnnRes] = await Promise.all([
-        api.getAIAnomalies(1, severityFilter || undefined).catch(() => ({ anomalies: [], summary: {} })),
-        api.getAIIntegrity(1).catch(() => null),
-        api.getAIBenford(1).catch(() => null),
-        api.getAIMethods().catch(() => ({ methods: [] })),
-        api.getGNNScore(1).catch(() => null),
-      ]);
-      setAnomalies(anomalyRes?.anomalies || []);
-      setSummary(anomalyRes?.summary || {});
-      setIntegrity(integrityRes);
-      setBenford(benfordRes);
-      setMethods(methodsRes?.methods || []);
-      setGnnScore(gnnRes);
-    } catch {
-      // fallback
-    }
-    setLoading(false);
-  };
+    setDataError(null);
+    const [anomalyResult, integrityResult, benfordResult, methodsResult, gnnResult] = await Promise.allSettled([
+      api.getAIAnomalies(1, severityFilter || undefined),
+      api.getAIIntegrity(1),
+      api.getAIBenford(1),
+      api.getAIMethods(),
+      api.getGNNScore(1),
+    ]);
 
-  useEffect(() => { loadData(); }, [severityFilter]);
+    if (anomalyResult.status === 'fulfilled') {
+      setAnomalies(anomalyResult.value?.anomalies || []);
+      setSummary(anomalyResult.value?.summary || {});
+    } else {
+      setAnomalies([]);
+      setSummary({});
+      setDataError('Live anomaly inference is temporarily unavailable. No anomaly conclusion should be drawn until the service reconnects.');
+    }
+    setIntegrity(integrityResult.status === 'fulfilled' ? integrityResult.value : null);
+    setBenford(benfordResult.status === 'fulfilled' ? benfordResult.value : null);
+    setMethods(methodsResult.status === 'fulfilled' ? methodsResult.value?.methods || [] : []);
+    setGnnScore(gnnResult.status === 'fulfilled' ? gnnResult.value : null);
+    setLoading(false);
+  }, [severityFilter]);
+
+  useEffect(() => { void loadData(); }, [loadData]);
 
   const gradeColor = (grade: string) => {
     if (grade === 'A' || grade === 'B') return 'text-green-700';
@@ -97,6 +102,8 @@ export default function AnomalyDetectionPage() {
           {t('refresh')}
         </Button>
       </div>
+
+      {dataError && <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">{dataError}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
