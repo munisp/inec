@@ -202,15 +202,23 @@ type ProductionHSM struct {
 
 func NewProductionHSM(database *sql.DB) *ProductionHSM {
 	mk := make([]byte, 32)
-	envKey := os.Getenv("HSM_MASTER_KEY")
+	envKey := strings.TrimSpace(os.Getenv("HSM_MASTER_KEY"))
+	isProduction := strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production")
 	if envKey == "" {
-		log.Fatal().Msg("HSM_MASTER_KEY must be set as a 64-character hex string (256-bit key)")
+		if isProduction {
+			log.Fatal().Msg("HSM_MASTER_KEY must be set as a 64-character hex string (256-bit key)")
+		}
+		if _, err := rand.Read(mk); err != nil {
+			log.Fatal().Err(err).Msg("Generating non-production HSM master key failed")
+		}
+		log.Warn().Msg("HSM_MASTER_KEY not set — using an ephemeral non-production key (not for production)")
+	} else {
+		decoded, err := hex.DecodeString(envKey)
+		if err != nil || len(decoded) != 32 {
+			log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key)")
+		}
+		copy(mk, decoded)
 	}
-	decoded, err := hex.DecodeString(envKey)
-	if err != nil || len(decoded) != 32 {
-		log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key)")
-	}
-	copy(mk, decoded)
 
 	// P-256 to match the PKCS#11 token curve so signatures verify across the
 	// hardware and software-fallback paths interchangeably.

@@ -78,12 +78,23 @@ function PageTransition({ page, children }: { page: string; children: React.Reac
 
 function AppContent() {
   const { isAuthenticated } = useAuth();
-  const [currentPage, setCurrentPage] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('page') || 'dashboard';
-  });
+	const [currentPage, setCurrentPage] = useState(() => {
+		const params = new URLSearchParams(window.location.search);
+		const pathPage = window.location.pathname.replace(/^\/+/, '');
+		if (pathPage && pathPage !== 'login') {
+			return pathPage;
+		}
+		return params.get('page') || 'dashboard';
+	});
 
-  if (!isAuthenticated) return <LoginPage />;
+	useEffect(() => {
+		const targetPath = isAuthenticated ? `/${currentPage}` : '/login';
+		if (window.location.pathname !== targetPath) {
+			window.history.replaceState(null, '', targetPath);
+		}
+	}, [currentPage, isAuthenticated]);
+
+	if (!isAuthenticated) return <LoginPage />;
 
   const pages: Record<string, React.ReactNode> = {
     dashboard: <DashboardPage />,

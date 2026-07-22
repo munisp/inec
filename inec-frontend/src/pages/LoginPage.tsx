@@ -66,11 +66,11 @@ export default function LoginPage() {
               )}
               <div className="space-y-2">
                 <Label htmlFor="username">Username</Label>
-                <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Enter username" />
+                <Input id="username" name="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Enter username" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter password" />
+                <Input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter password" />
               </div>
               <Button type="submit" className="w-full bg-green-700 hover:bg-green-800" disabled={loading}>
                 {loading ? 'Signing in...' : 'Sign In'}

@@ -59,7 +59,7 @@ test.describe('Election Management', () => {
     });
     expect(invalidResp.status()).toBe(422);
     const error = await invalidResp.json();
-    expect(error.error).toContain('invalid transition');
+    expect(error.detail ?? error.error).toContain('invalid transition');
 
     // Valid transition: draft → scheduled
     const validResp = await request.post(`${API_URL}/ems/elections/${id}/fsm/transition`, {

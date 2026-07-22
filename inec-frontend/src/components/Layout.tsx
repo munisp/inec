@@ -150,7 +150,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium text-zinc-900 dark:text-zinc-100 truncate">{user?.full_name}</p>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 capitalize">{user?.role?.replace('_', ' ')}</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 capitalize">{user?.role?.replace(/_/g, ' ')}</p>
           </div>
         </div>
       </div>
@@ -164,7 +164,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
       </aside>
 
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-white dark:bg-zinc-800 border px-2 py-1 rounded text-sm z-[100]">Skip to content</a>
-      <header className="lg:hidden sticky top-0 z-50 flex items-center justify-between px-4 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700" role="banner">
+      <div className="lg:hidden sticky top-0 z-50 flex items-center justify-between px-4 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700" role="banner">
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon"><Menu className="h-5 w-5" /></Button>
@@ -204,7 +204,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-      </header>
+      </div>
 
       <div className="lg:pl-56">
         <header className="hidden lg:flex items-center justify-between px-6 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700 sticky top-0 z-40" role="banner">
@@ -230,6 +230,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
                     </AvatarFallback>
                   </Avatar>
                   <span className="text-sm text-zinc-900 dark:text-zinc-100">{user?.full_name}</span>
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400 capitalize" data-testid="authenticated-role">{user?.role?.replace(/_/g, ' ')}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">

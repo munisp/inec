@@ -32,13 +32,14 @@ async function loginAsRole(page: any, role: string) {
 
 // Helper to mock API responses
 async function mockApis(page: any, role: string) {
+  const user = { id: 1, username: `${role}_user`, role, full_name: `Test ${role}` };
   await page.route('**/auth/login', async (route) => {
-    const json = {
-      access_token: 'mock-jwt-token',
-      token_type: 'bearer',
-      user: { id: 1, username: `${role}_user`, role, full_name: `Test ${role}` }
-    };
-    await route.fulfill({ json });
+    await route.fulfill({ json: { access_token: 'mock-jwt-token', token_type: 'bearer', user } });
+  });
+  // The app validates persisted sessions after a full page navigation. Keep the
+  // mock contract consistent with the login response rather than bypassing it.
+  await page.route('**/auth/me', async (route) => {
+    await route.fulfill({ json: user });
   });
 
   await page.route('**/elections*', async (route) => {
@@ -64,7 +65,7 @@ test.describe('Comprehensive Stakeholder Workflows', () => {
 
         // Navigate to Stakeholder Workflow Center
         await page.goto('/stakeholder-workflows');
-        await expect(page.locator('h1')).toContainText('Stakeholder Workflow Center');
+        await expect(page.getByRole('heading', { name: 'Stakeholder Workflow Center' })).toBeVisible();
 
         // Check if Available Workflows section exists
         await expect(page.locator('h2', { hasText: 'Available Workflows' })).toBeVisible();

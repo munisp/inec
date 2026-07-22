@@ -49,7 +49,6 @@ const apiProxy: Record<string, any> = {
       '/portals': 'http://localhost:8088',
       '/validation': 'http://localhost:8088',
       '/sms': 'http://localhost:8088',
-      '/public-api': 'http://localhost:8088',
       '/geo': 'http://localhost:8088',
       '/geofence': 'http://localhost:8088',
       '/export': 'http://localhost:8088',
@@ -84,7 +83,7 @@ const apiProxy: Record<string, any> = {
       '/presence': 'http://localhost:8088',
       '/reports': 'http://localhost:8088',
       '/voice': 'http://localhost:8088',
-      '/public': 'http://localhost:8088',
+      '^/public/': 'http://localhost:8088',
       '/gotv': { target: 'http://localhost:8103', ws: true },
 }
 

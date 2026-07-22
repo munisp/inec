@@ -4,7 +4,7 @@ const API_URL = process.env.API_URL || 'http://localhost:8088';
 
 // EMS election-workflow lifecycle: create -> list -> inspect phases -> advance.
 // Contracts verified against inec-go-backend/ems.go.
-test.describe('EMS Workflows', () => {
+test.describe.serial('EMS Workflows', () => {
   let adminToken: string;
   let observerToken: string;
   let electionId: number;

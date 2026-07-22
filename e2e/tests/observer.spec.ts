@@ -48,7 +48,7 @@ test.describe('Observer Monitoring', () => {
     });
     expect(resp.status()).toBe(200);
     const body = await resp.json();
-    expect(body.party).toBe('APC');
+    expect(body.party_code).toBe('APC');
   });
 
   test('should create alert rule', async ({ request }) => {
@@ -78,6 +78,7 @@ test.describe('Observer Monitoring', () => {
       headers: { Authorization: `Bearer ${observerToken}` },
       multipart: {
         polling_unit_code: 'FCT/ABJ/001/01',
+        election_id: '1',
         description: 'E2E test report',
         photo: { name: 'test.png', mimeType: 'image/png', buffer: pngHeader },
       },
@@ -181,10 +182,23 @@ test.describe('Webhook Subscriptions', () => {
 });
 
 test.describe('Dashboard SSE', () => {
+  let adminToken: string;
+
+  test.beforeAll(async ({ request }) => {
+    const resp = await request.post(`${API_URL}/auth/login`, {
+      data: { username: 'admin', password: 'admin123' },
+    });
+    const body = await resp.json();
+    adminToken = body.access_token;
+  });
+
   test('should stream dashboard updates', async ({ request }) => {
     // SSE streams never complete: connection held open = stream is live.
     try {
-      const resp = await request.get(`${API_URL}/dashboard/stream`, { timeout: 5000 });
+      const resp = await request.get(`${API_URL}/dashboard/stream`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+        timeout: 5000,
+      });
       expect(resp.status()).toBe(200);
       expect(resp.headers()['content-type']).toContain('text/event-stream');
     } catch (e: any) {

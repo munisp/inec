@@ -149,6 +149,10 @@ func main() {
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
 	initSchemaCompatibility(db)
+	if shouldSeedE2EFixtures() {
+		seedDatabase(db)
+		log.Info().Msg("E2E fixtures seeded from the declared non-production seed routine")
+	}
 	initOpenAPIRoutes()
 
 	// Production compliance, stablecoin, and USSD engines
@@ -844,20 +848,20 @@ func main() {
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", metricsHandler()).Methods("GET")
 
-	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
+	// Middleware chain: panic recovery → request ID → tracing → access log → size limit → WAF → input validation → metrics → CORS → auth → CSRF → security → rate limit → load shed → role rate → gzip.
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
 			otelTracingMiddleware(
 				tracingMiddleware(
 					accessLogMiddleware(
-						inputValidationMiddleware(
-							metricsMiddleware(
-								corsProductionMiddleware(
-									jwtAuthMiddleware(
-										csrfMiddleware(
-											enhancedSecurityHeaders(
-												wafMiddleware(
-													requestSizeLimit(
+						requestSizeLimit(
+							wafMiddleware(
+								inputValidationMiddleware(
+									metricsMiddleware(
+										corsProductionMiddleware(
+											jwtAuthMiddleware(
+												csrfMiddleware(
+													enhancedSecurityHeaders(
 														rateLimitMiddleware(
 															loadSheddingMiddleware(
 																roleBasedRateLimit(
@@ -955,18 +959,42 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-type rateLimiterStore struct{}
+type rateLimitEntry struct {
+	count   int
+	resetAt time.Time
+}
+
+type rateLimiterStore struct {
+	mu      sync.Mutex
+	entries map[string]rateLimitEntry
+}
 
 func newRateLimiter() *rateLimiterStore {
-	return &rateLimiterStore{}
+	return &rateLimiterStore{entries: make(map[string]rateLimitEntry)}
 }
 
 func (rl *rateLimiterStore) allow(key string, limit int, window time.Duration) bool {
-	if mwHub == nil || mwHub.Redis == nil {
-		log.Error().Msg("native Redis rate limiter is unavailable; rejecting request")
-		return false
+	if mwHub != nil && mwHub.Redis != nil && mwHub.Redis.Ping().Connected {
+		return rl.allowRedis(key, limit, window)
 	}
-	return rl.allowRedis(key, limit, window)
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		return rl.allowLocal(key, limit, window)
+	}
+	log.Error().Msg("native Redis rate limiter is unavailable; rejecting request")
+	return false
+}
+
+func (rl *rateLimiterStore) allowLocal(key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	entry, found := rl.entries[key]
+	if !found || !now.Before(entry.resetAt) {
+		entry = rateLimitEntry{resetAt: now.Add(window)}
+	}
+	entry.count++
+	rl.entries[key] = entry
+	return entry.count <= limit
 }
 
 func (rl *rateLimiterStore) allowRedis(key string, limit int, window time.Duration) bool {
@@ -1015,9 +1043,16 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		}
 		return def
 	}
+	loginDefault := 5
+	if shouldSeedE2EFixtures() {
+		// GitHub Actions and isolated E2E runs execute parallel suites from a
+		// shared loopback address. Keep brute-force protection configurable,
+		// but avoid issuing invalid tokens after the production default of five.
+		loginDefault = 100
+	}
 	limits := []rateRule{
 		// Auth endpoints: aggressive limits (brute-force protection)
-		{"/auth/login", limit("RATE_LIMIT_LOGIN", 5), time.Minute},                     // 5 login attempts per minute per IP
+		{"/auth/login", limit("RATE_LIMIT_LOGIN", loginDefault), time.Minute},          // production default: 5 login attempts per minute per IP
 		{"/auth/register", limit("RATE_LIMIT_REGISTER", 3), time.Minute},               // 3 registrations per minute per IP
 		{"/auth/refresh", limit("RATE_LIMIT_REFRESH", 10), time.Minute},                // 10 token refreshes per minute
 		{"/auth/forgot-password", limit("RATE_LIMIT_FORGOT_PASSWORD", 2), time.Minute}, // 2 password reset requests per minute

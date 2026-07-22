@@ -197,7 +197,9 @@ func (w *embeddedWAF) InspectRequest(ctx context.Context, req WAFRequest) (*WAFD
 	for _, pattern := range xssPatterns {
 		if strings.Contains(checkStr, strings.ToUpper(pattern)) {
 			decision.RulesMatched = append(decision.RulesMatched, "XSS_DETECTED")
-			decision.Score += 30
+			// A confirmed XSS signature is unsafe to challenge on an API endpoint;
+			// block it before routing or authentication can process the payload.
+			decision.Score += 40
 		}
 	}
 
