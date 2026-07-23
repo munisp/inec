@@ -6,6 +6,7 @@ import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
+import { registerLocalAuthRoutes } from "./localAuth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -52,6 +53,11 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerLocalAuthRoutes(app);
+
+  app.get("/api/v1/campaign/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
 
   // ── Deadline notification heartbeat handler ─────────────────────────────────
   // Triggered every hour by a project-level Heartbeat cron.
@@ -126,6 +132,10 @@ async function startServer() {
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      onError({ path, error }) {
+        console.error(`[tRPC] ${path ?? "<unknown>"} failed:`, error);
+        if (error.cause) console.error("[tRPC] cause:", error.cause);
+      },
     })
   );
   // development mode uses Vite, production mode uses static files

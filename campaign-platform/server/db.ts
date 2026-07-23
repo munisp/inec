@@ -2,7 +2,6 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, and, sql, gte, lte } from "drizzle-orm";
 import * as schema from "../drizzle/schema";
-import type { InsertUser } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _pool: Pool | null = null;
@@ -22,35 +21,49 @@ export function getDb() {
   return _db;
 }
 
-// ─── Users ────────────────────────────────────────────────────────────────────
-export async function upsertUser(user: InsertUser): Promise<void> {
+// ─── Users ──────────────────────────────────────────────────────────────────
+// `users` is owned by the Go backend (username/password_hash local login).
+// OAuth's `openId` concept doesn't exist there, so it's mapped onto `username`
+// for any OAuth-created accounts. In practice this app authenticates via the
+// local-login route (server/_core/localAuth.ts), not OAuth, so this path is
+// mostly dormant — kept working so it doesn't silently break if OAuth is ever
+// configured for a real Manus deployment.
+export async function upsertUser(user: {
+  openId: string;
+  name?: string | null;
+  email?: string | null;
+  loginMethod?: string | null;
+}): Promise<void> {
   const db = getDb();
   if (!db) return;
+  const isOwner = user.openId === ENV.ownerOpenId;
   await db
     .insert(schema.users)
     .values({
-      ...user,
-      role: user.openId === ENV.ownerOpenId ? "admin" : (user.role ?? "user"),
+      username: user.openId,
+      passwordHash: "oauth-account:no-local-password",
+      fullName: user.name || user.openId,
+      role: isOwner ? "admin" : "public",
     })
     .onConflictDoUpdate({
-      target: schema.users.openId,
+      target: schema.users.username,
       set: {
-        name: user.name,
-        email: user.email,
-        loginMethod: user.loginMethod,
-        lastSignedIn: new Date(),
-        updatedAt: new Date(),
+        fullName: user.name || user.openId,
       },
     });
 }
 
 export async function getUserByOpenId(openId: string) {
+  return getUserByUsername(openId);
+}
+
+export async function getUserByUsername(username: string) {
   const db = getDb();
   if (!db) return undefined;
   const rows = await db
     .select()
     .from(schema.users)
-    .where(eq(schema.users.openId, openId))
+    .where(eq(schema.users.username, username))
     .limit(1);
   return rows[0];
 }
@@ -147,25 +160,94 @@ export async function addVoterRegistration(data: typeof schema.voterRegistration
   return rows[0];
 }
 
-// ─── Polling Units ────────────────────────────────────────────────────────────
+// ─── Polling Units ──────────────────────────────────────────────────────────
+// `polling_units` is the canonical, Go-owned national PU registry (code/name/
+// ward_code/registered_voters/latitude/longitude). Per-candidate operational
+// fields (agent, status, notes) live in `campaign_pu_assignments`, keyed by
+// (profileId, puCode), so this app never writes campaign-specific data onto
+// the shared registry.
 export async function getPollingUnits(profileId: number) {
   const db = getDb();
   if (!db) return [];
   return db
-    .select()
-    .from(schema.pollingUnits)
-    .where(eq(schema.pollingUnits.profileId, profileId))
-    .orderBy(schema.pollingUnits.lga, schema.pollingUnits.name);
+    .select({
+      id: schema.campaignPuAssignments.id,
+      profileId: schema.campaignPuAssignments.profileId,
+      puCode: schema.pollingUnits.code,
+      name: schema.pollingUnits.name,
+      ward: schema.pollingUnits.wardCode,
+      latitude: schema.pollingUnits.latitude,
+      longitude: schema.pollingUnits.longitude,
+      registeredVoters: schema.pollingUnits.registeredVoters,
+      agentName: schema.campaignPuAssignments.agentName,
+      agentPhone: schema.campaignPuAssignments.agentPhone,
+      status: schema.campaignPuAssignments.status,
+      notes: schema.campaignPuAssignments.notes,
+    })
+    .from(schema.campaignPuAssignments)
+    .innerJoin(schema.pollingUnits, eq(schema.campaignPuAssignments.puCode, schema.pollingUnits.code))
+    .where(eq(schema.campaignPuAssignments.profileId, profileId))
+    .orderBy(schema.pollingUnits.name);
 }
 
-export async function upsertPollingUnit(data: typeof schema.pollingUnits.$inferInsert) {
+export async function upsertPollingUnit(data: {
+  id?: number;
+  profileId: number;
+  puCode?: string;
+  name: string;
+  ward?: string;
+  latitude?: number;
+  longitude?: number;
+  registeredVoters?: number;
+  agentName?: string;
+  agentPhone?: string;
+  status?: string;
+}) {
   const db = getDb();
   if (!db) return null;
-  if (data.id) {
-    const rows = await db.update(schema.pollingUnits).set(data).where(eq(schema.pollingUnits.id, data.id)).returning();
-    return rows[0];
-  }
-  const rows = await db.insert(schema.pollingUnits).values(data).returning();
+
+  const code = data.puCode || data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50);
+
+  await db
+    .insert(schema.pollingUnits)
+    .values({
+      code,
+      name: data.name,
+      wardCode: data.ward || "unassigned",
+      registeredVoters: data.registeredVoters ?? 0,
+      latitude: data.latitude,
+      longitude: data.longitude,
+    })
+    .onConflictDoUpdate({
+      target: schema.pollingUnits.code,
+      set: {
+        name: data.name,
+        ...(data.ward ? { wardCode: data.ward } : {}),
+        ...(data.registeredVoters != null ? { registeredVoters: data.registeredVoters } : {}),
+        ...(data.latitude != null ? { latitude: data.latitude } : {}),
+        ...(data.longitude != null ? { longitude: data.longitude } : {}),
+      },
+    });
+
+  const rows = await db
+    .insert(schema.campaignPuAssignments)
+    .values({
+      profileId: data.profileId,
+      puCode: code,
+      agentName: data.agentName,
+      agentPhone: data.agentPhone,
+      status: data.status,
+    })
+    .onConflictDoUpdate({
+      target: [schema.campaignPuAssignments.profileId, schema.campaignPuAssignments.puCode],
+      set: {
+        agentName: data.agentName,
+        agentPhone: data.agentPhone,
+        status: data.status,
+      },
+    })
+    .returning();
+
   return rows[0];
 }
 
@@ -602,7 +684,7 @@ export async function seedProfileData(profileId: number): Promise<void> {
     warRoomIncidents, electionResults, manifestoSections, petitions,
     diasporaContacts, endorsements, fundraisingTransactions, budgetItems,
     mediaItems, debatePrepNotes, debatePracticeScores, stakeholderContacts,
-    fieldAgents, pollingUnits, candidateProfiles,
+    fieldAgents, pollingUnits, campaignPuAssignments, candidateProfiles,
   } = await import("../drizzle/schema");
 
   // Mark as seeded first to prevent duplicate seeding
@@ -631,7 +713,8 @@ export async function seedProfileData(profileId: number): Promise<void> {
   await db.delete(debatePracticeScores).where(eq(debatePracticeScores.profileId, profileId));
   await db.delete(stakeholderContacts).where(eq(stakeholderContacts.profileId, profileId));
   await db.delete(fieldAgents).where(eq(fieldAgents.profileId, profileId));
-  await db.delete(pollingUnits).where(eq(pollingUnits.profileId, profileId));
+  // Don't touch `pollingUnits` — it's the shared, Go-owned national registry.
+  await db.delete(campaignPuAssignments).where(eq(campaignPuAssignments.profileId, profileId));
 
   // ── Timeline Events ───────────────────────────────────────────────────────
   await db.insert(timelineEvents).values([
@@ -837,14 +920,25 @@ export async function seedProfileData(profileId: number): Promise<void> {
   ]);
 
   // ── Polling Units ─────────────────────────────────────────────────────────
-  await db.insert(pollingUnits).values([
-    { profileId, puCode: "KN/01/01/001", name: "DALA PRIMARY SCHOOL", ward: "Dala Central", lga: "Dala", stateCode: "KN", lat: 12.0022, lng: 8.5919, registeredVoters: 842, agentAssigned: "Musa Dala", agentPhone: "08031111111" },
-    { profileId, puCode: "KN/02/01/001", name: "GWALE MODEL PRIMARY SCHOOL", ward: "Gwale North", lga: "Gwale", stateCode: "KN", lat: 11.9980, lng: 8.5150, registeredVoters: 654, agentAssigned: "Fatima Gwale", agentPhone: "08052222222" },
-    { profileId, puCode: "KN/03/01/001", name: "NASSARAWA SECONDARY SCHOOL", ward: "Nassarawa East", lga: "Nassarawa", stateCode: "KN", lat: 12.0100, lng: 8.5300, registeredVoters: 1120, agentAssigned: "Umar Nassarawa", agentPhone: "08073333333" },
-    { profileId, puCode: "KN/04/01/001", name: "KUMBOTSO PRIMARY SCHOOL", ward: "Kumbotso Central", lga: "Kumbotso", stateCode: "KN", lat: 12.0500, lng: 8.4800, registeredVoters: 780, agentAssigned: "Aisha Kumbotso", agentPhone: "08094444444" },
-    { profileId, puCode: "KN/05/01/001", name: "TARAUNI TOWN HALL", ward: "Tarauni South", lga: "Tarauni", stateCode: "KN", lat: 12.0200, lng: 8.5600, registeredVoters: 920 },
-    { profileId, puCode: "KN/06/01/001", name: "FAGGE PRIMARY SCHOOL", ward: "Fagge D2", lga: "Fagge", stateCode: "KN", lat: 11.9900, lng: 8.5200, registeredVoters: 560 },
-  ]);
+  // Canonical PU rows are upserted (shared, Go-owned registry); the per-
+  // campaign operational fields (agent, status) go in campaignPuAssignments.
+  const demoPUs = [
+    { puCode: "KN/01/01/001", name: "DALA PRIMARY SCHOOL", ward: "Dala Central", lat: 12.0022, lng: 8.5919, registeredVoters: 842, agentName: "Musa Dala", agentPhone: "08031111111" },
+    { puCode: "KN/02/01/001", name: "GWALE MODEL PRIMARY SCHOOL", ward: "Gwale North", lat: 11.9980, lng: 8.5150, registeredVoters: 654, agentName: "Fatima Gwale", agentPhone: "08052222222" },
+    { puCode: "KN/03/01/001", name: "NASSARAWA SECONDARY SCHOOL", ward: "Nassarawa East", lat: 12.0100, lng: 8.5300, registeredVoters: 1120, agentName: "Umar Nassarawa", agentPhone: "08073333333" },
+    { puCode: "KN/04/01/001", name: "KUMBOTSO PRIMARY SCHOOL", ward: "Kumbotso Central", lat: 12.0500, lng: 8.4800, registeredVoters: 780, agentName: "Aisha Kumbotso", agentPhone: "08094444444" },
+    { puCode: "KN/05/01/001", name: "TARAUNI TOWN HALL", ward: "Tarauni South", lat: 12.0200, lng: 8.5600, registeredVoters: 920 },
+    { puCode: "KN/06/01/001", name: "FAGGE PRIMARY SCHOOL", ward: "Fagge D2", lat: 11.9900, lng: 8.5200, registeredVoters: 560 },
+  ];
+  for (const pu of demoPUs) {
+    await db
+      .insert(pollingUnits)
+      .values({ code: pu.puCode, name: pu.name, wardCode: pu.ward, registeredVoters: pu.registeredVoters, latitude: pu.lat, longitude: pu.lng })
+      .onConflictDoNothing({ target: pollingUnits.code });
+    await db.insert(campaignPuAssignments).values({
+      profileId, puCode: pu.puCode, agentName: pu.agentName, agentPhone: pu.agentPhone,
+    });
+  }
 
   // ── Debate Prep Notes ─────────────────────────────────────────────────────
   await db.insert(debatePrepNotes).values([

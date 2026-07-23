@@ -114,10 +114,10 @@ export default function VoterRegistration() {
             disabled={voters.length === 0} onClick={handleExportCSV}>
             <Download size={13}/> Export CSV
           </Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("voters", EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("voters", "Voter Registration Report", `Total: ${(voters ?? []).length} voters`, EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("voters", EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
-              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("voters", "Voter Registration Report", `Total: ${(voters ?? []).length} voters`, EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
               <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5">
                 <Plus size={14}/> Register Voter
               </Button>

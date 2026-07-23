@@ -1,6 +1,6 @@
 import {
   pgTable, serial, text, varchar, integer, boolean,
-  timestamp, pgEnum, jsonb, real, date
+  timestamp, pgEnum, jsonb, real, date, unique
 } from "drizzle-orm/pg-core";
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -15,17 +15,25 @@ export const complianceStatusEnum = pgEnum("compliance_status", ["compliant", "w
 export const petitionStatusEnum = pgEnum("petition_status", ["draft", "active", "closed"]);
 export const memberRoleEnum = pgEnum("member_role", ["owner", "manager", "viewer"]);
 
-// ─── Users ────────────────────────────────────────────────────────────────────
+// ─── Users ──────────────────────────────────────────────────────────────────
+// This table is owned by the Go backend (inec-go-backend/db.go) and shared —
+// campaign-platform must match its exact columns, not define its own shape.
+// Valid `role` values (Postgres CHECK, not a native enum):
+// 'admin' | 'presiding_officer' | 'collation_officer' | 'observer' | 'public'
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
-  openId: varchar("open_id", { length: 64 }).notNull().unique(),
-  name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("login_method", { length: 64 }),
-  role: userRoleEnum("role").default("user").notNull(),
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  fullName: text("full_name").notNull(),
+  role: text("role").notNull(),
+  staffId: text("staff_id").unique(),
+  stateCode: text("state_code"),
+  lgaCode: text("lga_code"),
+  pollingUnitCode: text("polling_unit_code"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  lastSignedIn: timestamp("last_signed_in").defaultNow().notNull(),
+  isActive: integer("is_active").default(1),
+  partyId: integer("party_id"),
+  kycStatus: text("kyc_status").default("not_started"),
 });
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
@@ -85,23 +93,36 @@ export const voterRegistrations = pgTable("voter_registrations", {
 export type VoterRegistration = typeof voterRegistrations.$inferSelect;
 
 // ─── Polling Units ────────────────────────────────────────────────────────────
+// Canonical, nationwide PU registry — owned by the Go backend (inec-go-backend/db.go)
+// and shared. Must match its exact columns; do not add campaign-specific fields here.
 export const pollingUnits = pgTable("polling_units", {
   id: serial("id").primaryKey(),
-  profileId: integer("profile_id").references(() => candidateProfiles.id),
-  puCode: varchar("pu_code", { length: 50 }),
-  name: varchar("name", { length: 300 }).notNull(),
-  ward: varchar("ward", { length: 100 }),
-  lga: varchar("lga", { length: 100 }),
-  stateCode: varchar("state_code", { length: 10 }),
-  lat: real("lat"),
-  lng: real("lng"),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  wardCode: text("ward_code").notNull(),
   registeredVoters: integer("registered_voters").default(0),
-  agentAssigned: varchar("agent_assigned", { length: 200 }),
-  agentPhone: varchar("agent_phone", { length: 20 }),
-  notes: text("notes"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  latitude: real("latitude"),
+  longitude: real("longitude"),
 });
 export type PollingUnit = typeof pollingUnits.$inferSelect;
+
+// ─── Campaign PU Assignments ──────────────────────────────────────────────────
+// Per-candidate operational tracking (agent, status, notes) for a canonical PU.
+// Kept separate from `pollingUnits` so campaign-platform never writes campaign-
+// specific fields onto the shared, Go-owned national PU registry.
+export const campaignPuAssignments = pgTable("campaign_pu_assignments", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  puCode: text("pu_code").notNull().references(() => pollingUnits.code),
+  agentName: varchar("agent_name", { length: 200 }),
+  agentPhone: varchar("agent_phone", { length: 20 }),
+  status: varchar("status", { length: 50 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  unique("campaign_pu_assignments_profile_pu_unique").on(table.profileId, table.puCode),
+]);
+export type CampaignPuAssignment = typeof campaignPuAssignments.$inferSelect;
 
 // ─── Volunteers ───────────────────────────────────────────────────────────────
 export const volunteers = pgTable("volunteers", {

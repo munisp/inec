@@ -76,11 +76,11 @@ export default function ResultsProjection() {
             onClick={() => utils.results.list.invalidate()}>
             <RefreshCw size={13}/> Refresh
           </Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("results", EXPORT_COLS_R, (results ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("results", "Election Results Report", `Total LGAs: ${(results ?? []).length}`, EXPORT_COLS_R, (results ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("results", EXPORT_COLS_R, (results ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
-          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("results", "Election Results Report", `Total LGAs: ${(results ?? []).length}`, EXPORT_COLS_R, (results ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
-          <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5">
+              <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5">
                 <Plus size={14}/> Add Result
               </Button>
             </DialogTrigger>

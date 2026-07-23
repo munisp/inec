@@ -35,7 +35,7 @@ spec:
         - name: talentgraph-auth-pull
       containers:
         - name: campaign-planning
-          image: registry.digitalocean.com/talentgraph-auth/campaign-planning:archive-20260722-010210
+          image: registry.digitalocean.com/talentgraph-auth/campaign-planning:archive-20260723-095605
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -43,6 +43,18 @@ spec:
           env:
             - name: PORT
               value: "8206"
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: inec-postgres-secrets
+                  key: database-url
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: jwt-secret
           readinessProbe:
             httpGet:
               path: /api/v1/campaign/health
@@ -790,3 +802,47 @@ spec:
             capabilities:
               drop:
                 - ALL
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: campaign-tls
+  namespace: inec
+spec:
+  secretName: campaign-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod
+  dnsNames:
+    - campaign.inec.servers.upi.dev
+---
+apiVersion: apisix.apache.org/v2
+kind: ApisixTls
+metadata:
+  name: campaign-tls
+  namespace: inec
+spec:
+  hosts:
+    - campaign.inec.servers.upi.dev
+  secret:
+    name: campaign-tls
+    namespace: inec
+---
+apiVersion: apisix.apache.org/v2
+kind: ApisixRoute
+metadata:
+  name: campaign-planning
+  namespace: inec
+spec:
+  ingressClassName: apisix
+  http:
+    - name: campaign-planning
+      match:
+        hosts:
+          - campaign.inec.servers.upi.dev
+        paths:
+          - /*
+      backends:
+        - serviceName: campaign-planning
+          servicePort: 8206
+      websocket: true

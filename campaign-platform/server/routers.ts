@@ -785,7 +785,7 @@ Format with clear headers. Be specific to Nigerian political context.`;
         const inviteUrl = result.inviteUrl ?? "(no URL — origin not provided)";
         await notifyOwner({
           title: `👥 New Team Invite — ${candidateName}`,
-          content: `${ctx.user.name} invited ${input.name} (${input.email}) as ${input.role} to the ${candidateName} campaign.
+          content: `${ctx.user.fullName} invited ${input.name} (${input.email}) as ${input.role} to the ${candidateName} campaign.
 
 Invite link: ${inviteUrl}
 

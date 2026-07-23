@@ -1,6 +1,6 @@
 {
-  "id": "dff64ca1-29c3-41e8-b131-5bfec254b8c7",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "b7b8f429-243b-4ba0-be47-9bceda575ade",
+  "prevId": "1289d80d-0b0f-4aa7-bf28-9ed4512c4d12",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -143,12 +143,6 @@
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
-        },
-        "invite_token": {
-          "name": "invite_token",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -182,104 +176,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.campaign_pu_assignments": {
-      "name": "campaign_pu_assignments",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pu_code": {
-          "name": "pu_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_name": {
-          "name": "agent_name",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent_phone": {
-          "name": "agent_phone",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(50)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "notes": {
-          "name": "notes",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "campaign_pu_assignments_profile_id_candidate_profiles_id_fk": {
-          "name": "campaign_pu_assignments_profile_id_candidate_profiles_id_fk",
-          "tableFrom": "campaign_pu_assignments",
-          "tableTo": "candidate_profiles",
-          "columnsFrom": [
-            "profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "campaign_pu_assignments_pu_code_polling_units_code_fk": {
-          "name": "campaign_pu_assignments_pu_code_polling_units_code_fk",
-          "tableFrom": "campaign_pu_assignments",
-          "tableTo": "polling_units",
-          "columnsFrom": [
-            "pu_code"
-          ],
-          "columnsTo": [
-            "code"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "campaign_pu_assignments_profile_pu_unique": {
-          "name": "campaign_pu_assignments_profile_pu_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "profile_id",
-            "pu_code"
-          ]
-        }
-      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -363,13 +259,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": true
-        },
-        "is_seeded": {
-          "name": "is_seeded",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": false,
-          "default": false
         },
         "created_at": {
           "name": "created_at",
@@ -475,77 +364,6 @@
         "compliance_items_profile_id_candidate_profiles_id_fk": {
           "name": "compliance_items_profile_id_candidate_profiles_id_fk",
           "tableFrom": "compliance_items",
-          "tableTo": "candidate_profiles",
-          "columnsFrom": [
-            "profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.debate_practice_scores": {
-      "name": "debate_practice_scores",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "topic": {
-          "name": "topic",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "score": {
-          "name": "score",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "max_score": {
-          "name": "max_score",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "default": 10
-        },
-        "notes": {
-          "name": "notes",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "scored_at": {
-          "name": "scored_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "debate_practice_scores_profile_id_candidate_profiles_id_fk": {
-          "name": "debate_practice_scores_profile_id_candidate_profiles_id_fk",
-          "tableFrom": "debate_practice_scores",
           "tableTo": "candidate_profiles",
           "columnsFrom": [
             "profile_id"
@@ -1215,26 +1033,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "source_type": {
-          "name": "source_type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'online'"
-        },
-        "reach": {
-          "name": "reach",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "default": 0
-        },
-        "zone": {
-          "name": "zone",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "url": {
           "name": "url",
           "type": "text",
@@ -1520,23 +1318,53 @@
           "primaryKey": true,
           "notNull": true
         },
-        "code": {
-          "name": "code",
-          "type": "text",
+        "profile_id": {
+          "name": "profile_id",
+          "type": "integer",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "pu_code": {
+          "name": "pu_code",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
         },
         "name": {
           "name": "name",
-          "type": "text",
+          "type": "varchar(300)",
           "primaryKey": false,
           "notNull": true
         },
-        "ward_code": {
-          "name": "ward_code",
-          "type": "text",
+        "ward": {
+          "name": "ward",
+          "type": "varchar(100)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "lga": {
+          "name": "lga",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state_code": {
+          "name": "state_code",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lat": {
+          "name": "lat",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lng": {
+          "name": "lng",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
         },
         "registered_voters": {
           "name": "registered_voters",
@@ -1545,31 +1373,50 @@
           "notNull": false,
           "default": 0
         },
-        "latitude": {
-          "name": "latitude",
-          "type": "real",
+        "agent_assigned": {
+          "name": "agent_assigned",
+          "type": "varchar(200)",
           "primaryKey": false,
           "notNull": false
         },
-        "longitude": {
-          "name": "longitude",
-          "type": "real",
+        "agent_phone": {
+          "name": "agent_phone",
+          "type": "varchar(20)",
           "primaryKey": false,
           "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "polling_units_code_unique": {
-          "name": "polling_units_code_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "code"
-          ]
+      "foreignKeys": {
+        "polling_units_profile_id_candidate_profiles_id_fk": {
+          "name": "polling_units_profile_id_candidate_profiles_id_fk",
+          "tableFrom": "polling_units",
+          "tableTo": "candidate_profiles",
+          "columnsFrom": [
+            "profile_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1922,133 +1769,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.stakeholder_contacts": {
-      "name": "stakeholder_contacts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "title": {
-          "name": "title",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "organization": {
-          "name": "organization",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "category": {
-          "name": "category",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "phone": {
-          "name": "phone",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "email": {
-          "name": "email",
-          "type": "varchar(320)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "state": {
-          "name": "state",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lga": {
-          "name": "lga",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "influence_level": {
-          "name": "influence_level",
-          "type": "priority_level",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'medium'"
-        },
-        "relationship": {
-          "name": "relationship",
-          "type": "varchar(50)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'neutral'"
-        },
-        "last_contact": {
-          "name": "last_contact",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_action": {
-          "name": "next_action",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "notes": {
-          "name": "notes",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "stakeholder_contacts_profile_id_candidate_profiles_id_fk": {
-          "name": "stakeholder_contacts_profile_id_candidate_profiles_id_fk",
-          "tableFrom": "stakeholder_contacts",
-          "tableTo": "candidate_profiles",
-          "columnsFrom": [
-            "profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.timeline_events": {
       "name": "timeline_events",
       "schema": "",
@@ -2157,53 +1877,37 @@
           "primaryKey": true,
           "notNull": true
         },
-        "username": {
-          "name": "username",
-          "type": "text",
+        "open_id": {
+          "name": "open_id",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
         },
-        "password_hash": {
-          "name": "password_hash",
+        "name": {
+          "name": "name",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "full_name": {
-          "name": "full_name",
-          "type": "text",
+        "email": {
+          "name": "email",
+          "type": "varchar(320)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "login_method": {
+          "name": "login_method",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
         },
         "role": {
           "name": "role",
-          "type": "text",
+          "type": "user_role",
+          "typeSchema": "public",
           "primaryKey": false,
-          "notNull": true
-        },
-        "staff_id": {
-          "name": "staff_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "state_code": {
-          "name": "state_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lga_code": {
-          "name": "lga_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "polling_unit_code": {
-          "name": "polling_unit_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'user'"
         },
         "created_at": {
           "name": "created_at",
@@ -2212,43 +1916,30 @@
           "notNull": true,
           "default": "now()"
         },
-        "is_active": {
-          "name": "is_active",
-          "type": "integer",
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
           "primaryKey": false,
-          "notNull": false,
-          "default": 1
+          "notNull": true,
+          "default": "now()"
         },
-        "party_id": {
-          "name": "party_id",
-          "type": "integer",
+        "last_signed_in": {
+          "name": "last_signed_in",
+          "type": "timestamp",
           "primaryKey": false,
-          "notNull": false
-        },
-        "kyc_status": {
-          "name": "kyc_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'not_started'"
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "users_username_unique": {
-          "name": "users_username_unique",
+        "users_open_id_unique": {
+          "name": "users_open_id_unique",
           "nullsNotDistinct": false,
           "columns": [
-            "username"
-          ]
-        },
-        "users_staff_id_unique": {
-          "name": "users_staff_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "staff_id"
+            "open_id"
           ]
         }
       },

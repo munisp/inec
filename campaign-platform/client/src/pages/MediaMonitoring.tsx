@@ -109,11 +109,11 @@ export default function MediaMonitoring() {
               {seedMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Database size={13} />} Seed Sample Data
             </Button>
           )}
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("media-monitoring", EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
+          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("media-monitoring", "Media Monitoring Report", `Total mentions: ${(mentions ?? []).length}`, EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("media-monitoring", EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
-          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("media-monitoring", "Media Monitoring Report", `Total mentions: ${(mentions ?? []).length}`, EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
-          <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5" disabled={!canEdit}>
+              <Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5" disabled={!canEdit}>
                 <Plus size={14} /> Add Mention
               </Button>
             </DialogTrigger>

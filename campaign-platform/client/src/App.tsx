@@ -33,10 +33,12 @@ import CampaignTeam from "./pages/CampaignTeam";
 import MobileNav from "./components/MobileNav";
 import Dashboard from "./pages/Dashboard";
 import PetitionSignPage from "./pages/PetitionSignPage";
+import Login from "./pages/Login";
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
+      <Route path={"/login"} component={Login} />
       <Route path={"/"} component={Home} />
       <Route path={"/join"} component={JoinCampaign} />
       <Route path={"/stakeholders"} component={StakeholdersPage} />

@@ -286,7 +286,6 @@ class SDKServer {
     }
 
     const sessionUserId = session.openId;
-    const signedInAt = new Date();
     let user = await db.getUserByOpenId(sessionUserId);
 
     // If user not in DB, sync from OAuth server automatically
@@ -298,7 +297,6 @@ class SDKServer {
           name: userInfo.name || null,
           email: userInfo.email ?? null,
           loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
-          lastSignedIn: signedInAt,
         });
         user = await db.getUserByOpenId(userInfo.openId);
       } catch (error) {
@@ -310,11 +308,6 @@ class SDKServer {
     if (!user) {
       throw ForbiddenError("User not found");
     }
-
-    await db.upsertUser({
-      openId: user.openId,
-      lastSignedIn: signedInAt,
-    });
 
     return user;
   }
@@ -334,14 +327,18 @@ function buildCronUser(
   const now = new Date();
   return {
     id: -1,
-    openId: userInfo.openId,
-    name: userInfo.name || "Manus Scheduled Task",
-    email: null,
-    loginMethod: null,
-    role: "user",
+    username: userInfo.openId,
+    passwordHash: "cron:no-local-password",
+    fullName: userInfo.name || "Scheduled Task",
+    role: "admin",
+    staffId: null,
+    stateCode: null,
+    lgaCode: null,
+    pollingUnitCode: null,
     createdAt: now,
-    updatedAt: now,
-    lastSignedIn: now,
+    isActive: 1,
+    partyId: null,
+    kycStatus: null,
     taskUid: userInfo.taskUid ?? undefined,
     isCron: true,
   } as AuthenticatedUser;
