@@ -64,3 +64,28 @@ func TestInitDaprClientUsesLocalTransportOutsideProduction(t *testing.T) {
 		t.Fatalf("unexpected local Dapr status: %#v", status)
 	}
 }
+
+func TestExplicitNonProductionDaprEnvironment(t *testing.T) {
+	tests := []struct {
+		name          string
+		appEnv        string
+		githubActions string
+		want          bool
+	}{
+		{name: "test", appEnv: "test", want: true},
+		{name: "github actions", githubActions: "true", want: true},
+		{name: "staging wins over ci", appEnv: "staging", githubActions: "true", want: false},
+		{name: "production wins over ci", appEnv: "production", githubActions: "true", want: false},
+		{name: "unspecified", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("APP_ENV", tt.appEnv)
+			t.Setenv("GITHUB_ACTIONS", tt.githubActions)
+			if got := isExplicitNonProductionDaprEnvironment(); got != tt.want {
+				t.Fatalf("isExplicitNonProductionDaprEnvironment() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}

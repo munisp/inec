@@ -200,17 +200,37 @@ type ProductionHSM struct {
 	mode      string
 }
 
+// allowEphemeralHSMKey is deliberately limited to local, test, and CI startup.
+// Staging and production must always provide a real 256-bit master key.
+func allowEphemeralHSMKey() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if env == "production" || env == "staging" {
+		return false
+	}
+	if env == "test" || env == "e2e" || env == "development" || env == "dev" || env == "local" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")), "true")
+}
+
 func NewProductionHSM(database *sql.DB) *ProductionHSM {
 	mk := make([]byte, 32)
 	envKey := os.Getenv("HSM_MASTER_KEY")
 	if envKey == "" {
-		log.Fatal().Msg("HSM_MASTER_KEY must be set as a 64-character hex string (256-bit key)")
+		if !allowEphemeralHSMKey() {
+			log.Fatal().Msg("HSM_MASTER_KEY must be set as a 64-character hex string (256-bit key)")
+		}
+		if _, err := io.ReadFull(rand.Reader, mk); err != nil {
+			log.Fatal().Err(err).Msg("generate ephemeral HSM key")
+		}
+		log.Warn().Msg("HSM_MASTER_KEY not set — using a process-local key outside staging and production")
+	} else {
+		decoded, err := hex.DecodeString(envKey)
+		if err != nil || len(decoded) != 32 {
+			log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key)")
+		}
+		copy(mk, decoded)
 	}
-	decoded, err := hex.DecodeString(envKey)
-	if err != nil || len(decoded) != 32 {
-		log.Fatal().Msg("HSM_MASTER_KEY must be a 64-character hex string (256-bit key)")
-	}
-	copy(mk, decoded)
 
 	// P-256 to match the PKCS#11 token curve so signatures verify across the
 	// hardware and software-fallback paths interchangeably.

@@ -173,12 +173,15 @@ func (d *localDaprClient) Close() error {
 }
 
 func isExplicitNonProductionDaprEnvironment() bool {
-	switch strings.ToLower(strings.TrimSpace(envOrDefault("APP_ENV", ""))) {
-	case "test", "development", "dev", "local":
-		return true
-	default:
+	env := strings.ToLower(strings.TrimSpace(envOrDefault("APP_ENV", "")))
+	if env == "production" || env == "staging" {
 		return false
 	}
+	switch env {
+	case "test", "e2e", "development", "dev", "local":
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(envOrDefault("GITHUB_ACTIONS", "")), "true")
 }
 
 func (d *daprHTTPClient) do(ctx context.Context, method, url string, payload []byte) ([]byte, error) {

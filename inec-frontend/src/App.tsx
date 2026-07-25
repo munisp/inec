@@ -76,12 +76,46 @@ function PageTransition({ page, children }: { page: string; children: React.Reac
   );
 }
 
+function pageFromLocation() {
+  const hash = window.location.hash.replace(/^#\/?/, '');
+  const hashPage = hash.split(/[/?]/, 1)[0];
+  if (hashPage) return hashPage;
+
+  // Keep legacy query-based deep links working while making hashes the
+  // canonical, deployment-safe route format.
+  const params = new URLSearchParams(window.location.search);
+  return params.get('page') || 'dashboard';
+}
+
 function AppContent() {
   const { isAuthenticated } = useAuth();
-  const [currentPage, setCurrentPage] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('page') || 'dashboard';
-  });
+  const [currentPage, setCurrentPage] = useState(pageFromLocation);
+
+  useEffect(() => {
+    const syncPageFromHash = () => setCurrentPage(pageFromLocation());
+    window.addEventListener('hashchange', syncPageFromHash);
+    return () => window.removeEventListener('hashchange', syncPageFromHash);
+  }, []);
+
+  useEffect(() => {
+    const hashPage = window.location.hash.replace(/^#\/?/, '').split(/[/?]/, 1)[0];
+    if (!isAuthenticated) {
+      if (hashPage !== 'login') window.location.hash = '/login';
+      return;
+    }
+    if (!hashPage || hashPage === 'login') {
+      window.location.hash = '/dashboard';
+    }
+  }, [isAuthenticated]);
+
+  const navigate = (page: string) => {
+    const target = page.replace(/^#\/?/, '') || 'dashboard';
+    if (window.location.hash === `#/${target}`) {
+      setCurrentPage(target);
+      return;
+    }
+    window.location.hash = `/${target}`;
+  };
 
   if (!isAuthenticated) return <LoginPage />;
 
@@ -137,7 +171,7 @@ function AppContent() {
   };
 
   return (
-    <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
+    <Layout currentPage={currentPage} onNavigate={navigate}>
       <ErrorBoundary key={currentPage}>
         <PageTransition page={currentPage}>
           <Suspense fallback={<DashboardSkeleton />}>
@@ -145,7 +179,7 @@ function AppContent() {
               <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
                 <h1 className="text-6xl font-bold text-gray-300 dark:text-gray-600">404</h1>
                 <p className="mt-4 text-lg text-gray-600 dark:text-gray-400">Page not found</p>
-                <button onClick={() => setCurrentPage('dashboard')} className="mt-6 px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 transition">
+                <button onClick={() => navigate('dashboard')} className="mt-6 px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 transition">
                   Back to Dashboard
                 </button>
               </div>

@@ -966,6 +966,9 @@ func (rl *rateLimiterStore) allow(key string, limit int, window time.Duration) b
 		log.Error().Msg("native Redis rate limiter is unavailable; rejecting request")
 		return false
 	}
+	if isExplicitNonProductionDaprEnvironment() && !mwHub.Redis.Ping().Connected {
+		return rl.allowLocal(key, limit, window)
+	}
 	return rl.allowRedis(key, limit, window)
 }
 
