@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -76,6 +77,109 @@ func (d *unavailableDaprClient) Status() MWStatus {
 	return MWStatus{Name: "Dapr", Connected: false, Mode: "Dapr sidecar required", Details: d.reason}
 }
 func (d *unavailableDaprClient) Close() error { return nil }
+
+// localDaprClient is an explicit, process-local transport used only in test and
+// development environments. It makes local end-to-end validation possible
+// without representing an unavailable production sidecar as healthy.
+type localDaprClient struct {
+	mu    sync.RWMutex
+	state map[string][]byte
+}
+
+func newLocalDaprClient() *localDaprClient {
+	return &localDaprClient{state: make(map[string][]byte)}
+}
+
+func localDaprStateKey(store, key string) (string, error) {
+	store = strings.TrimSpace(store)
+	key = strings.TrimSpace(key)
+	if store == "" || key == "" {
+		return "", fmt.Errorf("Dapr state store and key are required")
+	}
+	return store + ":" + key, nil
+}
+
+func (d *localDaprClient) PublishEvent(_ context.Context, pubsub, topic string, data interface{}) error {
+	if strings.TrimSpace(pubsub) == "" || strings.TrimSpace(topic) == "" {
+		return fmt.Errorf("Dapr pubsub name and topic are required")
+	}
+	if _, err := json.Marshal(data); err != nil {
+		return fmt.Errorf("marshal local Dapr event: %w", err)
+	}
+	return nil
+}
+
+func (d *localDaprClient) InvokeService(context.Context, string, string, interface{}) ([]byte, error) {
+	return nil, fmt.Errorf("local Dapr transport does not emulate service invocation")
+}
+
+func (d *localDaprClient) InvokeServiceValidated(ctx context.Context, appID, method string, data interface{}, schema DaprResponseSchema) ([]byte, *DaprValidationResult, error) {
+	raw, err := d.InvokeService(ctx, appID, method, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return raw, validateDaprResponse(raw, schema), nil
+}
+
+func (d *localDaprClient) GetState(_ context.Context, store, key string) ([]byte, error) {
+	stateKey, err := localDaprStateKey(store, key)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	value := d.state[stateKey]
+	if value == nil {
+		return nil, nil
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func (d *localDaprClient) SaveState(_ context.Context, store, key string, value interface{}) error {
+	stateKey, err := localDaprStateKey(store, key)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal local Dapr state: %w", err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.state[stateKey] = append([]byte(nil), raw...)
+	return nil
+}
+
+func (d *localDaprClient) DeleteState(_ context.Context, store, key string) error {
+	stateKey, err := localDaprStateKey(store, key)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.state, stateKey)
+	return nil
+}
+
+func (d *localDaprClient) Status() MWStatus {
+	return MWStatus{Name: "Dapr", Connected: true, Mode: "in-memory (non-production)", Details: "local test/development transport"}
+}
+
+func (d *localDaprClient) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	clear(d.state)
+	return nil
+}
+
+func isExplicitNonProductionDaprEnvironment() bool {
+	switch strings.ToLower(strings.TrimSpace(envOrDefault("APP_ENV", ""))) {
+	case "test", "development", "dev", "local":
+		return true
+	default:
+		return false
+	}
+}
 
 func (d *daprHTTPClient) do(ctx context.Context, method, url string, payload []byte) ([]byte, error) {
 	var body io.Reader
@@ -210,6 +314,10 @@ func initDaprClient() DaprClient {
 		}
 	}
 	if daprURL == "" {
+		if isExplicitNonProductionDaprEnvironment() {
+			log.Info().Msg("Dapr sidecar not configured; using explicit in-memory non-production transport")
+			return newLocalDaprClient()
+		}
 		log.Warn().Msg("Dapr unavailable: set DAPR_HTTP_URL or DAPR_HTTP_PORT and run the Dapr sidecar")
 		return &unavailableDaprClient{reason: "DAPR_HTTP_URL or DAPR_HTTP_PORT must be configured"}
 	}

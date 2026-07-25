@@ -134,6 +134,10 @@ func main() {
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
 	initSchemaCompatibility(db)
+	if shouldSeedE2EFixtures() {
+		log.Info().Msg("Seeding declared E2E fixtures in explicit non-production environment")
+		seedDatabase(db)
+	}
 	initOpenAPIRoutes()
 
 	// Production compliance, stablecoin, and USSD engines
@@ -940,18 +944,45 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-type rateLimiterStore struct{}
+type rateLimitWindow struct {
+	count   int
+	expires time.Time
+}
+
+type rateLimiterStore struct {
+	mu    sync.Mutex
+	local map[string]rateLimitWindow
+}
 
 func newRateLimiter() *rateLimiterStore {
-	return &rateLimiterStore{}
+	return &rateLimiterStore{local: make(map[string]rateLimitWindow)}
 }
 
 func (rl *rateLimiterStore) allow(key string, limit int, window time.Duration) bool {
 	if mwHub == nil || mwHub.Redis == nil {
+		if isExplicitNonProductionDaprEnvironment() {
+			return rl.allowLocal(key, limit, window)
+		}
 		log.Error().Msg("native Redis rate limiter is unavailable; rejecting request")
 		return false
 	}
 	return rl.allowRedis(key, limit, window)
+}
+
+func (rl *rateLimiterStore) allowLocal(key string, limit int, window time.Duration) bool {
+	if limit <= 0 || window <= 0 {
+		return false
+	}
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	entry := rl.local[key]
+	if entry.expires.IsZero() || !now.Before(entry.expires) {
+		entry = rateLimitWindow{expires: now.Add(window)}
+	}
+	entry.count++
+	rl.local[key] = entry
+	return entry.count <= limit
 }
 
 func (rl *rateLimiterStore) allowRedis(key string, limit int, window time.Duration) bool {
@@ -1000,9 +1031,15 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		}
 		return def
 	}
+	loginDefault := 5
+	if isExplicitNonProductionDaprEnvironment() {
+		// Parallel browser suites legitimately authenticate several roles from one
+		// local address. Production retains the stricter default above.
+		loginDefault = 20
+	}
 	limits := []rateRule{
 		// Auth endpoints: aggressive limits (brute-force protection)
-		{"/auth/login", limit("RATE_LIMIT_LOGIN", 5), time.Minute},                     // 5 login attempts per minute per IP
+		{"/auth/login", limit("RATE_LIMIT_LOGIN", loginDefault), time.Minute},          // 5 login attempts per minute per IP
 		{"/auth/register", limit("RATE_LIMIT_REGISTER", 3), time.Minute},               // 3 registrations per minute per IP
 		{"/auth/refresh", limit("RATE_LIMIT_REFRESH", 10), time.Minute},                // 10 token refreshes per minute
 		{"/auth/forgot-password", limit("RATE_LIMIT_FORGOT_PASSWORD", 2), time.Minute}, // 2 password reset requests per minute

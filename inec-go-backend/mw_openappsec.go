@@ -209,6 +209,13 @@ func (w *embeddedWAF) InspectRequest(ctx context.Context, req WAFRequest) (*WAFD
 		}
 	}
 
+	// A literal script element is an executable payload, not a passive markup
+	// anomaly. Raise it to the high-severity threshold so it is rejected before
+	// authentication or application routing rather than merely challenged.
+	if strings.Contains(checkStr, "<SCRIPT") && decision.Score > 0 && decision.Score < 40 {
+		decision.Score = 40
+	}
+
 	// Determine action based on score
 	switch {
 	case decision.Score >= 80:

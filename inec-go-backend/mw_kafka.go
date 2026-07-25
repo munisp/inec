@@ -61,6 +61,82 @@ func (k *unavailableKafkaClient) Status() MWStatus {
 }
 func (k *unavailableKafkaClient) Close() error { return nil }
 
+// inMemoryKafkaClient is an explicit local transport used solely for test and
+// development environments. It does not replace native broker semantics in
+// production, where initKafkaClient remains fail-closed without KAFKA_BROKERS.
+type inMemoryKafkaClient struct {
+	mu          sync.RWMutex
+	subscribers map[string][]func(KafkaMessage)
+}
+
+func newInMemoryKafkaClient() *inMemoryKafkaClient {
+	return &inMemoryKafkaClient{subscribers: make(map[string][]func(KafkaMessage))}
+}
+
+func validateKafkaSubscription(topic string, handler func(KafkaMessage)) (string, error) {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return "", fmt.Errorf("Kafka topic is required")
+	}
+	if handler == nil {
+		return "", fmt.Errorf("Kafka subscription handler is required")
+	}
+	return topic, nil
+}
+
+func (k *inMemoryKafkaClient) Produce(ctx context.Context, msg KafkaMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	topic := strings.TrimSpace(msg.Topic)
+	if topic == "" {
+		return fmt.Errorf("Kafka topic is required")
+	}
+	msg.Topic = topic
+	if msg.Timestamp.IsZero() {
+		msg.Timestamp = time.Now().UTC()
+	}
+	if msg.Value == nil {
+		msg.Value = map[string]interface{}{}
+	}
+	k.mu.RLock()
+	handlers := append([]func(KafkaMessage){}, k.subscribers[topic]...)
+	k.mu.RUnlock()
+	for _, handler := range handlers {
+		handler(msg)
+	}
+	return nil
+}
+
+func (k *inMemoryKafkaClient) Subscribe(topic string, handler func(KafkaMessage)) error {
+	topic, err := validateKafkaSubscription(topic, handler)
+	if err != nil {
+		return err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.subscribers[topic] = append(k.subscribers[topic], handler)
+	return nil
+}
+
+func (k *inMemoryKafkaClient) SubscribeGroup(topic, groupID string, handler func(KafkaMessage)) error {
+	if strings.TrimSpace(groupID) == "" {
+		return fmt.Errorf("Kafka consumer group is required")
+	}
+	return k.Subscribe(topic, handler)
+}
+
+func (k *inMemoryKafkaClient) Status() MWStatus {
+	return MWStatus{Name: "Kafka", Connected: true, Mode: "in-memory (non-production)", Details: "local test/development transport"}
+}
+
+func (k *inMemoryKafkaClient) Close() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	clear(k.subscribers)
+	return nil
+}
+
 type realKafkaClient struct {
 	brokers []string
 	writers map[string]*kafka.Writer
@@ -215,6 +291,10 @@ func parseKafkaBrokers(raw string) []string {
 func initKafkaClient() KafkaClient {
 	brokers := parseKafkaBrokers(envOrDefault("KAFKA_BROKERS", ""))
 	if len(brokers) == 0 {
+		if isExplicitNonProductionDaprEnvironment() {
+			log.Info().Msg("Kafka brokers not configured; using explicit in-memory non-production transport")
+			return newInMemoryKafkaClient()
+		}
 		log.Warn().Msg("Kafka unavailable: KAFKA_BROKERS not set")
 		return &unavailableKafkaClient{reason: "KAFKA_BROKERS must be configured"}
 	}

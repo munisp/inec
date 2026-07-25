@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -74,6 +75,145 @@ func (f *unavailableFluvioClient) Status() MWStatus {
 	return MWStatus{Name: "Fluvio", Connected: false, Mode: "Rust SDK bridge required", Details: f.reason}
 }
 func (f *unavailableFluvioClient) Close() error { return nil }
+
+// inMemoryFluvioClient is an explicit deterministic stream implementation used
+// only by test and development environments. Production continues to require
+// the official Rust SDK bridge.
+type inMemoryFluvioClient struct {
+	mu           sync.RWMutex
+	topics       map[string][]FluvioRecord
+	groupOffsets map[string]int64
+}
+
+func newInMemoryFluvioClient() *inMemoryFluvioClient {
+	return &inMemoryFluvioClient{
+		topics:       make(map[string][]FluvioRecord),
+		groupOffsets: make(map[string]int64),
+	}
+}
+
+func normalizedFluvioTopic(topic string) (string, error) {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return "", fmt.Errorf("Fluvio topic is required")
+	}
+	return topic, nil
+}
+
+func (f *inMemoryFluvioClient) CreateTopic(_ context.Context, topic string, _ int) error {
+	topic, err := normalizedFluvioTopic(topic)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.topics[topic]; !exists {
+		f.topics[topic] = []FluvioRecord{}
+	}
+	return nil
+}
+
+func (f *inMemoryFluvioClient) Produce(_ context.Context, topic string, record FluvioRecord) error {
+	topic, err := normalizedFluvioTopic(topic)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entries, exists := f.topics[topic]
+	if !exists {
+		return fmt.Errorf("Fluvio topic %q does not exist", topic)
+	}
+	record.Topic = topic
+	record.Offset = int64(len(entries))
+	if record.Timestamp.IsZero() {
+		record.Timestamp = time.Now().UTC()
+	}
+	if record.Value == nil {
+		record.Value = map[string]interface{}{}
+	}
+	f.topics[topic] = append(entries, record)
+	return nil
+}
+
+func (f *inMemoryFluvioClient) Consume(_ context.Context, topic string, offset int64, limit int) ([]FluvioRecord, error) {
+	topic, err := normalizedFluvioTopic(topic)
+	if err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 1_000 {
+		limit = 100
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	entries, exists := f.topics[topic]
+	if !exists {
+		return nil, fmt.Errorf("Fluvio topic %q does not exist", topic)
+	}
+	if offset >= int64(len(entries)) {
+		return []FluvioRecord{}, nil
+	}
+	end := int(offset) + limit
+	if end > len(entries) {
+		end = len(entries)
+	}
+	result := make([]FluvioRecord, end-int(offset))
+	copy(result, entries[offset:end])
+	return result, nil
+}
+
+func (f *inMemoryFluvioClient) ConsumeGroup(ctx context.Context, topic, groupID, memberID string, handler func(FluvioRecord) error) error {
+	topic, err := normalizedFluvioTopic(topic)
+	if err != nil {
+		return err
+	}
+	groupID = strings.TrimSpace(groupID)
+	memberID = strings.TrimSpace(memberID)
+	if groupID == "" || memberID == "" {
+		return fmt.Errorf("Fluvio group ID and member ID are required")
+	}
+	if handler == nil {
+		return fmt.Errorf("Fluvio consumer handler is required")
+	}
+	groupKey := topic + "\x00" + groupID
+	f.mu.RLock()
+	entries, exists := f.topics[topic]
+	offset := f.groupOffsets[groupKey]
+	f.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("Fluvio topic %q does not exist", topic)
+	}
+	for _, record := range entries {
+		if record.Offset < offset {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := handler(record); err != nil {
+			return err
+		}
+		f.mu.Lock()
+		f.groupOffsets[groupKey] = record.Offset + 1
+		f.mu.Unlock()
+	}
+	return nil
+}
+
+func (f *inMemoryFluvioClient) Status() MWStatus {
+	return MWStatus{Name: "Fluvio", Connected: true, Mode: "in-memory (non-production)", Details: "local test/development transport"}
+}
+
+func (f *inMemoryFluvioClient) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	clear(f.topics)
+	clear(f.groupOffsets)
+	return nil
+}
 
 func (f *fluvioBridgeClient) do(ctx context.Context, method, path string, payload interface{}, target interface{}) error {
 	var body io.Reader
@@ -246,6 +386,10 @@ func (f *fluvioBridgeClient) Close() error { return nil }
 func initFluvioClient() FluvioClient {
 	bridgeURL := strings.TrimRight(strings.TrimSpace(envOrDefault("FLUVIO_STREAM_URL", "")), "/")
 	if bridgeURL == "" {
+		if isExplicitNonProductionDaprEnvironment() {
+			log.Info().Msg("Fluvio bridge not configured; using explicit in-memory non-production transport")
+			return newInMemoryFluvioClient()
+		}
 		log.Warn().Msg("Fluvio unavailable: FLUVIO_STREAM_URL not set")
 		return &unavailableFluvioClient{reason: "FLUVIO_STREAM_URL must be configured"}
 	}

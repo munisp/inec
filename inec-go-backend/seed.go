@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"github.com/rs/zerolog/log"
+	"os"
+	"regexp"
+	"strings"
 )
 
 type stateInfo struct {
@@ -146,10 +148,35 @@ var nigerianLastNames = []string{
 
 var wardNames = []string{"Ward I", "Ward II", "Ward III", "Ward IV", "Ward V", "Ward VI", "Ward VII", "Ward VIII", "Ward IX", "Ward X", "Ward XI", "Ward XII"}
 
+// shouldSeedE2EFixtures permits deterministic test fixtures only in explicit
+// non-production contexts. Staging and production always refuse seed data,
+// including when a generic CI environment flag is present.
+func shouldSeedE2EFixtures() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	if env == "production" || env == "staging" {
+		return false
+	}
+	if env == "test" || env == "e2e" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")), "true") {
+		return true
+	}
+	if env == "development" || env == "dev" || env == "local" {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("INEC_E2E_SEED"))) {
+		case "1", "true", "yes":
+			return true
+		}
+	}
+	return false
+}
+
 func seedDatabase(db *sql.DB) {
 	var count int
 	err := db.QueryRow("SELECT COUNT(*) FROM states").Scan(&count)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	if count > 0 {
 		return
@@ -157,8 +184,9 @@ func seedDatabase(db *sql.DB) {
 
 	rand := NewSecureRng()
 	tx, err := db.Begin()
-	if err != nil { return }
-
+	if err != nil {
+		return
+	}
 
 	for _, s := range nigeriaStates {
 		tx.Exec("INSERT INTO states (code, name, geo_zone, capital) VALUES (?,?,?,?)", s.Code, s.Name, s.GeoZone, s.Capital)
@@ -381,7 +409,10 @@ func seedDatabase(db *sql.DB) {
 	}
 
 	// KYB records for parties and observer orgs
-	kybEntities := []struct{ id int; etype, name, regNum string }{
+	kybEntities := []struct {
+		id                  int
+		etype, name, regNum string
+	}{
 		{1, "political_party", "All Progressives Congress", "CAC/IT/12345"},
 		{2, "political_party", "Peoples Democratic Party", "CAC/IT/12346"},
 		{3, "political_party", "Labour Party", "CAC/IT/12347"},
@@ -394,7 +425,7 @@ func seedDatabase(db *sql.DB) {
 			e.id, e.etype, e.name, e.regNum, 1, 95.0, "low", "approved", "2027-01-10T08:00:00Z", "2028-01-10T08:00:00Z")
 	}
 
-	// Voters with realistic Nigerian data  
+	// Voters with realistic Nigerian data
 	voterFirstNames := []string{"Chidinma", "Abdullahi", "Folake", "Obinna", "Hauwa", "Emeka", "Zainab", "Tunde", "Amina", "Ifeanyi", "Ngozi", "Sani", "Bukola", "Chidi", "Fatima"}
 	voterLastNames := []string{"Okafor", "Mohammed", "Adeyemi", "Bello", "Nwosu", "Ibrahim", "Eze", "Yusuf", "Adeleke", "Usman", "Afolabi", "Danladi", "Bakare", "Igwe", "Hassan"}
 	genders := []string{"M", "F"}
