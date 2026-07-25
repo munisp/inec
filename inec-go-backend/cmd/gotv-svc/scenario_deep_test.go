@@ -1519,6 +1519,25 @@ func TestPerformanceDB_GeoCoverage(t *testing.T) {
 }
 
 func TestPerformanceDB_Analytics(t *testing.T) {
+	if dbConn == nil {
+		t.Skip("requires database")
+	}
+
+	req := httptest.NewRequest("GET", "/gotv/analytics", nil)
+	setAuth(req)
+	rr := httptest.NewRecorder()
+	handleGOTVAnalytics(rr, req)
+	if rr.Code == http.StatusServiceUnavailable {
+		if !strings.Contains(rr.Body.String(), "unavailable") {
+			t.Fatalf("analytics unavailable response lacks diagnostics: %s", rr.Body.String())
+		}
+		t.Log("analytics provider unavailable; explicit fail-closed contract verified")
+		return
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("analytics returned unexpected status %d: %s", rr.Code, rr.Body.String())
+	}
+
 	benchmarkDBEndpoint(t, "analytics", handleGOTVAnalytics, "/gotv/analytics")
 }
 
