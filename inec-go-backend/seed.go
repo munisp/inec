@@ -159,7 +159,10 @@ func shouldSeedE2EFixtures() bool {
 	if env == "test" || env == "e2e" {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")), "true") {
+	// A generic CI flag is a legacy fallback only when the application
+	// environment is unspecified. An explicit environment must control
+	// whether fixtures are permitted, including the load-test environment.
+	if env == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")), "true") {
 		return true
 	}
 	if env == "development" || env == "dev" || env == "local" {

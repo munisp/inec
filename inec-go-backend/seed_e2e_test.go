@@ -14,6 +14,7 @@ func TestShouldSeedE2EFixtures(t *testing.T) {
 		{name: "e2e environment", appEnv: "e2e", want: true},
 		{name: "explicit non-production seed", appEnv: "development", explicitSeed: "true", want: true},
 		{name: "github actions", appEnv: "", githubActions: "true", want: true},
+		{name: "load test blocks github actions seed", appEnv: "loadtest", githubActions: "true", want: false},
 		{name: "production blocks explicit seed", appEnv: "production", explicitSeed: "true", want: false},
 		{name: "staging blocks github actions", appEnv: "staging", githubActions: "true", want: false},
 	}
