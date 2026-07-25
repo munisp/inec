@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,8 +40,40 @@ func TestMain(m *testing.M) {
 	if dsn != "" {
 		db, err := sql.Open("postgres", dsn)
 		if err == nil && db.Ping() == nil {
+			// Match the service's bounded production pool. A test burst should
+			// queue behind this pool rather than exhaust PostgreSQL connections.
+			db.SetMaxOpenConns(25)
+			db.SetMaxIdleConns(10)
+			db.SetConnMaxLifetime(5 * time.Minute)
 			dbConn = db
+			// The GOTV schema is party-scoped. The main platform normally owns
+			// this table, but isolated service tests must establish its minimal
+			// canonical contract before invoking the service initializer.
+			if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS parties (
+				id SERIAL PRIMARY KEY,
+				code TEXT UNIQUE NOT NULL,
+				name TEXT NOT NULL,
+				abbreviation TEXT DEFAULT '',
+				color TEXT DEFAULT '#000000',
+				is_active BOOLEAN NOT NULL DEFAULT TRUE
+			)`); err != nil {
+				fmt.Fprintln(os.Stderr, "create test parties table:", err)
+				os.Exit(1)
+			}
 			svc = gotv.NewService(db, "")
+			if err := svc.InitTables(context.Background()); err != nil {
+				fmt.Fprintln(os.Stderr, "initialize GOTV tables:", err)
+				os.Exit(1)
+			}
+			if err := gotv.InitV2Tables(context.Background(), db); err != nil {
+				fmt.Fprintln(os.Stderr, "initialize GOTV v2 tables:", err)
+				os.Exit(1)
+			}
+			if err := initKOHIndicatorTables(db); err != nil {
+				fmt.Fprintln(os.Stderr, "initialize KOH tables:", err)
+				os.Exit(1)
+			}
+			seedGOTVData(db)
 			wsHub = gotv.NewWSHub(100, 2)
 			go wsHub.Run()
 			dispatcher = gotv.NewDispatchEngine(db, svc, wsHub, 2)
@@ -47,7 +81,11 @@ func TestMain(m *testing.M) {
 			initGOTVLedgerAndBlockchain()
 		}
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if dbConn != nil {
+		_ = dbConn.Close()
+	}
+	os.Exit(code)
 }
 
 // ─── Scenario 1: Election Day Result Submission & Collation ──────────
@@ -956,7 +994,7 @@ func TestCrossCutting_SecurityHeaders(t *testing.T) {
 
 	requiredHeaders := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
+		"X-Frame-Options":        "DENY",
 	}
 
 	for header, expected := range requiredHeaders {

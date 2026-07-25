@@ -290,8 +290,21 @@ func (s *Service) InitTables(ctx context.Context) error {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(party_id, phone_hash)
 	);
-	CREATE INDEX IF NOT EXISTS idx_gotv_mobile_users_party ON gotv_mobile_users(party_id);
-	CREATE INDEX IF NOT EXISTS idx_gotv_mobile_users_phone ON gotv_mobile_users(party_id, phone_hash);
+		CREATE INDEX IF NOT EXISTS idx_gotv_mobile_users_party ON gotv_mobile_users(party_id);
+		CREATE INDEX IF NOT EXISTS idx_gotv_mobile_users_phone ON gotv_mobile_users(party_id, phone_hash);
+
+		-- Handlers consistently treat contact, volunteer, and pledge records as
+		-- soft-deletable. Make the idempotent service initializer compatible with
+		-- those production query contracts on a fresh database as well.
+		ALTER TABLE gotv_contacts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+		ALTER TABLE gotv_volunteers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+		ALTER TABLE gotv_pledges ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+		CREATE INDEX IF NOT EXISTS idx_gotv_contacts_active_party
+			ON gotv_contacts (party_id, created_at DESC) WHERE deleted_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_gotv_volunteers_active_party
+			ON gotv_volunteers (party_id, created_at DESC) WHERE deleted_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_gotv_pledges_active_party
+			ON gotv_pledges (party_id, created_at DESC) WHERE deleted_at IS NULL;
 	`
 	_, err := s.DB.ExecContext(ctx, tables)
 	if err != nil {
@@ -397,20 +410,20 @@ func (s *Service) Audit(partyID int, actor, action, resourceType, resourceID str
 
 // Campaign represents a GOTV campaign.
 type Campaign struct {
-	ID              int        `json:"id"`
-	CampaignID      string     `json:"campaign_id"`
-	PartyID         int        `json:"party_id"`
-	Name            string     `json:"name"`
-	Description     string     `json:"description,omitempty"`
-	CampaignType    string     `json:"campaign_type"`
-	Status          string     `json:"status"`
-	TargetState     string     `json:"target_state,omitempty"`
-	TargetLGA       string     `json:"target_lga,omitempty"`
-	MessageTemplate string     `json:"message_template,omitempty"`
-	ABSplitPct      int        `json:"ab_split_pct"`
-	TotalContacts   int        `json:"total_contacts"`
-	CreatedBy       string     `json:"created_by"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID              int       `json:"id"`
+	CampaignID      string    `json:"campaign_id"`
+	PartyID         int       `json:"party_id"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description,omitempty"`
+	CampaignType    string    `json:"campaign_type"`
+	Status          string    `json:"status"`
+	TargetState     string    `json:"target_state,omitempty"`
+	TargetLGA       string    `json:"target_lga,omitempty"`
+	MessageTemplate string    `json:"message_template,omitempty"`
+	ABSplitPct      int       `json:"ab_split_pct"`
+	TotalContacts   int       `json:"total_contacts"`
+	CreatedBy       string    `json:"created_by"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // Contact represents a GOTV contact (PII fields encrypted).
