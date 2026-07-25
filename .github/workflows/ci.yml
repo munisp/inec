@@ -171,6 +171,20 @@ jobs:
         env:
           PORT: '8088'
           DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
+      - name: Wait for backend and E2E fixtures
+        run: |
+          status=000
+          for i in $(seq 1 90); do
+            status=$(curl --max-time 2 -sS -o /dev/null -w '%{http_code}' http://localhost:8088/health || true)
+            # The health route is intentionally protected, so a 401 proves the
+            # process has completed startup, bound its listener, and can serve requests.
+            if [ "$status" != "000" ]; then
+              echo "Backend ready with protected health status $status"
+              break
+            fi
+            sleep 1
+          done
+          test "$status" != "000"
       - name: Install frontend
         working-directory: inec-frontend
         run: npm ci
