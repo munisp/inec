@@ -8,11 +8,10 @@ This service provides:
 - Real-time data ingestion from PostgreSQL
 """
 
-import os
 import math
+import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import duckdb
 import httpx
@@ -69,7 +68,7 @@ class IntegrityScore(BaseModel):
 class LakehouseStats(BaseModel):
     total_records: int
     tables: list[dict]
-    last_sync: Optional[str]
+    last_sync: str | None
     duckdb_version: str
 
 
@@ -232,13 +231,13 @@ class AnomalyDetector:
                 severity = "critical" if confidence > 0.8 else "high" if confidence > 0.6 else "medium"
                 anomalies.append(
                     AnomalyResult(
-                        id=f"anomaly-{i}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                        id=f"anomaly-{i}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
                         polling_unit_code=f"PU-{i:05d}",
                         anomaly_type="statistical_outlier",
                         severity=severity,
                         confidence=round(confidence, 4),
                         description=f"Vote count {vote_counts[i]} is a statistical outlier (isolation score: {score:.4f})",
-                        detected_at=datetime.now(timezone.utc).isoformat(),
+                        detected_at=datetime.now(UTC).isoformat(),
                     )
                 )
         return anomalies
@@ -327,13 +326,13 @@ class AnomalyDetector:
             overall_score=round(overall, 1),
             components=components,
             risk_level=risk_level,
-            assessed_at=datetime.now(timezone.utc).isoformat(),
+            assessed_at=datetime.now(UTC).isoformat(),
         )
 
 
 # --- Application ---
 
-lakehouse: Optional[Lakehouse] = None
+lakehouse: Lakehouse | None = None
 detector = AnomalyDetector()
 
 
@@ -346,8 +345,8 @@ async def lifespan(app: FastAPI):
     # Try to sync from PostgreSQL
     try:
         await sync_from_postgres()
-    except Exception as e:
-        log.warning("initial_sync_failed", error=str(e))
+    except (httpx.HTTPError, duckdb.Error, ValueError) as exc:
+        log.warning("initial_sync_failed", error=str(exc))
 
     yield
     log.info("lakehouse_shutting_down")

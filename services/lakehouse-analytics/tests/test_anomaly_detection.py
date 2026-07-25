@@ -17,7 +17,7 @@ import numpy as np
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from main import AnomalyDetector, MODEL_PATH
+from main import MODEL_PATH, AnomalyDetector
 
 
 class TestModelPersistence:

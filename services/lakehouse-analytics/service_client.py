@@ -7,8 +7,8 @@ Provides typed Python clients for communicating with other INEC microservices:
 - Middleware service (event publishing, caching)
 """
 
-import os
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -44,8 +44,8 @@ class ServiceClient:
         try:
             await self.get("/health")
             return True
-        except Exception as e:
-            logger.warning("%s health check failed: %s", self.service_name, e)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("%s health check failed: %s", self.service_name, exc)
             return False
 
     async def close(self):
