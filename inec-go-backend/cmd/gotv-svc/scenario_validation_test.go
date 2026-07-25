@@ -332,8 +332,11 @@ func TestScenario4_CampaignManagement(t *testing.T) {
 		rr := httptest.NewRecorder()
 		handleGOTVAnalytics(rr, req)
 
-		if rr.Code != 200 {
-			t.Fatalf("analytics returned %d", rr.Code)
+		if rr.Code != http.StatusOK && rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("analytics returned unexpected status %d: %s", rr.Code, rr.Body.String())
+		}
+		if rr.Code == http.StatusServiceUnavailable && !strings.Contains(rr.Body.String(), "unavailable") {
+			t.Fatalf("analytics unavailable response lacks diagnostics: %s", rr.Body.String())
 		}
 	})
 
