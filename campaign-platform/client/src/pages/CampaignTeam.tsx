@@ -148,6 +148,7 @@ export default function CampaignTeam() {
                             </SelectContent>
                           </Select>
                           <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-700 h-7 w-7 p-0"
+                            aria-label={`Remove ${m.name} from campaign team`}
                             onClick={() => removeMut.mutate({ memberId: m.id })}>
                             <Trash2 size={12}/>
                           </Button>

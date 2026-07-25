@@ -10,6 +10,35 @@ CREATE TYPE "public"."item_status" AS ENUM('active', 'inactive', 'pending', 'com
 CREATE TYPE "public"."user_role" AS ENUM('user', 'admin');--> statement-breakpoint
 CREATE TYPE "public"."volunteer_task_status" AS ENUM('pending', 'in_progress', 'completed', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."volunteer_task_type" AS ENUM('canvassing', 'polling_unit', 'data_entry', 'logistics', 'security', 'media', 'other');--> statement-breakpoint
+-- Shared canonical tables are ordinarily created by the Go backend. Creating
+-- them only when absent makes a fresh campaign-only environment bootstrappable
+-- while remaining a no-op beside the canonical backend schema.
+CREATE TABLE IF NOT EXISTS "users" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"username" text NOT NULL UNIQUE,
+	"password_hash" text NOT NULL,
+	"full_name" text NOT NULL,
+	"role" text NOT NULL,
+	"staff_id" text UNIQUE,
+	"state_code" text,
+	"lga_code" text,
+	"polling_unit_code" text,
+	"created_at" timestamp DEFAULT now() NOT NULL,
+	"is_active" integer DEFAULT 1,
+	"party_id" integer,
+	"kyc_status" text DEFAULT 'not_started'
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "polling_units" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"code" text NOT NULL UNIQUE,
+	"name" text NOT NULL,
+	"ward_code" text NOT NULL,
+	"registered_voters" integer DEFAULT 0,
+	"latitude" real,
+	"longitude" real
+);
+--> statement-breakpoint
 CREATE TABLE "budget_items" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"profile_id" integer,

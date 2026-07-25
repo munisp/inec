@@ -156,7 +156,7 @@ export default function CampaignTimeline() {
                           {ev.priority && <Badge variant="outline">{ev.priority}</Badge>}
                         </div>
                       </div>
-                      <Button variant="ghost" size="sm" onClick={() => deleteMut.mutate({ id: ev.id })} className="text-red-400 hover:text-red-600">
+                      <Button variant="ghost" size="sm" aria-label={`Delete ${ev.title}`} onClick={() => deleteMut.mutate({ id: ev.id })} className="text-red-400 hover:text-red-600">
                         <Trash2 size={14}/>
                       </Button>
                     </div>

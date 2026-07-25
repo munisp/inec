@@ -275,6 +275,7 @@ export default function Home() {
   const [runCount, setRunCount] = useState(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [narrative, setNarrative] = useState<string | null>(null);
+  const [narrativeError, setNarrativeError] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<[number | null, number | null]>([null, null]);
   const [runLabel, setRunLabel] = useState("");
   const [historyFilter, setHistoryFilter] = useState("");
@@ -294,14 +295,21 @@ export default function Home() {
     onError: (e) => toast.error("Save failed: " + e.message),
   });
   const narrativeMut = trpc.simulation.narrative.useMutation({
-    onSuccess: (data) => setNarrative(typeof data.narrative === "string" ? data.narrative : String(data.narrative ?? "")),
-    onError: (e) => toast.error("AI narrative failed: " + e.message),
+    onSuccess: (data) => {
+      setNarrativeError(null);
+      setNarrative(typeof data.narrative === "string" ? data.narrative : String(data.narrative ?? ""));
+    },
+    onError: () => {
+      setNarrative(null);
+      setNarrativeError("AI briefing is unavailable for this deployment. The simulation calculations and charts remain available.");
+    },
   });
 
   const handleRun = useCallback(() => {
     setIsRunning(true);
     setResult(null);
     setNarrative(null);
+    setNarrativeError(null);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       const r = runSimulation(config);
@@ -753,6 +761,8 @@ export default function Home() {
                         </div>
                         {narrative ? (
                           <p className="text-sm text-gray-700 leading-relaxed">{narrative}</p>
+                        ) : narrativeError ? (
+                          <p role="status" className="text-sm leading-relaxed text-amber-800">{narrativeError}</p>
                         ) : (
                           <p className="text-xs text-gray-400 italic">Click "Generate" to get an AI-powered plain-English briefing of this simulation result.</p>
                         )}

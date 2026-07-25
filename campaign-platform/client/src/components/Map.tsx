@@ -76,7 +76,7 @@
 
 /// <reference types="@types/google.maps" />
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePersistFn } from "@/hooks/usePersistFn";
 import { cn } from "@/lib/utils";
 
@@ -92,21 +92,35 @@ const FORGE_BASE_URL =
   "https://forge.butterfly-effect.dev";
 const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
 
-function loadMapScript() {
-  return new Promise(resolve => {
+let mapScriptPromise: Promise<void> | null = null;
+
+function loadMapScript(): Promise<void> {
+  if (window.google?.maps) return Promise.resolve();
+  if (!API_KEY) return Promise.reject(new Error("The map service is not configured."));
+  if (mapScriptPromise) return mapScriptPromise;
+
+  mapScriptPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-campaign-map-loader="true"]');
+    if (existing) {
+      existing.addEventListener("load", () => window.google?.maps ? resolve() : reject(new Error("The map service did not initialize.")), { once: true });
+      existing.addEventListener("error", () => reject(new Error("The map service could not be reached.")), { once: true });
+      return;
+    }
+
     const script = document.createElement("script");
+    script.dataset.campaignMapLoader = "true";
     script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
     script.async = true;
     script.crossOrigin = "anonymous";
-    script.onload = () => {
-      resolve(null);
-      script.remove(); // Clean up immediately
-    };
+    script.onload = () => window.google?.maps ? resolve() : reject(new Error("The map service did not initialize."));
     script.onerror = () => {
-      console.error("Failed to load Google Maps script");
+      mapScriptPromise = null;
+      reject(new Error("The map service could not be reached."));
     };
     document.head.appendChild(script);
   });
+
+  return mapScriptPromise;
 }
 
 interface MapViewProps {
@@ -124,32 +138,53 @@ export function MapView({
 }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<google.maps.Map | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [errorMessage, setErrorMessage] = useState("");
 
   const init = usePersistFn(async () => {
-    await loadMapScript();
-    if (!mapContainer.current) {
-      console.error("Map container not found");
-      return;
-    }
-    map.current = new window.google.maps.Map(mapContainer.current, {
-      zoom: initialZoom,
-      center: initialCenter,
-      mapTypeControl: true,
-      fullscreenControl: true,
-      zoomControl: true,
-      streetViewControl: true,
-      mapId: "DEMO_MAP_ID",
-    });
-    if (onMapReady) {
-      onMapReady(map.current);
+    try {
+      setStatus("loading");
+      await loadMapScript();
+      if (!mapContainer.current || !window.google?.maps) {
+        throw new Error("The map service did not initialize.");
+      }
+      map.current = new window.google.maps.Map(mapContainer.current, {
+        zoom: initialZoom,
+        center: initialCenter,
+        mapTypeControl: true,
+        fullscreenControl: true,
+        zoomControl: true,
+        streetViewControl: true,
+        mapId: "DEMO_MAP_ID",
+      });
+      setStatus("ready");
+      onMapReady?.(map.current);
+    } catch (error) {
+      setStatus("error");
+      setErrorMessage(error instanceof Error ? error.message : "The map service is unavailable.");
     }
   });
 
   useEffect(() => {
-    init();
+    void init();
   }, [init]);
 
   return (
-    <div ref={mapContainer} className={cn("w-full h-[500px]", className)} />
+    <div className={cn("relative w-full h-[500px]", className)}>
+      <div ref={mapContainer} className="w-full h-full" aria-hidden={status === "error"} />
+      {status === "loading" && (
+        <div className="absolute inset-0 grid place-items-center bg-slate-950 text-center text-sm text-slate-300">
+          Loading interactive map…
+        </div>
+      )}
+      {status === "error" && (
+        <div role="alert" className="absolute inset-0 grid place-items-center bg-slate-950 p-6 text-center text-slate-200">
+          <div className="max-w-sm">
+            <p className="font-semibold">Interactive map unavailable</p>
+            <p className="mt-2 text-sm text-slate-400">{errorMessage} You can still search the Units panel and use LGA Summary to plan field operations.</p>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

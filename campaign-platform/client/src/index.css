@@ -183,3 +183,32 @@
     }
   }
 }
+
+/* Stable, keyboard-accessible scroll regions for long PWA side panels. */
+.campaign-scroll-region {
+  min-height: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.campaign-scroll-region:focus-visible {
+  outline: 2px solid var(--inec-green);
+  outline-offset: -2px;
+}
+
+.campaign-scroll-region::-webkit-scrollbar {
+  width: 0.75rem;
+}
+
+.campaign-scroll-region::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--inec-green) 55%, transparent);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+.campaign-scroll-region::-webkit-scrollbar-track {
+  background: transparent;
+}

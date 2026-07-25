@@ -160,6 +160,7 @@ export default function VolunteerPortal() {
                           variant="ghost"
                           size="sm"
                           className="text-red-400 hover:text-red-600 h-7 w-7 p-0"
+                          aria-label={`Delete task: ${task.title}`}
                           onClick={() => { if (confirm("Delete task?")) deleteTaskMut.mutate({ id: task.id }); }}
                           disabled={!canDelete}
                         >

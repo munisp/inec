@@ -25,7 +25,26 @@ export default function PostElectionAnalytics() {
   const totalVotes = results.reduce((s,r)=>s+(r.votes??0),0);
   const lgaBreakdown = results.reduce<Record<string,number>>((acc,r)=>{ acc[r.lga]=(acc[r.lga]||0)+(r.votes??0); return acc; },{});
   const lgaData = Object.entries(lgaBreakdown).map(([lga,votes])=>({lga,votes})).sort((a,b)=>b.votes-a.votes).slice(0,10);
-  const pieData = results.map(r=>({ name: r.candidateName, value: r.votes??0 }));
+  const candidateTotals = results.reduce<Record<string, number>>((acc, result) => {
+    const candidate = result.candidateName?.trim() || "Unspecified candidate";
+    acc[candidate] = (acc[candidate] ?? 0) + (result.votes ?? 0);
+    return acc;
+  }, {});
+  const pieData = Object.entries(candidateTotals)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+  const votersByLga = voters.reduce<Record<string, number>>((acc, voter) => {
+    const lga = voter.lga?.trim();
+    if (lga) acc[lga] = (acc[lga] ?? 0) + 1;
+    return acc;
+  }, {});
+  const turnoutByLga = Object.entries(lgaBreakdown)
+    .map(([lga, votes]) => {
+      const registered = votersByLga[lga] ?? 0;
+      const pct = registered > 0 ? Math.min(100, Math.round((votes / registered) * 100)) : null;
+      return { lga, votes, registered, pct };
+    })
+    .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
 
   const EXPORT_COLS_P = [
     { header: "LGA", key: "lga" },
@@ -129,7 +148,7 @@ export default function PostElectionAnalytics() {
             )}
 
             {/* LGA Turnout Heatmap */}
-            {results.length > 0 && voters.length > 0 && (
+            {results.length > 0 && (
               <div className="mt-6 bg-white border border-gray-200 rounded p-5" style={{ borderTop: "3px solid #008751" }}>
                 <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">LGA Turnout Heatmap</p>
                 <p className="text-xs text-gray-400 mb-4">Votes cast vs registered voters per LGA — colour intensity indicates turnout rate</p>
@@ -137,36 +156,30 @@ export default function PostElectionAnalytics() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-gray-50 border-b">
-                        {["LGA", "Votes Cast", "Turnout %", "Intensity"].map(h => (
+                        {["LGA", "Votes Cast", "Registered", "Turnout %", "Intensity"].map(h => (
                           <th key={h} className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {Object.entries(lgaBreakdown)
-                        .map(([lga, votes]) => {
-                          const totalReg = Math.max(1, Math.round(voters.length / Math.max(1, Object.keys(lgaBreakdown).length)));
-                          const pct = Math.min(100, Math.round((votes / totalReg) * 100));
-                          return { lga, votes, pct };
-                        })
-                        .sort((a, b) => b.pct - a.pct)
-                        .map(({ lga, votes, pct }, i) => {
-                          const hue = pct >= 60 ? "#008751" : pct >= 40 ? "#F59E0B" : "#C0392B";
-                          const opacity = 0.15 + (pct / 100) * 0.7;
-                          return (
-                            <tr key={lga} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                              <td className="px-4 py-2 font-medium text-gray-900">{lga}</td>
-                              <td className="px-4 py-2 font-mono text-gray-700">{votes.toLocaleString()}</td>
-                              <td className="px-4 py-2 font-mono font-bold" style={{ color: hue }}>{pct}%</td>
-                              <td className="px-4 py-2">
-                                <div className="flex items-center gap-2">
-                                  <div className="h-4 rounded" style={{ width: `${Math.max(4, pct)}%`, background: hue, opacity }} />
-                                  <span className="text-xs text-gray-500">{pct >= 60 ? "High" : pct >= 40 ? "Medium" : "Low"}</span>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                      {turnoutByLga.map(({ lga, votes, registered, pct }, i) => {
+                        const hue = pct == null ? "#64748B" : pct >= 60 ? "#008751" : pct >= 40 ? "#F59E0B" : "#C0392B";
+                        const opacity = pct == null ? 0.35 : 0.15 + (pct / 100) * 0.7;
+                        return (
+                          <tr key={lga} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                            <td className="px-4 py-2 font-medium text-gray-900">{lga}</td>
+                            <td className="px-4 py-2 font-mono text-gray-700">{votes.toLocaleString()}</td>
+                            <td className="px-4 py-2 font-mono text-gray-700">{registered > 0 ? registered.toLocaleString() : "—"}</td>
+                            <td className="px-4 py-2 font-mono font-bold" style={{ color: hue }}>{pct == null ? "—" : `${pct}%`}</td>
+                            <td className="px-4 py-2">
+                              <div className="flex items-center gap-2">
+                                <div className="h-4 rounded" style={{ width: `${pct == null ? 4 : Math.max(4, pct)}%`, background: hue, opacity }} />
+                                <span className="text-xs text-gray-500">{pct == null ? "No LGA voter data" : pct >= 60 ? "High" : pct >= 40 ? "Medium" : "Low"}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

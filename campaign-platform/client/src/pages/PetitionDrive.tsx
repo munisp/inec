@@ -39,7 +39,9 @@ export default function PetitionDrive() {
 
   const [form, setForm] = useState({ name: "", phone: "", lga: "" });
   const goal = petition?.targetSignatures ?? 10000;
-  const pct = Math.min(100, Math.round((signatures.length / goal) * 100));
+  const pct = goal > 0 ? Math.min(100, (signatures.length / goal) * 100) : 0;
+  const progressLabel = pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
+  const progressWidth = signatures.length > 0 ? Math.max(0.4, pct) : 0;
   const shareUrl = petition ? `${window.location.origin}/sign/${petition.id}` : null;
   const copyShareLink = () => {
     if (!shareUrl) return;
@@ -66,10 +68,10 @@ export default function PetitionDrive() {
             {petition.description && <p className="text-sm text-gray-600 mb-3">{petition.description}</p>}
             <div className="flex justify-between mb-2">
               <p className="text-sm font-semibold text-gray-700">Progress to Goal</p>
-              <p className="font-mono font-bold" style={{ color: pct >= 100 ? "#008751" : "#4A1525" }}>{pct}%</p>
+              <p className="font-mono font-bold" style={{ color: pct >= 100 ? "#008751" : "#4A1525" }}>{progressLabel}</p>
             </div>
             <div className="h-4 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 100 ? "#008751" : "#4A1525" }}/>
+              <div className="h-full rounded-full transition-all" style={{ width: `${progressWidth}%`, background: pct >= 100 ? "#008751" : "#4A1525" }}/>
             </div>
           </div>
         )}

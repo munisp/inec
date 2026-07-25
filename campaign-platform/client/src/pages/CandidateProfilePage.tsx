@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -17,16 +17,34 @@ export default function CandidateProfilePage() {
   const utils = trpc.useUtils();
 
   const [form, setForm] = useState({
-    candidateName: profile?.candidateName ?? "",
-    partyName: profile?.partyName ?? "",
-    partyColor: profile?.partyColor ?? "#006400",
-    stateCode: profile?.stateCode ?? "",
-    stateName: profile?.stateName ?? "",
-    office: (profile?.office ?? "Governor") as "President"|"Governor"|"Senator"|"House"|"LGA",
-    religion: profile?.religion ?? "",
-    gender: profile?.gender ?? "",
-    geopoliticalZone: profile?.geopoliticalZone ?? "",
+    candidateName: "",
+    partyName: "",
+    partyColor: "#006400",
+    stateCode: "",
+    stateName: "",
+    office: "Governor" as "President"|"Governor"|"Senator"|"House"|"LGA",
+    religion: "",
+    gender: "",
+    geopoliticalZone: "",
   });
+
+  // The profile query resolves asynchronously. Synchronize the form when its
+  // selected campaign identity arrives, without overwriting an existing form
+  // during an in-progress edit of the same profile.
+  useEffect(() => {
+    if (!profile) return;
+    setForm({
+      candidateName: profile.candidateName ?? "",
+      partyName: profile.partyName ?? "",
+      partyColor: profile.partyColor ?? "#006400",
+      stateCode: profile.stateCode ?? "",
+      stateName: profile.stateName ?? "",
+      office: (profile.office ?? "Governor") as "President"|"Governor"|"Senator"|"House"|"LGA",
+      religion: profile.religion ?? "",
+      gender: profile.gender ?? "",
+      geopoliticalZone: profile.geopoliticalZone ?? "",
+    });
+  }, [profile?.id]);
 
   const updateMut = trpc.profile.update.useMutation({
     onSuccess: () => {

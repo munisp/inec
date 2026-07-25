@@ -29,24 +29,18 @@ interface SiteConfig {
 }
 
 const DEFAULT_CONFIG: SiteConfig = {
-  candidateName: "Aminu Bello",
-  office: "Governor",
-  state: "Lagos",
-  party: "APC",
+  candidateName: "",
+  office: "",
+  state: "",
+  party: "",
   partyColor: "#006400",
-  tagline: "A New Lagos for Every Nigerian",
-  bio: "Former Commissioner for Finance with 15 years of public service. Committed to infrastructure, education, and economic empowerment for all Lagosians.",
-  phone: "+234 800 000 0000",
-  email: "contact@aminubello.ng",
-  twitter: "@AminuBelloNG",
-  facebook: "AminuBelloOfficial",
-  manifesto: [
-    "Rebuild 500km of roads in the first year",
-    "Free primary and secondary education for all",
-    "Create 200,000 jobs through SME grants",
-    "24-hour electricity in all LGAs by 2028",
-    "Universal health insurance for Lagos residents",
-  ],
+  tagline: "",
+  bio: "",
+  phone: "",
+  email: "",
+  twitter: "",
+  facebook: "",
+  manifesto: [],
   showEndorsements: true,
   showTimeline: false,
   showDonation: true,
@@ -139,6 +133,7 @@ export default function CandidateWebsite() {
       office: profile.office ?? prev.office,
       state: profile.stateName ?? prev.state,
       party: profile.partyName ?? prev.party,
+      partyColor: profile.partyColor ?? prev.partyColor,
       tagline: (profile as any).tagline ?? prev.tagline,
       bio: (profile as any).bio ?? prev.bio,
       phone: (profile as any).phone ?? prev.phone,
@@ -160,6 +155,16 @@ export default function CandidateWebsite() {
   });
 
   const html = generateHTML(cfg);
+  const missingPublicationFields = [
+    !cfg.candidateName.trim() && "candidate name",
+    !cfg.office.trim() && "office sought",
+    !cfg.state.trim() && "state",
+    !cfg.party.trim() && "party",
+    !cfg.tagline.trim() && "tagline",
+    !cfg.bio.trim() && "biography",
+    cfg.manifesto.filter(point => point.trim()).length === 0 && "at least one manifesto point",
+  ].filter(Boolean) as string[];
+  const canPublish = missingPublicationFields.length === 0;
 
   function copyHTML() {
     navigator.clipboard.writeText(html);
@@ -200,19 +205,19 @@ export default function CandidateWebsite() {
   return (
     <div className="min-h-screen flex flex-col" style={{ background: "#0d1117", fontFamily: "'IBM Plex Mono', monospace", color: "#e2e8f0" }}>
       {/* Header */}
-      <div className="border-b px-6 py-4 flex items-center justify-between flex-shrink-0" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
-        <div className="flex items-center gap-4">
+      <div className="border-b px-4 py-3 flex flex-col items-stretch gap-3 flex-shrink-0 sm:px-6 lg:flex-row lg:items-center lg:justify-between" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
+        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
           <Link href="/stakeholders">
             <button className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.65 0.01 240)" }}>
               <ArrowLeft className="w-3.5 h-3.5" /> Back
             </button>
           </Link>
-          <div>
-            <div className="text-xs tracking-widest uppercase mb-0.5" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div>
+          <div className="min-w-0">
+            <div className="text-xs tracking-widest uppercase mb-0.5 truncate" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div>
             <div className="font-bold text-sm">Candidate Website Builder</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
           <button onClick={() => setTab("preview")} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-all" style={{ borderColor: tab === "preview" ? "oklch(0.55 0.18 145)" : "oklch(0.28 0.01 240)", color: tab === "preview" ? "oklch(0.65 0.18 145)" : "oklch(0.55 0.01 240)", background: tab === "preview" ? "oklch(0.16 0.04 145)" : "transparent" }}>
             <Eye className="w-3.5 h-3.5" /> Preview
           </button>
@@ -231,7 +236,8 @@ export default function CandidateWebsite() {
               if (!profileId) { toast.error("No candidate profile selected"); return; }
               publishMut.mutate({ profileId, htmlContent: html, candidateName: cfg.candidateName });
             }}
-            disabled={publishMut.isPending}
+            disabled={publishMut.isPending || !canPublish}
+            title={!canPublish ? `Complete ${missingPublicationFields.join(", ")} before publishing` : "Publish campaign website"}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border font-bold transition-all disabled:opacity-50"
             style={{ borderColor: "oklch(0.55 0.18 30)", color: "oklch(0.65 0.18 30)", background: "oklch(0.16 0.04 30)" }}
           >
@@ -262,9 +268,15 @@ export default function CandidateWebsite() {
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      {!canPublish && (
+        <div role="status" className="border-b px-6 py-3 text-sm" style={{ background: "oklch(0.17 0.04 60)", borderColor: "oklch(0.32 0.08 60)", color: "oklch(0.82 0.12 60)" }}>
+          Complete {missingPublicationFields.join(", ")} before publishing this public campaign site. Draft and preview controls remain available.
+        </div>
+      )}
+
+      <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
         {/* Config sidebar */}
-        <div className="w-72 flex-shrink-0 border-r overflow-y-auto p-4" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.11 0.008 240)" }}>
+        <div tabIndex={0} aria-label="Campaign website configuration" className="campaign-scroll-region h-[min(52vh,38rem)] w-full flex-shrink-0 border-b overflow-y-auto p-4 lg:h-auto lg:w-72 lg:border-b-0 lg:border-r" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.11 0.008 240)" }}>
           <div className="text-xs font-bold tracking-widest uppercase mb-4 flex items-center gap-2" style={{ color: "oklch(0.55 0.01 240)" }}>
             <Type className="w-3.5 h-3.5" /> Candidate Info
           </div>
@@ -310,7 +322,7 @@ export default function CandidateWebsite() {
             {cfg.manifesto.map((p, i) => (
               <div key={i} className="flex items-start gap-2 text-xs p-2 rounded border" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.15 0.008 240)" }}>
                 <span className="flex-1" style={{ color: "oklch(0.75 0.01 240)" }}>{p}</span>
-                <button onClick={() => setCfg(c => ({ ...c, manifesto: c.manifesto.filter((_, j) => j !== i) }))} style={{ color: "oklch(0.55 0.18 25)" }} className="text-xs">✕</button>
+                <button aria-label={`Remove manifesto point ${i + 1}: ${p}`} onClick={() => setCfg(c => ({ ...c, manifesto: c.manifesto.filter((_, j) => j !== i) }))} style={{ color: "oklch(0.55 0.18 25)" }} className="text-xs">✕</button>
               </div>
             ))}
           </div>
@@ -339,7 +351,7 @@ export default function CandidateWebsite() {
         </div>
 
         {/* Preview / Code panel */}
-        <div className="flex-1 overflow-hidden">
+        <div className="min-w-0 flex-1 overflow-hidden">
           {tab === "preview" ? (
             <iframe
               srcDoc={html}

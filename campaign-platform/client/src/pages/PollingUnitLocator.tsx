@@ -236,19 +236,19 @@ export default function PollingUnitLocator() {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: "#0d1117", fontFamily: "'IBM Plex Mono', monospace", color: "#e2e8f0" }}>
-      <div className="border-b px-6 py-4 flex items-center justify-between flex-shrink-0" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
-        <div className="flex items-center gap-4">
-          <Link href="/stakeholders"><button className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.65 0.01 240)" }}><ArrowLeft className="w-3.5 h-3.5" /> Back</button></Link>
-          <div>
-            <div className="text-xs tracking-widest uppercase mb-0.5" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div>
-            <div className="font-bold text-sm flex items-center gap-2">
+      <div className="border-b px-4 py-3 flex flex-col items-stretch gap-3 flex-shrink-0 sm:px-6 lg:flex-row lg:items-center lg:justify-between" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
+        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+          <Link href="/"><button aria-label="Return to campaign tools" className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.65 0.01 240)" }}><ArrowLeft className="w-3.5 h-3.5" /> Back</button></Link>
+          <div className="min-w-0">
+            <div className="text-xs tracking-widest uppercase mb-0.5 truncate" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div>
+            <div className="font-bold text-sm flex items-center gap-2 min-w-0">
               Polling Unit Locator
               {usingDemo && <span className="text-xs px-2 py-0.5 rounded-full font-normal" style={{ background: "oklch(0.22 0.04 60)", color: "oklch(0.70 0.08 60)" }}>Demo data — add units in Volunteer Portal</span>}
               {isLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ color: "oklch(0.55 0.01 240)" }} />}
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end lg:gap-3">
           <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleCSVUpload}/>
           <button onClick={() => fileRef.current?.click()} disabled={bulkMut.isPending}
             className="text-xs px-2 py-1 rounded border flex items-center gap-1"
@@ -265,15 +265,15 @@ export default function PollingUnitLocator() {
           <button onClick={() => refetch()} className="text-xs px-2 py-1 rounded border flex items-center gap-1" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.55 0.01 240)" }}>
             <RefreshCw className="w-3 h-3" /> Refresh
           </button>
-          <div className="flex items-center gap-2 text-xs" style={{ color: "oklch(0.50 0.01 240)" }}>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" style={{ color: "oklch(0.50 0.01 240)" }}>
             {Object.entries(STATUS_COLORS).map(([s, c]) => <span key={s} className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: c }} />{s}</span>)}
           </div>
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
         {/* Sidebar */}
-        <div className="w-80 border-r flex flex-col flex-shrink-0" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
+        <div className="h-[min(46vh,30rem)] w-full flex-shrink-0 border-b lg:h-auto lg:w-80 lg:border-b-0 lg:border-r flex flex-col" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
           {/* Tab switcher */}
           <div className="flex border-b" style={{ borderColor: "oklch(0.20 0.01 240)" }}>
             {([["list", "Units", MapPin], ["lga", "LGA Summary", BarChart2]] as const).map(([tab, label, Icon]) => (
@@ -300,7 +300,7 @@ export default function PollingUnitLocator() {
                   {filtered.length} of {ALL_UNITS.length} unit{ALL_UNITS.length !== 1 ? "s" : ""}
                 </div>
               </div>
-              <div className="flex-1 overflow-y-auto divide-y" style={{ borderColor: "oklch(0.18 0.008 240)" }}>
+              <div tabIndex={0} aria-label="Polling unit list" className="campaign-scroll-region flex-1 overflow-y-auto divide-y" style={{ borderColor: "oklch(0.18 0.008 240)" }}>
                 {filtered.map(pu => (
                   <button key={pu.id} onClick={() => flyTo(pu)} className="w-full px-3 py-3 text-left hover:bg-white/5 transition-colors" style={{ background: selected?.id === pu.id ? "oklch(0.18 0.01 240)" : "transparent" }}>
                     <div className="flex items-start gap-2.5">
@@ -322,7 +322,7 @@ export default function PollingUnitLocator() {
           )}
 
           {activeTab === "lga" && (
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <div tabIndex={0} aria-label="Polling unit LGA summary" className="campaign-scroll-region flex-1 overflow-y-auto p-3 space-y-2">
               <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: "oklch(0.45 0.01 240)" }}>Units per LGA</p>
               {lgaSummary.map(([lga, stats]) => {
                 const riskColor = stats.disputed > 0 ? "#ef4444" : stats.active < stats.total * 0.8 ? "#f59e0b" : "#22c55e";
@@ -353,13 +353,13 @@ export default function PollingUnitLocator() {
         </div>
 
         {/* Map */}
-        <div className="flex-1 relative">
+        <div className="relative min-h-[22rem] flex-1 lg:min-h-0">
           <MapView onMapReady={handleMapReady} className="w-full h-full" />
           {selected && (
             <div className="absolute bottom-4 left-4 right-4 max-w-sm rounded-xl border p-4 shadow-2xl" style={{ borderColor: "oklch(0.28 0.01 240)", background: "oklch(0.14 0.008 240)", backdropFilter: "blur(8px)" }}>
               <div className="flex items-start justify-between mb-2">
                 <div className="font-bold text-sm" style={{ color: "oklch(0.85 0.01 240)" }}>{selected.name}</div>
-                <button onClick={() => setSelected(null)} className="text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>✕</button>
+                <button aria-label="Close selected polling unit details" onClick={() => setSelected(null)} className="text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>✕</button>
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 {[

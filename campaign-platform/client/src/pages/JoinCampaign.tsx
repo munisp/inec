@@ -38,7 +38,11 @@ export default function JoinCampaign() {
         <div className="text-center p-8">
           <XCircle size={48} className="mx-auto text-red-500 mb-4" />
           <h2 className="text-xl font-bold text-[#4A1525] mb-2">Invalid Invite Link</h2>
-          <p className="text-gray-600 text-sm">This invite link is missing a token. Please request a new invite.</p>
+          <p className="text-gray-600 text-sm mb-4">This invite link is missing a token. Please request a new invite.</p>
+          <div className="flex flex-col sm:flex-row justify-center gap-2">
+            <Button onClick={() => startLogin()} className="bg-[#4A1525] text-white">Sign in</Button>
+            <Button variant="outline" onClick={() => navigate("/")}>Return to campaign</Button>
+          </div>
         </div>
       </div>
     );
@@ -58,7 +62,11 @@ export default function JoinCampaign() {
         <div className="text-center p-8 max-w-sm">
           <XCircle size={48} className="mx-auto text-red-500 mb-4" />
           <h2 className="text-xl font-bold text-[#4A1525] mb-2">Invite Not Found</h2>
-          <p className="text-gray-600 text-sm">This invite link is invalid or has already been used. Please request a new invite from your campaign manager.</p>
+          <p className="text-gray-600 text-sm mb-4">This invite link is invalid or has already been used. Please request a new invite from your campaign manager.</p>
+          <div className="flex flex-col sm:flex-row justify-center gap-2">
+            <Button onClick={() => startLogin()} className="bg-[#4A1525] text-white">Sign in</Button>
+            <Button variant="outline" onClick={() => navigate("/")}>Return to campaign</Button>
+          </div>
         </div>
       </div>
     );
