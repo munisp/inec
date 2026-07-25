@@ -60,6 +60,14 @@ func TestMain(m *testing.M) {
 				fmt.Fprintln(os.Stderr, "create test parties table:", err)
 				os.Exit(1)
 			}
+			if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS polling_units (
+				code TEXT PRIMARY KEY,
+				latitude DOUBLE PRECISION,
+				longitude DOUBLE PRECISION
+			)`); err != nil {
+				fmt.Fprintln(os.Stderr, "create test polling_units table:", err)
+				os.Exit(1)
+			}
 			svc = gotv.NewService(db, "")
 			if err := svc.InitTables(context.Background()); err != nil {
 				fmt.Fprintln(os.Stderr, "initialize GOTV tables:", err)
