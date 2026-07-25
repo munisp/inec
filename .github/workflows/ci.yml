@@ -174,7 +174,7 @@ jobs:
       - name: Wait for backend and E2E fixtures
         run: |
           status=000
-          for i in $(seq 1 90); do
+          for _ in $(seq 1 90); do
             status=$(curl --max-time 2 -sS -o /dev/null -w '%{http_code}' http://localhost:8088/health || true)
             # The health route is intentionally protected, so a 401 proves the
             # process has completed startup, bound its listener, and can serve requests.
@@ -193,9 +193,15 @@ jobs:
         run: npx vite --port 5173 &
       - name: Wait for frontend
         run: |
-          for i in $(seq 1 60); do
-            curl -sf http://localhost:5173 > /dev/null && break || sleep 1
+          frontend_ready=false
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:5173 > /dev/null; then
+              frontend_ready=true
+              break
+            fi
+            sleep 1
           done
+          test "$frontend_ready" = true
       - name: Install E2E deps
         working-directory: e2e
         run: |
@@ -283,9 +289,15 @@ jobs:
           DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
       - name: Wait for server
         run: |
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:8099/health && break || sleep 1
+          server_ready=false
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8099/health > /dev/null; then
+              server_ready=true
+              break
+            fi
+            sleep 1
           done
+          test "$server_ready" = true
       - name: Run load tests
         run: |
           go install github.com/rakyll/hey@latest
