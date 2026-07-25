@@ -85,7 +85,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-zinc-200 dark:border-zinc-700">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-green-700 flex items-center justify-center">
+          <div className="w-8 h-8 rounded-lg bg-[#4A1525] flex items-center justify-center">
             <Vote className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -110,11 +110,11 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
                 aria-label={`Navigate to ${item.label}`}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 ${
                   isActive
-                    ? 'bg-green-50 dark:bg-green-900/30 text-green-800 dark:text-green-300 font-medium shadow-sm'
-                    : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-zinc-200'
+                    ? 'bg-[#4A1525]/10 dark:bg-[#4A1525]/45 text-[#4A1525] dark:text-[#F5F0EB] font-medium shadow-sm'
+                    : 'text-zinc-600 dark:text-zinc-400 hover:bg-[#4A1525]/5 dark:hover:bg-[#4A1525]/25 hover:text-zinc-900 dark:hover:text-zinc-100'
                 }`}
               >
-                <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-green-700 dark:text-green-400' : ''}`} aria-hidden="true" />
+                <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-[#4A1525] dark:text-[#35B779]' : ''}`} aria-hidden="true" />
                 <span className="truncate">{item.label}</span>
                 {isActive && <ChevronRight className="w-4 h-4 ml-auto flex-shrink-0" aria-hidden="true" />}
               </button>
@@ -174,7 +174,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </SheetContent>
         </Sheet>
         <div className="flex items-center gap-2">
-          <Vote className="w-5 h-5 text-green-700 dark:text-green-400" />
+          <Vote className="w-5 h-5 text-[#4A1525] dark:text-[#35B779]" />
           <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100">INEC Platform</span>
         </div>
         <div className="flex items-center gap-2">
