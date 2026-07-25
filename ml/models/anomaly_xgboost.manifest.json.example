@@ -1,0 +1,16 @@
+{
+  "model_id": "anomaly_xgboost",
+  "version": "REPLACE_WITH_RELEASE_VERSION",
+  "sha256": "REPLACE_WITH_SHA256_OF_anomaly_xgboost.onnx",
+  "approved_for_production": false,
+  "validation_report_uri": "REPLACE_WITH_IMMUTABLE_VALIDATION_REPORT_URI",
+  "approval": {
+    "approved_by": "REPLACE_WITH_AUTHORIZED_MODEL_RISK_OWNER",
+    "approved_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
+    "change_ticket": "REPLACE_WITH_CHANGE_CONTROL_TICKET"
+  },
+  "training_data": {
+    "dataset_version": "REPLACE_WITH_AUTHORITATIVE_DATASET_VERSION",
+    "data_cutoff": "REPLACE_WITH_RFC3339_TIMESTAMP"
+  }
+}

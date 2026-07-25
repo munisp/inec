@@ -20,11 +20,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 INFERENCE_ENGINE_URL = os.getenv("INFERENCE_ENGINE_URL", "").strip().rstrip("/")
-CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 app = FastAPI(
     title="INEC AI Anomaly Detection Service",
-    description="Real-time election irregularity detection using the trained CPU ONNX model",
+    description=(
+        "Real-time election irregularity detection using the trained CPU ONNX model"
+    ),
     version="2.0.0",
 )
 app.add_middleware(
@@ -70,20 +76,30 @@ class AnomalyAlert(BaseModel):
 
 def require_inference_url() -> str:
     if not INFERENCE_ENGINE_URL:
-        raise HTTPException(status_code=503, detail="INFERENCE_ENGINE_URL is required for trained anomaly inference")
+        raise HTTPException(
+            status_code=503,
+            detail="INFERENCE_ENGINE_URL is required for trained anomaly inference",
+        )
     return INFERENCE_ENGINE_URL
 
 
 def inference_payload(record: VotingRecord) -> tuple[dict[str, Any], dict[str, float]]:
     if len(record.party_results) < 2:
-        raise HTTPException(status_code=422, detail="party_results must contain at least two actual party totals")
+        raise HTTPException(
+            status_code=422,
+            detail="party_results must contain at least two actual party totals",
+        )
     if any(v < 0 for v in record.party_results.values()):
-        raise HTTPException(status_code=422, detail="party_results must not contain negative values")
+        raise HTTPException(
+            status_code=422, detail="party_results must not contain negative values"
+        )
 
     ordered_party_totals = sorted(record.party_results.values(), reverse=True)
     total_valid_votes = sum(record.party_results.values())
     if total_valid_votes <= 0:
-        raise HTTPException(status_code=422, detail="party_results must contain at least one valid vote")
+        raise HTTPException(
+            status_code=422, detail="party_results must contain at least one valid vote"
+        )
 
     turnout = record.accredited_voters / record.registered_voters
     payload = {
@@ -124,11 +140,15 @@ def severity_for_score(score: float) -> str:
 def explanation_for_result(result: dict[str, Any]) -> str:
     factors = result.get("risk_factors", [])
     if factors:
-        return "; ".join(str(factor.get("factor", "model risk factor")) for factor in factors)
+        return "; ".join(
+            str(factor.get("factor", "model risk factor")) for factor in factors
+        )
     return "trained CPU ONNX model found no named risk factor"
 
 
-def alert_from_result(record: VotingRecord, features: dict[str, float], result: dict[str, Any]) -> AnomalyAlert:
+def alert_from_result(
+    record: VotingRecord, features: dict[str, float], result: dict[str, Any]
+) -> AnomalyAlert:
     score = float(result["anomaly_score"])
     return AnomalyAlert(
         polling_unit_id=record.polling_unit_id,
@@ -153,9 +173,16 @@ async def call_inference(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=503, detail=f"trained anomaly inference returned HTTP {exc.response.status_code}") from exc
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"trained anomaly inference returned HTTP {exc.response.status_code}"
+            ),
+        ) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="trained anomaly inference service is unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="trained anomaly inference service is unavailable"
+        ) from exc
 
 
 async def score_record(record: VotingRecord) -> AnomalyAlert:
@@ -175,17 +202,30 @@ async def score_voting_record(record: VotingRecord):
 @app.post("/api/v1/anomaly/batch")
 async def score_batch(records: list[VotingRecord]):
     if not records:
-        raise HTTPException(status_code=422, detail="at least one voting record is required")
+        raise HTTPException(
+            status_code=422, detail="at least one voting record is required"
+        )
     if len(records) > 50_000:
-        raise HTTPException(status_code=413, detail="batch exceeds trained inference service limit")
+        raise HTTPException(
+            status_code=413, detail="batch exceeds trained inference service limit"
+        )
 
     mapped = [inference_payload(record) for record in records]
-    result = await call_inference("/anomaly/batch", {"polling_units": [payload for payload, _ in mapped]})
+    result = await call_inference(
+        "/anomaly/batch", {"polling_units": [payload for payload, _ in mapped]}
+    )
     model_results = result.get("results", [])
     if len(model_results) != len(records):
-        raise HTTPException(status_code=503, detail="trained anomaly inference returned an incomplete batch")
-    alerts = [alert_from_result(record, features, model_result)
-              for record, (_, features), model_result in zip(records, mapped, model_results)]
+        raise HTTPException(
+            status_code=503,
+            detail="trained anomaly inference returned an incomplete batch",
+        )
+    alerts = [
+        alert_from_result(record, features, model_result)
+        for record, (_, features), model_result in zip(
+            records, mapped, model_results, strict=True
+        )
+    ]
     anomalies = [alert for alert in alerts if alert.is_anomaly]
     for alert in anomalies:
         await broadcast_alert(alert.model_dump(mode="json"))
@@ -201,10 +241,31 @@ async def health():
             response.raise_for_status()
             inference_health = response.json()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail="trained anomaly inference service is unavailable") from exc
-    if not inference_health.get("models", {}).get("anomaly_xgboost", False):
-        raise HTTPException(status_code=503, detail="trained anomaly ONNX model is unavailable")
-    return {"status": "healthy", "model_trained": True, "inference": inference_health}
+        raise HTTPException(
+            status_code=503, detail="trained anomaly inference service is unavailable"
+        ) from exc
+    models = inference_health.get("models", {})
+    governance = models.get("anomaly_governance", {})
+    if not models.get("anomaly_xgboost", False):
+        raise HTTPException(
+            status_code=503,
+            detail="trained anomaly ONNX model is unavailable or unapproved",
+        )
+    if not governance.get("approved", False):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "trained anomaly model lacks an approved immutable governance manifest"
+            ),
+        )
+    return {
+        "status": "healthy",
+        "model_trained": True,
+        "model_id": governance.get("model_id"),
+        "model_version": governance.get("version"),
+        "model_sha256": governance.get("sha256"),
+        "inference": inference_health,
+    }
 
 
 @app.websocket("/ws/anomalies")
@@ -233,4 +294,6 @@ async def broadcast_alert(alert: dict[str, Any]):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8200")), log_level="info")
+    uvicorn.run(
+        app, host="0.0.0.0", port=int(os.getenv("PORT", "8200")), log_level="info"
+    )

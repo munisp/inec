@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../lib/api';
-import { DEMO_COMMAND_CENTER, DEMO_LIVE_FEED } from '../lib/demo-data';
+import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
 import { logger } from '../lib/utils';
 import { Activity, AlertTriangle, Radio, Shield, Clock, RefreshCw, Zap, MapPin } from 'lucide-react';
 
@@ -98,9 +98,11 @@ export default function CommandCenterPage() {
       setLastUpdated(new Date());
     } catch (e) {
       logger.error(e);
-      setData(prev => prev || DEMO_COMMAND_CENTER as unknown as CommandData);
-      setLiveFeed(prev => prev.length ? prev : DEMO_LIVE_FEED as unknown as FeedItem[]);
-      setLastUpdated(new Date());
+      setData(null);
+      setLiveFeed([]);
+      setEscalationRules([]);
+      setLastUpdated(null);
+      setError('command-center-source-unavailable');
     }
   }, []);
 
@@ -192,12 +194,13 @@ export default function CommandCenterPage() {
     } catch { return ts; }
   };
 
-  if (error && !data) return (
-    <div className="flex flex-col items-center justify-center h-64 gap-4" role="main" aria-label="Command Center Error">
-      <AlertTriangle className="w-8 h-8 text-red-500" />
-      <p className="text-zinc-600 dark:text-zinc-400">{error}</p>
-      <button onClick={fetchData} className="px-4 py-2 bg-green-700 text-white rounded-lg hover:bg-green-800 text-sm">Retry</button>
-    </div>
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="Command Center data is unavailable"
+      description="Verified election command metrics, alerts, live feed entries, and escalation rules could not be retrieved. No simulated operational state is shown."
+      error={error}
+      onRetry={fetchData}
+    />
   );
 
   if (!data) return (

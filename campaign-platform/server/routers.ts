@@ -931,13 +931,18 @@ Produce only the manifesto section text, no commentary.`;
       .mutation(({ input }) => db.deleteVolunteerTask(input.id)),
   }),
   // ─── Candidate Website Publish ────────────────────────────────────────────
-  // ─── Global Seed ──────────────────────────────────────────────────────────
+  // ─── Non-production fixture seed ───────────────────────────────────────────
   seed: router({
     all: protectedProcedure
       .input(z.object({ profileId: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
+        if (!db.isFixtureSeedingAllowed()) {
+          throw new Error("Campaign fixture seeding is disabled in this runtime");
+        }
+        const profile = await db.getProfileById(input.profileId);
+        if (!profile || profile.userId !== ctx.user.id) throw new Error("Forbidden");
         await db.seedProfileData(input.profileId);
-        return { success: true, message: 'All modules seeded with realistic Nigerian election data.' };
+        return { success: true, message: "Non-production fixture data seeded for an explicitly enabled test profile." };
       }),
   }),
   candidateWebsite: router({

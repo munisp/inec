@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { DEMO_COMPLIANCE } from '../lib/demo-data';
+import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
 
 interface ComplianceData {
   standard: string;
@@ -29,25 +29,20 @@ export default function ComplianceReportPage() {
   const [data, setData] = useState<ComplianceData | null>(null);
   const [standard, setStandard] = useState('ecowas');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     api.getComplianceReport(standard, 1)
       .then(setData)
       .catch(() => {
-        const fw = DEMO_COMPLIANCE.frameworks.find(f => f.name.toLowerCase() === standard) || DEMO_COMPLIANCE.frameworks[0];
-        setData({
-          standard: fw.name,
-          compliance_framework: `${fw.name} Electoral Observation Framework`,
-          assessment_criteria: fw.requirements.map(r => r.name),
-          election_overview: { total_polling_units: 176543, units_reporting: 170234, coverage_pct: 96.4, total_votes_cast: 24492921 },
-          security_assessment: { total_incidents: 5, open_disputes: 2, unresolved_anomalies: 3, security_level: fw.score > 90 ? 'good' : 'fair' },
-          observer_coverage: { total_observers: 2345, coverage_ratio: 0.013 },
-          recommendations: ['Improve ward-level public access to collation data', 'Expand BVAS coverage to all PUs', 'Implement E2E verifiable voting for primaries'],
-        });
+        setData(null);
+        setError('compliance-report-source-unavailable');
       })
       .finally(() => setLoading(false));
-  }, [standard]);
+  }, [standard, refreshKey]);
 
   const secLevelColor: Record<string, string> = {
     excellent: 'text-green-600 dark:text-green-400', good: 'text-blue-600 dark:text-blue-400',
@@ -70,7 +65,19 @@ export default function ComplianceReportPage() {
 
       {loading && <div className="text-center py-20 text-gray-500" role="status">Loading report...</div>}
 
-      {data && !loading && (
+      {!loading && error && (
+        <AuthoritativeDataUnavailable
+          title="Compliance report is unavailable"
+          description="Verified compliance, coverage, incident, and recommendation data could not be retrieved. No estimated compliance score is shown."
+          error={error}
+          onRetry={() => {
+            setLoading(true);
+            setRefreshKey((value) => value + 1);
+          }}
+        />
+      )}
+
+      {data && !loading && !error && (
         <div className="space-y-6">
           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
             <p className="text-sm text-blue-600 dark:text-blue-400 font-medium">Framework</p>

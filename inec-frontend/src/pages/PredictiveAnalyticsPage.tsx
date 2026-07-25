@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { DEMO_PREDICTIVE } from '../lib/demo-data';
+import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
 
 
 interface Prediction {
@@ -16,19 +16,40 @@ interface Prediction {
 export default function PredictiveAnalyticsPage() {
   const [data, setData] = useState<{ predictions: Prediction[]; model: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    setLoading(true);
+    setError(null);
     api.getPredictiveAnalytics()
       .then(setData)
-      .catch(() => { setData(DEMO_PREDICTIVE as { predictions: Prediction[]; model: string }); })
+      .catch(() => {
+        setData(null);
+        setError('predictive-analytics-source-unavailable');
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [refreshKey]);
 
   if (loading) {
     return (
       <div className="p-6 max-w-5xl mx-auto">
         <h1 className="text-2xl font-bold dark:text-white mb-4">Predictive Analytics</h1>
         <div className="animate-pulse bg-gray-200 dark:bg-gray-700 h-64 rounded-lg" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 max-w-5xl mx-auto" role="main" aria-label="Predictive Analytics">
+        <h1 className="text-2xl font-bold dark:text-white mb-2">Predictive Analytics</h1>
+        <AuthoritativeDataUnavailable
+          title="Predictive analytics are unavailable"
+          description="Verified model output and model metadata could not be retrieved. No estimated turnout, margin, confidence, or risk values are shown."
+          error={error}
+          onRetry={() => setRefreshKey((value) => value + 1)}
+        />
       </div>
     );
   }

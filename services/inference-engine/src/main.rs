@@ -14,9 +14,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use ndarray::Array1;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::{fs, path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
@@ -25,12 +25,84 @@ mod models;
 mod neo4j_client;
 
 use models::{AnomalyModel, FaceModel, LivenessModel};
-use neo4j_client::Neo4jClient;
+use neo4j_client::{GraphQueryResponse, Neo4jClient};
 
 // ── Application State ──
 
+#[derive(Clone, Serialize)]
+struct ModelGovernance {
+    model_id: String,
+    version: String,
+    sha256: Option<String>,
+    approved: bool,
+    reason: Option<String>,
+}
+
+impl ModelGovernance {
+    fn load(models_dir: &str) -> Self {
+        let model_path = Path::new(models_dir).join("anomaly_xgboost.onnx");
+        let manifest_path = Path::new(models_dir).join("anomaly_xgboost.manifest.json");
+        let mut governance = Self {
+            model_id: "anomaly_xgboost".into(),
+            version: "unapproved".into(),
+            sha256: None,
+            approved: false,
+            reason: Some("model manifest is missing".into()),
+        };
+        let model_bytes = match fs::read(&model_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                governance.reason = Some(format!("model artifact unavailable: {error}"));
+                return governance;
+            }
+        };
+        let actual_hash = format!("{:x}", Sha256::digest(&model_bytes));
+        governance.sha256 = Some(actual_hash.clone());
+        let manifest_text = match fs::read_to_string(&manifest_path) {
+            Ok(text) => text,
+            Err(error) => {
+                governance.reason = Some(format!("model manifest unavailable: {error}"));
+                return governance;
+            }
+        };
+        let manifest: serde_json::Value = match serde_json::from_str(&manifest_text) {
+            Ok(value) => value,
+            Err(error) => {
+                governance.reason = Some(format!("model manifest is invalid JSON: {error}"));
+                return governance;
+            }
+        };
+        let model_id = manifest.get("model_id").and_then(|value| value.as_str()).unwrap_or("");
+        let version = manifest.get("version").and_then(|value| value.as_str()).unwrap_or("");
+        let declared_hash = manifest.get("sha256").and_then(|value| value.as_str()).unwrap_or("");
+        let approved = manifest.get("approved_for_production").and_then(|value| value.as_bool()).unwrap_or(false);
+        let validation_report = manifest.get("validation_report_uri").and_then(|value| value.as_str()).unwrap_or("");
+        if model_id != "anomaly_xgboost" || version.is_empty() || validation_report.is_empty() {
+            governance.reason = Some("model manifest is missing required identity or validation evidence".into());
+            return governance;
+        }
+        governance.version = version.to_string();
+        if declared_hash != actual_hash {
+            governance.reason = Some("model artifact SHA-256 does not match approved manifest".into());
+            return governance;
+        }
+        if !approved {
+            governance.reason = Some("model is not explicitly approved for production".into());
+            return governance;
+        }
+        governance.approved = true;
+        governance.reason = None;
+        governance
+    }
+
+    fn model_label(&self) -> String {
+        format!("{}@{}", self.model_id, self.version)
+    }
+}
+
 struct AppState {
     anomaly_model: Option<AnomalyModel>,
+    anomaly_governance: ModelGovernance,
     face_model: Option<FaceModel>,
     liveness_model: Option<LivenessModel>,
     neo4j: Option<Neo4jClient>,
@@ -41,6 +113,10 @@ impl AppState {
         let models_dir = std::env::var("MODELS_DIR")
             .unwrap_or_else(|_| "/app/models".to_string());
 
+        let anomaly_governance = ModelGovernance::load(&models_dir);
+        if !anomaly_governance.approved {
+            warn!(reason = ?anomaly_governance.reason, "Anomaly model governance approval is unavailable");
+        }
         let anomaly_model = AnomalyModel::load(&format!("{}/anomaly_xgboost.onnx", models_dir))
             .map_err(|e| warn!("Anomaly model not loaded: {}", e))
             .ok();
@@ -65,7 +141,7 @@ impl AppState {
             "Inference engine initialized"
         );
 
-        Self { anomaly_model, face_model, liveness_model, neo4j }
+        Self { anomaly_model, anomaly_governance, face_model, liveness_model, neo4j }
     }
 }
 
@@ -142,23 +218,6 @@ struct GraphQueryRequest {
     hops: Option<u32>,
 }
 
-#[derive(Serialize)]
-struct GraphQueryResponse {
-    pu_code: String,
-    neighbors: Vec<NeighborInfo>,
-    avg_neighbor_turnout: f64,
-    deviation_from_neighbors: f64,
-    flagged_neighbors: u32,
-}
-
-#[derive(Serialize)]
-struct NeighborInfo {
-    code: String,
-    turnout: f64,
-    distance_km: f64,
-    flagged: bool,
-}
-
 #[derive(Deserialize)]
 struct GpsSpoofRequest {
     device_id: String,
@@ -205,6 +264,7 @@ struct HealthResponse {
 #[derive(Serialize)]
 struct ModelsStatus {
     anomaly_xgboost: bool,
+    anomaly_governance: ModelGovernance,
     face_embeddings: bool,
     liveness_cdcn: bool,
     neo4j_connected: bool,
@@ -214,10 +274,12 @@ struct ModelsStatus {
 
 async fn health(State(state): State<SharedState>) -> Json<HealthResponse> {
     let s = state.read().await;
+    let anomaly_ready = s.anomaly_model.is_some() && s.anomaly_governance.approved;
     Json(HealthResponse {
-        status: "healthy".into(),
+        status: if anomaly_ready { "healthy" } else { "degraded" }.into(),
         models: ModelsStatus {
-            anomaly_xgboost: s.anomaly_model.is_some(),
+            anomaly_xgboost: anomaly_ready,
+            anomaly_governance: s.anomaly_governance.clone(),
             face_embeddings: s.face_model.is_some(),
             liveness_cdcn: s.liveness_model.is_some(),
             neo4j_connected: s.neo4j.is_some(),
@@ -234,6 +296,7 @@ async fn predict_anomaly(
     let s = state.read().await;
 
     let model = s.anomaly_model.as_ref()
+        .filter(|_| s.anomaly_governance.approved)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let turnout = req.accredited_voters as f64 / req.registered_voters.max(1) as f64;
@@ -257,7 +320,12 @@ async fn predict_anomaly(
         if req.total_valid_votes % 100 == 0 || req.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
     ];
 
-    let score = model.predict(&features);
+    let score = model
+        .predict(&features)
+        .map_err(|error| {
+            warn!(error = %error, "approved anomaly model inference failed");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
     let elapsed = start.elapsed().as_micros() as u64;
 
     let mut risk_factors = Vec::new();
@@ -284,7 +352,7 @@ async fn predict_anomaly(
         is_anomaly: score > 0.5,
         confidence: (score - 0.5).abs() * 2.0,
         risk_factors,
-        model: "xgboost-onnx-v1.0".into(),
+        model: s.anomaly_governance.model_label(),
         inference_time_us: elapsed,
     }))
 }
@@ -297,6 +365,7 @@ async fn batch_predict(
     let s = state.read().await;
 
     let model = s.anomaly_model.as_ref()
+        .filter(|_| s.anomaly_governance.approved)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let mut results = Vec::with_capacity(req.polling_units.len());
@@ -324,7 +393,12 @@ async fn batch_predict(
             if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
         ];
 
-        let score = model.predict(&features);
+        let score = model
+        .predict(&features)
+        .map_err(|error| {
+            warn!(error = %error, "approved anomaly model inference failed");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
         let is_anomaly = score > 0.5;
         if is_anomaly { total_anomalies += 1; }
 
@@ -333,7 +407,7 @@ async fn batch_predict(
             is_anomaly,
             confidence: (score - 0.5).abs() * 2.0,
             risk_factors: vec![],
-            model: "xgboost-onnx-v1.0-batch".into(),
+            model: s.anomaly_governance.model_label(),
             inference_time_us: 0,
         });
     }
@@ -362,12 +436,14 @@ async fn compare_faces(
     }
 
     // Cosine similarity via nalgebra
-    let a = Array1::from_vec(req.embedding_a.clone());
-    let b = Array1::from_vec(req.embedding_b.clone());
-
-    let dot = a.dot(&b);
-    let norm_a = a.dot(&a).sqrt();
-    let norm_b = b.dot(&b).sqrt();
+    let dot: f32 = req
+        .embedding_a
+        .iter()
+        .zip(&req.embedding_b)
+        .map(|(left, right)| left * right)
+        .sum();
+    let norm_a = req.embedding_a.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let norm_b = req.embedding_b.iter().map(|value| value * value).sum::<f32>().sqrt();
     let similarity = dot / (norm_a * norm_b).max(1e-10);
 
     let threshold = req.threshold.unwrap_or(0.4);

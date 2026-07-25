@@ -129,7 +129,6 @@ func main() {
 	initComplianceTables()
 	initGOTVTables()
 	initGOTVEncryption()
-	seedGOTVData()
 	initMFA()
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
@@ -137,6 +136,7 @@ func main() {
 	if shouldSeedE2EFixtures() {
 		log.Info().Msg("Seeding declared E2E fixtures in explicit non-production environment")
 		seedDatabase(db)
+		seedGOTVData()
 	}
 	initOpenAPIRoutes()
 
@@ -773,8 +773,7 @@ func main() {
 	r.HandleFunc("/voice/transcribe", writeAuth(handleVoiceTranscription)).Methods("POST")
 
 	// ── Innovation 1: AI Anomaly Detection ────────────────────────────────────────
-	r.HandleFunc("/innovation/anomaly/detect", writeAuth(handleAnomalyDetectStream)).Methods("POST")
-	r.HandleFunc("/innovation/anomaly/alerts", readAuth(handleAnomalyAlerts)).Methods("GET")
+	r.HandleFunc("/innovation/anomaly/detect", writeAuth(handleAnomalyDetect)).Methods("POST")
 	r.HandleFunc("/innovation/anomaly/model/status", readAuth(handleAnomalyModelStatus)).Methods("GET")
 	// ── Innovation 2: Zero-Knowledge Proof Voter Verification ─────────────────────
 	r.HandleFunc("/innovation/zkp/generate", writeAuth(handleZKPGenerateProof)).Methods("POST")
@@ -800,7 +799,6 @@ func main() {
 	r.HandleFunc("/innovation/quantum/keypair", adminOnly(handleQuantumKeyPair)).Methods("POST")
 	// ── Innovation 7: Satellite Imagery Change Detection ──────────────────────────
 	r.HandleFunc("/innovation/satellite/analyze", writeAuth(handleSatelliteAnalyze)).Methods("POST")
-	r.HandleFunc("/innovation/satellite/alerts", readAuth(handleSatelliteAlerts)).Methods("GET")
 	r.HandleFunc("/innovation/satellite/status", readAuth(handleSatelliteStatus)).Methods("GET")
 	// ── Innovation 8: IVR Extended ────────────────────────────────────────────────
 	r.HandleFunc("/ivr/session/status", readAuth(handleIVRSessionStatus)).Methods("GET")

@@ -69,7 +69,7 @@ export async function getUserByUsername(username: string) {
 }
 
 // ─── Candidate Profiles ───────────────────────────────────────────────────────
-export async function getOrCreateDefaultProfile(userId?: number) {
+export async function getOrCreateDefaultProfile(_userId?: number) {
   const db = getDb();
   if (!db) return null;
   const rows = await db
@@ -78,25 +78,8 @@ export async function getOrCreateDefaultProfile(userId?: number) {
     .where(eq(schema.candidateProfiles.isActive, true))
     .orderBy(schema.candidateProfiles.id)
     .limit(1);
-  if (rows.length > 0) return rows[0];
-  // Create a default profile
-  const inserted = await db
-    .insert(schema.candidateProfiles)
-    .values({
-      candidateName: "Our Candidate",
-      partyName: "PDP",
-      partyColor: "#006400",
-      stateCode: "OYO",
-      stateName: "Oyo",
-      office: "Governor",
-      religion: "Mixed / Prefer not to say",
-      gender: "Male",
-      geopoliticalZone: "South-West",
-      isActive: true,
-      userId: userId ?? null,
-    })
-    .returning();
-  return inserted[0];
+  // A missing profile is an operational setup state, not a reason to fabricate a candidate.
+  return rows[0] ?? null;
 }
 
 export async function updateProfile(id: number, data: Partial<schema.InsertCandidateProfile>) {
@@ -649,32 +632,43 @@ export async function getOrCreateUserProfile(userId: number) {
     .where(and(eq(schema.candidateProfiles.userId, userId), eq(schema.candidateProfiles.isActive, true)))
     .limit(1);
   if (rows.length > 0) return rows[0];
-  // Create a new profile for this user
+  // Create an empty, user-owned profile. Real campaign, party, jurisdiction, and office
+  // details must be supplied explicitly through the profile workflow.
+  const owners = await db
+    .select({ fullName: schema.users.fullName })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
   const inserted = await db
     .insert(schema.candidateProfiles)
     .values({
-      candidateName: "Our Candidate",
-      partyName: "PDP",
+      candidateName: owners[0]?.fullName?.trim() || "Unconfigured campaign profile",
+      partyName: null,
       partyColor: "#006400",
-      stateCode: "KN",
-      stateName: "Kano",
-      office: "Governor",
-      geopoliticalZone: "North-West",
+      stateCode: null,
+      stateName: null,
+      office: null,
+      geopoliticalZone: null,
       isActive: true,
       isSeeded: false,
       userId,
     })
     .returning();
-  const profile = inserted[0];
-  // Auto-seed on first profile creation (fire-and-forget)
-  if (profile) {
-    seedProfileData(profile.id).catch(() => {/* silent */});
-  }
-  return profile;
+  return inserted[0];
 }
 
-// Extracted seed logic so it can be called from both auto-seed and manual seed button
+export function isFixtureSeedingAllowed(): boolean {
+  const runtime = (process.env.NODE_ENV || "").toLowerCase();
+  const explicitFixtureFlag = process.env.CAMPAIGN_ALLOW_FIXTURE_SEED === "true";
+  const nonProductionRuntime = runtime === "test" || runtime === "development" || process.env.GITHUB_ACTIONS === "true";
+  return explicitFixtureFlag && nonProductionRuntime;
+}
+
+// Fixture data is reserved for explicitly enabled non-production test environments.
 export async function seedProfileData(profileId: number): Promise<void> {
+  if (!isFixtureSeedingAllowed()) {
+    throw new Error("Campaign fixture seeding is disabled outside an explicitly enabled non-production environment");
+  }
   const db = await getDb();
   if (!db) return;
   const { eq } = await import("drizzle-orm");

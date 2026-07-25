@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { DEMO_RESULTS, DEMO_PARTIES, DEMO_STATES } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { useAuth } from '@/lib/auth';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -38,14 +38,24 @@ export default function ResultsPage() {
   const [showUpload, setShowUpload] = useState(false);
   const [uploadData, setUploadData] = useState({ polling_unit_code: '', accredited_voters: '', rejected_votes: '0', scores: {} as Record<string, string> });
   const [submitMsg, setSubmitMsg] = useState('');
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [resultsError, setResultsError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const canUpload = user?.role === 'admin' || user?.role === 'presiding_officer';
   const canManage = user?.role === 'admin' || user?.role === 'collation_officer';
 
   useEffect(() => {
-    Promise.all([api.getParties(), api.getStates()]).then(([p, s]) => { setParties(p); setStates(s); }).catch(() => { setParties(DEMO_PARTIES as Party[]); setStates(DEMO_STATES as State[]); });
-  }, []);
+    setMetadataError(null);
+    Promise.all([api.getParties(), api.getStates()])
+      .then(([p, s]) => { setParties(p); setStates(s); })
+      .catch(() => {
+        setParties([]);
+        setStates([]);
+        setMetadataError('result-metadata-source-unavailable');
+      });
+  }, [refreshKey]);
 
-  useEffect(() => { loadResults(); }, [filterState, filterStatus]);
+  useEffect(() => { loadResults(); }, [filterState, filterStatus, refreshKey]);
 
   async function loadResults() {
     setLoading(true);
@@ -53,13 +63,15 @@ export default function ResultsPage() {
       const params: Record<string, string> = {};
       if (filterState !== 'all') params.state_code = filterState;
       if (filterStatus !== 'all') params.status = filterStatus;
+      setResultsError(null);
       const res = await api.getResults(1, params);
       setResults(res.results);
       setTotal(res.total);
     } catch (e) {
       logger.error(e);
-      setResults(DEMO_RESULTS.results as unknown as ResultItem[]);
-      setTotal(DEMO_RESULTS.total);
+      setResults([]);
+      setTotal(0);
+      setResultsError('official-results-source-unavailable');
     }
     finally { setLoading(false); }
   }
@@ -86,6 +98,15 @@ export default function ResultsPage() {
       loadResults();
     } catch (e) { logger.error(e); }
   }
+
+  if (metadataError || resultsError) return (
+    <AuthoritativeDataUnavailable
+      title="Official results are unavailable"
+      description="Verified party, location, and polling-unit result records could not be retrieved. No simulated result, party list, or state metadata is shown."
+      error={metadataError || resultsError || 'result-source-unavailable'}
+      onRetry={() => setRefreshKey((value) => value + 1)}
+    />
+  );
 
   return (
     <section aria-label="Election Results" className="space-y-4">

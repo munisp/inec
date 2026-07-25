@@ -6,8 +6,8 @@ Provides typed Python clients for:
 - Compliance service (audit logging for document processing)
 """
 
-import os
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -78,7 +78,9 @@ class ComplianceClient(ServiceClient):
         url = base_url or os.getenv("COMPLIANCE_URL", "http://localhost:8094")
         super().__init__("compliance-svc", url)
 
-    async def log_document_processing(self, doc_id: str, action: str, result: str) -> dict:
+    async def log_document_processing(
+        self, doc_id: str, action: str, result: str
+    ) -> dict:
         return await self.post(
             "/compliance/audit",
             {
@@ -104,10 +106,14 @@ class ServiceRegistry:
 
     async def health_check(self) -> dict[str, bool]:
         import asyncio
+
         checks = {
             "auth": self.auth.health(),
             "election": self.election.health(),
             "compliance": self.compliance.health(),
         }
         results = await asyncio.gather(*checks.values(), return_exceptions=True)
-        return {name: (r is True) for name, r in zip(checks.keys(), results)}
+        return {
+            name: result is True
+            for name, result in zip(checks.keys(), results, strict=True)
+        }

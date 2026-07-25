@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { DEMO_DASHBOARD, DEMO_LIVE_FEED } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -50,7 +50,8 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [_error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     async function load() {
@@ -64,8 +65,9 @@ export default function DashboardPage() {
         setFeed(liveFeed);
       } catch (e) {
         logger.error(e);
-        setData(prev => prev || DEMO_DASHBOARD as unknown as DashboardData);
-        setFeed(prev => prev.length ? prev : DEMO_LIVE_FEED as unknown as FeedItem[]);
+        setData(null);
+        setFeed([]);
+        setError('dashboard-source-unavailable');
       } finally {
         setLoading(false);
       }
@@ -73,16 +75,21 @@ export default function DashboardPage() {
     load();
     const interval = setInterval(load, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshKey]);
 
   if (loading) return <div role="status" aria-busy="true" aria-live="polite" className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" aria-hidden="true" /><span className="sr-only">Loading dashboard data</span></div>;
 
   if (!data) return (
-    <div className="flex flex-col items-center justify-center h-64 gap-4">
-      <Activity className="w-8 h-8 text-red-500" />
-      <p className="text-zinc-600 dark:text-zinc-400">{'No dashboard data available'}</p>
-      <button onClick={() => { setLoading(true); setError(null); api.getDashboardStats(1).then(setData).catch(() => { setData(DEMO_DASHBOARD as unknown as DashboardData); }).finally(() => setLoading(false)); }} className="px-4 py-2 bg-green-700 text-white rounded-lg hover:bg-green-800 text-sm">Retry</button>
-    </div>
+    <AuthoritativeDataUnavailable
+      title="Election dashboard is unavailable"
+      description="Verified election statistics and the live result feed could not be retrieved. No local or estimated results are shown."
+      error={error}
+      onRetry={() => {
+        setError(null);
+        setLoading(true);
+        setRefreshKey((value) => value + 1);
+      }}
+    />
   );
 
   const topParties = (data.party_scores || []).slice(0, 6);

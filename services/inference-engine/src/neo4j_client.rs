@@ -176,21 +176,18 @@ impl Neo4jClient {
     /// Store anomaly scores from GNN inference back to Neo4j.
     pub async fn store_anomaly_scores(&self, scores: &[(String, f64)]) -> Result<()> {
         let cypher = r#"
-            UNWIND $scores AS s
-            MATCH (p:PollingUnit {code: s.code})
-            SET p.anomaly_score = s.score,
-                p.flagged = CASE WHEN s.score >= 0.7 THEN true ELSE false END,
+            MATCH (p:PollingUnit {code: $code})
+            SET p.anomaly_score = $score,
+                p.flagged = CASE WHEN $score >= 0.7 THEN true ELSE false END,
                 p.scored_at = datetime()
         "#;
 
-        let scores_param: Vec<serde_json::Value> = scores.iter()
-            .map(|(code, score)| serde_json::json!({"code": code, "score": score}))
-            .collect();
-
-        self.graph
-            .run(query(cypher).param("scores", scores_param))
-            .await
-            .context("Failed to store anomaly scores")?;
+        for (code, score) in scores {
+            self.graph
+                .run(query(cypher).param("code", code.as_str()).param("score", *score))
+                .await
+                .with_context(|| format!("failed to store anomaly score for polling unit {code}"))?;
+        }
 
         info!(n_scores = scores.len(), "Stored GNN anomaly scores in Neo4j");
         Ok(())

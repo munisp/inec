@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -712,34 +713,20 @@ func handleAIIntegrity(w http.ResponseWriter, r *http.Request) {
 	row.Scan(&lateCount)
 	complianceScore := math.Max(0, 100-float64(lateCount)*5)
 
-	// Temporal patterns: variance in submission times
-	temporalScore := 90.0 // Default if no timestamp analysis available
-
-	// Weighted overall score
-	overall := benfordScore*0.3 + complianceScore*0.25 + consistencyScore*0.25 + temporalScore*0.2
-
-	riskLevel := "low"
-	if overall < 60 {
-		riskLevel = "critical"
-	} else if overall < 75 {
-		riskLevel = "high"
-	} else if overall < 85 {
-		riskLevel = "medium"
-	}
-
-	writeJSON(w, 200, M{
-		"overall_score": math.Round(overall*10) / 10,
+	// Temporal patterns require an implemented, validated time-series method.
+	// Return the available observations without inventing a weighted integrity score.
+	writeJSON(w, http.StatusServiceUnavailable, M{
+		"status": "unavailable",
+		"reason": "temporal integrity analysis is unavailable until a validated timestamp-analysis method is configured",
 		"components": []M{
-			{"name": "Statistical Validity (Benford)", "score": math.Round(benfordScore*10) / 10, "weight": 0.3},
-			{"name": "Process Compliance", "score": math.Round(complianceScore*10) / 10, "weight": 0.25},
-			{"name": "Data Consistency", "score": math.Round(consistencyScore*10) / 10, "weight": 0.25},
-			{"name": "Temporal Patterns", "score": math.Round(temporalScore*10) / 10, "weight": 0.2},
+			{"name": "Statistical Validity (Benford)", "score": math.Round(benfordScore*10) / 10, "status": "observed"},
+			{"name": "Process Compliance", "score": math.Round(complianceScore*10) / 10, "status": "observed"},
+			{"name": "Data Consistency", "score": math.Round(consistencyScore*10) / 10, "status": "observed"},
+			{"name": "Temporal Patterns", "status": "unavailable"},
 		},
-		"risk_level":     riskLevel,
-		"confidence":     math.Round((overall/100)*100) / 100,
 		"total_results":  totalResults,
 		"overvote_count": overvoteCount,
-		"method":         "real_data_analysis",
+		"method":         "partial_real_data_analysis",
 	})
 }
 
@@ -748,59 +735,69 @@ func handleAIMethods(w http.ResponseWriter, r *http.Request) {
 	_, anomalyErr := callMLInference(r.Context(), "rust", "/health", nil)
 	_, pythonErr := callMLInference(r.Context(), "python", "/health", nil)
 
-	// Load actual model performance metrics from DB (tracked per inference call)
-	modelAccuracy := func(modelName string, fallback float64) float64 {
-		var acc float64
-		err := db.QueryRow(`SELECT COALESCE(AVG(accuracy), ?) FROM model_metrics WHERE model_name=? AND evaluated_at > datetime('now', '-7 days')`, fallback, modelName).Scan(&acc)
-		if err != nil {
-			return fallback
+	// Report a performance metric only when recent measured validation evidence exists.
+	// Hard-coded accuracy figures are prohibited from this operational status endpoint.
+	modelAccuracy := func(modelName string) interface{} {
+		var acc sql.NullFloat64
+		err := db.QueryRow(`SELECT AVG(accuracy) FROM model_metrics WHERE model_name=? AND evaluated_at > datetime('now', '-7 days')`, modelName).Scan(&acc)
+		if err != nil || !acc.Valid {
+			return nil
 		}
-		return acc
+		return math.Round(acc.Float64*10_000) / 10_000
+	}
+	modelStatus := func(modelName string, dependencyErr error) string {
+		if dependencyErr != nil {
+			return "unavailable"
+		}
+		if modelAccuracy(modelName) == nil {
+			return "unvalidated"
+		}
+		return "active"
 	}
 
 	methods := []M{
 		{
 			"name": "Benford's Law Analysis", "type": "statistical",
 			"description": "Real chi-square test on first-digit frequency of vote tallies",
-			"accuracy":    modelAccuracy("benfords_law", 0.94), "status": "active", "implementation": "go_native",
+			"accuracy":    modelAccuracy("benfords_law"), "status": modelStatus("benfords_law", nil), "implementation": "go_native",
 		},
 		{
 			"name": "Rule-Based Anomaly Detection", "type": "rule_engine",
 			"description": "Overvoting, turnout spike, round-number, rejection rate checks",
-			"accuracy":    modelAccuracy("rule_engine", 0.78), "status": "active", "implementation": "go_native",
+			"accuracy":    modelAccuracy("rule_engine"), "status": modelStatus("rule_engine", nil), "implementation": "go_native",
 		},
 		{
 			"name": "XGBoost Anomaly Detection", "type": "ml_model",
-			"description": "Gradient-boosted model trained on 50K samples, 17 features",
-			"accuracy":    modelAccuracy("xgboost_anomaly", 0.92), "status": statusFromErr(anomalyErr),
+			"description": "Gradient-boosted anomaly model; requires immutable approved manifest and recent validation evidence",
+			"accuracy":    modelAccuracy("xgboost_anomaly"), "status": modelStatus("xgboost_anomaly", anomalyErr),
 			"implementation": "rust_onnx", "inference_device": "cpu",
 			"model_file": "anomaly_xgboost.onnx",
 		},
 		{
 			"name": "ArcFace Face Verification", "type": "deep_learning",
 			"description": "512-d face embeddings (ResNet-100) for KYC identity matching",
-			"accuracy":    modelAccuracy("arcface_verification", 0.998), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("arcface_verification"), "status": modelStatus("arcface_verification", pythonErr),
 			"implementation": "python_insightface", "inference_device": "cpu",
 			"model_file": "buffalo_l (InsightFace)",
 		},
 		{
 			"name": "CDCN Liveness Detection", "type": "deep_learning",
 			"description": "Central Difference Convolution Network for anti-spoofing",
-			"accuracy":    modelAccuracy("cdcn_liveness", 0.95), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("cdcn_liveness"), "status": modelStatus("cdcn_liveness", pythonErr),
 			"implementation": "python_onnx", "inference_device": "cpu",
 			"model_file": "liveness_cdcn.onnx",
 		},
 		{
 			"name": "GNN Cross-PU Validation", "type": "graph_neural_network",
 			"description": "Graph Attention Network detecting anomalies via neighbor comparison",
-			"accuracy":    modelAccuracy("gnn_crosspu", 0.89), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("gnn_crosspu"), "status": modelStatus("gnn_crosspu", pythonErr),
 			"implementation": "python_pytorch_geometric", "inference_device": "cpu",
 			"model_file": "gnn_election.pt",
 		},
 		{
 			"name": "PaddleOCR EC8A Extraction", "type": "ocr",
 			"description": "Pre-trained text recognition for result sheet digitization",
-			"accuracy":    modelAccuracy("paddleocr_ec8a", 0.95), "status": statusFromErr(pythonErr),
+			"accuracy":    modelAccuracy("paddleocr_ec8a"), "status": modelStatus("paddleocr_ec8a", pythonErr),
 			"implementation": "python_paddleocr", "inference_device": "cpu",
 		},
 	}

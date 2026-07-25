@@ -12,8 +12,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # ML inference
-ort = { version = "2.0", features = ["load-dynamic"] }
-ndarray = "0.16"
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 
 # Neo4j
 neo4rs = "0.8"
@@ -31,6 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
 
 # Math
 nalgebra = "0.33"

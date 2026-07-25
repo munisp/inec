@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { DEMO_PRODUCTION } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,6 +36,7 @@ export default function ProductionPage() {
   const [dbMetrics, setDbMetrics] = useState<Record<string, any> | null>(null);
   const [pgpool, setPgpool] = useState<Record<string, any> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadAll();
@@ -44,7 +45,8 @@ export default function ProductionPage() {
   async function loadAll() {
     setLoading(true);
     try {
-      const [s, h, sm, p, i, f, l, d, pg] = await Promise.allSettled([
+      setError(null);
+      const [s, h, sm, p, i, f, l, d, pg] = await Promise.all([
         api.getProductionStatus(),
         api.getProductionHSMStats(),
         api.getProductionSMSStats(),
@@ -55,24 +57,41 @@ export default function ProductionPage() {
         api.getDBMetrics(),
         api.getPgpoolStatus(),
       ]);
-      if (s.status === 'fulfilled') setStatus(s.value);
-      if (h.status === 'fulfilled') setHsm(h.value);
-      if (sm.status === 'fulfilled') setSms(sm.value);
-      if (p.status === 'fulfilled') setPad(p.value);
-      if (i.status === 'fulfilled') setIpfs(i.value);
-      if (f.status === 'fulfilled') setFabric(f.value);
-      if (l.status === 'fulfilled') setLedger(l.value);
-      if (d.status === 'fulfilled') setDbMetrics(d.value);
-      if (pg.status === 'fulfilled') setPgpool(pg.value);
-      if (s.status !== 'fulfilled') setStatus(prev => prev || DEMO_PRODUCTION as Record<string, any>);
+      setStatus(s);
+      setHsm(h);
+      setSms(sm);
+      setPad(p);
+      setIpfs(i);
+      setFabric(f);
+      setLedger(l);
+      setDbMetrics(d);
+      setPgpool(pg);
     } catch (e) {
       logger.error(e);
-      if (!status) setStatus(DEMO_PRODUCTION as Record<string, any>);
+      setStatus(null);
+      setHsm(null);
+      setSms(null);
+      setPad(null);
+      setIpfs(null);
+      setFabric(null);
+      setLedger(null);
+      setDbMetrics(null);
+      setPgpool(null);
+      setError('production-status-source-unavailable');
     }
     setLoading(false);
   }
 
   if (loading) return <div className="flex items-center justify-center h-64"><p className="text-zinc-500">Loading production dashboard...</p></div>;
+
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="Production infrastructure status is unavailable"
+      description="Verified health and metrics for HSM, messaging, PAD, IPFS, Fabric, ledger, database, and Pgpool could not be retrieved. No simulated production status is shown."
+      error={error}
+      onRetry={loadAll}
+    />
+  );
 
   const components = status?.components || {};
 

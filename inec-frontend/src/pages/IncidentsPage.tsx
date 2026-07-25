@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { DEMO_INCIDENTS } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,14 +34,19 @@ export default function IncidentsPage() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterSeverity, setFilterSeverity] = useState('all');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { loadIncidents(); }, []);
 
   async function loadIncidents() {
     setLoading(true);
-    try { setIncidents(await api.getIncidents(1)); } catch (e) {
+    try {
+      setError(null);
+      setIncidents(await api.getIncidents(1));
+    } catch (e) {
       logger.error(e);
-      setIncidents(DEMO_INCIDENTS.map((inc) => ({ id: inc.id, election_id: 1, polling_unit_code: inc.polling_unit_code, incident_type: inc.type, description: inc.description, severity: inc.severity, status: inc.status, reported_at: inc.reported_at, reporter_name: inc.reported_by })) as Incident[]);
+      setIncidents([]);
+      setError('incident-source-unavailable');
     }
     finally { setLoading(false); }
   }
@@ -79,6 +84,15 @@ export default function IncidentsPage() {
   const statusDist = incidents.reduce((acc, inc) => { acc[inc.status] = (acc[inc.status] || 0) + 1; return acc; }, {} as Record<string, number>);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="Incident records are unavailable"
+      description="Verified election-security incident records could not be retrieved. No simulated incident queue, severity count, or resolution metric is shown."
+      error={error}
+      onRetry={loadIncidents}
+    />
+  );
 
   return (
     <div className="space-y-4">

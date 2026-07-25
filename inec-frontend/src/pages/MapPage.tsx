@@ -3,7 +3,7 @@ import { logger } from '@/lib/utils';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
-import { DEMO_MAP_STATES } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { generateStateBoundaryGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -65,6 +65,7 @@ export default function MapPage() {
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
   const [tileVersion, setTileVersion] = useState<number>(0);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [mapDataError, setMapDataError] = useState<string | null>(null);
   // Enhanced geospatial state
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(false);
@@ -116,6 +117,7 @@ export default function MapPage() {
   async function loadData(stateCode?: string) {
     setLoading(true);
     try {
+      setMapDataError(null);
       const data = await api.getMapData(1, stateCode);
       setStates(data.states);
       setPus(data.polling_units);
@@ -123,7 +125,12 @@ export default function MapPage() {
       setPuCount({ total: data.polling_units.length, withResults });
     } catch (e) {
       logger.error(e);
-      setStates(prev => prev.length ? prev : DEMO_MAP_STATES as unknown as StateData[]);
+      setStates([]);
+      setPus([]);
+      setSelectedState(null);
+      setSelectedPU(null);
+      setPuCount({ total: 0, withResults: 0 });
+      setMapDataError('map-source-unavailable');
     }
     finally { setLoading(false); }
   }
@@ -1062,6 +1069,17 @@ export default function MapPage() {
 
   if (loading && states.length === 0) {
     return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+  }
+
+  if (mapDataError) {
+    return (
+      <AuthoritativeDataUnavailable
+        title="Election map data is unavailable"
+        description="Verified state, polling-unit, and results geography could not be retrieved. No estimated election map or state coverage layer is shown."
+        error={mapDataError}
+        onRetry={() => loadData(selectedState?.code)}
+      />
+    );
   }
 
   function flyToCoords(lat: number, lon: number, zoom = 14) {

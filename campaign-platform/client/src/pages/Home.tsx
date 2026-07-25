@@ -253,16 +253,6 @@ function SensitivityHeatmap({ config }: { config: SimConfig }) {
 export default function Home() {
   const { profile, isLoading, profileId, memberRole, canEdit } = useCandidateProfile();
   const utils = trpc.useUtils();
-  const [seedLoading, setSeedLoading] = useState(false);
-  const seedMut = trpc.seed.all.useMutation({
-    onSuccess: () => {
-      utils.invalidate();
-      setSeedLoading(false);
-      toast.success("Sample data seeded! All 22 campaign tools are now populated with realistic Nigerian election data.");
-    },
-    onError: (e) => { setSeedLoading(false); toast.error(e.message); },
-  });
-
   const [activeTab, setActiveTab] = useState<"hub" | "simulation">("hub");
   const [config, setConfig] = useState<SimConfig>({
     scenario: "baseline", state: "FCT — Abuja",
@@ -533,40 +523,15 @@ export default function Home() {
       {activeTab === "hub" && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
           {/* Welcome Banner */}
-          {!isLoading && !profile?.candidateName && (
+          {!isLoading && (!profile || !profile.partyName || !profile.stateCode || !profile.office) && (
             <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <AlertTriangle size={18} className="text-amber-600 flex-shrink-0" />
-                <p className="text-sm text-amber-800">Set up your candidate profile to personalise all 22 campaign tools.</p>
+                <p className="text-sm text-amber-800">Complete your candidate profile with verified campaign, party, jurisdiction, and office details before operational tools are used.</p>
               </div>
               <Link href="/profile">
                 <Button size="sm" style={{ background: "#4A1525", color: "white" }}>Set Up Profile</Button>
               </Link>
-            </div>
-          )}
-
-          {/* Seed Sample Data Banner */}
-          {!isLoading && profile && (
-            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <Database size={18} className="text-green-700 flex-shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-green-900">Populate All 22 Campaign Tools with Sample Data</p>
-                  <p className="text-xs text-green-700 mt-0.5">Seeds realistic Nigerian election data across all modules: timeline, volunteers, media, endorsements, fundraising, budget, and more.</p>
-                </div>
-              </div>
-              <Button
-                size="sm"
-                style={{ background: "#008751", color: "white" }}
-                disabled={seedLoading || !profileId}
-                onClick={() => {
-                  if (!profileId) return toast.error("Profile required");
-                  setSeedLoading(true);
-                  seedMut.mutate({ profileId });
-                }}
-              >
-                {seedLoading ? <><Loader2 size={13} className="animate-spin mr-1" /> Seeding...</> : <><Database size={13} className="mr-1" /> Seed Sample Data</>}
-              </Button>
             </div>
           )}
 

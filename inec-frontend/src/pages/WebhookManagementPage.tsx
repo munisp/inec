@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
-import { DEMO_WEBHOOKS } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 
 interface Webhook {
   id: number;
@@ -29,14 +29,18 @@ export default function WebhookManagementPage() {
   const [editForm, setEditForm] = useState({ url: '', events: [] as string[], active: true });
 
   const [error, setError] = useState('');
+  const [sourceError, setSourceError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
+      setSourceError(null);
       const data = await api.getWebhooks() as unknown as { webhooks?: Webhook[] } | Webhook[];
       const list = Array.isArray(data) ? data : (data?.webhooks || []);
       setWebhooks(list);
     } catch {
-      setWebhooks(DEMO_WEBHOOKS.map(w => ({ id: w.id, url: w.url, events: w.events, active: w.status === 'active', created_at: w.created_at, last_triggered: w.last_delivery, failure_count: 0 })));
+      setWebhooks([]);
+      setSourceError('webhook-source-unavailable');
     }
     setLoading(false);
   }, []);
@@ -82,6 +86,15 @@ export default function WebhookManagementPage() {
     const s = search.toLowerCase();
     return wh.url?.toLowerCase().includes(s) || wh.events?.some(ev => ev.toLowerCase().includes(s));
   });
+
+  if (sourceError) return (
+    <AuthoritativeDataUnavailable
+      title="Webhook configuration is unavailable"
+      description="Verified webhook endpoints, subscriptions, and delivery state could not be retrieved. No simulated integration configuration is shown."
+      error={sourceError}
+      onRetry={load}
+    />
+  );
 
   return (
     <div className="space-y-6">

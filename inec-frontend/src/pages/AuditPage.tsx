@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { DEMO_AUDIT } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,7 @@ export default function AuditPage() {
   const [searchId, setSearchId] = useState('');
   const [verifyData, setVerifyData] = useState<VerifyData | null>(null);
   const [stats, setStats] = useState<{ total_entries: number; action_counts: Array<{ action: string; count: number }>; latest_block_hash: string | null } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
@@ -37,16 +38,17 @@ export default function AuditPage() {
   async function loadData() {
     setLoading(true);
     try {
+      setError(null);
       const [trail, auditStats] = await Promise.all([api.getAuditTrail(), api.getAuditStats()]);
       setEntries(trail.entries);
       setTotal(trail.total);
       setStats(auditStats);
     } catch (e) {
       logger.error(e);
-      const demoEntries = DEMO_AUDIT.map(a => ({ ...a, block_hash: 'demo-' + a.id, prev_block_hash: a.id > 1 ? 'demo-' + (a.id - 1) : '0', timestamp: a.created_at, full_name: a.username }));
-      setEntries(demoEntries as unknown as AuditEntry[]);
-      setTotal(demoEntries.length);
-      setStats({ total_entries: demoEntries.length, action_counts: [{ action: 'RESULT_SUBMITTED', count: 3 }, { action: 'RESULT_VALIDATED', count: 2 }, { action: 'USER_LOGIN', count: 1 }], latest_block_hash: 'demo-8' });
+      setEntries([]);
+      setTotal(0);
+      setStats(null);
+      setError('audit-source-unavailable');
     }
     finally { setLoading(false); }
   }
@@ -69,6 +71,15 @@ export default function AuditPage() {
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="Audit trail is unavailable"
+      description="Verified audit records and ledger status could not be retrieved. No local audit events or ledger confirmations are shown."
+      error={error}
+      onRetry={loadData}
+    />
+  );
 
   return (
     <div className="space-y-6">

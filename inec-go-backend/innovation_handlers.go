@@ -31,7 +31,7 @@ func digitalTwinURL() string {
 	return envString("DIGITAL_TWIN_SERVICE_URL", "http://digital-twin-simulation:8000")
 }
 func satelliteURL() string {
-	return strings.TrimRight(strings.TrimSpace(os.Getenv("SATELLITE_SERVICE_URL")), "/")
+	return strings.TrimRight(envString("SATELLITE_SERVICE_URL", "http://satellite-change-detection:8204"), "/")
 }
 func predictiveAllocURL() string {
 	return envString("PREDICTIVE_ALLOC_URL", "http://predictive-resource-allocation:8000")
@@ -67,19 +67,18 @@ func proxyToService(w http.ResponseWriter, r *http.Request, targetURL string) {
 
 // ── Innovation 1: AI Anomaly Detection ────────────────────────────────────────
 
-// handleAnomalyDetectStream proxies to the AI anomaly detection microservice.
-func handleAnomalyDetectStream(w http.ResponseWriter, r *http.Request) {
-	proxyToService(w, r, anomalyServiceURL()+"/detect")
+// handleAnomalyDetect proxies a real voting record to the governance-aware
+// anomaly gateway. The gateway returns 503 when its approved model or inference
+// dependency is unavailable; this handler does not substitute a local score.
+func handleAnomalyDetect(w http.ResponseWriter, r *http.Request) {
+	proxyToService(w, r, anomalyServiceURL()+"/api/v1/anomaly/score")
 }
 
-// handleAnomalyAlerts returns recent anomaly alerts from the detection service.
-func handleAnomalyAlerts(w http.ResponseWriter, r *http.Request) {
-	proxyToService(w, r, anomalyServiceURL()+"/alerts")
-}
-
-// handleAnomalyModelStatus returns the current model status and accuracy metrics.
+// handleAnomalyModelStatus returns governance and runtime health from the
+// anomaly gateway. It is intentionally a health endpoint, not a fabricated
+// model-accuracy report.
 func handleAnomalyModelStatus(w http.ResponseWriter, r *http.Request) {
-	proxyToService(w, r, anomalyServiceURL()+"/model/status")
+	proxyToService(w, r, anomalyServiceURL()+"/api/v1/anomaly/health")
 }
 
 // ── Innovation 2: Zero-Knowledge Proof Voter Verification ─────────────────────
@@ -311,13 +310,6 @@ func handleSatelliteAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxyToService(w, r, url+"/analyze")
-}
-
-// handleSatelliteAlerts intentionally rejects the retired unbacked alerts surface.
-// Alerting must be driven by persisted, real STAC analysis records rather than a
-// fabricated stateless response.
-func handleSatelliteAlerts(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusNotImplemented, "satellite alerts require a persisted real-analysis workflow and are not enabled")
 }
 
 // handleSatelliteStatus returns real STAC-service readiness.

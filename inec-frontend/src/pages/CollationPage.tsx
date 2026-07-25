@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
-import { DEMO_COLLATION } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -45,22 +45,26 @@ export default function CollationPage() {
   const [breadcrumbs, setBreadcrumbs] = useState<Array<{ level: Level; code?: string; name: string }>>([
     { level: 'state', name: 'National' }
   ]);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
+        setError(null);
         const res = await api.getCollation(1, level, parentCode);
         setData(res);
       } catch (e) {
         logger.error(e);
-        if (level === 'state') setData(DEMO_COLLATION as unknown as CollationItem[]);
+        setData([]);
+        setError('collation-source-unavailable');
       } finally {
         setLoading(false);
       }
     }
     load();
-  }, [level, parentCode]);
+  }, [level, parentCode, refreshKey]);
 
   const drillDown = (item: CollationItem) => {
     const next = NEXT_LEVEL[level];
@@ -83,6 +87,18 @@ export default function CollationPage() {
     : [];
 
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="Collation data is unavailable"
+      description="Verified state, LGA, ward, and polling-unit collation records could not be retrieved. No simulated results are shown."
+      error={error}
+      onRetry={() => {
+        setLoading(true);
+        setRefreshKey((value) => value + 1);
+      }}
+    />
+  );
 
   return (
     <div className="space-y-4">

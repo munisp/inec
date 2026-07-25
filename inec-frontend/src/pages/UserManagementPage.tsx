@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
-import { DEMO_USERS } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -55,6 +55,8 @@ export default function UserManagementPage() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [showDelete, setShowDelete] = useState<number | null>(null);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -62,21 +64,27 @@ export default function UserManagementPage() {
       const params: Record<string, string> = { limit: '100' };
       if (search) params.search = search;
       if (filterRole !== 'all') params.role = filterRole;
+      setUsersError(null);
       const data = await api.getUsers(params) as { users: User[]; total: number };
       setUsers(Array.isArray(data.users) ? data.users : []);
       setTotal(data.total || 0);
     } catch {
-      setUsers(DEMO_USERS as unknown as User[]);
-      setTotal(DEMO_USERS.length);
+      setUsers([]);
+      setTotal(0);
+      setUsersError('user-directory-source-unavailable');
     }
     setLoading(false);
   }, [search, filterRole]);
 
   const loadSessions = useCallback(async () => {
     try {
+      setSessionsError(null);
       const data = await api.getAuthSessions() as unknown as Session[];
       setSessions(Array.isArray(data) ? data : []);
-    } catch { setSessions([]); }
+    } catch {
+      setSessions([]);
+      setSessionsError('session-source-unavailable');
+    }
   }, []);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
@@ -129,6 +137,17 @@ export default function UserManagementPage() {
   };
 
   if (loading && view === 'users') return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
+
+  if ((view === 'users' && usersError) || (view === 'sessions' && sessionsError)) return (
+    <AuthoritativeDataUnavailable
+      title={view === 'sessions' ? 'Session records are unavailable' : 'User directory is unavailable'}
+      description={view === 'sessions'
+        ? 'Verified authentication-session records could not be retrieved. No synthetic sessions are shown.'
+        : 'Verified user and role records could not be retrieved. No simulated administrator or staff accounts are shown.'}
+      error={view === 'sessions' ? sessionsError! : usersError!}
+      onRetry={view === 'sessions' ? loadSessions : loadUsers}
+    />
+  );
 
   if (view === 'create' || view === 'edit') {
     return (

@@ -749,26 +749,26 @@ func handleGOTVListCampaigns(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		c := map[string]interface{}{
-			"campaign_id":        cid,
-			"name":               name,
-			"description":        gotvNullStr(desc),
-			"campaign_type":      ctype,
-			"status":             cstatus,
-			"target_state":       gotvNullStr(tState),
-			"target_lga":         gotvNullStr(tLGA),
-			"target_ward":        gotvNullStr(tWard),
+			"campaign_id":         cid,
+			"name":                name,
+			"description":         gotvNullStr(desc),
+			"campaign_type":       ctype,
+			"status":              cstatus,
+			"target_state":        gotvNullStr(tState),
+			"target_lga":          gotvNullStr(tLGA),
+			"target_ward":         gotvNullStr(tWard),
 			"target_polling_unit": gotvNullStr(tPU),
-			"message_template":   gotvNullStr(msgTemplate),
-			"message_variant_b":  gotvNullStr(msgVariantB),
-			"ab_split_pct":       abSplit,
-			"scheduled_at":       gotvNullTime(scheduledAt),
-			"started_at":         gotvNullTime(startedAt),
-			"completed_at":       gotvNullTime(completedAt),
-			"total_contacts":     totalContacts,
-			"contacts_reached":   reached,
-			"contacts_responded": responded,
-			"created_by":         createdBy,
-			"created_at":         createdAt,
+			"message_template":    gotvNullStr(msgTemplate),
+			"message_variant_b":   gotvNullStr(msgVariantB),
+			"ab_split_pct":        abSplit,
+			"scheduled_at":        gotvNullTime(scheduledAt),
+			"started_at":          gotvNullTime(startedAt),
+			"completed_at":        gotvNullTime(completedAt),
+			"total_contacts":      totalContacts,
+			"contacts_reached":    reached,
+			"contacts_responded":  responded,
+			"created_by":          createdBy,
+			"created_at":          createdAt,
 		}
 		campaigns = append(campaigns, c)
 	}
@@ -782,10 +782,10 @@ func handleGOTVListCampaigns(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"campaigns":  campaigns,
-		"total":      total,
-		"page":       page,
-		"per_page":   limit,
+		"campaigns":   campaigns,
+		"total":       total,
+		"page":        page,
+		"per_page":    limit,
 		"total_pages": int(math.Ceil(float64(total) / float64(limit))),
 	})
 }
@@ -795,17 +795,17 @@ func handleGOTVCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	username := r.Header.Get("X-GOTV-User")
 
 	var req struct {
-		Name             string  `json:"name"`
-		Description      string  `json:"description"`
-		CampaignType     string  `json:"campaign_type"`
-		TargetState      string  `json:"target_state"`
-		TargetLGA        string  `json:"target_lga"`
-		TargetWard       string  `json:"target_ward"`
-		TargetPU         string  `json:"target_polling_unit"`
-		MessageTemplate  string  `json:"message_template"`
-		MessageVariantB  string  `json:"message_variant_b"`
-		ABSplitPct       int     `json:"ab_split_pct"`
-		ScheduledAt      *string `json:"scheduled_at"`
+		Name            string  `json:"name"`
+		Description     string  `json:"description"`
+		CampaignType    string  `json:"campaign_type"`
+		TargetState     string  `json:"target_state"`
+		TargetLGA       string  `json:"target_lga"`
+		TargetWard      string  `json:"target_ward"`
+		TargetPU        string  `json:"target_polling_unit"`
+		MessageTemplate string  `json:"message_template"`
+		MessageVariantB string  `json:"message_variant_b"`
+		ABSplitPct      int     `json:"ab_split_pct"`
+		ScheduledAt     *string `json:"scheduled_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
@@ -1048,13 +1048,13 @@ func handleGOTVCampaignStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"campaign_id":      id,
-		"total_contacts":   totalContacts,
-		"reached":          reached,
-		"responded":        responded,
-		"reach_rate":       gotvSafeDiv(float64(reached), float64(totalContacts)),
-		"response_rate":    gotvSafeDiv(float64(responded), float64(reached)),
-		"channel_stats":    channelStats,
+		"campaign_id":    id,
+		"total_contacts": totalContacts,
+		"reached":        reached,
+		"responded":      responded,
+		"reach_rate":     gotvSafeDiv(float64(reached), float64(totalContacts)),
+		"response_rate":  gotvSafeDiv(float64(responded), float64(reached)),
+		"channel_stats":  channelStats,
 		"ab_test": map[string]interface{}{
 			"variant_a_responses": variantAResp,
 			"variant_b_responses": variantBResp,
@@ -1069,14 +1069,14 @@ func handleGOTVCreateContact(w http.ResponseWriter, r *http.Request) {
 	username := r.Header.Get("X-GOTV-User")
 
 	var req struct {
-		Phone            string   `json:"phone"`
-		FullName         string   `json:"full_name"`
-		StateCode        string   `json:"state_code"`
-		LGACode          string   `json:"lga_code"`
-		WardCode         string   `json:"ward_code"`
-		PollingUnitCode  string   `json:"polling_unit_code"`
-		Tags             []string `json:"tags"`
-		ConsentPurpose   string   `json:"consent_purpose"`
+		Phone           string   `json:"phone"`
+		FullName        string   `json:"full_name"`
+		StateCode       string   `json:"state_code"`
+		LGACode         string   `json:"lga_code"`
+		WardCode        string   `json:"ward_code"`
+		PollingUnitCode string   `json:"polling_unit_code"`
+		Tags            []string `json:"tags"`
+		ConsentPurpose  string   `json:"consent_purpose"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
@@ -1199,18 +1199,18 @@ func handleGOTVListContacts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		contacts = append(contacts, map[string]interface{}{
-			"contact_id":       cid,
-			"phone_masked":     maskedPhone,
-			"full_name":        fullName,
-			"state_code":       gotvNullStr(state),
-			"lga_code":         gotvNullStr(lga),
-			"ward_code":        gotvNullStr(ward),
+			"contact_id":        cid,
+			"phone_masked":      maskedPhone,
+			"full_name":         fullName,
+			"state_code":        gotvNullStr(state),
+			"lga_code":          gotvNullStr(lga),
+			"ward_code":         gotvNullStr(ward),
 			"polling_unit_code": gotvNullStr(pu),
-			"voter_status":     vStatus,
-			"tags":             tags,
+			"voter_status":      vStatus,
+			"tags":              tags,
 			"last_contacted_at": gotvNullTime(lastContacted),
-			"contact_count":    contactCount,
-			"created_at":       createdAt,
+			"contact_count":     contactCount,
+			"created_at":        createdAt,
 		})
 	}
 
@@ -1501,7 +1501,7 @@ func handleGOTVListVolunteers(w http.ResponseWriter, r *http.Request) {
 			"is_active": isActive, "has_vehicle": hasVehicle, "vehicle_capacity": vehicleCap,
 			"latitude": gotvNullFloat(lat), "longitude": gotvNullFloat(lng),
 			"last_checkin_at": gotvNullTime(lastCheckin),
-			"doors_knocked": doorsKnocked, "calls_made": callsMade, "rides_given": ridesGiven,
+			"doors_knocked":   doorsKnocked, "calls_made": callsMade, "rides_given": ridesGiven,
 			"created_at": createdAt,
 		})
 	}
@@ -1515,15 +1515,15 @@ func handleGOTVCreateVolunteer(w http.ResponseWriter, r *http.Request) {
 	username := r.Header.Get("X-GOTV-User")
 
 	var req struct {
-		FullName    string  `json:"full_name"`
-		Phone       string  `json:"phone"`
-		Role        string  `json:"role"`
-		State       string  `json:"assigned_state"`
-		LGA         string  `json:"assigned_lga"`
-		Ward        string  `json:"assigned_ward"`
-		PU          string  `json:"assigned_polling_unit"`
-		HasVehicle  bool    `json:"has_vehicle"`
-		VehicleCap  int     `json:"vehicle_capacity"`
+		FullName   string `json:"full_name"`
+		Phone      string `json:"phone"`
+		Role       string `json:"role"`
+		State      string `json:"assigned_state"`
+		LGA        string `json:"assigned_lga"`
+		Ward       string `json:"assigned_ward"`
+		PU         string `json:"assigned_polling_unit"`
+		HasVehicle bool   `json:"has_vehicle"`
+		VehicleCap int    `json:"vehicle_capacity"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
@@ -2001,12 +2001,12 @@ func handleGOTVTurnout(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"election_id":     electionID,
-		"states":          states,
-		"national_total":  totalReg,
-		"national_accredited": totalAcc,
+		"election_id":          electionID,
+		"states":               states,
+		"national_total":       totalReg,
+		"national_accredited":  totalAcc,
 		"national_turnout_pct": math.Round(gotvSafeDiv(float64(totalAcc), float64(totalReg))*10000) / 100,
-		"snapshot_at":     time.Now(),
+		"snapshot_at":          time.Now(),
 	})
 }
 
@@ -2879,8 +2879,8 @@ func handleGOTVPrimariesDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"total_delegates": totalDelegates, "accredited": accredited, "checked_in": checkedIn,
-		"turnout_pct": gotvSafeDiv(float64(votedCount), float64(totalDelegates)) * 100,
-		"quorum_met": totalDelegates > 0 && checkedIn >= totalDelegates/2,
+		"turnout_pct":   gotvSafeDiv(float64(votedCount), float64(totalDelegates)) * 100,
+		"quorum_met":    totalDelegates > 0 && checkedIn >= totalDelegates/2,
 		"current_round": gotvNullInt(currentRound), "aspirants_cleared": aspirantsCleared,
 		"state_breakdown": stateBreakdown,
 	})
@@ -3520,10 +3520,14 @@ func gotvNullIfEmpty(s string) interface{} {
 	return s
 }
 
-// seedGOTVData populates the GOTV module with realistic demo data for every
-// existing party, reusing the same encryption/hashing path as the real API
-// (handleGOTVCreateContact) so the rows are indistinguishable from live data.
+// seedGOTVData creates deterministic non-production GOTV fixtures only when
+// the central explicit E2E fixture gate is enabled. Production and staging must
+// never create contacts, turnout, campaigns, or outreach records at startup.
 func seedGOTVData() {
+	if !shouldSeedE2EFixtures() {
+		log.Info().Msg("GOTV fixture seeding refused outside explicit non-production environment")
+		return
+	}
 	type partyRef struct {
 		ID   int
 		Code string
@@ -3545,9 +3549,7 @@ func seedGOTVData() {
 		return
 	}
 
-	// Give the seeded admin account a party so gotvAuthMiddleware's
-	// header-less fallback (users.party_id) resolves for the demo login.
-	// Runs every boot regardless of the bulk-seed gate below.
+	// Give the test administrator a party only inside the explicit fixture gate.
 	db.Exec("UPDATE users SET party_id=$1 WHERE username='admin' AND party_id IS NULL", partyRefs[0].ID)
 
 	var count int
@@ -3763,5 +3765,5 @@ func seedGOTVData() {
 		}
 	}
 
-	log.Info().Int("parties", len(partyRefs)).Int("contacts_per_party", 15).Msg("GOTV demo data seeded")
+	log.Info().Int("parties", len(partyRefs)).Int("contacts_per_party", 15).Msg("GOTV non-production fixtures seeded")
 }

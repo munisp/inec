@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
-import { DEMO_MIDDLEWARE } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
@@ -27,6 +27,7 @@ export default function MiddlewarePage() {
   const [wafThreats, setWafThreats] = useState<unknown[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<unknown[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadAll();
@@ -36,25 +37,26 @@ export default function MiddlewarePage() {
 
   async function loadAll() {
     try {
+      setError(null);
       const [statusRes, healthRes] = await Promise.all([
-        api.getMiddlewareStatus().catch(() => ({ middleware: [] })),
-        api.getMiddlewareHealth().catch(() => null),
+        api.getMiddlewareStatus(),
+        api.getMiddlewareHealth(),
       ]);
       const mwArr = statusRes?.middleware || (Array.isArray(statusRes) ? statusRes : []);
       setStatuses(mwArr.map((m: Record<string, unknown>) => ({ name: String(m.name), status: m.connected ? 'connected' : 'disconnected', mode: String(m.mode || ''), details: m.details as Record<string, unknown> | undefined })));
       setHealth(healthRes ? { status: healthRes.all_connected ? 'healthy' : 'degraded', ...healthRes } : null);
 
       const [kt, rs, ar, lt, moja, mojaT, os, osI, waf, wafT] = await Promise.all([
-        api.getKafkaTopics().catch(() => []),
-        api.getRedisStats().catch(() => null),
-        api.getAPISIXRoutes().catch(() => []),
-        api.getLakehouseTables().catch(() => []),
-        api.getMojaStatus().catch(() => null),
-        api.getMojaTransactions().catch(() => []),
-        api.getOpenSearchStatus().catch(() => null),
-        api.getOpenSearchIndices().catch(() => []),
-        api.getWAFStatus().catch(() => null),
-        api.getWAFThreats().catch(() => []),
+        api.getKafkaTopics(),
+        api.getRedisStats(),
+        api.getAPISIXRoutes(),
+        api.getLakehouseTables(),
+        api.getMojaStatus(),
+        api.getMojaTransactions(),
+        api.getOpenSearchStatus(),
+        api.getOpenSearchIndices(),
+        api.getWAFStatus(),
+        api.getWAFThreats(),
       ]);
       setKafkaTopics(Array.isArray(kt) ? kt : (kt as Record<string, unknown>)?.topics as unknown[] || []);
       const redisData = rs?.status || rs;
@@ -70,9 +72,19 @@ export default function MiddlewarePage() {
       setWafStatus(waf);
       setWafThreats(Array.isArray(wafT) ? wafT : (wafT as Record<string, unknown>)?.threats as unknown[] || []);
     } catch {
-      const demoServices = DEMO_MIDDLEWARE.services.map(s => ({ name: s.name, status: 'connected', mode: 'external', details: { latency_ms: s.latency_ms, uptime_pct: s.uptime_pct } }));
-      setStatuses(demoServices as MWStatus[]);
-      setHealth({ status: 'healthy', all_connected: true, total: 14, connected: 14 });
+      setStatuses([]);
+      setHealth(null);
+      setKafkaTopics([]);
+      setRedisStats(null);
+      setApisixRoutes([]);
+      setLakehouseTables([]);
+      setMojaStatus(null);
+      setMojaTransactions([]);
+      setOsStatus(null);
+      setOsIndices([]);
+      setWafStatus(null);
+      setWafThreats([]);
+      setError('middleware-status-source-unavailable');
     } finally {
       setLoading(false);
     }
@@ -101,12 +113,21 @@ export default function MiddlewarePage() {
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-700" /></div>;
 
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="Middleware status is unavailable"
+      description="Verified status from the platform’s middleware and security integrations could not be retrieved. No connected-service, health, or threat state is inferred."
+      error={error}
+      onRetry={loadAll}
+    />
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-zinc-900">Middleware Status</h2>
-          <p className="text-sm text-zinc-500">{statuses.length || 13} enterprise middleware integrations</p>
+          <p className="text-sm text-zinc-500">{statuses.length} reported middleware integrations</p>
         </div>
         {health && (
           <Badge variant="outline" className={health.status === 'healthy' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}>
@@ -141,7 +162,7 @@ export default function MiddlewarePage() {
           </CardHeader>
           <CardContent>
             {kafkaTopics.length === 0 ? (
-              <p className="text-sm text-zinc-500">No topics (embedded mode)</p>
+              <p className="text-sm text-zinc-500">No topics reported by the authoritative source</p>
             ) : (
               <div className="flex flex-wrap gap-2">
                 {kafkaTopics.map((t: string) => (
@@ -167,7 +188,7 @@ export default function MiddlewarePage() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-zinc-500">Embedded cache active</p>
+              <p className="text-sm text-zinc-500">No Redis statistics reported by the authoritative source</p>
             )}
           </CardContent>
         </Card>
@@ -178,7 +199,7 @@ export default function MiddlewarePage() {
           </CardHeader>
           <CardContent>
             {apisixRoutes.length === 0 ? (
-              <p className="text-sm text-zinc-500">Embedded routing active</p>
+              <p className="text-sm text-zinc-500">No APISIX routes reported by the authoritative source</p>
             ) : (
               <div className="space-y-1">
                 {apisixRoutes.map((r, i) => {
@@ -198,7 +219,7 @@ export default function MiddlewarePage() {
           </CardHeader>
           <CardContent>
             {lakehouseTables.length === 0 ? (
-              <p className="text-sm text-zinc-500">Embedded analytics active</p>
+              <p className="text-sm text-zinc-500">No Lakehouse tables reported by the authoritative source</p>
             ) : (
               <div className="flex flex-wrap gap-2">
                 {lakehouseTables.map((t: string) => (

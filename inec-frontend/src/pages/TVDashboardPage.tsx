@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { DEMO_TV_DATA } from '../lib/demo-data';
+import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
 
 interface PartyTotal {
   party: string;
@@ -25,6 +25,8 @@ const partyColors: Record<string, string> = {
 export default function TVDashboardPage() {
   const [data, setData] = useState<TVData | null>(null);
   const [cycleIdx, setCycleIdx] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const load = () => {
@@ -34,18 +36,35 @@ export default function TVDashboardPage() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
-        .then(setData)
-        .catch(() => { setData(prev => prev || DEMO_TV_DATA as TVData); });
+        .then((payload) => {
+          setData(payload);
+          setError(null);
+        })
+        .catch(() => {
+          setData(null);
+          setError('public-results-source-unavailable');
+        });
     };
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     const interval = setInterval(() => setCycleIdx(i => i + 1), 8000);
     return () => clearInterval(interval);
   }, []);
+
+  if (error) return (
+    <div className="min-h-screen bg-gray-950 text-white p-6 flex items-center justify-center">
+      <AuthoritativeDataUnavailable
+        title="Live results are unavailable"
+        description="Verified public election-result totals could not be retrieved. No estimated or simulated results are displayed."
+        error={error}
+        onRetry={() => setRefreshKey((value) => value + 1)}
+      />
+    </div>
+  );
 
   if (!data) return <div className="flex items-center justify-center h-screen bg-gray-950 text-white text-4xl" role="status" aria-label="Loading dashboard">Loading Election Dashboard...</div>;
 

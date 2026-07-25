@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import { DEMO_BVAS } from '@/lib/demo-data';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
 
 interface DeviceSummary {
@@ -30,36 +30,43 @@ export default function BVASPage() {
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'overview' | 'devices' | 'reconciliation' | 'ingestion'>('overview');
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     loadAll();
     const iv = setInterval(loadAll, 30000);
     return () => clearInterval(iv);
-  }, [flaggedOnly]);
+  }, [flaggedOnly, refreshKey]);
 
   async function loadAll() {
     try {
+      setError(null);
       const [summary, recon, tl, fd, ing] = await Promise.all([
-        api.getBVASSummary(1).catch(() => null),
-        api.getBVASReconciliation(1, flaggedOnly).catch(() => ({ reconciliation: [], total_flagged: 0 })),
-        api.getBVASAccreditationTimeline(1, 'hour').catch(() => ({ data: [] })),
-        api.getBVASAccreditationFeed(1, 20).catch(() => []),
-        api.getIngestionStats().catch(() => null),
+        api.getBVASSummary(1),
+        api.getBVASReconciliation(1, flaggedOnly),
+        api.getBVASAccreditationTimeline(1, 'hour'),
+        api.getBVASAccreditationFeed(1, 20),
+        api.getIngestionStats(),
       ]);
-      if (summary) {
-        setDevices(summary.devices);
-        setAccreditation(summary.accreditation);
-        setStateBreakdown(summary.state_breakdown || []);
-      }
-      setReconciliation(recon?.reconciliation || []);
-      setTotalFlagged(recon?.total_flagged || 0);
-      setTimeline(tl?.data || []);
+      setDevices(summary.devices);
+      setAccreditation(summary.accreditation);
+      setStateBreakdown(summary.state_breakdown || []);
+      setReconciliation(recon.reconciliation || []);
+      setTotalFlagged(recon.total_flagged || 0);
+      setTimeline(tl.data || []);
       setFeed(Array.isArray(fd) ? fd : []);
       setIngestion(ing);
     } catch {
-      const s = DEMO_BVAS.summary;
-      setDevices({ total: s.total_devices, active: s.active, offline: s.offline, faulty: s.error, avg_battery: 68, low_battery_count: Math.round(s.total_devices * 0.08) });
-      setAccreditation({ total: 24492921, biometric_match: 24100000, pvc_verified: 24350000, biometric_pass_rate: 98.4, pvc_verify_rate: 99.4 });
+      setDevices(null);
+      setAccreditation(null);
+      setStateBreakdown([]);
+      setReconciliation([]);
+      setTotalFlagged(0);
+      setTimeline([]);
+      setFeed([]);
+      setIngestion(null);
+      setError('bvas-source-unavailable');
     } finally { setLoading(false); }
   }
 
@@ -73,6 +80,18 @@ export default function BVASPage() {
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600" /></div>;
+
+  if (error) return (
+    <AuthoritativeDataUnavailable
+      title="BVAS operational data is unavailable"
+      description="Verified accreditation, device, reconciliation, and ingestion records could not be retrieved. No estimated device or accreditation metrics are shown."
+      error={error}
+      onRetry={() => {
+        setLoading(true);
+        setRefreshKey((value) => value + 1);
+      }}
+    />
+  );
 
   const devicePie = devices ? [
     { name: 'Active', value: devices.active, color: '#10b981' },

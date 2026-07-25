@@ -3,7 +3,7 @@
  * Real media mentions, sentiment tracking, and competitor coverage analysis.
  */
 import { useState } from "react";
-import { ArrowLeft, TrendingUp, TrendingDown, Minus, Radio, Newspaper, Tv, Globe, Plus, Trash2, Loader2, Database, FileText, Download} from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, Minus, Radio, Newspaper, Tv, Globe, Plus, Trash2, Loader2, FileText, Download} from "lucide-react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { exportToCSV, exportToPDF } from "@/hooks/useExport";
@@ -55,11 +55,6 @@ export default function MediaMonitoring() {
     onSuccess: () => { utils.media.list.invalidate(); toast.success("Mention removed"); },
     onError: e => toast.error(e.message),
   });
-  const seedMut = trpc.seed.all.useMutation({
-    onSuccess: () => { utils.media.list.invalidate(); toast.success("Sample media mentions seeded!"); },
-    onError: e => toast.error(e.message),
-  });
-
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ source: "Channels TV", headline: "", sentiment: "positive", sourceType: "tv", reach: "", zone: "National" });
   const [sentimentFilter, setSentimentFilter] = useState<"all" | "positive" | "neutral" | "negative">("all");
@@ -102,13 +97,6 @@ export default function MediaMonitoring() {
           <h1 className="text-white font-bold text-lg" style={{ fontFamily: "'Playfair Display', serif" }}>Media Monitoring</h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {mentions.length === 0 && (
-            <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10"
-              disabled={!profileId || seedMut.isPending}
-              onClick={() => profileId && seedMut.mutate({ profileId })}>
-              {seedMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Database size={13} />} Seed Sample Data
-            </Button>
-          )}
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("media-monitoring", EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("media-monitoring", "Media Monitoring Report", `Total mentions: ${(mentions ?? []).length}`, EXPORT_COLS_M, (mentions ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
           <Dialog open={open} onOpenChange={setOpen}>
@@ -237,7 +225,7 @@ export default function MediaMonitoring() {
           <div className="text-center py-20 text-gray-500">
             <Radio size={48} className="mx-auto mb-4 opacity-30" />
             <p className="font-semibold mb-2">No media mentions yet</p>
-            <p className="text-sm">Add mentions manually or use "Seed Sample Data" to populate with realistic Nigerian media coverage.</p>
+            <p className="text-sm">Add a verified media mention to begin monitoring coverage. No sample coverage is generated in this environment.</p>
           </div>
         ) : (
           <div className="space-y-3">
