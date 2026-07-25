@@ -698,38 +698,15 @@ func (p *PADModelManager) ListModels() []M {
 }
 
 func (p *PADModelManager) DeployUpdate(modelID, newVersion string) M {
-	// Get baseline accuracy from the model being superseded
-	var prevAcc float64
-	p.db.QueryRow(`SELECT COALESCE(accuracy, 0.95) FROM pad_models WHERE model_id=?`, modelID).Scan(&prevAcc)
-	dbExecLog("pad_supersede", `UPDATE pad_models SET status='superseded' WHERE model_id=?`, modelID)
-	newModelID := fmt.Sprintf("%s-v%s", modelID[:strings.LastIndex(modelID, "-v")], newVersion)
-
-	// Estimate improvement from benchmark baseline for this modality.
-	// Extract modality from model_id (e.g., "PAD-FP-v3.1" -> "fingerprint")
-	modality := "multi_modal"
-	if strings.Contains(strings.ToLower(modelID), "fp") {
-		modality = "fingerprint"
-	} else if strings.Contains(strings.ToLower(modelID), "face") {
-		modality = "facial"
-	} else if strings.Contains(strings.ToLower(modelID), "iris") {
-		modality = "iris"
-	}
-	baseAcc := GetPADBaselineAccuracy(modality)
-
-	// New version accuracy is the benchmark baseline for this modality,
-	// updated incrementally. This represents real model improvement
-	// tracked against known benchmark performance, not a fake formula.
-	acc := math.Min(prevAcc+(baseAcc-prevAcc)*0.1, baseAcc)
-	flr := 0.001 * (1.0 - acc) * 10 // FAR decreases as accuracy improves
-	fsr := 0.01 * (1.0 - acc) * 5
-	dbExecLog("pad_deploy", `INSERT INTO pad_models (model_id, modality, model_version, algorithm, attack_types, accuracy, false_live_rate, false_spoof_rate, model_size_kb, status) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		newModelID, modality, newVersion, "deep_cnn_ensemble",
-		"silicone_mold,printed_photo,3d_mask,deepfake,screen_replay,latex_finger",
-		acc, flr, fsr, 2560, "active")
+	// Model releases must be supplied by the governed biometric deployment path.
+	// This API deliberately does not synthesize a new artifact, accuracy, FAR, or
+	// FRR from a model identifier and version string.
 	return M{
-		"old_model": modelID, "new_model": newModelID, "version": newVersion,
-		"accuracy": math.Round(acc*10000) / 10000, "status": "deployed",
-		"ota_delivery": "incremental_delta_update",
+		"status":   "unavailable",
+		"model_id": modelID,
+		"version":  newVersion,
+		"reason": "PAD model updates require an approved artifact, immutable " +
+			"manifest, validation evidence, and controlled deployment workflow",
 	}
 }
 
@@ -1703,7 +1680,11 @@ func handlePADModelUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "model_id and new_version required")
 		return
 	}
-	writeJSON(w, 200, padModelManager.DeployUpdate(req.ModelID, req.NewVersion))
+	writeJSON(
+		w,
+		http.StatusServiceUnavailable,
+		padModelManager.DeployUpdate(req.ModelID, req.NewVersion),
+	)
 }
 
 func handleQualityGateway(w http.ResponseWriter, r *http.Request) {

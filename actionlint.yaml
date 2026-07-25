@@ -1,0 +1,4 @@
+# Custom labels configured on the protected Kasicloud self-hosted runner.
+self-hosted-runner:
+  labels:
+    - kasicloud

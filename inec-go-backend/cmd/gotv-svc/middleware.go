@@ -513,10 +513,10 @@ func daprInvoke(appID, method string, payload interface{}) ([]byte, error) {
 // invokeRustMatchRide calls the Rust gotv-engine for spatial ride matching
 func invokeRustMatchRide(rideID string, pickupLat, pickupLng float64, partyID int) (map[string]interface{}, error) {
 	result, err := daprInvoke("gotv-engine", "match", map[string]interface{}{
-		"ride_id":    rideID,
-		"pickup_lat": pickupLat,
-		"pickup_lng": pickupLng,
-		"party_id":   partyID,
+		"ride_id":         rideID,
+		"pickup_lat":      pickupLat,
+		"pickup_lng":      pickupLng,
+		"party_id":        partyID,
 		"max_distance_km": 10.0,
 	})
 	if err != nil {
@@ -590,8 +590,8 @@ func initiateVolunteerPayment(volunteerPhone string, amountNGN float64, reason s
 		return fmt.Errorf("mojaloop not configured")
 	}
 	payload := map[string]interface{}{
-		"from":     map[string]interface{}{"idType": "MSISDN", "idValue": "0000000000"},
-		"to":       map[string]interface{}{"idType": "MSISDN", "idValue": volunteerPhone},
+		"from":       map[string]interface{}{"idType": "MSISDN", "idValue": "0000000000"},
+		"to":         map[string]interface{}{"idType": "MSISDN", "idValue": volunteerPhone},
 		"amountType": "SEND",
 		"currency":   "NGN",
 		"amount":     fmt.Sprintf("%.2f", amountNGN),
@@ -817,7 +817,11 @@ func handleGOTVAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := invokePythonAnalytics(endpoint, nil)
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error(), "fallback": true})
+		http.Error(
+			w,
+			fmt.Sprintf(`{"error":%q}`, "GOTV analytics service is unavailable: "+err.Error()),
+			http.StatusServiceUnavailable,
+		)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -857,7 +861,7 @@ func handleMiddlewareStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"middleware":        status,
+		"middleware":       status,
 		"connected":        connected,
 		"total":            14,
 		"connection_ratio": fmt.Sprintf("%d/14", connected),

@@ -679,20 +679,20 @@ func handleResultCertificate(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT block_hash FROM blockchain_records WHERE data_hash = ?", certHash).Scan(&blockHash)
 
 	certificate := M{
-		"certificate_id":     fmt.Sprintf("CERT-%s-%d", puCode, electionID),
-		"polling_unit_code":  puCode,
-		"election_id":        electionID,
-		"total_valid_votes":  totalVotes,
-		"rejected_votes":     rejectedVotes,
-		"party_results":      partyResults,
-		"submitted_at":       submittedAt,
-		"certificate_hash":   certHash,
-		"blockchain_anchor":  blockHash,
-		"verification_url":   fmt.Sprintf("/citizen/verify?pu=%s&election=%d", puCode, electionID),
-		"qr_data":            fmt.Sprintf("INEC-VERIFY:%s:%d:%s", puCode, electionID, certHash[:16]),
-		"generated_at":       time.Now().Format(time.RFC3339),
-		"integrity_score":    calculateIntegrityScore(puCode, electionID),
-		"tamper_evident":     true,
+		"certificate_id":    fmt.Sprintf("CERT-%s-%d", puCode, electionID),
+		"polling_unit_code": puCode,
+		"election_id":       electionID,
+		"total_valid_votes": totalVotes,
+		"rejected_votes":    rejectedVotes,
+		"party_results":     partyResults,
+		"submitted_at":      submittedAt,
+		"certificate_hash":  certHash,
+		"blockchain_anchor": blockHash,
+		"verification_url":  fmt.Sprintf("/citizen/verify?pu=%s&election=%d", puCode, electionID),
+		"qr_data":           fmt.Sprintf("INEC-VERIFY:%s:%d:%s", puCode, electionID, certHash[:16]),
+		"generated_at":      time.Now().Format(time.RFC3339),
+		"integrity_score":   calculateIntegrityScore(puCode, electionID),
+		"tamper_evident":    true,
 	}
 
 	writeJSON(w, 200, certificate)
@@ -796,14 +796,14 @@ func handleComplianceReport(w http.ResponseWriter, r *http.Request) {
 			"total_votes_cast":    totalVotes,
 		},
 		"security_assessment": M{
-			"total_incidents":     totalIncidents,
-			"open_disputes":       totalDisputes,
+			"total_incidents":      totalIncidents,
+			"open_disputes":        totalDisputes,
 			"unresolved_anomalies": anomalyCount,
-			"security_level":      assessSecurityLevel(totalIncidents, anomalyCount),
+			"security_level":       assessSecurityLevel(totalIncidents, anomalyCount),
 		},
 		"observer_coverage": M{
-			"total_observers":  observerCount,
-			"coverage_ratio":   safeDiv(float64(observerCount), float64(totalPUs)),
+			"total_observers": observerCount,
+			"coverage_ratio":  safeDiv(float64(observerCount), float64(totalPUs)),
 		},
 		"recommendations": generateComplianceRecommendations(reportedPUs, totalPUs, totalIncidents, anomalyCount),
 	}
@@ -972,22 +972,29 @@ func handleVoiceTranscription(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := client.Do(proxyReq)
 	if err != nil {
-		// Fallback response when Whisper service unavailable
-		writeJSON(w, 200, M{
-			"text":        "",
-			"language":    "en",
-			"duration":    0,
-			"status":      "service_unavailable",
-			"fallback":    true,
-			"message":     "Voice transcription service is offline. Please type your report manually.",
-		})
+		writeError(
+			w,
+			http.StatusServiceUnavailable,
+			"voice transcription service is unavailable; submit the report manually",
+		)
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		writeError(
+			w,
+			resp.StatusCode,
+			"voice transcription provider did not complete the request",
+		)
+		return
+	}
 
 	var result M
-	json.NewDecoder(resp.Body).Decode(&result)
-	writeJSON(w, 200, result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		writeError(w, http.StatusBadGateway, "invalid response from voice transcription provider")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

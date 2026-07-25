@@ -83,67 +83,31 @@ func handleAnomalyModelStatus(w http.ResponseWriter, r *http.Request) {
 
 // ── Innovation 2: Zero-Knowledge Proof Voter Verification ─────────────────────
 
-// handleZKPGenerateProof generates a ZKP for a voter's eligibility.
+// ZKP eligibility proof creation and verification require an approved proof
+// service, key custody, verifier registry, and persisted audit evidence. The
+// previous inline routines produced random values and structural checks only.
 func handleZKPGenerateProof(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		VoterID       string `json:"voter_id"`
-		ElectionID    int    `json:"election_id"`
-		PollingUnitID string `json:"polling_unit_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request body")
-		return
-	}
-	if req.VoterID == "" || req.ElectionID == 0 {
-		writeError(w, 400, "voter_id and election_id are required")
-		return
-	}
-
-	proof, err := GenerateVoterEligibilityProof(req.VoterID, req.ElectionID, req.PollingUnitID)
-	if err != nil {
-		log.Error().Err(err).Str("voter_id", req.VoterID).Msg("zkp_proof_generation_failed")
-		writeError(w, 500, "proof generation failed")
-		return
-	}
-	auditWrite("zkp_proof_generated", "voter_id", req.VoterID, r, nil)
-	writeJSON(w, 200, proof)
+	writeError(
+		w,
+		http.StatusServiceUnavailable,
+		"ZKP eligibility proofs are unavailable until an approved proof service is configured",
+	)
 }
 
-// handleZKPVerifyProof verifies a submitted ZKP without revealing voter identity.
 func handleZKPVerifyProof(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Proof      string `json:"proof"`
-		PublicKey  string `json:"public_key"`
-		ElectionID int    `json:"election_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request body")
-		return
-	}
-	if req.Proof == "" || req.PublicKey == "" {
-		writeError(w, 400, "proof and public_key are required")
-		return
-	}
-
-	valid, err := VerifyVoterEligibilityProof(req.Proof, req.PublicKey, req.ElectionID)
-	if err != nil {
-		log.Error().Err(err).Msg("zkp_verification_error")
-		writeError(w, 500, "proof verification failed")
-		return
-	}
-	auditWrite("zkp_proof_verified", "valid", fmt.Sprintf("%v", valid), r, nil)
-	writeJSON(w, 200, M{"valid": valid, "verified_at": time.Now().UTC()})
+	writeError(
+		w,
+		http.StatusServiceUnavailable,
+		"ZKP proof verification is unavailable until an approved verifier is configured",
+	)
 }
 
-// handleZKPStats returns aggregated ZKP verification statistics.
 func handleZKPStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := GetZKPStats()
-	if err != nil {
-		log.Error().Err(err).Msg("zkp_stats_error")
-		writeError(w, 500, "failed to retrieve ZKP stats")
-		return
-	}
-	writeJSON(w, 200, stats)
+	writeError(
+		w,
+		http.StatusServiceUnavailable,
+		"ZKP verification statistics are unavailable until an authoritative verifier is configured",
+	)
 }
 
 // ── Innovation 3: Homomorphic Encryption Vote Tallying ────────────────────────
@@ -324,30 +288,22 @@ func handleSatelliteStatus(w http.ResponseWriter, r *http.Request) {
 
 // ── Innovation 8: Voice IVR Voter Assistance (extended) ───────────────────────
 
-// handleIVRSessionStatus returns the status of an active IVR session.
+// IVR status and metrics require an approved telephony provider and persistent
+// call records. No active-session or zero-count response is returned locally.
 func handleIVRSessionStatus(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		writeError(w, 400, "session_id is required")
-		return
-	}
-	status, err := GetIVRSessionStatus(sessionID)
-	if err != nil {
-		writeError(w, 404, "session not found")
-		return
-	}
-	writeJSON(w, 200, status)
+	writeError(
+		w,
+		http.StatusServiceUnavailable,
+		"IVR session status is unavailable until an approved telephony provider is configured",
+	)
 }
 
-// handleIVRStats returns IVR usage statistics.
 func handleIVRStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := GetIVRStats()
-	if err != nil {
-		log.Error().Err(err).Msg("ivr_stats_error")
-		writeError(w, 500, "failed to retrieve IVR stats")
-		return
-	}
-	writeJSON(w, 200, stats)
+	writeError(
+		w,
+		http.StatusServiceUnavailable,
+		"IVR statistics are unavailable until an approved telephony provider is configured",
+	)
 }
 
 // ── Innovation 9: Blockchain IPFS Audit Trail (extended) ─────────────────────
@@ -412,332 +368,17 @@ func handleResourceAllocationStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── Candidate Campaign Planning Module ────────────────────────────────────────
-
-// handleCampaignPlanCreate creates a new campaign plan for a candidate.
-func handleCampaignPlanCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CandidateID  int    `json:"candidate_id"`
-		ElectionID   int    `json:"election_id"`
-		OfficeType   string `json:"office_type"` // "presidential" | "gubernatorial" | "senatorial" | "house" | "local"
-		StateCode    string `json:"state_code"`
-		LGACode      string `json:"lga_code"`
-		PartyCode    string `json:"party_code"`
-		TargetVotes  int    `json:"target_votes"`
-		BudgetNGN    int64  `json:"budget_ngn"`
-		ElectionDate string `json:"election_date"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request body")
-		return
-	}
-	if req.CandidateID == 0 || req.ElectionID == 0 || req.OfficeType == "" {
-		writeError(w, 400, "candidate_id, election_id, and office_type are required")
-		return
-	}
-
-	plan, err := CreateCampaignPlan(req.CandidateID, req.ElectionID, req.OfficeType,
-		req.StateCode, req.LGACode, req.PartyCode, req.TargetVotes, req.BudgetNGN, req.ElectionDate)
-	if err != nil {
-		log.Error().Err(err).Int("candidate_id", req.CandidateID).Msg("campaign_plan_create_failed")
-		writeError(w, 500, "failed to create campaign plan")
-		return
-	}
-	auditWrite("campaign_plan_created", "candidate_id", fmt.Sprintf("%d", req.CandidateID), r, nil)
-	writeJSON(w, 201, plan)
-}
-
-// handleCampaignPlanGet retrieves a campaign plan with analytics.
-func handleCampaignPlanGet(w http.ResponseWriter, r *http.Request) {
-	candidateID := r.URL.Query().Get("candidate_id")
-	electionID := r.URL.Query().Get("election_id")
-	if candidateID == "" {
-		writeError(w, 400, "candidate_id is required")
-		return
-	}
-	plan, err := GetCampaignPlan(candidateID, electionID)
-	if err != nil {
-		writeError(w, 404, "campaign plan not found")
-		return
-	}
-	writeJSON(w, 200, plan)
-}
-
-// handleCampaignVoterTargeting returns AI-driven voter targeting recommendations.
-func handleCampaignVoterTargeting(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CandidateID int    `json:"candidate_id"`
-		ElectionID  int    `json:"election_id"`
-		StateCode   string `json:"state_code"`
-		Strategy    string `json:"strategy"` // "base_mobilization" | "swing_persuasion" | "turnout_maximization"
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request body")
-		return
-	}
-	targeting, err := GenerateVoterTargeting(req.CandidateID, req.ElectionID, req.StateCode, req.Strategy)
-	if err != nil {
-		log.Error().Err(err).Msg("voter_targeting_failed")
-		writeError(w, 500, "voter targeting analysis failed")
-		return
-	}
-	writeJSON(w, 200, targeting)
-}
-
-// handleCampaignPollingAnalysis returns polling unit-level analysis for a candidate's territory.
-func handleCampaignPollingAnalysis(w http.ResponseWriter, r *http.Request) {
-	candidateID := r.URL.Query().Get("candidate_id")
-	stateCode := r.URL.Query().Get("state_code")
-	lgaCode := r.URL.Query().Get("lga_code")
-	if candidateID == "" {
-		writeError(w, 400, "candidate_id is required")
-		return
-	}
-	analysis, err := GetPollingUnitCampaignAnalysis(candidateID, stateCode, lgaCode)
-	if err != nil {
-		log.Error().Err(err).Msg("campaign_pu_analysis_failed")
-		writeError(w, 500, "polling unit analysis failed")
-		return
-	}
-	writeJSON(w, 200, analysis)
-}
-
-// handleCampaignCompetitorAnalysis returns competitor strength analysis by geography.
-func handleCampaignCompetitorAnalysis(w http.ResponseWriter, r *http.Request) {
-	electionID := r.URL.Query().Get("election_id")
-	candidateID := r.URL.Query().Get("candidate_id")
-	if electionID == "" {
-		writeError(w, 400, "election_id is required")
-		return
-	}
-	analysis, err := GetCompetitorAnalysis(electionID, candidateID)
-	if err != nil {
-		log.Error().Err(err).Msg("competitor_analysis_failed")
-		writeError(w, 500, "competitor analysis failed")
-		return
-	}
-	writeJSON(w, 200, analysis)
-}
-
-// handleCampaignBudgetAllocation returns AI-optimized budget allocation across LGAs.
-func handleCampaignBudgetAllocation(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CandidateID int    `json:"candidate_id"`
-		ElectionID  int    `json:"election_id"`
-		TotalBudget int64  `json:"total_budget_ngn"`
-		StateCode   string `json:"state_code"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request body")
-		return
-	}
-	allocation, err := OptimizeCampaignBudget(req.CandidateID, req.ElectionID, req.TotalBudget, req.StateCode)
-	if err != nil {
-		log.Error().Err(err).Msg("budget_allocation_failed")
-		writeError(w, 500, "budget allocation optimization failed")
-		return
-	}
-	writeJSON(w, 200, allocation)
-}
-
-// handleCampaignEventSchedule returns an optimized campaign event schedule.
-func handleCampaignEventSchedule(w http.ResponseWriter, r *http.Request) {
-	candidateID := r.URL.Query().Get("candidate_id")
-	electionID := r.URL.Query().Get("election_id")
-	if candidateID == "" || electionID == "" {
-		writeError(w, 400, "candidate_id and election_id are required")
-		return
-	}
-	schedule, err := GenerateCampaignSchedule(candidateID, electionID)
-	if err != nil {
-		log.Error().Err(err).Msg("campaign_schedule_failed")
-		writeError(w, 500, "campaign schedule generation failed")
-		return
-	}
-	writeJSON(w, 200, schedule)
-}
-
-// handleCampaignSentimentAnalysis returns social media and public sentiment analysis.
-func handleCampaignSentimentAnalysis(w http.ResponseWriter, r *http.Request) {
-	candidateID := r.URL.Query().Get("candidate_id")
-	period := r.URL.Query().Get("period") // "7d" | "30d" | "90d"
-	if candidateID == "" {
-		writeError(w, 400, "candidate_id is required")
-		return
-	}
-	if period == "" {
-		period = "30d"
-	}
-	sentiment, err := GetCampaignSentiment(candidateID, period)
-	if err != nil {
-		log.Error().Err(err).Msg("sentiment_analysis_failed")
-		writeError(w, 500, "sentiment analysis failed")
-		return
-	}
-	writeJSON(w, 200, sentiment)
-}
-
-// handleCampaignEligibilityCheck verifies a candidate's eligibility for a specific office.
-func handleCampaignEligibilityCheck(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CandidateID int    `json:"candidate_id"`
-		OfficeType  string `json:"office_type"`
-		StateCode   string `json:"state_code"`
-		PartyCode   string `json:"party_code"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request body")
-		return
-	}
-	result, err := CheckCandidateEligibility(req.CandidateID, req.OfficeType, req.StateCode, req.PartyCode)
-	if err != nil {
-		log.Error().Err(err).Msg("eligibility_check_failed")
-		writeError(w, 500, "eligibility check failed")
-		return
-	}
-	writeJSON(w, 200, result)
-}
-
-// ── Stub implementations for campaign domain functions ────────────────────────
-// These call the database and AI services; they are production-complete.
-
-func CreateCampaignPlan(candidateID, electionID int, officeType, stateCode, lgaCode, partyCode string, targetVotes int, budgetNGN int64, electionDate string) (interface{}, error) {
-	plan := M{
-		"id":            fmt.Sprintf("cp-%d-%d-%d", candidateID, electionID, time.Now().Unix()),
-		"candidate_id":  candidateID,
-		"election_id":   electionID,
-		"office_type":   officeType,
-		"state_code":    stateCode,
-		"lga_code":      lgaCode,
-		"party_code":    partyCode,
-		"target_votes":  targetVotes,
-		"budget_ngn":    budgetNGN,
-		"election_date": electionDate,
-		"status":        "active",
-		"created_at":    time.Now().UTC(),
-		"milestones": []M{
-			{"phase": "filing_and_nomination", "deadline": electionDate, "status": "pending", "description": "INEC form submission, affidavit, and party nomination"},
-			{"phase": "primary_campaign", "deadline": electionDate, "status": "pending", "description": "Party primaries and delegate mobilization"},
-			{"phase": "voter_registration_drive", "deadline": electionDate, "status": "pending", "description": "Ensure target voters are registered"},
-			{"phase": "main_campaign", "deadline": electionDate, "status": "pending", "description": "Rallies, media, and ground operations"},
-			{"phase": "election_day_gotv", "deadline": electionDate, "status": "pending", "description": "Get Out The Vote operations"},
-			{"phase": "result_collation_monitoring", "deadline": electionDate, "status": "pending", "description": "Polling agent deployment and result monitoring"},
-		},
-	}
-	return plan, nil
-}
-
-func GetCampaignPlan(candidateID, electionID string) (interface{}, error) {
-	return M{"candidate_id": candidateID, "election_id": electionID, "status": "active"}, nil
-}
-
-func GenerateVoterTargeting(candidateID, electionID int, stateCode, strategy string) (interface{}, error) {
-	return M{
-		"candidate_id": candidateID,
-		"election_id":  electionID,
-		"state_code":   stateCode,
-		"strategy":     strategy,
-		"segments": []M{
-			{"segment": "registered_base_voters", "count": 45000, "priority": "high", "approach": "GOTV calls and transport"},
-			{"segment": "swing_voters_18_35", "count": 12000, "priority": "high", "approach": "Social media and youth rallies"},
-			{"segment": "women_voters", "count": 28000, "priority": "medium", "approach": "Market campaigns and women's groups"},
-			{"segment": "diaspora_registered", "count": 3200, "priority": "medium", "approach": "Online engagement"},
-		},
-		"generated_at": time.Now().UTC(),
-	}, nil
-}
-
-func GetPollingUnitCampaignAnalysis(candidateID, stateCode, lgaCode string) (interface{}, error) {
-	return M{
-		"candidate_id":  candidateID,
-		"state_code":    stateCode,
-		"lga_code":      lgaCode,
-		"total_pus":     847,
-		"strong_pus":    312,
-		"swing_pus":     289,
-		"weak_pus":      246,
-		"analysis_date": time.Now().UTC(),
-	}, nil
-}
-
-func GetCompetitorAnalysis(electionID, candidateID string) (interface{}, error) {
-	return M{
-		"election_id":  electionID,
-		"candidate_id": candidateID,
-		"competitors":  []M{},
-		"generated_at": time.Now().UTC(),
-	}, nil
-}
-
-func OptimizeCampaignBudget(candidateID, electionID int, totalBudget int64, stateCode string) (interface{}, error) {
-	return M{
-		"candidate_id": candidateID,
-		"election_id":  electionID,
-		"total_budget": totalBudget,
-		"allocation": []M{
-			{"category": "media_advertising", "amount": totalBudget * 30 / 100, "percentage": 30},
-			{"category": "ground_operations", "amount": totalBudget * 35 / 100, "percentage": 35},
-			{"category": "rallies_events", "amount": totalBudget * 20 / 100, "percentage": 20},
-			{"category": "polling_agents", "amount": totalBudget * 10 / 100, "percentage": 10},
-			{"category": "contingency", "amount": totalBudget * 5 / 100, "percentage": 5},
-		},
-		"optimized_at": time.Now().UTC(),
-	}, nil
-}
-
-func GenerateCampaignSchedule(candidateID, electionID string) (interface{}, error) {
-	return M{
-		"candidate_id": candidateID,
-		"election_id":  electionID,
-		"events":       []M{},
-		"generated_at": time.Now().UTC(),
-	}, nil
-}
-
-func GetCampaignSentiment(candidateID, period string) (interface{}, error) {
-	return M{
-		"candidate_id":  candidateID,
-		"period":        period,
-		"overall_score": 0.62,
-		"trend":         "improving",
-		"positive":      0.62,
-		"neutral":       0.28,
-		"negative":      0.10,
-		"analyzed_at":   time.Now().UTC(),
-	}, nil
-}
-
-func CheckCandidateEligibility(candidateID int, officeType, stateCode, partyCode string) (interface{}, error) {
-	requirements := map[string]interface{}{
-		"presidential":  M{"min_age": 40, "citizenship": "Nigerian by birth", "education": "School Certificate", "party_membership": "required"},
-		"gubernatorial": M{"min_age": 35, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-		"senatorial":    M{"min_age": 35, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-		"house":         M{"min_age": 25, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-		"local":         M{"min_age": 25, "citizenship": "Nigerian", "education": "School Certificate", "party_membership": "required"},
-	}
-	req, ok := requirements[officeType]
-	if !ok {
-		req = requirements["house"]
-	}
-	return M{
-		"candidate_id":        candidateID,
-		"office_type":         officeType,
-		"state_code":          stateCode,
-		"party_code":          partyCode,
-		"eligible":            true,
-		"requirements":        req,
-		"checked_at":          time.Now().UTC(),
-		"inec_forms_required": []string{"CF001", "CF002", "CF003"},
-	}, nil
-}
-
-// ── IVR stub functions ─────────────────────────────────────────────────────────
-
-func GetIVRSessionStatus(sessionID string) (interface{}, error) {
-	return M{"session_id": sessionID, "status": "active", "language": "en"}, nil
-}
-
-func GetIVRStats() (interface{}, error) {
-	return M{"total_calls": 0, "active_sessions": 0, "languages": []string{"en", "ha", "yo", "ig"}}, nil
+// Campaign plans, voter-targeting recommendations, polling analysis, competitor
+// analysis, budget allocation, schedules, sentiment, and eligibility decisions
+// all require authoritative data and an approved planning provider. The former
+// local handlers emitted invented records and metrics, so every route now fails
+// closed until that integration is deployed.
+func campaignPlanningUnavailable(w http.ResponseWriter, r *http.Request) {
+	writeError(
+		w,
+		http.StatusServiceUnavailable,
+		"campaign planning is unavailable until authoritative data and an approved provider are configured",
+	)
 }
 
 // ── Quantum ML-DSA-65 compatibility helpers ───────────────────────────────────
@@ -763,45 +404,6 @@ func GenerateQuantumKeyPair(algorithm string) (string, string, error) {
 		return "", "", err
 	}
 	return kp.PublicKey, kp.PrivateKey, nil
-}
-
-// ── ZKP stub functions ─────────────────────────────────────────────────────────
-
-func GetZKPStats() (interface{}, error) {
-	return M{
-		"total_proofs_generated": 0,
-		"total_proofs_verified":  0,
-		"verification_rate":      1.0,
-		"avg_proof_time_ms":      45,
-		"algorithm":              "Schnorr-ZKP over secp256k1",
-	}, nil
-}
-
-// GenerateVoterEligibilityProof wraps the ZKP commit handler logic inline.
-func GenerateVoterEligibilityProof(voterID string, electionID int, pollingUnitID string) (interface{}, error) {
-	scalar, err := generateScalar()
-	if err != nil {
-		return nil, fmt.Errorf("scalar generation failed: %w", err)
-	}
-	return M{
-		"voter_id":        voterID,
-		"election_id":     electionID,
-		"polling_unit_id": pollingUnitID,
-		"proof":           fmt.Sprintf("%x", scalar.Bytes()),
-		"public_key":      fmt.Sprintf("%x", scalar.Bytes()[:16]),
-		"algorithm":       "Schnorr-ZKP",
-		"generated_at":    time.Now().UTC(),
-	}, nil
-}
-
-// VerifyVoterEligibilityProof verifies a ZKP proof.
-func VerifyVoterEligibilityProof(proof, publicKey string, electionID int) (bool, error) {
-	if len(proof) < 16 || len(publicKey) < 8 {
-		return false, fmt.Errorf("invalid proof or public key format")
-	}
-	// In production: verify Schnorr proof against the public key
-	// For now: structural validation
-	return len(proof) >= 32 && len(publicKey) >= 16, nil
 }
 
 // IPFS and EVM anchoring are intentionally unavailable until real external

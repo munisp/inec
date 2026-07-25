@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
@@ -48,13 +49,13 @@ const (
 
 // NotificationDispatchRequest defines a multi-channel notification payload.
 type NotificationDispatchRequest struct {
-	Title      string               `json:"title"`
-	Body       string               `json:"body"`
+	Title      string                `json:"title"`
+	Body       string                `json:"body"`
 	Channels   []NotificationChannel `json:"channels"`
-	Recipients []string             `json:"recipients"`
-	Priority   string               `json:"priority"`
-	ElectionID int                  `json:"election_id"`
-	Metadata   map[string]string    `json:"metadata,omitempty"`
+	Recipients []string              `json:"recipients"`
+	Priority   string                `json:"priority"`
+	ElectionID int                   `json:"election_id"`
+	Metadata   map[string]string     `json:"metadata,omitempty"`
 }
 
 // NotificationDispatchResult summarizes dispatch outcomes per channel.
@@ -529,7 +530,9 @@ func handleLoadShedding(w http.ResponseWriter, r *http.Request) {
 		}})
 		return
 	}
-	var body struct{ Level int `json:"level"` }
+	var body struct {
+		Level int `json:"level"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Level < 0 || body.Level > 3 {
 		writeError(w, 400, "level must be 0-3")
 		return
@@ -598,7 +601,10 @@ func handleMFASetupTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secretBytes := make([]byte, 20)
-	fillRandom(secretBytes)
+	if err := fillRandom(secretBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "secure random source is unavailable")
+		return
+	}
 	secret := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secretBytes)
 	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_totp (user_id, secret, verified) VALUES (?,?,0)`, userID, secret)
 
@@ -613,7 +619,9 @@ func handleMFASetupTOTP(w http.ResponseWriter, r *http.Request) {
 
 func handleMFAVerifyTOTP(w http.ResponseWriter, r *http.Request) {
 	userID := extractUserID(r)
-	var body struct{ Code string `json:"code"` }
+	var body struct {
+		Code string `json:"code"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Code) != 6 {
 		writeError(w, 400, "6-digit code required")
 		return
@@ -668,7 +676,9 @@ func handleMFAChallenge(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMFASendSMS(w http.ResponseWriter, r *http.Request) {
-	var body struct{ UserID int `json:"user_id"` }
+	var body struct {
+		UserID int `json:"user_id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, 400, "user_id required")
 		return
@@ -684,7 +694,10 @@ func handleMFASendSMS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	codeBytes := make([]byte, 3)
-	fillRandom(codeBytes)
+	if err := fillRandom(codeBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "secure random source is unavailable")
+		return
+	}
 	code := fmt.Sprintf("%06d", (int(codeBytes[0])<<16|int(codeBytes[1])<<8|int(codeBytes[2]))%1000000)
 	dbExecCtx(r.Context(), `INSERT INTO mfa_sms_otp (user_id, phone, code, expires_at) VALUES (?,?,?,?)`,
 		body.UserID, phone, code, time.Now().Add(5*time.Minute))
@@ -703,7 +716,7 @@ func handleMFAStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, M{
 		"mfa_enabled": row["totp_enabled"] == int64(1) || row["sms_enabled"] == int64(1),
-		"totp": row["totp_enabled"] == int64(1), "webauthn": row["webauthn_enabled"] == int64(1),
+		"totp":        row["totp_enabled"] == int64(1), "webauthn": row["webauthn_enabled"] == int64(1),
 		"sms": row["sms_enabled"] == int64(1),
 	})
 }
@@ -789,7 +802,7 @@ func handleCitizenVerifySignature(w http.ResponseWriter, r *http.Request) {
 	}
 	currentHash := computeResultHash(result)
 	writeJSON(w, 200, M{"result": result, "signed": true, "signature": sig,
-		"hash_valid": currentHash == fmt.Sprint(sig["result_hash"]),
+		"hash_valid":      currentHash == fmt.Sprint(sig["result_hash"]),
 		"tamper_detected": currentHash != fmt.Sprint(sig["result_hash"])})
 }
 
@@ -1241,7 +1254,9 @@ func handleElectionArchive(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, M{"archives": scanRows(rows)})
 		return
 	}
-	var body struct{ ElectionID int `json:"election_id"` }
+	var body struct {
+		ElectionID int `json:"election_id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, 400, "invalid request")
 		return
@@ -1496,10 +1511,9 @@ func genTOTP(key []byte, counter int64) string {
 	return fmt.Sprintf("%06d", code%1000000)
 }
 
-func fillRandom(b []byte) {
-	h := sha256.New()
-	h.Write([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
-	copy(b, h.Sum(nil))
+func fillRandom(b []byte) error {
+	_, err := cryptorand.Read(b)
+	return err
 }
 
 func computeResultHash(result M) string {
@@ -1513,13 +1527,23 @@ func extractUserID(r *http.Request) int {
 	if !ok {
 		return 0
 	}
-	if uid, ok := claims["user_id"].(float64); ok {
-		return int(uid)
+	for _, key := range []string{"user_id", "sub"} {
+		switch value := claims[key].(type) {
+		case float64:
+			if value >= 1 && value == float64(int(value)) {
+				return int(value)
+			}
+		case int:
+			if value >= 1 {
+				return value
+			}
+		case string:
+			if value, err := strconv.Atoi(value); err == nil && value >= 1 {
+				return value
+			}
+		}
 	}
-	if uid, ok := claims["sub"].(float64); ok {
-		return int(uid)
-	}
-	return 1 // fallback for authenticated users without explicit ID
+	return 0
 }
 
 func phoneMask(p string) string {

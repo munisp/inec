@@ -219,7 +219,6 @@ func main() {
 	r.HandleFunc("/geo/nearby-pus", readAuth(handleNearbyPUs)).Methods("GET")
 	r.HandleFunc("/geo/landmarks", readAuth(handleLandmarks)).Methods("GET")
 	r.HandleFunc("/geo/landmarks", writeAuth(handleCreateLandmark)).Methods("POST")
-	r.HandleFunc("/geo/landmarks/seed", writeAuth(handleSeedLandmarks)).Methods("POST")
 	r.HandleFunc("/geo/heatmap", readAuth(handleGeoHeatmap)).Methods("GET")
 	r.HandleFunc("/geo/clusters", readAuth(handleGeoCluster)).Methods("GET")
 	r.HandleFunc("/geo/street-view", readAuth(handleStreetViewProxy)).Methods("GET")
@@ -233,7 +232,6 @@ func main() {
 	r.HandleFunc("/geo/tracking/stream", readAuth(handleLiveTrackingStream)).Methods("GET")
 	r.HandleFunc("/geo/crowd/report", writeAuth(handleReportCrowdDensity)).Methods("POST")
 	r.HandleFunc("/geo/crowd/density", readAuth(handleGetCrowdDensity)).Methods("GET")
-	r.HandleFunc("/geo/tracking/seed", writeAuth(handleSeedTrackingData)).Methods("POST")
 
 	// Advanced Geospatial (#2-#30): tracking history, geofence viz, PostGIS spatial, crowd alerts,
 	// routing, weather, photos, incident hotspots, predictive crowd, drones, simulation,
@@ -811,15 +809,17 @@ func main() {
 	r.HandleFunc("/innovation/resource/optimize", adminOnly(handleResourceAllocationOptimize)).Methods("POST")
 	r.HandleFunc("/innovation/resource/status", readAuth(handleResourceAllocationStatus)).Methods("GET")
 	// ── Candidate Campaign Planning Module ────────────────────────────────────────
-	r.HandleFunc("/campaign/plan", writeAuth(handleCampaignPlanCreate)).Methods("POST")
-	r.HandleFunc("/campaign/plan", readAuth(handleCampaignPlanGet)).Methods("GET")
-	r.HandleFunc("/campaign/voter-targeting", writeAuth(handleCampaignVoterTargeting)).Methods("POST")
-	r.HandleFunc("/campaign/polling-analysis", readAuth(handleCampaignPollingAnalysis)).Methods("GET")
-	r.HandleFunc("/campaign/competitor-analysis", readAuth(handleCampaignCompetitorAnalysis)).Methods("GET")
-	r.HandleFunc("/campaign/budget-allocation", writeAuth(handleCampaignBudgetAllocation)).Methods("POST")
-	r.HandleFunc("/campaign/event-schedule", readAuth(handleCampaignEventSchedule)).Methods("GET")
-	r.HandleFunc("/campaign/sentiment", readAuth(handleCampaignSentimentAnalysis)).Methods("GET")
-	r.HandleFunc("/campaign/eligibility-check", writeAuth(handleCampaignEligibilityCheck)).Methods("POST")
+	// These established routes remain authenticated but fail closed until the
+	// platform has authoritative campaign records and an approved planning provider.
+	r.HandleFunc("/campaign/plan", writeAuth(campaignPlanningUnavailable)).Methods("POST")
+	r.HandleFunc("/campaign/plan", readAuth(campaignPlanningUnavailable)).Methods("GET")
+	r.HandleFunc("/campaign/voter-targeting", writeAuth(campaignPlanningUnavailable)).Methods("POST")
+	r.HandleFunc("/campaign/polling-analysis", readAuth(campaignPlanningUnavailable)).Methods("GET")
+	r.HandleFunc("/campaign/competitor-analysis", readAuth(campaignPlanningUnavailable)).Methods("GET")
+	r.HandleFunc("/campaign/budget-allocation", writeAuth(campaignPlanningUnavailable)).Methods("POST")
+	r.HandleFunc("/campaign/event-schedule", readAuth(campaignPlanningUnavailable)).Methods("GET")
+	r.HandleFunc("/campaign/sentiment", readAuth(campaignPlanningUnavailable)).Methods("GET")
+	r.HandleFunc("/campaign/eligibility-check", writeAuth(campaignPlanningUnavailable)).Methods("POST")
 	// Stakeholder Recommendation Engine
 	r.HandleFunc("/campaign/stakeholders/recommend", writeAuth(handleStakeholderRecommend)).Methods("POST")
 	r.HandleFunc("/campaign/stakeholders/categories", readAuth(handleStakeholderCategories)).Methods("GET")

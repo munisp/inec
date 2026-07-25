@@ -192,42 +192,52 @@ inec/
 
 ## 📊 Production Readiness
 
-### ✅ Production-Ready Components
+The platform source is designed to **fail closed** when authoritative election data, approved model artifacts, or external verification providers are unavailable. It does not treat demo records, neutral model scores, placeholder OCR output, or synthetic geospatial observations as production data. Source-controlled readiness is necessary but not sufficient for an official deployment: the Kasicloud host, real credentials, data provenance, model approval evidence, provider contracts, backups, and operational ownership must be verified separately.
 
-These components have real business logic and could be deployed:
+### Kasicloud Deployment Go/No-Go Checklist
 
-- EC8A form validation rules
-- Hierarchical SQL collation
-- JWT authentication + role guards
-- Geofencing (correct Haversine math)
-- SSE real-time streaming
-- Rate limiting
-- Photo upload + storage
-- Alert CRUD
-- PaddleOCR + DocLing (real libraries)
-- Isolation Forest anomaly detection (persisted models)
-- Benford's Law statistical test
+> The supported production target for this repository is **Kasicloud with Docker Compose**. This deployment guide does not require or prescribe AWS services.
 
-### 🔄 In Progress / Needs Hardening
+| Gate | Required evidence before launch | Failure condition |
+|---|---|---|
+| Secrets and origins | Copy `.env.production.example` to the deployment host as `.env`; populate every required secret with approved values; set the actual browser origins; restrict the file to the deployment account. | Empty, development, shared, or committed credentials. |
+| Database and recovery | Verify PostgreSQL primary/replica/Pgpool health, encrypted backups, restore rehearsal, migration completion, and least-privilege service accounts. | Any database role, backup, or restore procedure is unverified. |
+| Identity and authorization | Verify Keycloak realm import, client secret, real administrator/officer/observer accounts, Permify policy, and session/role controls against the production URL. | Bootstrap, default, or unapproved accounts remain enabled. |
+| Authoritative election data | Confirm the production database contains approved polling-unit, voter, result, and geographic records with documented provenance. | Any dashboard or workflow would rely on demo, seed, or synthetic records. |
+| Model governance | Mount a protected `MODELS_DIR` containing the approved ONNX artifact and its matching manifest. Follow [MODEL_GOVERNANCE.md](MODEL_GOVERNANCE.md). | Manifest missing, hash mismatch, approval false, or validation evidence unavailable. |
+| Document, identity, and satellite providers | Configure real VLM/OCR dependencies, authorized NIMC/identity/sanctions providers, and an approved STAC collection. Exercise both successful and provider-unavailable paths. | A provider is absent, unauthorized, or produces an unverified response. |
+| Compose health | Run `docker compose --env-file .env -f docker-compose.yml config --quiet`, then start the stack and require all core dependencies to become healthy. Inference, anomaly, document AI, satellite, campaign-planning, database, and backend health must be green. | A required service is merely running, degraded, or retrying rather than healthy. |
+| Browser verification | Verify authenticated and public flows on `https://inec.servers.upi.dev/` and `https://campaign.inec.servers.upi.dev/`, including mobile layouts, hash/deep links, unavailable states, and destructive-control accessibility. | Any frontend displays plausible fallback data after an API or provider failure. |
+| Security and operations | Confirm TLS, CORS allow-lists, APISIX/OpenAppSec enforcement, monitoring, logs, alert recipients, incident runbooks, patching, and change-control approval. | Monitoring, escalation, or rollback ownership is absent. |
+| Rollback | Record the prior Compose image set, database migration plan, model artifact/manifest pair, and tested rollback command before promotion. | A release cannot be reverted without improvisation. |
 
-These components work but need production hardening:
+### Production Deployment Sequence
 
-- WAF (regex-based only, no ML detection)
-- Rate limiter (no Redis persistence in production)
-- JWT (no refresh tokens or token rotation)
-- Session management (no distributed invalidation)
-- Biometric PAD (real but needs model fine-tuning)
-- KYC pipeline (format validation, needs NIN API)
+```bash
+# On the protected Kasicloud host only.
+cp .env.production.example .env
+chmod 600 .env
+# Populate .env from the approved secret-management process; never paste real values into Git.
 
-### 🧪 Under Development
+docker compose --env-file .env -f docker-compose.yml config --quiet
+docker compose --env-file .env -f docker-compose.yml pull
+docker compose --env-file .env -f docker-compose.yml up -d
 
-These components are being built or integrated:
+docker compose --env-file .env -f docker-compose.yml ps
+docker compose --env-file .env -f docker-compose.yml logs --tail=200 go-backend inference-engine ai-anomaly-detection document-ai satellite-change-detection
+```
 
-- Deep PAD model (CDCN) for liveness detection
-- GNN for cross-PU validation
-- ArcFace face embeddings for KYC
-- Real-time fraud detection with XGBoost
-- Video ballot counting with YOLO
+The inference engine intentionally reports `503` when its approved model artifact or manifest is unavailable. The anomaly gateway and backend then report the dependency as unavailable; do **not** bypass this gate by substituting a score or editing the health check.
+
+### Source-Controlled Assurance Scope
+
+| Area | Source-control status | External prerequisite |
+|---|---|---|
+| Runtime demo/fixture paths | Production runtime paths are gated or fail closed. | Deployment environment must not enable explicit test/fixture flags. |
+| Anomaly scoring | Governance manifest, SHA-256 match, approval gate, and unavailable propagation are enforced. | Approved model artifact, manifest, validation report, and approver decision. |
+| Document/KYC analysis | Unavailable providers return explicit unavailable or pending-review states. | Real OCR/VLM/NIMC/identity/sanctions credentials and provider approvals. |
+| Geo and satellite analytics | Missing source data or STAC configuration produces unavailable status. | Authoritative PostgreSQL geo records and approved STAC access. |
+| Infrastructure | Compose requires core secrets and includes health-gated dependencies. | Kasicloud host security, TLS/DNS, backups, monitoring, and operator runbooks. |
 
 ## 🧪 Testing
 
@@ -247,22 +257,29 @@ make test
 
 ## 📝 Configuration
 
-All services use environment variables. A `.env.example` file is provided:
+All services use environment variables. Use the local template only for development; use the production template on the protected Kasicloud host:
 
 ```bash
+# Development only
 cp .env.example .env
-# Edit .env with your configuration
+
+# Production only: populate from approved secret management, then protect the file
+cp .env.production.example .env
+chmod 600 .env
 ```
 
-Key environment variables:
+Key production environment variables:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PG_USER` | PostgreSQL username | `inec_admin` |
-| `PG_PASSWORD` | PostgreSQL password | *(required)* |
-| `BIOMETRIC_MASTER_KEY` | Encryption key for biometric vault | *(required)* |
-| `NIN_API_KEY` | NIN/NIMC verification API key | *(optional)* |
-| `DATABASE_URL` | PostgreSQL connection string | See docker-compose.yml |
+| Variable | Description | Production default |
+|----------|-------------|--------------------|
+| `PG_PASSWORD` | PostgreSQL service credential | **None; required.** |
+| `HSM_MASTER_KEY` | Platform cryptographic root material | **None; required.** |
+| `APISIX_ADMIN_KEY` | API gateway administration secret | **None; required.** |
+| `KEYCLOAK_CLIENT_SECRET` | OIDC client credential | **None; required.** |
+| `VLM_ENDPOINT` | Approved vision-analysis provider endpoint | **None; required for Document AI.** |
+| `NIMC_VERIFICATION_URL` | Authorized identity verification provider | **None; required for authoritative NIN verification.** |
+| `STAC_API_URL` | Approved real satellite/STAC provider | **None; required for satellite analysis.** |
+| `MODELS_DIR` | Protected directory holding approved model and manifest | `/app/models` inside the inference container. |
 
 ## 📚 API Documentation
 

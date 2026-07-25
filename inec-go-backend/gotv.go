@@ -661,39 +661,39 @@ func registerGOTVRoutes(r *mux.Router) {
 	gotv.HandleFunc("/warroom/stream", gotvAuthMiddleware(handleGOTVWarRoomStream)).Methods("GET")
 	gotv.HandleFunc("/warroom/ai-alerts", gotvAuthMiddleware(handleGOTVWarRoomAIAlerts)).Methods("GET")
 
-	// Analytics extras
+	// Analytics and operational integrations. These capability routes remain
+	// explicit about absence until backed by authoritative source data or an
+	// approved provider; they never return neutral or synthetic payloads.
 	gotv.HandleFunc("/ai/variants", gotvAuthMiddleware(handleGOTVAIVariants)).Methods("GET")
 	gotv.HandleFunc("/roi/channels", gotvAuthMiddleware(handleGOTVROIChannels)).Methods("GET")
-	gotv.HandleFunc("/turnout/predict", gotvAuthMiddleware(handleGOTVTurnoutPredict)).Methods("GET")
+	gotv.HandleFunc("/turnout/predict", gotvAuthMiddleware(gotvUnavailable("turnout prediction"))).Methods("GET")
 
-	// GOTV-scoped ledger/blockchain (placeholders)
-	gotv.HandleFunc("/ledger/accounts", gotvAuthMiddleware(handleGOTVLedgerAccounts)).Methods("GET")
-	gotv.HandleFunc("/ledger/history", gotvAuthMiddleware(handleGOTVLedgerHistory)).Methods("GET")
-	gotv.HandleFunc("/ledger/reconcile", gotvAuthMiddleware(handleGOTVLedgerReconcile)).Methods("GET")
-	gotv.HandleFunc("/blockchain/status", gotvAuthMiddleware(handleGOTVBlockchainStatus)).Methods("GET")
-	gotv.HandleFunc("/blockchain/blocks", gotvAuthMiddleware(handleGOTVBlockchainBlocks)).Methods("GET")
-	gotv.HandleFunc("/blockchain/anchor", gotvAuthMiddleware(handleGOTVBlockchainAnchor)).Methods("POST")
+	gotv.HandleFunc("/ledger/accounts", gotvAuthMiddleware(gotvUnavailable("GOTV ledger"))).Methods("GET")
+	gotv.HandleFunc("/ledger/history", gotvAuthMiddleware(gotvUnavailable("GOTV ledger"))).Methods("GET")
+	gotv.HandleFunc("/ledger/reconcile", gotvAuthMiddleware(gotvUnavailable("GOTV ledger"))).Methods("GET")
+	gotv.HandleFunc("/blockchain/status", gotvAuthMiddleware(gotvUnavailable("GOTV blockchain"))).Methods("GET")
+	gotv.HandleFunc("/blockchain/blocks", gotvAuthMiddleware(gotvUnavailable("GOTV blockchain"))).Methods("GET")
+	gotv.HandleFunc("/blockchain/anchor", gotvAuthMiddleware(gotvUnavailable("GOTV blockchain"))).Methods("POST")
 
 	// Platform tab
 	gotv.HandleFunc("/teams/leaderboard", gotvAuthMiddleware(handleGOTVTeamsLeaderboard)).Methods("GET")
-	gotv.HandleFunc("/experiments", gotvAuthMiddleware(handleGOTVExperiments)).Methods("GET")
-	gotv.HandleFunc("/nl/query", gotvAuthMiddleware(handleGOTVNLQuery)).Methods("POST")
-	gotv.HandleFunc("/simulation", gotvAuthMiddleware(handleGOTVSimulation)).Methods("POST")
+	gotv.HandleFunc("/experiments", gotvAuthMiddleware(gotvUnavailable("campaign experimentation"))).Methods("GET")
+	gotv.HandleFunc("/nl/query", gotvAuthMiddleware(gotvUnavailable("natural-language campaign query"))).Methods("POST")
+	gotv.HandleFunc("/simulation", gotvAuthMiddleware(gotvUnavailable("campaign simulation"))).Methods("POST")
 
-	// KOH indicators (placeholders)
-	gotv.HandleFunc("/koh/cpi/compute", gotvAuthMiddleware(handleGOTVKOHCPICompute)).Methods("GET")
-	gotv.HandleFunc("/koh/cpi/history", gotvAuthMiddleware(gotvKOHEmpty("history"))).Methods("GET")
-	gotv.HandleFunc("/koh/demographics", gotvAuthMiddleware(handleGOTVKOHDemographics)).Methods("GET")
-	gotv.HandleFunc("/koh/lga/dashboard", gotvAuthMiddleware(handleGOTVKOHLGADashboard)).Methods("GET")
-	gotv.HandleFunc("/koh/social/sentiment", gotvAuthMiddleware(handleGOTVKOHSocialSentiment)).Methods("GET")
-	gotv.HandleFunc("/koh/social/share-of-voice", gotvAuthMiddleware(handleGOTVKOHShareOfVoice)).Methods("GET")
-	gotv.HandleFunc("/koh/endorsements", gotvAuthMiddleware(gotvKOHEmpty("endorsements"))).Methods("GET")
-	gotv.HandleFunc("/koh/endorsements/score", gotvAuthMiddleware(handleGOTVKOHEndorsementScore)).Methods("GET")
-	gotv.HandleFunc("/koh/reports", gotvAuthMiddleware(gotvKOHEmpty("reports"))).Methods("GET")
-	gotv.HandleFunc("/koh/reports/generate/{type}", gotvAuthMiddleware(handleGOTVKOHReportGenerate)).Methods("POST")
-	gotv.HandleFunc("/koh/surveys", gotvAuthMiddleware(gotvKOHEmpty("surveys"))).Methods("GET")
-	gotv.HandleFunc("/koh/surveys/trend", gotvAuthMiddleware(gotvKOHEmpty("trend"))).Methods("GET")
-	gotv.HandleFunc("/koh/analytics/summary", gotvAuthMiddleware(handleGOTVKOHAnalyticsSummary)).Methods("GET")
+	gotv.HandleFunc("/koh/cpi/compute", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/cpi/history", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/demographics", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/lga/dashboard", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/social/sentiment", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/social/share-of-voice", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/endorsements", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/endorsements/score", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/reports", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/reports/generate/{type}", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("POST")
+	gotv.HandleFunc("/koh/surveys", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/surveys/trend", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
+	gotv.HandleFunc("/koh/analytics/summary", gotvAuthMiddleware(gotvUnavailable("key-opinion-holder analytics"))).Methods("GET")
 
 	// Scoring Engine (Cambridge Analytica-grade analytics)
 	gotv.HandleFunc("/scoring/voter/{contactID}", gotvAuthMiddleware(handleScoringVoter)).Methods("GET")
@@ -978,23 +978,17 @@ func handleGOTVLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	_, err = db.Exec("UPDATE gotv_campaigns SET status='active', started_at=$1, updated_at=$1 WHERE campaign_id=$2 AND party_id=$3", now, id, partyID)
-	if err != nil {
-		http.Error(w, `{"error":"launch failed"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Dispatch outreach asynchronously
-	go dispatchCampaignOutreach(partyID, id, ctype, msgTemplate, "")
-
-	gotvAudit(partyID, username, "launch_campaign", "campaign", id, nil, r)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":         "active",
-		"total_contacts": totalContacts,
-		"started_at":     now,
-	})
+	// This source tree has no approved outbound communications gateway or
+	// delivery receipt contract. Do not mark a campaign active or emit a local
+	// `sent` record until a governed provider integration is deployed.
+	_ = ctype
+	_ = msgTemplate
+	gotvAudit(partyID, username, "launch_campaign_rejected", "campaign", id, nil, r)
+	http.Error(
+		w,
+		`{"error":"outbound campaign delivery is unavailable; no messages were sent"}`,
+		http.StatusServiceUnavailable,
+	)
 }
 
 func handleGOTVPauseCampaign(w http.ResponseWriter, r *http.Request) {
@@ -3223,50 +3217,18 @@ func handleGOTVROIChannels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"channels": out})
 }
 
-func handleGOTVTurnoutPredict(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"predictions": []map[string]interface{}{}})
-}
-
-// ─── GOTV Ledger (placeholder — no real financial ledger wired up for GOTV) ──
-
-func handleGOTVLedgerAccounts(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"accounts": []map[string]interface{}{}})
-}
-
-func handleGOTVLedgerHistory(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"transfers": []map[string]interface{}{}})
-}
-
-func handleGOTVLedgerReconcile(w http.ResponseWriter, r *http.Request) {
-	partyID, _, _ := getGOTVParty(r)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"party_id": partyID, "account_count": 0, "transfer_count": 0, "posted": 0, "pending": 0, "voided": 0,
-		"total_posted_ngn": 0, "balanced": true, "variance": 0,
-	})
-}
-
-// ─── GOTV Blockchain (placeholder — no real chain wired up for GOTV) ────────
-
-func handleGOTVBlockchainStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total_blocks": 0, "total_transactions": 0, "verified_tx": 0, "merkle_anchors": 0,
-		"latest_block_hash": "", "latest_block_time": nil, "chain_integrity": true,
-	})
-}
-
-func handleGOTVBlockchainBlocks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"blocks": []map[string]interface{}{}})
-}
-
-func handleGOTVBlockchainAnchor(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"status": "anchored", "block_hash": ""})
+// gotvUnavailable preserves an established route while making an unsupported
+// capability unmistakably unavailable. It deliberately does not return a neutral
+// metric, empty ledger, queued task, or fabricated operational state.
+func gotvUnavailable(capability string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusServiceUnavailable, M{
+			"status":     "unavailable",
+			"capability": capability,
+			"reason": "authoritative data source or approved provider is not " +
+				"configured for this capability",
+		})
+	}
 }
 
 // ─── Platform tab: teams, experiments, NL query, simulation ────────────────
@@ -3298,165 +3260,7 @@ func handleGOTVTeamsLeaderboard(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"teams": out})
 }
 
-func handleGOTVExperiments(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"variants": []map[string]interface{}{}})
-}
-
-func handleGOTVNLQuery(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Query string `json:"query"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"answer": "Natural-language querying isn't enabled in this demo environment yet.",
-	})
-}
-
-func handleGOTVSimulation(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Scenario        string `json:"scenario"`
-		AdditionalCount int    `json:"additional_count"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"scenario": req.Scenario, "additional_count": req.AdditionalCount,
-		"message": "Simulation modeling isn't enabled in this demo environment yet.",
-	})
-}
-
-// ─── KOH (Key Opinion Holder) indicators — placeholder, no real data model ──
-
-func gotvKOHEmpty(key string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{key: []map[string]interface{}{}})
-	}
-}
-
-func handleGOTVKOHCPICompute(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"cpi": 0, "components": []map[string]interface{}{}})
-}
-
-func handleGOTVKOHDemographics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"demographics": []map[string]interface{}{}})
-}
-
-func handleGOTVKOHLGADashboard(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"tiers": []map[string]interface{}{}})
-}
-
-func handleGOTVKOHSocialSentiment(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"positive": 0, "neutral": 0, "negative": 0, "trend": []map[string]interface{}{}})
-}
-
-func handleGOTVKOHShareOfVoice(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"share_pct": 0, "by_platform": []map[string]interface{}{}})
-}
-
-func handleGOTVKOHEndorsementScore(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"score": 0, "total_endorsements": 0})
-}
-
-func handleGOTVKOHReportGenerate(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
-}
-
-func handleGOTVKOHAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"cpi": 0, "sentiment_score": 0, "share_of_voice_pct": 0, "endorsement_score": 0,
-	})
-}
-
 // ─── Campaign Dispatch Engine ──────────────────────────────────────────────
-
-func dispatchCampaignOutreach(partyID int, campaignID, channelType, messageTemplate, messageVariantB string) {
-	log.Info().Str("campaign", campaignID).Msg("GOTV: dispatching campaign outreach")
-
-	// Get campaign geo targeting
-	var tState, tLGA, tWard, tPU sql.NullString
-	var abSplit int
-	db.QueryRow("SELECT target_state, target_lga, target_ward, target_polling_unit, ab_split_pct FROM gotv_campaigns WHERE campaign_id=$1 AND party_id=$2",
-		campaignID, partyID).Scan(&tState, &tLGA, &tWard, &tPU, &abSplit)
-
-	// Fetch eligible contacts in batches
-	query := "SELECT contact_id, phone_encrypted FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE"
-	args := []interface{}{partyID}
-	idx := 2
-	if tState.Valid {
-		query += fmt.Sprintf(" AND state_code=$%d", idx)
-		args = append(args, tState.String)
-		idx++
-	}
-	if tLGA.Valid {
-		query += fmt.Sprintf(" AND lga_code=$%d", idx)
-		args = append(args, tLGA.String)
-		idx++
-	}
-	if tWard.Valid {
-		query += fmt.Sprintf(" AND ward_code=$%d", idx)
-		args = append(args, tWard.String)
-		idx++
-	}
-	if tPU.Valid {
-		query += fmt.Sprintf(" AND polling_unit_code=$%d", idx)
-		args = append(args, tPU.String)
-		idx++
-	}
-	query += " ORDER BY id LIMIT 10000"
-
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		log.Error().Err(err).Msg("GOTV: failed to fetch contacts for campaign")
-		return
-	}
-	defer rows.Close()
-
-	sent := 0
-	for rows.Next() {
-		var contactID, phoneEnc string
-		rows.Scan(&contactID, &phoneEnc)
-
-		// Determine A/B variant
-		variant := "A"
-		msg := messageTemplate
-		if messageVariantB != "" && sent%100 >= abSplit {
-			variant = "B"
-			msg = messageVariantB
-		}
-
-		// Log outreach (actual SMS dispatch would go through production SMS gateway)
-		logID := "gotv-log-" + uuid.New().String()[:8]
-		db.Exec(`INSERT INTO gotv_outreach_log (log_id, campaign_id, party_id, contact_id, channel, direction, message_text, message_variant, status)
-			VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,'sent')`,
-			logID, campaignID, partyID, contactID, channelType, msg, variant)
-
-		db.Exec("UPDATE gotv_contacts SET last_contacted_at=NOW(), contact_count=contact_count+1 WHERE contact_id=$1", contactID)
-		sent++
-
-		// Rate limit: 100 per second
-		if sent%100 == 0 {
-			time.Sleep(time.Second)
-		}
-	}
-
-	// Update campaign stats
-	db.Exec("UPDATE gotv_campaigns SET contacts_reached=$1, status=CASE WHEN $1>=total_contacts THEN 'completed' ELSE status END, completed_at=CASE WHEN $1>=total_contacts THEN NOW() ELSE completed_at END, updated_at=NOW() WHERE campaign_id=$2",
-		sent, campaignID)
-
-	log.Info().Str("campaign", campaignID).Int("sent", sent).Msg("GOTV: campaign dispatch complete")
-}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

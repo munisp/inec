@@ -5,10 +5,13 @@
 // P1: Scoring persistence, data export, RBAC, campaign preview
 // P2: Auto CPI recompute, push notifications, self-service registration
 // P3: Isochrone, WhatsApp two-way, dashboard builder, A/B dashboard,
-//     photo evidence, predictive turnout
+//
+//	photo evidence, predictive turnout
+//
 // P4: Route optimization, voice AI, blockchain pledges, crowd estimation,
-//     social command center, war room AI agent, team gamification,
-//     digital twin, federated learning, NL query
+//
+//	social command center, war room AI agent, team gamification,
+//	digital twin, federated learning, NL query
 package main
 
 import (
@@ -37,9 +40,9 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 
 type rateBucket struct {
-	tokens    float64
-	lastTime  time.Time
-	maxTokens float64
+	tokens     float64
+	lastTime   time.Time
+	maxTokens  float64
 	refillRate float64 // tokens per second
 }
 
@@ -257,12 +260,16 @@ func hasPermission(role GOTVRole, permission string) bool {
 
 func requirePermission(permission string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// In dev mode, allow all
-		role := r.Header.Get("X-GOTV-Role")
+		role := GOTVRole(r.Header.Get("X-GOTV-Role"))
 		if role == "" {
-			role = "party_admin" // dev fallback
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "authenticated GOTV role is required",
+			})
+			return
 		}
-		if !hasPermission(GOTVRole(role), permission) {
+		if !hasPermission(role, permission) {
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{"error": "insufficient permissions", "required": permission})
 			return
@@ -625,14 +632,14 @@ func handleVolunteerSelfRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		FullName    string `json:"full_name"`
-		Phone       string `json:"phone"`
-		NIN         string `json:"nin"`
-		State       string `json:"state"`
-		LGA         string `json:"lga"`
-		Role        string `json:"role_preference"`
-		HasVehicle  bool   `json:"has_vehicle"`
-		PartyCode   string `json:"party_code"`
+		FullName   string `json:"full_name"`
+		Phone      string `json:"phone"`
+		NIN        string `json:"nin"`
+		State      string `json:"state"`
+		LGA        string `json:"lga"`
+		Role       string `json:"role_preference"`
+		HasVehicle bool   `json:"has_vehicle"`
+		PartyCode  string `json:"party_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, jsonErrResp("invalid request body"), 400)
@@ -641,10 +648,18 @@ func handleVolunteerSelfRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Validate
 	var errors []ValidationError
-	if e := validateRequired("full_name", req.FullName); e != nil { errors = append(errors, *e) }
-	if e := validateRequired("phone", req.Phone); e != nil { errors = append(errors, *e) }
-	if e := validateRequired("party_code", req.PartyCode); e != nil { errors = append(errors, *e) }
-	if e := validateNigerianPhone(req.Phone); e != nil { errors = append(errors, *e) }
+	if e := validateRequired("full_name", req.FullName); e != nil {
+		errors = append(errors, *e)
+	}
+	if e := validateRequired("phone", req.Phone); e != nil {
+		errors = append(errors, *e)
+	}
+	if e := validateRequired("party_code", req.PartyCode); e != nil {
+		errors = append(errors, *e)
+	}
+	if e := validateNigerianPhone(req.Phone); e != nil {
+		errors = append(errors, *e)
+	}
 	if req.Role != "" {
 		if e := validateEnum("role_preference", req.Role, []string{"canvasser", "driver", "caller", "observer", "coordinator"}); e != nil {
 			errors = append(errors, *e)
@@ -679,10 +694,10 @@ func handleVolunteerSelfRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"volunteer_id":  volID,
-		"status":        "pending",
-		"message":       "Registration successful. You will be notified when your application is reviewed.",
-		"next_step":     "NIN verification",
+		"volunteer_id": volID,
+		"status":       "pending",
+		"message":      "Registration successful. You will be notified when your application is reviewed.",
+		"next_step":    "NIN verification",
 	})
 }
 
@@ -920,14 +935,14 @@ func handlePredictiveTurnout(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Prediction struct {
-		State             string  `json:"state"`
-		TotalContacts     int     `json:"total_contacts"`
-		PledgedCount      int     `json:"pledged_count"`
-		ConfirmedCount    int     `json:"confirmed_count"`
-		PredictedTurnout  float64 `json:"predicted_turnout_pct"`
+		State              string     `json:"state"`
+		TotalContacts      int        `json:"total_contacts"`
+		PledgedCount       int        `json:"pledged_count"`
+		ConfirmedCount     int        `json:"confirmed_count"`
+		PredictedTurnout   float64    `json:"predicted_turnout_pct"`
 		ConfidenceInterval [2]float64 `json:"confidence_interval"`
-		RiskLevel         string  `json:"risk_level"`
-		RecommendedAction string  `json:"recommended_action"`
+		RiskLevel          string     `json:"risk_level"`
+		RecommendedAction  string     `json:"recommended_action"`
 	}
 
 	var predictions []Prediction
@@ -1101,14 +1116,14 @@ func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
 // ═══════════════════════════════════════════════════════════════════════════
 
 type WarRoomAlert struct {
-	AlertID    string `json:"alert_id"`
-	Severity   string `json:"severity"` // critical, warning, info
-	Category   string `json:"category"`
-	Message    string `json:"message"`
-	Action     string `json:"action"`
-	State      string `json:"state,omitempty"`
-	Ward       string `json:"ward,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	AlertID   string `json:"alert_id"`
+	Severity  string `json:"severity"` // critical, warning, info
+	Category  string `json:"category"`
+	Message   string `json:"message"`
+	Action    string `json:"action"`
+	State     string `json:"state,omitempty"`
+	Ward      string `json:"ward,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
 
 func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
@@ -1135,12 +1150,12 @@ func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
 			rate := float64(pledged) / float64(contacts) * 100
 			if rate < 25 {
 				alerts = append(alerts, WarRoomAlert{
-					AlertID:  "alert-low-" + ward,
-					Severity: "critical",
-					Category: "turnout",
-					Message:  fmt.Sprintf("Ward %s has only %.0f%% pledge rate (%d/%d contacts)", ward, rate, pledged, contacts),
-					Action:   "Deploy 2+ additional canvassers immediately",
-					Ward:     ward,
+					AlertID:   "alert-low-" + ward,
+					Severity:  "critical",
+					Category:  "turnout",
+					Message:   fmt.Sprintf("Ward %s has only %.0f%% pledge rate (%d/%d contacts)", ward, rate, pledged, contacts),
+					Action:    "Deploy 2+ additional canvassers immediately",
+					Ward:      ward,
 					CreatedAt: time.Now().Format(time.RFC3339),
 				})
 			}
@@ -1156,11 +1171,11 @@ func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
 		partyID).Scan(&pendingRides)
 	if pendingRides > 0 {
 		alerts = append(alerts, WarRoomAlert{
-			AlertID:  "alert-rides-stale",
-			Severity: "warning",
-			Category: "rides",
-			Message:  fmt.Sprintf("%d ride requests pending >30 minutes", pendingRides),
-			Action:   "Alert available drivers or expand search radius",
+			AlertID:   "alert-rides-stale",
+			Severity:  "warning",
+			Category:  "rides",
+			Message:   fmt.Sprintf("%d ride requests pending >30 minutes", pendingRides),
+			Action:    "Alert available drivers or expand search radius",
 			CreatedAt: time.Now().Format(time.RFC3339),
 		})
 	}
@@ -1174,11 +1189,11 @@ func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
 		partyID).Scan(&inactiveVols)
 	if inactiveVols > 5 {
 		alerts = append(alerts, WarRoomAlert{
-			AlertID:  "alert-inactive-vols",
-			Severity: "warning",
-			Category: "volunteers",
-			Message:  fmt.Sprintf("%d volunteers inactive for >1 hour", inactiveVols),
-			Action:   "Contact volunteers to confirm status",
+			AlertID:   "alert-inactive-vols",
+			Severity:  "warning",
+			Category:  "volunteers",
+			Message:   fmt.Sprintf("%d volunteers inactive for >1 hour", inactiveVols),
+			Action:    "Contact volunteers to confirm status",
 			CreatedAt: time.Now().Format(time.RFC3339),
 		})
 	}
@@ -1193,11 +1208,11 @@ func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
 		partyID).Scan(&prevCPI)
 	if prevCPI > 0 && currentCPI < prevCPI-5 {
 		alerts = append(alerts, WarRoomAlert{
-			AlertID:  "alert-cpi-drop",
-			Severity: "critical",
-			Category: "cpi",
-			Message:  fmt.Sprintf("CPI dropped %.1f points (%.1f → %.1f)", prevCPI-currentCPI, prevCPI, currentCPI),
-			Action:   "Review campaign strategy and messaging effectiveness",
+			AlertID:   "alert-cpi-drop",
+			Severity:  "critical",
+			Category:  "cpi",
+			Message:   fmt.Sprintf("CPI dropped %.1f points (%.1f → %.1f)", prevCPI-currentCPI, prevCPI, currentCPI),
+			Action:    "Review campaign strategy and messaging effectiveness",
 			CreatedAt: time.Now().Format(time.RFC3339),
 		})
 	}
@@ -1212,18 +1227,18 @@ func handleWarRoomAIAlerts(w http.ResponseWriter, r *http.Request) {
 		partyID).Scan(&negPct)
 	if negPct > 40 {
 		alerts = append(alerts, WarRoomAlert{
-			AlertID:  "alert-sentiment-neg",
-			Severity: "warning",
-			Category: "sentiment",
-			Message:  fmt.Sprintf("Negative sentiment at %.0f%% in last 6 hours", negPct),
-			Action:   "Activate social media response team",
+			AlertID:   "alert-sentiment-neg",
+			Severity:  "warning",
+			Category:  "sentiment",
+			Message:   fmt.Sprintf("Negative sentiment at %.0f%% in last 6 hours", negPct),
+			Action:    "Activate social media response team",
 			CreatedAt: time.Now().Format(time.RFC3339),
 		})
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"alerts":      alerts,
-		"total":       len(alerts),
+		"alerts":       alerts,
+		"total":        len(alerts),
 		"generated_at": time.Now(),
 	})
 }
@@ -1376,12 +1391,12 @@ func handleSimulation(w http.ResponseWriter, r *http.Request) {
 	dbConn.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM gotv_volunteers WHERE party_id=$1 AND is_active=TRUE AND has_vehicle=TRUE", partyID).Scan(&currentDrivers)
 
 	type SimResult struct {
-		Scenario          string  `json:"scenario"`
-		CurrentState      map[string]int `json:"current_state"`
-		ProjectedState    map[string]interface{} `json:"projected_state"`
-		ImpactSummary     string  `json:"impact_summary"`
-		CostEstimate      string  `json:"cost_estimate"`
-		ConfidenceLevel   string  `json:"confidence_level"`
+		Scenario        string                 `json:"scenario"`
+		CurrentState    map[string]int         `json:"current_state"`
+		ProjectedState  map[string]interface{} `json:"projected_state"`
+		ImpactSummary   string                 `json:"impact_summary"`
+		CostEstimate    string                 `json:"cost_estimate"`
+		ConfidenceLevel string                 `json:"confidence_level"`
 	}
 
 	result := SimResult{
@@ -1413,9 +1428,9 @@ func handleSimulation(w http.ResponseWriter, r *http.Request) {
 		additionalPledges := additionalDoors * conversionRate
 		result.ProjectedState = map[string]interface{}{
 			"additional_canvassers": req.AdditionalCount,
-			"additional_doors":     additionalDoors,
-			"additional_pledges":   math.Round(additionalPledges),
-			"projected_pledges":    currentPledges + int(additionalPledges),
+			"additional_doors":      additionalDoors,
+			"additional_pledges":    math.Round(additionalPledges),
+			"projected_pledges":     currentPledges + int(additionalPledges),
 		}
 		result.ImpactSummary = fmt.Sprintf("+%d canvassers → +%.0f doors/day → +%.0f pledges", req.AdditionalCount, additionalDoors, additionalPledges)
 		result.CostEstimate = fmt.Sprintf("₦%d/day (stipend + materials)", req.AdditionalCount*3000)
@@ -1638,11 +1653,11 @@ func handlePledgeMerkleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"merkle_root":   root,
-		"pledge_count":  count,
-		"computed_at":   time.Now(),
-		"algorithm":     "sha256-merkle-tree",
-		"tamper_proof":  true,
+		"merkle_root":  root,
+		"pledge_count": count,
+		"computed_at":  time.Now(),
+		"algorithm":    "sha256-merkle-tree",
+		"tamper_proof": true,
 	})
 }
 
@@ -1656,11 +1671,11 @@ func handleCrowdEstimate(w http.ResponseWriter, r *http.Request) {
 	}
 	partyID := getPartyID(r)
 	var req struct {
-		ImageURL    string  `json:"image_url"`
-		VenueArea   float64 `json:"venue_area_sqm"`
-		EventName   string  `json:"event_name"`
-		State       string  `json:"state"`
-		VenueType   string  `json:"venue_type"` // open_field, stadium, indoor, street
+		ImageURL  string  `json:"image_url"`
+		VenueArea float64 `json:"venue_area_sqm"`
+		EventName string  `json:"event_name"`
+		State     string  `json:"state"`
+		VenueType string  `json:"venue_type"` // open_field, stadium, indoor, street
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, jsonErrResp("invalid request"), 400)
@@ -1673,10 +1688,10 @@ func handleCrowdEstimate(w http.ResponseWriter, r *http.Request) {
 
 	// Density model calibrated by venue type (peer-reviewed crowd safety literature)
 	densityFactors := map[string]float64{
-		"open_field": 1.2,  // loose standing
-		"stadium":    2.0,  // seated/standing mixed
-		"indoor":     1.8,  // conference/rally hall
-		"street":     0.8,  // marching/dispersed
+		"open_field": 1.2, // loose standing
+		"stadium":    2.0, // seated/standing mixed
+		"indoor":     1.8, // conference/rally hall
+		"street":     0.8, // marching/dispersed
 	}
 	baseDensity := 1.5
 	if factor, ok := densityFactors[req.VenueType]; ok {
@@ -1711,15 +1726,15 @@ func handleCrowdEstimate(w http.ResponseWriter, r *http.Request) {
 	})
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"estimate_id":          estimateID,
-		"event_name":           req.EventName,
-		"estimated_crowd":      estimate,
-		"confidence_interval":  [2]int{lo, hi},
-		"venue_area_sqm":       req.VenueArea,
-		"venue_type":           req.VenueType,
-		"density_per_sqm":      math.Round(baseDensity*10) / 10,
-		"model":                "density-area-v2",
-		"persisted":            estimateID > 0,
+		"estimate_id":         estimateID,
+		"event_name":          req.EventName,
+		"estimated_crowd":     estimate,
+		"confidence_interval": [2]int{lo, hi},
+		"venue_area_sqm":      req.VenueArea,
+		"venue_type":          req.VenueType,
+		"density_per_sqm":     math.Round(baseDensity*10) / 10,
+		"model":               "density-area-v2",
+		"persisted":           estimateID > 0,
 	})
 }
 
@@ -1954,10 +1969,10 @@ func handleHealthDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":   overall,
-		"version":  serviceVersion,
-		"uptime":   time.Since(startTime).String(),
-		"checks":   checks,
+		"status":  overall,
+		"version": serviceVersion,
+		"uptime":  time.Since(startTime).String(),
+		"checks":  checks,
 		"data": map[string]int{
 			"contacts": contactCount, "volunteers": volCount, "tasks": taskCount,
 		},

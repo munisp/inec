@@ -272,20 +272,28 @@ struct ModelsStatus {
 
 // ── Handlers ──
 
-async fn health(State(state): State<SharedState>) -> Json<HealthResponse> {
+async fn health(State(state): State<SharedState>) -> (StatusCode, Json<HealthResponse>) {
     let s = state.read().await;
     let anomaly_ready = s.anomaly_model.is_some() && s.anomaly_governance.approved;
-    Json(HealthResponse {
-        status: if anomaly_ready { "healthy" } else { "degraded" }.into(),
-        models: ModelsStatus {
-            anomaly_xgboost: anomaly_ready,
-            anomaly_governance: s.anomaly_governance.clone(),
-            face_embeddings: s.face_model.is_some(),
-            liveness_cdcn: s.liveness_model.is_some(),
-            neo4j_connected: s.neo4j.is_some(),
-        },
-        inference_device: "CPU".into(),
-    })
+    let status_code = if anomaly_ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status_code,
+        Json(HealthResponse {
+            status: if anomaly_ready { "healthy" } else { "degraded" }.into(),
+            models: ModelsStatus {
+                anomaly_xgboost: anomaly_ready,
+                anomaly_governance: s.anomaly_governance.clone(),
+                face_embeddings: s.face_model.is_some(),
+                liveness_cdcn: s.liveness_model.is_some(),
+                neo4j_connected: s.neo4j.is_some(),
+            },
+            inference_device: "CPU".into(),
+        }),
+    )
 }
 
 async fn predict_anomaly(

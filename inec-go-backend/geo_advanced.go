@@ -625,10 +625,13 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use OSRM public API (or self-hosted) -- admin-configured via env, not user input
+	// Use an approved, administrator-configured OSRM endpoint only.
 	osrmURL := os.Getenv("OSRM_URL")
 	if osrmURL == "" {
-		osrmURL = "https://router.project-osrm.org"
+		writeJSON(w, http.StatusServiceUnavailable, M{
+			"error": "OSRM_URL is not configured; route optimization is unavailable",
+		})
+		return
 	}
 	if !strings.HasPrefix(osrmURL, "https://") && !strings.HasPrefix(osrmURL, "http://") {
 		writeJSON(w, 500, M{"error": "invalid OSRM URL scheme"})
@@ -647,25 +650,27 @@ func handleRouteOptimize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := geoHTTPClient.Do(req) // #nosec G704 -- URL constructed from admin-configured OSRM env var
+	resp, err := geoHTTPClient.Do(req) // #nosec G704 -- URL host is administrator-configured
 	if err != nil {
-		// Fallback: return straight line with Haversine distance
-		dist := haversineDistance(body.OriginLat, body.OriginLng, body.DestLat, body.DestLng)
-		writeJSON(w, 200, M{
-			"fallback": true,
-			"route": M{
-				"distance_km":  dist,
-				"duration_min": dist / 40 * 60, // estimate 40km/h
-				"geometry":     M{"type": "LineString", "coordinates": [][]float64{{body.OriginLng, body.OriginLat}, {body.DestLng, body.DestLat}}},
-			},
+		writeJSON(w, http.StatusServiceUnavailable, M{
+			"error": "routing provider is unavailable; no route was calculated",
 		})
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		writeJSON(w, resp.StatusCode, M{
+			"error": "routing provider did not complete the route request",
+		})
+		return
+	}
 
 	var osrmResp map[string]interface{}
-	json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&osrmResp)
-	writeJSON(w, 200, osrmResp)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10*1024*1024)).Decode(&osrmResp); err != nil {
+		writeJSON(w, http.StatusBadGateway, M{"error": "invalid response from routing provider"})
+		return
+	}
+	writeJSON(w, http.StatusOK, osrmResp)
 }
 
 // handleNearestOfficial finds closest available official to a given location.
@@ -1497,7 +1502,6 @@ func registerGeoAdvancedRoutes(r *mux.Router) {
 	// #2 Geofence visualization
 	r.HandleFunc("/geo/geofence/zones", readAuth(handleGetGeofenceZones)).Methods("GET")
 	r.HandleFunc("/geo/geofence/violations", readAuth(handleGeofenceViolations)).Methods("GET")
-	r.HandleFunc("/geo/geofence/zones/seed", writeAuth(handleSeedGeofenceZones)).Methods("POST")
 
 	// #7 Advanced PostGIS
 	r.HandleFunc("/geo/spatial/clusters", readAuth(handleSpatialClusters)).Methods("GET")

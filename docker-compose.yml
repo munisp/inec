@@ -163,7 +163,7 @@ services:
       dockerfile: Dockerfile
     depends_on:
       go-backend:
-        condition: service_started
+        condition: service_healthy
     networks:
     - inec-network
     ports:
@@ -190,13 +190,15 @@ services:
       temporal:
         condition: service_started
       inference-engine:
-        condition: service_started
+        condition: service_healthy
       biometric-go:
         condition: service_healthy
       fluvio-stream:
         condition: service_healthy
       satellite-change-detection:
-        condition: service_started
+        condition: service_healthy
+      ai-anomaly-detection:
+        condition: service_healthy
       document-ai:
         condition: service_healthy
       campaign-planning:
@@ -271,6 +273,16 @@ services:
     - PORT=8091
     - MODELS_DIR=/app/models
     - CORS_ORIGINS=https://inec.local,http://localhost:3000
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 30s
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - http://localhost:8091/health
+      timeout: 10s
     networks:
     - inec-network
     restart: unless-stopped
@@ -614,6 +626,16 @@ services:
     depends_on:
       inference-engine:
         condition: service_healthy
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8200/api/v1/anomaly/health')
+      timeout: 10s
 
   homomorphic-tally:
     build:
@@ -648,6 +670,16 @@ services:
     - STAC_COLLECTION=${STAC_COLLECTION:?STAC_COLLECTION must be set}
     - STAC_PREVIEW_ASSET=${STAC_PREVIEW_ASSET:?STAC_PREVIEW_ASSET must be set}
     - STAC_MAX_CLOUD_COVER=${STAC_MAX_CLOUD_COVER:?STAC_MAX_CLOUD_COVER must be set}
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8204/api/v1/satellite/health')
+      timeout: 10s
     networks:
     - inec-network
 
