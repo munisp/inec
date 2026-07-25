@@ -4,6 +4,25 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit SHA, branch, or tag to deploy on the protected Kasicloud runner"
+        required: true
+        default: "main"
+        type: string
+      environment:
+        description: "Protected deployment environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: inec-kasicloud-deployment-${{ github.event.inputs.environment || 'build' }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -12,11 +31,10 @@ env:
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 jobs:
   build-backend:
-    name: Build & Push Backend Image
+    name: Build and Push Backend Image
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.meta.outputs.version }}
@@ -33,7 +51,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker meta
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -54,8 +72,10 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-frontend:
-    name: Build & Push Frontend Image
+    name: Build and Push Frontend Image
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -69,7 +89,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker meta
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -89,100 +109,84 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy-staging:
-    name: Deploy to Staging
+  deploy-kasicloud:
+    name: Deploy to Kasicloud
+    if: github.event_name == 'workflow_dispatch'
     needs: [build-backend, build-frontend]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment: staging
+    runs-on: [self-hosted, linux, x64, kasicloud]
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Check out the approved deployment reference
+        uses: actions/checkout@v7
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
-          aws-region: af-south-1
+          ref: ${{ inputs.ref }}
 
-      - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name inec-staging --region af-south-1
-
-      - name: Deploy with Helm
+      - name: Verify protected production configuration
+        shell: bash
         run: |
-          helm upgrade --install inec ./helm/inec-platform \
-            --namespace inec --create-namespace \
-            --set global.environment=staging \
-            --set backend.image.tag=${{ needs.build-backend.outputs.image_tag }} \
-            --set frontend.image.tag=${{ needs.build-backend.outputs.image_tag }} \
-            --values helm/inec-platform/values.yaml \
-            --values helm/inec-platform/values-staging.yaml \
-            --wait --timeout 10m
+          set -euo pipefail
+          test -f /etc/inec/production.env
+          test -d /srv/inec/models
+          test -f /srv/inec/models/anomaly_xgboost.onnx
+          test -f /srv/inec/models/anomaly_xgboost.manifest.json
+          docker compose --env-file /etc/inec/production.env -f docker-compose.yml config --quiet
 
-      - name: Run smoke tests
+      - name: Build and apply the Compose release
+        shell: bash
         run: |
-          STAGING_URL=$(kubectl get ingress -n inec -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}')
-          curl -sf "https://${STAGING_URL}/healthz" | jq .
-          curl -sf "https://${STAGING_URL}/readiness" | jq .
+          set -euo pipefail
+          docker compose --env-file /etc/inec/production.env -f docker-compose.yml up -d --build --remove-orphans
 
-      - name: Run database migrations
+      - name: Require healthy core services
+        shell: bash
         run: |
-          kubectl exec -n inec deploy/inec-backend -- /app/inec-server --migrate-only
-
-  deploy-production:
-    name: Deploy to Production
-    needs: [build-backend, build-frontend, deploy-staging]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    environment: production
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PRODUCTION }}
-          aws-region: af-south-1
-
-      - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name inec-production --region af-south-1
-
-      - name: Deploy canary (10%)
-        run: |
-          helm upgrade --install inec ./helm/inec-platform \
-            --namespace inec \
-            --set global.environment=production \
-            --set backend.image.tag=${{ needs.build-backend.outputs.image_tag }} \
-            --set frontend.image.tag=${{ needs.build-backend.outputs.image_tag }} \
-            --set backend.canary.enabled=true \
-            --set backend.canary.weight=10 \
-            --values helm/inec-platform/values.yaml \
-            --wait --timeout 15m
-
-      - name: Canary health check (5 min)
-        run: |
-          for i in $(seq 1 30); do
-            STATUS=$(kubectl get pods -n inec -l app=inec-backend-canary -o jsonpath='{.items[0].status.phase}')
-            if [ "$STATUS" != "Running" ]; then
-              echo "Canary unhealthy: $STATUS — rolling back"
-              helm rollback inec -n inec
-              exit 1
+          set -euo pipefail
+          services=(
+            frontend
+            go-backend
+            inference-engine
+            ai-anomaly-detection
+            document-ai
+            satellite-change-detection
+            campaign-planning
+          )
+          deadline=$((SECONDS + 600))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            unhealthy=0
+            for service in "${services[@]}"; do
+              container_id="$(docker compose --env-file /etc/inec/production.env -f docker-compose.yml ps -q "$service")"
+              if [ -z "$container_id" ]; then
+                echo "${service}: container is absent"
+                unhealthy=1
+                continue
+              fi
+              health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
+              echo "${service}: ${health}"
+              if [ "$health" != healthy ]; then
+                unhealthy=1
+              fi
+            done
+            if [ "$unhealthy" -eq 0 ]; then
+              exit 0
             fi
             sleep 10
           done
-          echo "Canary healthy for 5 minutes"
+          echo "Timed out waiting for healthy core services" >&2
+          docker compose --env-file /etc/inec/production.env -f docker-compose.yml ps
+          docker compose --env-file /etc/inec/production.env -f docker-compose.yml logs --tail=200 \
+            go-backend inference-engine ai-anomaly-detection document-ai satellite-change-detection
+          exit 1
 
-      - name: Promote to full production
+      - name: Run local deployment smoke checks
+        shell: bash
         run: |
-          helm upgrade --install inec ./helm/inec-platform \
-            --namespace inec \
-            --set global.environment=production \
-            --set backend.image.tag=${{ needs.build-backend.outputs.image_tag }} \
-            --set frontend.image.tag=${{ needs.build-backend.outputs.image_tag }} \
-            --set backend.canary.enabled=false \
-            --values helm/inec-platform/values.yaml \
-            --wait --timeout 15m
+          set -euo pipefail
+          curl --fail --show-error http://127.0.0.1:8088/healthz
+          curl --fail --show-error http://127.0.0.1:3000/health
 
-      - name: Verify production
+      - name: Record deployed source revision
+        shell: bash
         run: |
-          kubectl rollout status deployment/inec-backend -n inec --timeout=5m
-          kubectl rollout status deployment/inec-frontend -n inec --timeout=5m
+          set -euo pipefail
+          printf '%s\n' "${GITHUB_SHA}" | sudo tee /srv/inec/DEPLOYED_GIT_SHA >/dev/null
