@@ -285,6 +285,7 @@ jobs:
         working-directory: inec-go-backend
         run: ./inec-server &
         env:
+          APP_ENV: loadtest
           PORT: '8099'
           DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
       - name: Wait for server
