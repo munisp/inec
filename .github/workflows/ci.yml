@@ -289,15 +289,18 @@ jobs:
           DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
       - name: Wait for server
         run: |
-          server_ready=false
+          status=000
           for _ in $(seq 1 30); do
-            if curl -sf http://localhost:8099/health > /dev/null; then
-              server_ready=true
+            status=$(curl --max-time 2 -sS -o /dev/null -w '%{http_code}' http://localhost:8099/health || true)
+            # The health route is intentionally protected. Any HTTP response
+            # proves the backend is listening and ready for authenticated load tests.
+            if [ "$status" != "000" ]; then
+              echo "Backend ready with protected health status $status"
               break
             fi
             sleep 1
           done
-          test "$server_ready" = true
+          test "$status" != "000"
       - name: Run load tests
         run: |
           go install github.com/rakyll/hey@latest
