@@ -17,7 +17,9 @@ import duckdb
 import httpx
 import numpy as np
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+
+from external_device import ExternalDeviceEvent, ExternalDeviceLakehouse
 from pydantic import BaseModel
 from scipy import stats as scipy_stats
 from sklearn.ensemble import IsolationForest
@@ -215,31 +217,53 @@ class AnomalyDetector:
         self.is_fitted = False
 
     def detect_anomalies(self, vote_counts: list[int]) -> list[AnomalyResult]:
+        """Return conservative, explainable statistical outliers.
+
+        Isolation Forest's contamination setting requires a proportion of an
+        in-sample batch to be labelled anomalous. That is useful as a candidate
+        generator, but it is unsafe to publish as an election-quality finding on
+        its own. A candidate must also exceed the established 3.5 modified-z
+        threshold using the batch median and median absolute deviation (MAD).
+        """
         if len(vote_counts) < 10:
             return []
 
-        arr = np.array(vote_counts).reshape(-1, 1)
+        values = np.asarray(vote_counts, dtype=float)
+        arr = values.reshape(-1, 1)
         self.model.fit(arr)
         self.is_fitted = True
         predictions = self.model.predict(arr)
         scores = self.model.decision_function(arr)
 
+        median = float(np.median(values))
+        mad = float(np.median(np.abs(values - median)))
+        if mad <= np.finfo(float).eps:
+            modified_z = np.where(np.abs(values - median) > 0, np.inf, 0.0)
+        else:
+            modified_z = 0.6745 * np.abs(values - median) / mad
+
         anomalies = []
-        for i, (pred, score) in enumerate(zip(predictions, scores)):
-            if pred == -1:
-                confidence = min(1.0, max(0.0, -score))
-                severity = "critical" if confidence > 0.8 else "high" if confidence > 0.6 else "medium"
-                anomalies.append(
-                    AnomalyResult(
-                        id=f"anomaly-{i}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
-                        polling_unit_code=f"PU-{i:05d}",
-                        anomaly_type="statistical_outlier",
-                        severity=severity,
-                        confidence=round(confidence, 4),
-                        description=f"Vote count {vote_counts[i]} is a statistical outlier (isolation score: {score:.4f})",
-                        detected_at=datetime.now(UTC).isoformat(),
-                    )
+        for i, (pred, score, robust_z) in enumerate(zip(predictions, scores, modified_z)):
+            if pred != -1 or robust_z < 3.5:
+                continue
+            robust_confidence = 1.0 if np.isinf(robust_z) else min(1.0, float(robust_z) / 8.0)
+            isolation_confidence = min(1.0, max(0.0, float(-score) * 4.0))
+            confidence = round(max(robust_confidence, isolation_confidence), 4)
+            severity = "critical" if confidence > 0.8 else "high" if confidence > 0.6 else "medium"
+            anomalies.append(
+                AnomalyResult(
+                    id=f"anomaly-{i}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
+                    polling_unit_code=f"PU-{i:05d}",
+                    anomaly_type="statistical_outlier",
+                    severity=severity,
+                    confidence=confidence,
+                    description=(
+                        f"Vote count {vote_counts[i]} is a statistical outlier "
+                        f"(modified-z: {robust_z:.4f}; isolation score: {score:.4f})"
+                    ),
+                    detected_at=datetime.now(UTC).isoformat(),
                 )
+            )
         return anomalies
 
     def benford_analysis(self, vote_counts: list[int]) -> BenfordAnalysis:
@@ -333,13 +357,15 @@ class AnomalyDetector:
 # --- Application ---
 
 lakehouse: Lakehouse | None = None
+external_device_lakehouse: ExternalDeviceLakehouse | None = None
 detector = AnomalyDetector()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global lakehouse
+    global lakehouse, external_device_lakehouse
     lakehouse = Lakehouse(DUCKDB_PATH)
+    external_device_lakehouse = ExternalDeviceLakehouse(lakehouse.conn, os.path.dirname(DUCKDB_PATH) or "/data")
     log.info("lakehouse_started", path=DUCKDB_PATH)
 
     # Try to sync from PostgreSQL
@@ -383,6 +409,46 @@ async def health():
 async def sync_data():
     count = await sync_from_postgres()
     return {"synced": count}
+
+
+def require_dapr_ingress(request: Request) -> None:
+    token = os.getenv("DAPR_API_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="Dapr ingestion token is not configured")
+    if request.headers.get("dapr-api-token", "") != token:
+        raise HTTPException(status_code=401, detail="invalid Dapr ingestion token")
+
+
+@app.get("/dapr/subscribe")
+async def dapr_subscriptions():
+    return [{
+        "pubsubname": os.getenv("DAPR_PUBSUB_NAME", "pubsub"),
+        "topic": os.getenv("DAPR_EXTERNAL_DEVICE_TOPIC", "inec.bvas.device-event.v1"),
+        "route": "/dapr/events/external-device",
+    }]
+
+
+@app.post("/dapr/events/external-device")
+async def ingest_external_device_event(request: Request):
+    require_dapr_ingress(request)
+    if external_device_lakehouse is None:
+        raise HTTPException(status_code=503, detail="external device lakehouse is unavailable")
+    try:
+        envelope = await request.json()
+        payload = envelope.get("data", envelope) if isinstance(envelope, dict) else envelope
+        event = ExternalDeviceEvent.model_validate(payload)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="invalid redacted external device event") from None
+    return await external_device_lakehouse.ingest(event)
+
+
+@app.get("/analytics/external-device-quality")
+async def external_device_quality(limit: int = 100):
+    if external_device_lakehouse is None:
+        raise HTTPException(status_code=503, detail="external device lakehouse is unavailable")
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 1000")
+    return external_device_lakehouse.quality_summary(limit)
 
 
 @app.get("/analytics/votes-by-state")

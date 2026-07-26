@@ -119,7 +119,12 @@ func main() {
 	initObserverTables()
 	initDocumentAISchema()
 	initEvidenceIntegritySchema()
+	initDeviceGatewaySchema(db)
+	initExternalIntegrationDeliverySchema(db)
+	initIReVSchema(db)
+	initOperationalSettlementSchema(db)
 	startFabricAnchorWorker()
+	startExternalIntegrationDeliveryWorker()
 	initKYBSchema()
 	initDataSecuritySchema()
 	initElectionFSMSchema()
@@ -292,6 +297,14 @@ func main() {
 	r.HandleFunc("/bvas/reconciliation", readAuth(handleBVASReconciliation)).Methods("GET")
 	r.HandleFunc("/bvas/summary", readAuth(handleBVASSummary)).Methods("GET")
 
+	// Device gateway — dedicated mTLS edge; it does not accept a human role session as device proof.
+	registerDeviceGatewayRoutes(r)
+
+	// Durable external-device event delivery — operational status and explicit retries.
+	r.HandleFunc("/integrations/delivery/status", readAuth(handleExternalIntegrationDeliveryStatus)).Methods("GET")
+	registerOperationalSettlementRoutes(r)
+	r.HandleFunc("/integrations/delivery/{id}/retry", writeAuth(handleRetryExternalIntegrationDelivery)).Methods("POST")
+
 	// Ingestion Engine — auth required
 	r.HandleFunc("/ingestion/submit", writeAuth(handleIngestionSubmit)).Methods("POST")
 	r.HandleFunc("/ingestion/batch", writeAuth(handleBatchUpload)).Methods("POST")
@@ -423,7 +436,16 @@ func main() {
 	r.HandleFunc("/ems/portals/sync-log", readAuth(handlePortalSyncLog)).Methods("GET")
 	r.HandleFunc("/ems/portals/webhooks", readAuth(handlePortalWebhooks)).Methods("GET")
 	r.HandleFunc("/ems/portals/{id}", readAuth(handleGetPortal)).Methods("GET")
-	r.HandleFunc("/ems/portals/{id}/sync", adminOnly(handlePortalSync)).Methods("POST")
+	r.HandleFunc("/ems/portals/{id}/sync", adminOnly(handleLegacyPortalSyncDisabled)).Methods("POST")
+
+	// IReV — only sanctioned mutual-TLS/OAuth integration and receipt verification.
+	r.HandleFunc("/irev/status", readAuth(handleIReVStatus)).Methods("GET")
+	r.HandleFunc("/irev/submissions", writeAuth(handleIReVSubmit)).Methods("POST")
+	r.HandleFunc("/irev/submissions/{resultID}", readAuth(handleIReVReceipt)).Methods("GET")
+	r.HandleFunc("/irev/webhooks/receipts", handleIReVWebhook).Methods("POST")
+
+	// External device quality is served by the governed lakehouse/Sedona analytics path.
+	r.HandleFunc("/integrations/external-device-quality", readAuth(handleExternalDeviceQuality)).Methods("GET")
 
 	// EMS - Data Validation Pipeline — auth required
 	r.HandleFunc("/ems/validation/rules", readAuth(handleListValidationRules)).Methods("GET")
@@ -635,9 +657,9 @@ func main() {
 	r.HandleFunc("/production/fabric/stats", readAuth(handleProductionFabricStats)).Methods("GET")
 	r.HandleFunc("/production/fabric/submit", adminOnly(handleProductionFabricSubmit)).Methods("POST")
 	r.HandleFunc("/production/fabric/verify-endorsements", readAuth(handleProductionFabricVerifyEndorsements)).Methods("GET")
-	r.HandleFunc("/production/ledger/stats", readAuth(handleProductionTBStats)).Methods("GET")
-	r.HandleFunc("/production/ledger/transfer", adminOnly(handleProductionTBCreateTransfer)).Methods("POST")
-	r.HandleFunc("/production/ledger/journal", readAuth(handleProductionTBJournal)).Methods("GET")
+	// Direct TigerBeetle transfer creation, local journaling, and ledger façades
+	// are intentionally not exposed. The native operational-settlement workflow is
+	// the sole ledger mutation and status boundary.
 
 	// Middleware status & management
 	r.HandleFunc("/middleware/status", handleMiddlewareStatus).Methods("GET")
@@ -658,13 +680,10 @@ func main() {
 	r.HandleFunc("/middleware/lakehouse/tables", readAuth(handleLakehouseTables)).Methods("GET")
 	r.HandleFunc("/middleware/redis/stats", adminOnly(handleRedisStats)).Methods("GET")
 
-	// Mojaloop — 4-Phase Transaction Pattern
-	r.HandleFunc("/middleware/mojaloop/status", handleMojaStatus).Methods("GET")
-	r.HandleFunc("/middleware/mojaloop/parties", handleMojaPartyLookup).Methods("GET")
-	r.HandleFunc("/middleware/mojaloop/quotes", writeAuth(handleMojaCreateQuote)).Methods("POST")
-	r.HandleFunc("/middleware/mojaloop/transfers", writeAuth(handleMojaCreateTransfer)).Methods("POST")
-	r.HandleFunc("/middleware/mojaloop/settlements", adminOnly(handleMojaSettle)).Methods("POST")
-	r.HandleFunc("/middleware/mojaloop/transactions", readAuth(handleMojaTransactions)).Methods("GET")
+	// Mojaloop status only. Generic party, quote, transfer, settlement, and
+	// transaction routes are intentionally not exposed; approved device-operational
+	// reimbursements use /operational-settlements/commitments instead.
+	r.HandleFunc("/middleware/mojaloop/status", readAuth(handleMojaStatus)).Methods("GET")
 
 	// OpenSearch — Full-text Search
 	r.HandleFunc("/middleware/opensearch/status", readAuth(handleOpenSearchStatus)).Methods("GET")
@@ -913,7 +932,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Stop Fabric anchor retries before releasing application dependencies.
+	// Stop durable workers before releasing middleware or database dependencies.
+	stopExternalIntegrationDeliveryWorker()
 	stopFabricAnchorWorker()
 
 	// Close middleware connections

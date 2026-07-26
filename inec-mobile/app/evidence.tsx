@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
-import { integrityApi, IntegrityJourney } from '../src/lib/api';
+import { DeviceGatewayHealth, DeviceGatewayOperationalStatus, externalElectionApi, IReVPortalStatus, IReVReceipt, integrityApi, IntegrityJourney } from '../src/lib/api';
 
 type RecordValue = Record<string, unknown>;
 
@@ -33,6 +33,10 @@ function compactHash(raw: unknown) {
 export default function EvidenceScreen() {
   const params = useLocalSearchParams<{ result_id?: string; election_id?: string }>();
   const [journey, setJourney] = useState<IntegrityJourney | null>(null);
+  const [irevStatus, setIReVStatus] = useState<IReVPortalStatus | null>(null);
+  const [irevReceipt, setIReVReceipt] = useState<IReVReceipt | null>(null);
+  const [deviceHealth, setDeviceHealth] = useState<DeviceGatewayHealth | null>(null);
+  const [deviceTrust, setDeviceTrust] = useState<DeviceGatewayOperationalStatus | null>(null);
   const [materials, setMaterials] = useState<RecordValue[]>([]);
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
@@ -51,6 +55,17 @@ export default function EvidenceScreen() {
     try {
       const response = await integrityApi.journey(resultId);
       setJourney(response);
+      const [portalResult, receiptResult, healthResult, trustResult] = await Promise.allSettled([
+        externalElectionApi.irevStatus(),
+        externalElectionApi.irevReceipt(resultId),
+        externalElectionApi.deviceGatewayHealth(),
+        externalElectionApi.deviceGatewayStatus(),
+      ]);
+      setIReVStatus(portalResult.status === 'fulfilled' ? portalResult.value : null);
+      // Missing receipts and unavailable portal calls are deliberately not treated as acceptance.
+      setIReVReceipt(receiptResult.status === 'fulfilled' ? receiptResult.value : null);
+      setDeviceHealth(healthResult.status === 'fulfilled' ? healthResult.value : { status: 'unavailable' });
+      setDeviceTrust(trustResult.status === 'fulfilled' ? trustResult.value : null);
     } catch (caught: unknown) {
       setJourney(null);
       setError((caught as Error).message || 'Evidence journey is unavailable.');
@@ -109,6 +124,8 @@ export default function EvidenceScreen() {
   const fabricAnchors = journey?.fabric_anchors || [];
   const committedFabricAnchors = fabricAnchors.filter((anchor) => anchor.status === 'committed');
   const verificationGood = Boolean(verification?.chain_valid) && verification?.signature_valid !== false;
+  const irevReceiptState = String(irevReceipt?.submission_status || 'not_recorded').toLowerCase();
+  const irevReceiptAccepted = irevReceiptState === 'acknowledged' || irevReceiptState === 'accepted';
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -136,6 +153,14 @@ export default function EvidenceScreen() {
           <View style={styles.verificationHeader}><Ionicons name={verificationGood ? 'shield-checkmark-outline' : 'shield-outline'} size={22} color={verificationGood ? '#166534' : '#b45309'} /><View style={{ flex: 1 }}><Text style={styles.verificationTitle}>Evidence verification</Text><Text style={styles.verificationText}>Chain: {verification?.chain_valid ? 'valid' : 'unverified'} · Signature: {verification?.signature_checked ? (verification.signature_valid ? 'valid' : 'invalid') : 'not checked'}</Text></View></View>
           {(verification?.failure_reasons || []).map((reason) => <Text key={reason} style={styles.failureReason}>• {reason}</Text>)}
           <TouchableOpacity accessibilityRole="button" style={styles.verifyButton} onPress={verify} disabled={verifying}><Text style={styles.verifyButtonText}>{verifying ? 'Verifying…' : 'Verify chain now'}</Text></TouchableOpacity>
+        </View>
+
+        <Text style={styles.sectionTitle}>Device trust and authorized IReV receipt</Text>
+        <View style={[styles.externalStatusCard, irevReceiptAccepted && deviceHealth?.status === 'ready' ? styles.externalStatusReady : styles.externalStatusReview]}>
+          <View style={styles.externalStatusHeader}><Ionicons name={irevReceiptAccepted && deviceHealth?.status === 'ready' ? 'shield-checkmark-outline' : 'shield-outline'} size={22} color={irevReceiptAccepted && deviceHealth?.status === 'ready' ? '#166534' : '#b45309'} /><View style={{ flex: 1 }}><Text style={styles.externalStatusTitle}>External-election boundary</Text><Text style={styles.externalStatusText}>Gateway: {title(deviceHealth?.status)} · Portal: {title(irevStatus?.status || 'unavailable')} · Receipt: {title(irevReceiptState)}</Text></View></View>
+          <View style={styles.externalMetrics}><View><Text style={styles.label}>ACTIVE ENROLLMENTS</Text><Text style={styles.externalMetric}>{deviceTrust?.enrollments?.active ?? '—'}</Text></View><View><Text style={styles.label}>DELIVERED EVENTS</Text><Text style={styles.externalMetric}>{deviceTrust?.delivery?.delivered ?? '—'}</Text></View><View><Text style={styles.label}>ACKNOWLEDGED RECEIPTS</Text><Text style={styles.externalMetric}>{irevStatus?.submissions?.acknowledged ?? '—'}</Text></View></View>
+          {irevReceipt?.external_receipt_id ? <TouchableOpacity onPress={() => copyHash(irevReceipt.external_receipt_id, 'IReV receipt reference')}><Text style={styles.hash}>Receipt: {compactHash(irevReceipt.external_receipt_id)}</Text></TouchableOpacity> : <Text style={styles.externalWarning}>No verified IReV receipt is recorded for this result. This does not evidence portal acceptance.</Text>}
+          {deviceHealth?.status !== 'ready' ? <Text style={styles.externalWarning}>Device event ingress remains fail closed until its required components report ready.</Text> : null}
         </View>
 
         <Text style={styles.sectionTitle}>Consortium ledger anchors</Text>
@@ -185,5 +210,6 @@ const styles = StyleSheet.create({
   caseCard: { backgroundColor: '#fff7ed', borderLeftWidth: 3, borderLeftColor: '#f97316', borderRadius: 8, padding: 12, marginBottom: 8 }, caseHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 }, caseTitle: { color: '#111827', fontSize: 13, fontWeight: '800', flex: 1 }, caseSeverity: { color: '#9a3412', fontSize: 10, fontWeight: '800', textTransform: 'uppercase' }, caseText: { color: '#475569', fontSize: 12, lineHeight: 17, marginTop: 5 }, caseMeta: { color: '#78716c', fontSize: 10, marginTop: 6 },
   artifactCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 13, marginBottom: 8 }, artifactTitle: { color: '#111827', fontSize: 13, fontWeight: '800' }, artifactText: { color: '#64748b', fontSize: 11, marginTop: 4 },
   fabricSummary: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 9 }, fabricCommitted: { borderColor: '#bae6fd', backgroundColor: '#f0f9ff' }, fabricPending: { borderColor: '#fde68a', backgroundColor: '#fffbeb' }, fabricHeader: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' }, fabricTitle: { color: '#111827', fontSize: 14, fontWeight: '800' }, fabricText: { color: '#475569', fontSize: 11, lineHeight: 16, marginTop: 3 }, fabricCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#bae6fd', borderRadius: 12, padding: 13, marginBottom: 8 }, fabricCardHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 }, fabricStatus: { color: '#075985', fontSize: 10, fontWeight: '800' }, fabricMeta: { color: '#64748b', fontSize: 10, flexShrink: 1, textAlign: 'right' }, fabricTx: { color: '#0369a1', fontFamily: 'monospace', fontSize: 10, marginTop: 6 }, fabricDiagnostic: { color: '#92400e', fontSize: 10, lineHeight: 14, marginTop: 7 },
+  externalStatusCard: { borderWidth: 1, borderRadius: 12, padding: 13, marginBottom: 9 }, externalStatusReady: { borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' }, externalStatusReview: { borderColor: '#fde68a', backgroundColor: '#fffbeb' }, externalStatusHeader: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' }, externalStatusTitle: { color: '#111827', fontSize: 14, fontWeight: '800' }, externalStatusText: { color: '#475569', fontSize: 11, lineHeight: 16, marginTop: 3 }, externalMetrics: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 13 }, externalMetric: { color: '#111827', fontSize: 17, fontWeight: '800', marginTop: 3 }, externalWarning: { color: '#92400e', fontSize: 11, lineHeight: 16, marginTop: 8 },
   materialSection: { marginTop: 6, paddingTop: 4 }, materialDescription: { color: '#64748b', fontSize: 12, lineHeight: 17 }, materialButton: { alignSelf: 'flex-start', marginTop: 10, backgroundColor: '#111827', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 }, materialButtonText: { color: '#fff', fontSize: 12, fontWeight: '800' }, materialCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 13, marginTop: 9 },
 });

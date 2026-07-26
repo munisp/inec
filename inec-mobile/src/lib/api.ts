@@ -328,6 +328,54 @@ export const integrityApi = {
   voterServices: () => api<OfficialVoterServicesResponse>('/integrity/voter-services'),
 };
 
+export interface DeviceGatewayHealth {
+  status: 'ready' | 'unavailable' | string;
+  components?: Record<string, boolean | string | number>;
+}
+
+export interface DeviceGatewayOperationalStatus {
+  status: string;
+  enrollments?: Record<string, number>;
+  delivery?: Record<string, number>;
+  notice?: string;
+}
+
+export interface IReVPortalStatus {
+  status?: string;
+  required?: boolean;
+  portal_connection_id?: number;
+  submissions?: Record<string, number>;
+  [key: string]: unknown;
+}
+
+export interface IReVReceipt {
+  submission_status?: string;
+  external_receipt_id?: string;
+  external_transaction_id?: string;
+  external_status?: string;
+  payload_sha256?: string;
+  evidence_event_hash?: string;
+  acknowledged_at?: string;
+  submitted_at?: string;
+  last_error_code?: string;
+  last_error_detail?: string;
+  [key: string]: unknown;
+}
+
+export interface OperationalSettlementHealth {
+  status: 'ready' | 'unavailable' | string;
+  components?: Record<string, boolean | string | number>;
+  scope?: string;
+}
+
+export const externalElectionApi = {
+  deviceGatewayHealth: () => api<DeviceGatewayHealth>('/device-gateway/v1/health'),
+  deviceGatewayStatus: () => api<DeviceGatewayOperationalStatus>('/device-gateway/v1/status'),
+  irevStatus: () => api<IReVPortalStatus>('/irev/status'),
+  irevReceipt: (resultId: number) => api<IReVReceipt>(`/irev/submissions/${resultId}`),
+  operationalSettlementHealth: () => api<OperationalSettlementHealth>('/operational-settlements/health'),
+};
+
 // ── Disputes API ──
 
 export interface Dispute {

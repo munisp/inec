@@ -189,6 +189,7 @@ export const api = {
     request(`/geo/map-data?election_id=${electionId}${stateCode ? `&state_code=${stateCode}` : ''}`),
 
   getMiddlewareHealth: () => request('/middleware/health'),
+  getScaleHealth: () => request('/scale/health'),
   getKafkaTopics: () => request('/middleware/kafka/topics'),
   getTemporalWorkflows: () => request('/middleware/temporal/workflows'),
   getTigerBeetleAccounts: () => request('/middleware/tigerbeetle/accounts'),
@@ -580,6 +581,12 @@ export const api = {
     request(`/integrity/collation/${electionId}/${encodeURIComponent(level)}/${encodeURIComponent(areaCode)}`),
   getIntegrityVoterServices: () => request('/integrity/voter-services'),
   getIntegrityHealth: () => request('/integrity/health'),
+  getExternalDeviceQuality: (limit = 100) => request(`/integrations/external-device-quality?limit=${limit}`),
+  getDeviceGatewayHealth: () => request('/device-gateway/v1/health'),
+  getDeviceGatewayStatus: () => request('/device-gateway/v1/status'),
+  getIReVStatus: () => request('/irev/status'),
+  getIReVReceipt: (resultId: number) => request(`/irev/submissions/${resultId}`),
+  getOperationalSettlementHealth: () => request('/operational-settlements/health'),
 
   // KYC (already exists in pages but not in api object)
   kycVerify: (form: FormData) =>
@@ -589,12 +596,9 @@ export const api = {
   kycStatus: (userId?: number) =>
     request(`/kyc/status${userId ? `?user_id=${userId}` : ''}`),
 
-  // Mojaloop
+  // Mojaloop remains status-only. Payment operations are available solely through
+  // the independently approved operational-settlement workflow.
   getMojaStatus: () => request('/middleware/mojaloop/status'),
-  getMojaTransactions: () => request('/middleware/mojaloop/transactions'),
-  mojaPartyLookup: (partyId: string) => request(`/middleware/mojaloop/parties?party_id=${partyId}`),
-  mojaCreateQuote: (payerFsp: string, payeeFsp: string, amount: number, currency?: string) =>
-    request('/middleware/mojaloop/quotes', { method: 'POST', body: JSON.stringify({ payer_fsp: payerFsp, payee_fsp: payeeFsp, amount, currency }) }),
 
   // OpenSearch
   getOpenSearchStatus: () => request('/middleware/opensearch/status'),

@@ -15,6 +15,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -314,6 +315,37 @@ struct IntegrityVerifyRequest {
 struct IntegrityVerifyResponse {
     valid: bool,
     key_id: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct DeviceEnvelope {
+    version: String,
+    device_id: String,
+    election_id: i64,
+    polling_unit_code: String,
+    event_type: String,
+    sequence: i64,
+    nonce: String,
+    observed_at: String,
+    payload_sha256: String,
+    payload: serde_json::Value,
+    signature: String,
+}
+
+#[derive(Deserialize)]
+struct DeviceEnvelopeVerifyRequest {
+    envelope: DeviceEnvelope,
+    public_key_base64: String,
+    attestation_policy_version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeviceEnvelopeVerifyResponse {
+    valid: bool,
+    envelope_sha256: String,
+    payload_sha256: String,
+    attestation: serde_json::Value,
+    reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -789,6 +821,188 @@ async fn verify_integrity(
     Ok(Json(IntegrityVerifyResponse { valid, key_id: state.integrity_signer.key_id.clone() }))
 }
 
+fn canonical_json(value: &serde_json::Value) -> Result<String, String> {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::String(_) => {
+            serde_json::to_string(value).map_err(|error| error.to_string())
+        }
+        serde_json::Value::Array(values) => {
+            let members = values
+                .iter()
+                .map(canonical_json)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("[{}]", members.join(",")))
+        }
+        serde_json::Value::Object(values) => {
+            let mut entries = values.iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            let members = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let encoded_key = serde_json::to_string(key).map_err(|error| error.to_string())?;
+                    Ok(format!("{}:{}", encoded_key, canonical_json(value)?))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(format!("{{{}}}", members.join(",")))
+        }
+    }
+}
+
+fn canonical_device_envelope(envelope: &DeviceEnvelope) -> Result<Vec<u8>, String> {
+    let canonical_payload = canonical_json(&envelope.payload)?;
+    let fields = vec![
+        envelope.version.clone(),
+        envelope.device_id.clone(),
+        envelope.election_id.to_string(),
+        envelope.polling_unit_code.clone(),
+        envelope.event_type.clone(),
+        envelope.sequence.to_string(),
+        envelope.nonce.clone(),
+        envelope.observed_at.clone(),
+        envelope.payload_sha256.to_ascii_lowercase(),
+        canonical_payload,
+    ];
+    Ok(fields.join("\\n").into_bytes())
+}
+
+fn valid_device_event_type(event_type: &str) -> bool {
+    matches!(event_type, "accreditation" | "result_capture" | "heartbeat" | "incident")
+}
+
+fn contains_prohibited_device_field(value: &serde_json::Value) -> bool {
+    const PROHIBITED: [&str; 6] = [
+        "voter_pvc_number",
+        "biometric_template",
+        "fingerprint_image",
+        "face_embedding",
+        "raw_image",
+        "result_image",
+    ];
+    match value {
+        serde_json::Value::Object(entries) => entries.iter().any(|(key, nested)| {
+            PROHIBITED.contains(&key.as_str()) || contains_prohibited_device_field(nested)
+        }),
+        serde_json::Value::Array(entries) => entries.iter().any(contains_prohibited_device_field),
+        _ => false,
+    }
+}
+
+fn verify_device_envelope_payload(
+    request: &DeviceEnvelopeVerifyRequest,
+    signer: &IntegritySigner,
+) -> Result<DeviceEnvelopeVerifyResponse, (StatusCode, String)> {
+    let envelope = &request.envelope;
+    if envelope.version != "bvas-envelope-v1"
+        || envelope.device_id.trim().is_empty()
+        || envelope.election_id <= 0
+        || envelope.polling_unit_code.trim().is_empty()
+        || envelope.sequence <= 0
+        || !valid_device_event_type(&envelope.event_type)
+        || !valid_sha256(&envelope.payload_sha256)
+        || request.attestation_policy_version.trim().is_empty()
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid device envelope shape".into()));
+    }
+    let observed = DateTime::parse_from_rfc3339(&envelope.observed_at)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "observed_at must be RFC3339".into()))?
+        .with_timezone(&Utc);
+    let skew_seconds = (Utc::now() - observed).num_seconds().abs();
+    if skew_seconds > 600 {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "device timestamp outside permitted clock skew".into()));
+    }
+    if contains_prohibited_device_field(&envelope.payload) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "payload contains prohibited sensitive device field".into()));
+    }
+    let canonical_payload = canonical_json(&envelope.payload)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "payload cannot be canonicalized".into()))?;
+    let calculated_payload_hash = format!("{:x}", Sha256::digest(canonical_payload.as_bytes()));
+    if calculated_payload_hash != envelope.payload_sha256.to_ascii_lowercase() {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "payload SHA-256 mismatch".into()));
+    }
+    let public_key_bytes = BASE64_STANDARD
+        .decode(request.public_key_base64.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid enrolled device public key".into()))?;
+    let public_key_array = <[u8; 32]>::try_from(public_key_bytes.as_slice())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid enrolled device public key length".into()))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key_array)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid enrolled device public key".into()))?;
+    let signature_bytes = BASE64_STANDARD
+        .decode(envelope.signature.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid device signature encoding".into()))?;
+    let signature_array = <[u8; 64]>::try_from(signature_bytes.as_slice())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid device signature length".into()))?;
+    let signature = Signature::from_bytes(&signature_array);
+    let canonical_envelope = canonical_device_envelope(envelope)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "envelope cannot be canonicalized".into()))?;
+    verifying_key
+        .verify(&canonical_envelope, &signature)
+        .map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "device signature verification failed".into()))?;
+    let envelope_sha256 = format!("{:x}", Sha256::digest(&canonical_envelope));
+    let signing_key = signer.signing_key.as_ref().ok_or((StatusCode::SERVICE_UNAVAILABLE, "integrity attestation signer is unavailable".into()))?;
+    if signer.key_id == "unconfigured" {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "integrity attestation key is unavailable".into()));
+    }
+    let verified_at = Utc::now().to_rfc3339();
+    let attestation_payload = format!(
+        "device-attestation-v1\\n{}\\n{}\\n{}\\n{}\\n{}",
+        envelope_sha256,
+        envelope.payload_sha256.to_ascii_lowercase(),
+        request.attestation_policy_version,
+        signer.key_id,
+        verified_at
+    );
+    let attestation_signature = signing_key.sign(attestation_payload.as_bytes());
+    let attestation = serde_json::json!({
+        "version": "device-attestation-v1",
+        "envelope_sha256": envelope_sha256,
+        "payload_sha256": envelope.payload_sha256.to_ascii_lowercase(),
+        "attestation_policy_version": request.attestation_policy_version,
+        "key_id": signer.key_id,
+        "verified_at": verified_at,
+        "signature": BASE64_STANDARD.encode(attestation_signature.to_bytes())
+    });
+    Ok(DeviceEnvelopeVerifyResponse {
+        valid: true,
+        envelope_sha256,
+        payload_sha256: envelope.payload_sha256.to_ascii_lowercase(),
+        attestation,
+        reason: None,
+    })
+}
+
+async fn verify_device_envelope(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(request): Json<DeviceEnvelopeVerifyRequest>,
+) -> (StatusCode, Json<DeviceEnvelopeVerifyResponse>) {
+    let signer_state = state.read().await;
+    if !signer_state.integrity_signer.authorizes(&headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(DeviceEnvelopeVerifyResponse {
+                valid: false,
+                envelope_sha256: String::new(),
+                payload_sha256: String::new(),
+                attestation: serde_json::json!({}),
+                reason: Some("unauthorized".into()),
+            }),
+        );
+    }
+    match verify_device_envelope_payload(&request, &signer_state.integrity_signer) {
+        Ok(response) => (StatusCode::OK, Json(response)),
+        Err((status, reason)) => (
+            status,
+            Json(DeviceEnvelopeVerifyResponse {
+                valid: false,
+                envelope_sha256: String::new(),
+                payload_sha256: request.envelope.payload_sha256,
+                attestation: serde_json::json!({}),
+                reason: Some(reason),
+            }),
+        ),
+    }
+}
+
 async fn query_graph(
     State(state): State<SharedState>,
     Json(req): Json<GraphQueryRequest>,
@@ -826,6 +1040,7 @@ async fn main() {
         .route("/gps/spoof-detect", post(detect_gps_spoof))
         .route("/integrity/sign", post(sign_integrity))
         .route("/integrity/verify", post(verify_integrity))
+        .route("/integrity/device/verify", post(verify_device_envelope))
         .route("/integrity/health", get(integrity_signer_health).post(integrity_signer_health))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -878,5 +1093,66 @@ mod integrity_tests {
         let signature = signing_key.sign(digest.as_bytes());
         assert!(verifying_key.verify(digest.as_bytes(), &signature).is_ok());
         assert!(verifying_key.verify(b"different digest", &signature).is_err());
+    }
+
+    fn signed_device_request(payload: serde_json::Value) -> DeviceEnvelopeVerifyRequest {
+        let device_key = SigningKey::from_bytes(&[31_u8; 32]);
+        let canonical_payload = canonical_json(&payload).expect("canonical payload");
+        let payload_sha256 = format!("{:x}", Sha256::digest(canonical_payload.as_bytes()));
+        let mut envelope = DeviceEnvelope {
+            version: "bvas-envelope-v1".into(),
+            device_id: "BVAS-00001".into(),
+            election_id: 1,
+            polling_unit_code: "PU-001".into(),
+            event_type: "accreditation".into(),
+            sequence: 1,
+            nonce: BASE64_STANDARD.encode([9_u8; 32]),
+            observed_at: Utc::now().to_rfc3339(),
+            payload_sha256,
+            payload,
+            signature: String::new(),
+        };
+        let bytes = canonical_device_envelope(&envelope).expect("canonical envelope");
+        envelope.signature = BASE64_STANDARD.encode(device_key.sign(&bytes).to_bytes());
+        DeviceEnvelopeVerifyRequest {
+            envelope,
+            public_key_base64: BASE64_STANDARD.encode(device_key.verifying_key().to_bytes()),
+            attestation_policy_version: "device-policy-v1".into(),
+        }
+    }
+
+    #[test]
+    fn device_envelope_verifies_and_returns_signed_attestation() {
+        let signer_key = SigningKey::from_bytes(&[41_u8; 32]);
+        let signer = IntegritySigner {
+            signing_key: Some(signer_key),
+            verifying_key: None,
+            key_id: "integrity-device-test-key".into(),
+            service_token: Some("service-secret".into()),
+        };
+        let request = signed_device_request(serde_json::json!({
+            "voter_pvc_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "biometric_match": true,
+            "pvc_verified": true,
+            "method": "biometric"
+        }));
+        let response = verify_device_envelope_payload(&request, &signer).expect("valid device envelope");
+        assert!(response.valid);
+        assert!(valid_sha256(&response.envelope_sha256));
+        assert!(response.attestation.get("signature").is_some());
+    }
+
+    #[test]
+    fn device_envelope_rejects_prohibited_sensitive_payload() {
+        let signer_key = SigningKey::from_bytes(&[41_u8; 32]);
+        let signer = IntegritySigner {
+            signing_key: Some(signer_key),
+            verifying_key: None,
+            key_id: "integrity-device-test-key".into(),
+            service_token: Some("service-secret".into()),
+        };
+        let request = signed_device_request(serde_json::json!({"voter_pvc_number": "not-permitted"}));
+        let error = verify_device_envelope_payload(&request, &signer).expect_err("sensitive field must fail");
+        assert_eq!(error.0, StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

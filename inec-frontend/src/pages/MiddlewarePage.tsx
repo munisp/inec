@@ -20,7 +20,6 @@ export default function MiddlewarePage() {
   const [apisixRoutes, setApisixRoutes] = useState<unknown[]>([]);
   const [lakehouseTables, setLakehouseTables] = useState<string[]>([]);
   const [mojaStatus, setMojaStatus] = useState<Record<string, unknown> | null>(null);
-  const [mojaTransactions, setMojaTransactions] = useState<unknown[]>([]);
   const [osStatus, setOsStatus] = useState<Record<string, unknown> | null>(null);
   const [osIndices, setOsIndices] = useState<unknown[]>([]);
   const [wafStatus, setWafStatus] = useState<Record<string, unknown> | null>(null);
@@ -46,13 +45,12 @@ export default function MiddlewarePage() {
       setStatuses(mwArr.map((m: Record<string, unknown>) => ({ name: String(m.name), status: m.connected ? 'connected' : 'disconnected', mode: String(m.mode || ''), details: m.details as Record<string, unknown> | undefined })));
       setHealth(healthRes ? { status: healthRes.all_connected ? 'healthy' : 'degraded', ...healthRes } : null);
 
-      const [kt, rs, ar, lt, moja, mojaT, os, osI, waf, wafT] = await Promise.all([
+      const [kt, rs, ar, lt, moja, os, osI, waf, wafT] = await Promise.all([
         api.getKafkaTopics(),
         api.getRedisStats(),
         api.getAPISIXRoutes(),
         api.getLakehouseTables(),
         api.getMojaStatus(),
-        api.getMojaTransactions(),
         api.getOpenSearchStatus(),
         api.getOpenSearchIndices(),
         api.getWAFStatus(),
@@ -66,7 +64,6 @@ export default function MiddlewarePage() {
       setApisixRoutes(Array.isArray(ar) ? ar : (ar as Record<string, unknown>)?.routes as unknown[] || []);
       setLakehouseTables(Array.isArray(lt) ? lt : (lt as Record<string, unknown>)?.tables as unknown[] || []);
       setMojaStatus(moja);
-      setMojaTransactions(Array.isArray(mojaT) ? mojaT : (mojaT as Record<string, unknown>)?.transactions as unknown[] || []);
       setOsStatus(os);
       setOsIndices(Array.isArray(osI) ? osI : (osI as Record<string, unknown>)?.indices as unknown[] || []);
       setWafStatus(waf);
@@ -79,7 +76,6 @@ export default function MiddlewarePage() {
       setApisixRoutes([]);
       setLakehouseTables([]);
       setMojaStatus(null);
-      setMojaTransactions([]);
       setOsStatus(null);
       setOsIndices([]);
       setWafStatus(null);
@@ -234,7 +230,7 @@ export default function MiddlewarePage() {
       {/* Mojaloop */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
-          <CardHeader><CardTitle className="text-base">Mojaloop Payment Hub</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">Mojaloop operational settlement boundary</CardTitle></CardHeader>
           <CardContent>
             {mojaStatus ? (
               <div className="space-y-2 text-sm">
@@ -244,17 +240,9 @@ export default function MiddlewarePage() {
                     <span className="font-mono">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
                   </div>
                 ))}
-                {mojaTransactions.length > 0 && (
-                  <div className="mt-2 pt-2 border-t">
-                    <p className="text-xs text-zinc-500 mb-1">{mojaTransactions.length} recent transactions</p>
-                    {mojaTransactions.slice(0, 5).map((t, i) => {
-                      const tx = t as Record<string, unknown>;
-                      return <div key={i} className="text-xs font-mono text-zinc-600">{String(tx.id || tx.transfer_id || JSON.stringify(t).slice(0, 80))}</div>;
-                    })}
-                  </div>
-                )}
+                <p className="mt-2 border-t pt-2 text-xs text-zinc-500">Generic party, quote, transfer, and settlement operations are intentionally unavailable. Approved device operational commitments require independent approval, native TigerBeetle records, and configured Mojaloop mTLS.</p>
               </div>
-            ) : <p className="text-sm text-zinc-500">Mojaloop embedded/not connected</p>}
+            ) : <p className="text-sm text-zinc-500">Mojaloop is unavailable until the authorised FSPIOP endpoint and mTLS prerequisites are configured.</p>}
           </CardContent>
         </Card>
 

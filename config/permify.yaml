@@ -71,3 +71,35 @@ entity incident {
     action edit = reporter or election.admin
     action resolve = election.admin
 }
+
+# Device relations are used by the dedicated mTLS gateway. Device trust is not
+# granted by a browser session; these actions govern administrative enrollment.
+entity bvas_device {
+    relation election @election
+    relation admin @user
+    relation ict_officer @user
+    relation security @user
+    action manage_bvas = admin or ict_officer or election.admin
+    action view = admin or ict_officer or security or election.view
+    action request_operational_settlement = admin or ict_officer
+}
+
+# Operational settlements are limited to approved BVAS logistics, reimbursement,
+# and repair commitments. They intentionally have no relation to results, voters,
+# PVCs, biometrics, ballots, or public-result publication.
+entity operational_settlement {
+    relation election @election
+    relation device @bvas_device
+    relation requester @user
+    relation approver @user
+    relation admin @user
+    relation finance_officer @user
+    relation ict_officer @user
+    action request_operational_settlement = admin or finance_officer or device.request_operational_settlement
+    action approve_operational_settlement = admin or finance_officer
+    action commit_operational_settlement = admin or finance_officer
+    action dispatch_operational_settlement = admin or finance_officer
+    action reconcile_operational_settlement = admin or finance_officer
+    action void_operational_settlement = admin or finance_officer
+    action view_operational_settlement = requester or approver or admin or finance_officer or ict_officer or election.view
+}

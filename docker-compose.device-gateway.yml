@@ -1,0 +1,14 @@
+services:
+  apisix:
+    depends_on:
+      openappsec-agent:
+        condition: service_started
+    ports:
+      - "9443:9443"
+    volumes:
+      - ${APISIX_DEVICE_CONFIG_DIR:?APISIX_DEVICE_CONFIG_DIR must point to the rendered protected config}/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ${APISIX_DEVICE_CONFIG_DIR:?APISIX_DEVICE_CONFIG_DIR must point to the rendered protected config}/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+
+# This overlay is intentionally applied only after scripts/launch-device-gateway.sh
+# renders APISIX configuration from mounted certificate material. It never creates
+# a development CA, a device identity, or a permissive TLS fallback.

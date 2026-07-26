@@ -5,7 +5,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from 'expo-router';
-import { scaleApi } from '../src/lib/api';
+import { DeviceGatewayHealth, DeviceGatewayOperationalStatus, externalElectionApi, IReVPortalStatus, scaleApi } from '../src/lib/api';
 import { CardSkeleton } from '../src/components/SkeletonLoader';
 
 interface MiddlewareMode {
@@ -17,17 +17,26 @@ interface MiddlewareMode {
 export default function ScaleHealthScreen() {
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
   const [middlewareModes, setMiddlewareModes] = useState<MiddlewareMode[]>([]);
+  const [deviceHealth, setDeviceHealth] = useState<DeviceGatewayHealth | null>(null);
+  const [deviceTrust, setDeviceTrust] = useState<DeviceGatewayOperationalStatus | null>(null);
+  const [irevStatus, setIReVStatus] = useState<IReVPortalStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
-      const [h, m] = await Promise.all([
+      const [h, m, gateway, trust, portal] = await Promise.all([
         scaleApi.health().catch(() => null),
         scaleApi.middlewareModes().catch(() => []),
+        externalElectionApi.deviceGatewayHealth().catch(() => ({ status: 'unavailable' } as DeviceGatewayHealth)),
+        externalElectionApi.deviceGatewayStatus().catch(() => null),
+        externalElectionApi.irevStatus().catch(() => null),
       ]);
       if (h) setHealth(h);
       setMiddlewareModes(m);
+      setDeviceHealth(gateway);
+      setDeviceTrust(trust);
+      setIReVStatus(portal);
     } catch { /* */ }
     setLoading(false);
   }, []);
@@ -102,6 +111,21 @@ export default function ScaleHealthScreen() {
         </>
       )}
 
+      <View style={[styles.sectionCard, deviceHealth?.status === 'ready' ? styles.gatewayReady : styles.gatewayReview]}>
+        <View style={styles.sectionHeader}>
+          <View style={[styles.sectionIcon, { backgroundColor: deviceHealth?.status === 'ready' ? '#dcfce7' : '#fef3c7' }]}>
+            <Ionicons name="shield-checkmark-outline" size={18} color={deviceHealth?.status === 'ready' ? '#166534' : '#b45309'} />
+          </View>
+          <View style={{ flex: 1 }}><Text style={styles.sectionTitle}>BVAS gateway and IReV boundary</Text><Text style={styles.gatewayNote}>mTLS device ingress, redacted outbox delivery, and authorised receipt state</Text></View>
+        </View>
+        <View style={styles.kvRow}><Text style={styles.kvKey}>Gateway status</Text><Text style={styles.kvValue}>{deviceHealth?.status || 'unavailable'}</Text></View>
+        <View style={styles.kvRow}><Text style={styles.kvKey}>Active enrollments</Text><Text style={styles.kvValue}>{String(deviceTrust?.enrollments?.active ?? '—')}</Text></View>
+        <View style={styles.kvRow}><Text style={styles.kvKey}>Delivered events</Text><Text style={styles.kvValue}>{String(deviceTrust?.delivery?.delivered ?? '—')}</Text></View>
+        <View style={styles.kvRow}><Text style={styles.kvKey}>IReV portal state</Text><Text style={styles.kvValue}>{irevStatus?.status || 'unavailable'}</Text></View>
+        <View style={styles.kvRow}><Text style={styles.kvKey}>Acknowledged receipts</Text><Text style={styles.kvValue}>{String(irevStatus?.submissions?.acknowledged ?? '—')}</Text></View>
+        {deviceHealth?.status !== 'ready' ? <Text style={styles.gatewayWarning}>Device events remain fail closed until every required gateway component is ready. Unavailable data is not a readiness confirmation.</Text> : null}
+      </View>
+
       {middlewareModes.length > 0 && (
         <View style={styles.sectionCard}>
           <View style={styles.sectionHeader}>
@@ -150,4 +174,8 @@ const styles = StyleSheet.create({
   mwConnection: { fontSize: 11, color: '#9ca3af', marginTop: 2 },
   mwBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   mwBadgeText: { fontSize: 10, fontWeight: '700' },
+  gatewayReady: { borderWidth: 1, borderColor: '#bbf7d0' },
+  gatewayReview: { borderWidth: 1, borderColor: '#fde68a', backgroundColor: '#fffbeb' },
+  gatewayNote: { color: '#6b7280', fontSize: 10, marginTop: 2 },
+  gatewayWarning: { color: '#92400e', fontSize: 11, lineHeight: 16, marginTop: 10 },
 });

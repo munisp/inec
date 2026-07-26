@@ -483,13 +483,9 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tbTransfer, tbErr := createTBTransfer(0, int64(totalCast), req.PollingUnitCode)
-	if tbErr != nil {
-		log.Error().Err(tbErr).Str("pu_code", req.PollingUnitCode).Msg("Native TigerBeetle transfer creation failed")
-		writeError(w, http.StatusServiceUnavailable, "TigerBeetle ledger is unavailable; result submission was not recorded")
-		return
-	}
-	tbID := tbTransfer.ID
+	// TigerBeetle is deliberately excluded from electoral result submission.
+	// Result integrity is governed by the immutable evidence chain and approved
+	// cryptographic controls, not an operational-settlement ledger.
 
 	// Use transaction for atomic result + party scores insert
 	tx, txErr := db.BeginTx(r.Context(), nil)
@@ -498,12 +494,12 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resultID := insertReturningID(tx, `INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
-		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
-		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
+			ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.ElectionID, req.PollingUnitCode, userID, "pending",
 		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
-		ec8aHash, tbID, "PENDING", "PENDING")
+		ec8aHash, nil, "NOT_APPLICABLE", "PENDING")
 
 	// Batch insert party scores (single multi-value INSERT on PostgreSQL)
 	if err := batchInsertPartyScores(tx, resultID, req.PartyScores); err != nil {
@@ -551,7 +547,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logAudit("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", resultID), userID,
-		map[string]interface{}{"phase": "Pre-Validation", "polling_unit": req.PollingUnitCode, "tigerbeetle_id": tbID})
+		map[string]interface{}{"phase": "Pre-Validation", "polling_unit": req.PollingUnitCode, "tigerbeetle_status": "NOT_APPLICABLE"})
 
 	// Sharded WS broadcast: resolve PU → state for targeted fan-out
 	var puStateCode string
@@ -570,7 +566,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	go checkAutoCollation(req.ElectionID, req.PollingUnitCode)
 
 	go publishResultEvent(TopicResultSubmitted, resultID, req.PollingUnitCode, req.ElectionID, userID,
-		map[string]interface{}{"phase": "Pre-Validation", "tigerbeetle_id": tbID})
+		map[string]interface{}{"phase": "Pre-Validation", "tigerbeetle_status": "NOT_APPLICABLE"})
 	go publishAuditEvent("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", resultID), userID,
 		map[string]interface{}{"polling_unit": req.PollingUnitCode})
 
@@ -584,7 +580,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	invalidateCollationCache(req.ElectionID)
 
-	writeJSON(w, 200, M{"id": resultID, "status": "pending", "tigerbeetle_transfer_id": tbID, "workflow_id": wfID, "phase": "Pre-Validation", "message": "Result submitted. Proceeding to Edge Validation."})
+	writeJSON(w, 200, M{"id": resultID, "status": "pending", "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "message": "Result submitted. Proceeding to Edge Validation."})
 }
 
 func handleValidateResult(w http.ResponseWriter, r *http.Request) {
@@ -742,22 +738,12 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "result has no immutable evidence chain and cannot be finalized")
 		return
 	}
-	if integritySigningRequired() && (!tbTransferID.Valid || tbTransferID.String == "") {
-		writeError(w, http.StatusConflict, "a recorded TigerBeetle transfer is required for production finalisation")
-		return
-	}
-	if tbTransferID.Valid && tbTransferID.String != "" {
-		if err := postTBTransfer(tbTransferID.String); err != nil {
-			log.Error().Err(err).Str("transfer_id", tbTransferID.String).Msg("Native TigerBeetle transfer posting failed")
-			writeError(w, http.StatusServiceUnavailable, "TigerBeetle ledger posting failed; result was not finalized")
-			return
-		}
-	}
-
-	// External Fabric/IPFS anchoring is deliberately not fabricated. The result is
-	// finalized only after the real TigerBeetle transition and evidence signature.
+	// External Fabric/IPFS anchoring is deliberately not fabricated. Electoral
+	// finalisation is driven by verified evidence and authorized signing; the
+	// TigerBeetle operational-settlement ledger must never gate or record results.
 	if _, err := tx.ExecContext(r.Context(), convertPlaceholders(`UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
-		tigerbeetle_status='POSTED', hyperledger_status='NOT_CONFIGURED', hyperledger_tx_id=NULL, ipfs_cid=NULL WHERE id=?`), idInt); err != nil {
+			tigerbeetle_transfer_id=NULL, tigerbeetle_status='NOT_APPLICABLE', hyperledger_status='NOT_CONFIGURED', hyperledger_tx_id=NULL, ipfs_cid=NULL WHERE id=?`), idInt); err != nil {
+
 		writeError(w, http.StatusInternalServerError, "failed to finalize result")
 		return
 	}
@@ -768,8 +754,9 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 		Visibility:      integrityVisibilityPublic,
 		CreatedBy:       uid,
 		PublicPayload: M{
-			"status": "finalized", "polling_unit_code": puCode, "tigerbeetle_status": "POSTED",
+			"status": "finalized", "polling_unit_code": puCode, "tigerbeetle_status": "NOT_APPLICABLE",
 		},
+
 		PrivatePayload: M{
 			"phase": "Finalization", "polling_unit": puCode, "external_anchoring": "not_configured",
 		},
@@ -788,7 +775,8 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	go publishAuditEvent("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
 	startResultWorkflow("ResultFinalizationWorkflow", idInt, map[string]interface{}{"result_id": id})
 
-	writeJSON(w, http.StatusOK, M{"status": "finalized", "phase": "Finalization", "tigerbeetle_status": "POSTED", "hyperledger_status": "NOT_CONFIGURED", "external_anchoring": "not_configured"})
+	writeJSON(w, http.StatusOK, M{"status": "finalized", "phase": "Finalization", "tigerbeetle_status": "NOT_APPLICABLE", "hyperledger_status": "NOT_CONFIGURED", "external_anchoring": "not_configured"})
+
 }
 
 func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
@@ -836,14 +824,10 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	if tbTransferID.Valid && tbTransferID.String != "" {
-		if err := voidTBTransfer(tbTransferID.String); err != nil {
-			log.Error().Err(err).Str("transfer_id", tbTransferID.String).Msg("Native TigerBeetle transfer voiding failed")
-			writeError(w, http.StatusServiceUnavailable, "TigerBeetle ledger void failed; result was not disputed")
-			return
-		}
-	}
-	if _, err := tx.ExecContext(r.Context(), convertPlaceholders("UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?"), idInt); err != nil {
+	// Disputes affect evidence and result state only; they must not create or void
+	// an operational settlement entry.
+	if _, err := tx.ExecContext(r.Context(), convertPlaceholders("UPDATE results SET status='disputed', tigerbeetle_transfer_id=NULL, tigerbeetle_status='NOT_APPLICABLE' WHERE id=?"), idInt); err != nil {
+
 		writeError(w, http.StatusInternalServerError, "failed to mark result disputed")
 		return
 	}

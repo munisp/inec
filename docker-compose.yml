@@ -16,7 +16,7 @@ services:
     networks:
     - inec-network
     ports:
-    - 9180:9180
+    - 127.0.0.1:9180:9180
     volumes:
     - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
@@ -237,10 +237,24 @@ services:
     - SATELLITE_SERVICE_URL=http://satellite-change-detection:8204
     - DOCUMENT_AI_URL=http://document-ai:8089
     - CAMPAIGN_PLANNING_URL=http://campaign-planning:8206
+    # Operational settlement remains disabled unless finance governance explicitly enables it.
+    - OPERATIONAL_SETTLEMENTS_ENABLED=${OPERATIONAL_SETTLEMENTS_ENABLED:-false}
+    - OPERATIONAL_SETTLEMENT_TREASURY_ACCOUNT=${OPERATIONAL_SETTLEMENT_TREASURY_ACCOUNT:-}
+    - OPERATIONAL_SETTLEMENT_DEVICE_ACCOUNT_PREFIX=${OPERATIONAL_SETTLEMENT_DEVICE_ACCOUNT_PREFIX:-}
+    - OPERATIONAL_SETTLEMENT_TB_LEDGER=${OPERATIONAL_SETTLEMENT_TB_LEDGER:-}
+    - OPERATIONAL_SETTLEMENT_TB_ACCOUNT_CODE=${OPERATIONAL_SETTLEMENT_TB_ACCOUNT_CODE:-}
+    - OPERATIONAL_SETTLEMENT_TB_TRANSFER_CODE=${OPERATIONAL_SETTLEMENT_TB_TRANSFER_CODE:-}
+    - OPERATIONAL_SETTLEMENT_MAX_AMOUNT_MINOR=${OPERATIONAL_SETTLEMENT_MAX_AMOUNT_MINOR:-}
+    - MOJALOOP_OPERATIONAL_SETTLEMENT_ENABLED=${MOJALOOP_OPERATIONAL_SETTLEMENT_ENABLED:-false}
+    - MOJALOOP_URL=${MOJALOOP_URL:-}
+    - MOJALOOP_OPERATIONAL_PAYER_FSP=${MOJALOOP_OPERATIONAL_PAYER_FSP:-}
+    - MOJALOOP_TLS_CERT_FILE=${MOJALOOP_TLS_CERT_FILE:-}
+    - MOJALOOP_TLS_KEY_FILE=${MOJALOOP_TLS_KEY_FILE:-}
+    - MOJALOOP_CA_FILE=${MOJALOOP_CA_FILE:-}
     networks:
     - inec-network
-    ports:
-    - 8088:8088
+    expose:
+    - "8088"
     volumes:
     - app-data:/data
   document-ai:
@@ -374,17 +388,39 @@ services:
     depends_on:
       pgpool:
         condition: service_healthy
+      sedona-spatial:
+        condition: service_healthy
     environment:
     - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - DUCKDB_PATH=/data/inec_lakehouse.duckdb
     - MODEL_DIR=/data/models
     - PORT=8090
+    - SEDONA_SERVICE_URL=http://sedona-spatial:8212
+    - SEDONA_SERVICE_TOKEN=${SEDONA_SERVICE_TOKEN:?SEDONA_SERVICE_TOKEN must be set}
+    - DAPR_API_TOKEN=${DAPR_API_TOKEN:?DAPR_API_TOKEN must be set}
+    - DAPR_PUBSUB_NAME=${DAPR_PUBSUB_NAME:-pubsub}
+    - DAPR_EXTERNAL_DEVICE_TOPIC=${DAPR_EXTERNAL_DEVICE_TOPIC:-inec.bvas.device-event.v1}
     networks:
     - inec-network
     ports:
     - 8090:8090
     volumes:
     - lakehouse-data:/data
+  sedona-spatial:
+    build:
+      context: ./services/sedona-spatial
+      dockerfile: Dockerfile
+    depends_on:
+      pgpool:
+        condition: service_healthy
+    environment:
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    - SEDONA_SERVICE_TOKEN=${SEDONA_SERVICE_TOKEN:?SEDONA_SERVICE_TOKEN must be set}
+    - DEVICE_GEOFENCE_METERS=${DEVICE_GEOFENCE_METERS:?DEVICE_GEOFENCE_METERS must be set}
+    networks:
+    - inec-network
+    ports:
+    - 8212:8212
   permify:
     command: serve
     image: ghcr.io/permify/permify:latest

@@ -299,4 +299,41 @@ routes:
     type: roundrobin
   uri: /fluvio/*
 
+# BVAS-style device events are accepted only through the dedicated client-certificate SNI.
+# The matching SSL resource is provisioned from protected certificate material by
+# config/apisix/provision-device-gateway-mtls.sh; APISIX rejects the TLS handshake
+# before this route when the client certificate is absent or invalid.
+- methods:
+  - POST
+  plugins:
+    client-control:
+      max_body_size: 131072
+    limit-req:
+      burst: 4
+      key: ssl_client_fingerprint
+      key_type: var
+      rate: 8
+    proxy-rewrite:
+      headers:
+        remove:
+        - X-Device-Gateway
+        - X-Device-Certificate-Fingerprint
+        - X-SSL-Client-Fingerprint
+        - X-SSL-Client-Verify
+        - X-SSL-Client-Serial
+        - X-SSL-Client-S-DN
+        set:
+          X-Device-Gateway: apisix-mtls
+          X-Device-Certificate-Fingerprint: $ssl_client_fingerprint
+          X-SSL-Client-Fingerprint: $ssl_client_fingerprint
+          X-SSL-Client-Verify: $ssl_client_verify
+          X-SSL-Client-Serial: $ssl_client_serial
+          X-SSL-Client-S-DN: $ssl_client_s_dn
+    request-id: {}
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /device-gateway/v1/events
+
 #END

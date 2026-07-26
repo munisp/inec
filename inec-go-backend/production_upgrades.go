@@ -38,7 +38,6 @@ var (
 	prodPAD        *ProductionPADEngine
 	prodIPFS       *ProductionIPFSEngine
 	prodFabric     *ProductionFabricEngine
-	prodTB         *ProductionTBEngine
 )
 
 func initProductionUpgrades(database *sql.DB) {
@@ -155,36 +154,23 @@ func initProductionUpgrades(database *sql.DB) {
 		version_tx INTEGER NOT NULL DEFAULT 0,
 		is_delete INTEGER DEFAULT 0,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE TABLE IF NOT EXISTS tb_journal (
-		id SERIAL PRIMARY KEY,
-		transfer_id TEXT NOT NULL,
-		event_type TEXT NOT NULL,
-		debit_account TEXT NOT NULL,
-		credit_account TEXT NOT NULL,
-		amount INTEGER NOT NULL,
-		running_balance_debit INTEGER DEFAULT 0,
-		running_balance_credit INTEGER DEFAULT 0,
-		idempotency_key TEXT,
-		batch_id TEXT,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_hsm_keys_purpose ON hsm_keys(purpose, status);
+			);
+
+		CREATE INDEX IF NOT EXISTS idx_hsm_keys_purpose ON hsm_keys(purpose, status);
 	CREATE INDEX IF NOT EXISTS idx_hsm_ops_key ON hsm_operations(key_id, timestamp);
 	CREATE INDEX IF NOT EXISTS idx_sms_delivery ON sms_delivery_log(phone, created_at);
 	CREATE INDEX IF NOT EXISTS idx_pad_attack ON pad_attack_log(voter_vin, created_at);
 	CREATE INDEX IF NOT EXISTS idx_ipfs_dag ON ipfs_dag_nodes(codec, created_at);
 	CREATE INDEX IF NOT EXISTS idx_fabric_endorse ON fabric_endorsement_log(tx_id);
-	CREATE INDEX IF NOT EXISTS idx_fabric_state ON fabric_state_db(channel_id, chaincode_id, key);
-	CREATE INDEX IF NOT EXISTS idx_tb_journal ON tb_journal(transfer_id, created_at);
-	`)
+		CREATE INDEX IF NOT EXISTS idx_fabric_state ON fabric_state_db(channel_id, chaincode_id, key);
+
+		`)
 
 	prodHSM = NewProductionHSM(database)
 	prodSMSGateway = NewProductionSMSGateway(database)
 	prodPAD = NewProductionPADEngine(database)
 	prodIPFS = NewProductionIPFSEngine(database)
 	prodFabric = NewProductionFabricEngine(database)
-	prodTB = NewProductionTBEngine(database)
 
 	log.Info().Msg("Production component schemas and configured clients initialized")
 }
@@ -1829,92 +1815,6 @@ func (f *ProductionFabricEngine) GetStats() M {
 	return status
 }
 
-type ProductionTBEngine struct {
-	db *sql.DB
-	mu sync.Mutex
-}
-
-func NewProductionTBEngine(database *sql.DB) *ProductionTBEngine {
-	return &ProductionTBEngine{db: database}
-}
-
-func (t *ProductionTBEngine) CreateTransferWithJournal(debitAcct, creditAcct string, amount int64, ledger, code int, userData, idempotencyKey string) (string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if idempotencyKey != "" {
-		var existingID string
-		err := t.db.QueryRow(`SELECT transfer_id FROM tb_journal WHERE idempotency_key=?`, idempotencyKey).Scan(&existingID)
-		if err == nil {
-			return existingID, nil
-		}
-	}
-
-	h := sha256.Sum256([]byte(fmt.Sprintf("%d-%s-%s-%d-%s", time.Now().UnixNano(), debitAcct, creditAcct, amount, idempotencyKey)))
-	txID := "TB-" + hex.EncodeToString(h[:8])
-
-	_, err := t.db.Exec(`INSERT INTO tb_transfers (id, debit_account_id, credit_account_id, amount, ledger, code, status, user_data) VALUES (?,?,?,?,?,?,?,?)`,
-		txID, debitAcct, creditAcct, amount, ledger, code, "PENDING", userData)
-	if err != nil {
-		return "", err
-	}
-
-	dbExecLog("tb_debit_pend", `UPDATE tb_accounts SET debits_pending = debits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, debitAcct)
-	dbExecLog("tb_credit_pend", `UPDATE tb_accounts SET credits_pending = credits_pending + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, amount, creditAcct)
-
-	var debitBalance, creditBalance int64
-	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, debitAcct).Scan(&debitBalance)
-	t.db.QueryRow(`SELECT credits_posted - debits_posted FROM tb_accounts WHERE id=?`, creditAcct).Scan(&creditBalance)
-
-	dbExecLog("tb_journal", `INSERT INTO tb_journal (transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit, idempotency_key) VALUES (?,?,?,?,?,?,?,?)`,
-		txID, "CREATED", debitAcct, creditAcct, amount, debitBalance, creditBalance, idempotencyKey)
-
-	return txID, nil
-}
-func (t *ProductionTBEngine) GetJournal(transferID string) ([]M, error) {
-	rows, err := t.db.Query(`SELECT transfer_id, event_type, debit_account, credit_account, amount, running_balance_debit, running_balance_credit, idempotency_key, created_at FROM tb_journal WHERE transfer_id=? ORDER BY created_at`, transferID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var entries []M
-	for rows.Next() {
-		var tid, event, debit, credit, idemKey string
-		var created string
-		var amount, balDebit, balCredit int64
-		rows.Scan(&tid, &event, &debit, &credit, &amount, &balDebit, &balCredit, &idemKey, &created)
-		entries = append(entries, M{
-			"transfer_id": tid, "event": event, "debit": debit, "credit": credit,
-			"amount": amount, "balance_debit": balDebit, "balance_credit": balCredit,
-			"idempotency_key": idemKey, "created_at": created,
-		})
-	}
-	return entries, nil
-}
-
-func (t *ProductionTBEngine) GetStats() M {
-	var journalEntries int
-	t.db.QueryRow(`SELECT COUNT(*) FROM tb_journal`).Scan(&journalEntries)
-
-	baseStats := M{
-		"ledger_mode":          "native_tigerbeetle_go",
-		"journal_entries":      journalEntries,
-		"idempotency":          true,
-		"double_entry_journal": true,
-		"production_upgraded":  true,
-	}
-	if mwHub != nil && mwHub.TigerBeetle != nil {
-		status := mwHub.TigerBeetle.Status()
-		baseStats["connected"] = status.Connected
-		baseStats["latency"] = status.Latency
-		baseStats["details"] = status.Details
-	} else {
-		baseStats["connected"] = false
-		baseStats["details"] = "native TigerBeetle client is unavailable"
-	}
-	return baseStats
-}
-
 func seedProductionUpgrades(database *sql.DB) {
 	if prodHSM != nil {
 		for _, purpose := range []string{"template_encryption", "signing", "key_wrapping", "biometric_vault", "result_signing"} {
@@ -2210,58 +2110,6 @@ func handleProductionFabricVerifyEndorsements(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, details)
-}
-
-func handleProductionTBStats(w http.ResponseWriter, r *http.Request) {
-	if prodTB == nil {
-		writeJSON(w, 503, M{"error": "TB engine not initialized"})
-		return
-	}
-	writeJSON(w, 200, prodTB.GetStats())
-}
-
-func handleProductionTBCreateTransfer(w http.ResponseWriter, r *http.Request) {
-	if prodTB == nil {
-		writeJSON(w, 503, M{"error": "TB engine not initialized"})
-		return
-	}
-	var req struct {
-		DebitAccount   string `json:"debit_account"`
-		CreditAccount  string `json:"credit_account"`
-		Amount         int64  `json:"amount"`
-		Ledger         int    `json:"ledger"`
-		Code           int    `json:"code"`
-		UserData       string `json:"user_data"`
-		IdempotencyKey string `json:"idempotency_key"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request")
-		return
-	}
-	txID, err := prodTB.CreateTransferWithJournal(req.DebitAccount, req.CreditAccount, req.Amount, req.Ledger, req.Code, req.UserData, req.IdempotencyKey)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 201, M{"transfer_id": txID, "status": "PENDING", "journaled": true})
-}
-
-func handleProductionTBJournal(w http.ResponseWriter, r *http.Request) {
-	if prodTB == nil {
-		writeJSON(w, 503, M{"error": "TB engine not initialized"})
-		return
-	}
-	txID := queryParam(r, "transfer_id", "")
-	if txID == "" {
-		writeError(w, 400, "transfer_id parameter required")
-		return
-	}
-	entries, err := prodTB.GetJournal(txID)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, M{"transfer_id": txID, "journal": entries})
 }
 
 func handleProductionUpgradeStatus(w http.ResponseWriter, r *http.Request) {

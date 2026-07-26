@@ -1,0 +1,10 @@
+# Opt-in overlay for an INEC-approved Mojaloop operational-settlement deployment.
+# Apply only after finance governance, Permify policy, native TigerBeetle ledger setup,
+# FSPIOP onboarding, and mTLS acceptance testing are recorded in change control.
+services:
+  go-backend:
+    volumes:
+      - type: bind
+        source: ${MOJALOOP_SECRETS_DIR:?MOJALOOP_SECRETS_DIR must point to the approved mTLS secret directory}
+        target: /run/secrets/mojaloop
+        read_only: true

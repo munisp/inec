@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/base64"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -42,10 +42,47 @@ type MojaloopClient interface {
 }
 
 // MojaCallback represents an async FSPIOP callback from the switch.
+// unavailableMojaloopClient never queues, simulates, or fabricates a payment lifecycle.
+// It is the safe default until the Electoral Commission has authorized an external
+// FSPIOP scheme and explicitly enabled the operational-settlement integration.
+type unavailableMojaloopClient struct {
+	reason string
+}
+
+func (m *unavailableMojaloopClient) unavailable() error {
+	return fmt.Errorf("Mojaloop is unavailable: %s", m.reason)
+}
+func (m *unavailableMojaloopClient) PartyLookup(context.Context, string, string) (*MojaParty, error) {
+	return nil, m.unavailable()
+}
+func (m *unavailableMojaloopClient) CreateQuote(context.Context, MojaQuoteRequest) (*MojaQuote, error) {
+	return nil, m.unavailable()
+}
+func (m *unavailableMojaloopClient) CreateTransfer(context.Context, MojaTransferRequest) (*MojaTransfer, error) {
+	return nil, m.unavailable()
+}
+func (m *unavailableMojaloopClient) SettleBatch(context.Context, string) (*MojaSettlement, error) {
+	return nil, m.unavailable()
+}
+func (m *unavailableMojaloopClient) GetTransaction(context.Context, string) (*MojaTransaction, error) {
+	return nil, m.unavailable()
+}
+func (m *unavailableMojaloopClient) ListTransactions(context.Context, string, int) ([]MojaTransaction, error) {
+	return nil, m.unavailable()
+}
+func (m *unavailableMojaloopClient) HandleCallback(context.Context, string, string, []byte) error {
+	return m.unavailable()
+}
+func (m *unavailableMojaloopClient) RegisterCallbackURL(string) {}
+func (m *unavailableMojaloopClient) Status() MWStatus {
+	return MWStatus{Name: "Mojaloop", Connected: false, Mode: "disabled/unavailable", Details: m.reason}
+}
+func (m *unavailableMojaloopClient) Close() error { return nil }
+
 type MojaCallback struct {
-	Type       string          `json:"type"`       // "quote", "transfer", "party"
+	Type       string          `json:"type"` // "quote", "transfer", "party"
 	ResourceID string          `json:"resource_id"`
-	Status     string          `json:"status"`     // "success", "error"
+	Status     string          `json:"status"` // "success", "error"
 	Payload    json.RawMessage `json:"payload"`
 	ReceivedAt string          `json:"received_at"`
 }
@@ -316,234 +353,75 @@ func (m *mojaHTTPClient) RegisterCallbackURL(callbackURL string) {
 	m.callbackURL = callbackURL
 }
 
-// Embedded Mojaloop implementation backed by PostgreSQL
-type embeddedMojaloop struct {
-	callbackURL string
+func newAuthorizedMojaloopClient() (*ResilientHTTPClient, error) {
+	certFile := strings.TrimSpace(os.Getenv("MOJALOOP_TLS_CERT_FILE"))
+	keyFile := strings.TrimSpace(os.Getenv("MOJALOOP_TLS_KEY_FILE"))
+	caFile := strings.TrimSpace(os.Getenv("MOJALOOP_CA_FILE"))
+	if certFile == "" || keyFile == "" || caFile == "" {
+		return nil, fmt.Errorf("MOJALOOP_TLS_CERT_FILE, MOJALOOP_TLS_KEY_FILE, and MOJALOOP_CA_FILE are required")
+	}
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load Mojaloop client certificate: %w", err)
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Mojaloop CA bundle: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("MOJALOOP_CA_FILE does not contain a trusted PEM certificate")
+	}
+	client := NewResilientHTTPClient("mojaloop")
+	client.Client.Transport = &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			RootCAs:      roots,
+			Certificates: []tls.Certificate{certificate},
+		},
+	}
+	return client, nil
+}
+
+func initMojaloopClient() MojaloopClient {
+	if !envBool("MOJALOOP_OPERATIONAL_SETTLEMENT_ENABLED", false) {
+		return &unavailableMojaloopClient{reason: "MOJALOOP_OPERATIONAL_SETTLEMENT_ENABLED is false pending INEC scheme authorization"}
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("MOJALOOP_URL")), "/")
+	if baseURL == "" {
+		return &unavailableMojaloopClient{reason: "MOJALOOP_URL is required for authorized operational settlement"}
+	}
+	if !strings.HasPrefix(strings.ToLower(baseURL), "https://") {
+		return &unavailableMojaloopClient{reason: "MOJALOOP_URL must use HTTPS"}
+	}
+	transport, err := newAuthorizedMojaloopClient()
+	if err != nil {
+		return &unavailableMojaloopClient{reason: err.Error()}
+	}
+	log.Info().Str("url", baseURL).Msg("Mojaloop: connecting to authorized external FSPIOP switch")
+	client := &mojaHTTPClient{client: transport, baseURL: baseURL}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil) // #nosec G704 -- baseURL is an authorized administrator-controlled endpoint
+	if err != nil {
+		return &unavailableMojaloopClient{reason: "construct health request: " + err.Error()}
+	}
+	resp, err := client.client.Client.Do(req) // #nosec G704 -- baseURL is an authorized administrator-controlled endpoint
+	if err != nil {
+		return &unavailableMojaloopClient{reason: "external FSPIOP health check failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return &unavailableMojaloopClient{reason: fmt.Sprintf("external FSPIOP health check returned HTTP %d", resp.StatusCode)}
+	}
+	log.Info().Str("url", baseURL).Msg("Mojaloop authorized external FSPIOP connection initialized")
+	return client
 }
 
 func (m *mojaHTTPClient) Close() error { return nil }
-
-func (m *embeddedMojaloop) PartyLookup(ctx context.Context, partyType, partyID string) (*MojaParty, error) {
-	return &MojaParty{
-		PartyType: partyType,
-		PartyID:   partyID,
-		FSPName:   "INEC Financial Unit",
-		FSPID:     "inec-fsp",
-		Name:      "INEC " + partyType + " Account",
-	}, nil
-}
-
-func (m *embeddedMojaloop) CreateQuote(ctx context.Context, req MojaQuoteRequest) (*MojaQuote, error) {
-	// Generate ILP packet and condition
-	ilpData := fmt.Sprintf("%s:%s:%.2f:%s", req.PayerFSP, req.PayeeFSP, req.Amount, req.Currency)
-	hash := sha256.Sum256([]byte(ilpData))
-	condition := base64.StdEncoding.EncodeToString(hash[:])
-
-	quote := &MojaQuote{
-		QuoteID:         req.QuoteID,
-		TransferAmount:  req.Amount,
-		PayeeFee:        req.Amount * 0.001,
-		PayeeCommission: 0,
-		ILPPacket:       base64.StdEncoding.EncodeToString([]byte(ilpData)),
-		Condition:       condition,
-		Expiration:      time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
-	}
-
-	// Persist to DB — advance phase to 'quote'
-	txID := req.QuoteID
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO mw_mojaloop_transactions (id, payer_fsp, payee_fsp, amount, currency, phase, quote_id, ilp_packet, condition)
-		 VALUES (?, ?, ?, ?, ?, 'quote', ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET phase='quote', quote_id=excluded.quote_id, ilp_packet=excluded.ilp_packet, condition=excluded.condition, updated_at=CURRENT_TIMESTAMP`,
-		txID, req.PayerFSP, req.PayeeFSP, req.Amount, req.Currency, req.QuoteID, quote.ILPPacket, quote.Condition)
-	if err != nil {
-		log.Warn().Err(err).Msg("mojaloop: persist quote error")
-	}
-	return quote, nil
-}
-
-func (m *embeddedMojaloop) CreateTransfer(ctx context.Context, req MojaTransferRequest) (*MojaTransfer, error) {
-	// Generate fulfilment from condition
-	fulfilData := fmt.Sprintf("fulfil:%s:%s", req.TransferID, req.Condition)
-	hash := sha256.Sum256([]byte(fulfilData))
-	fulfilment := base64.StdEncoding.EncodeToString(hash[:])
-
-	transfer := &MojaTransfer{
-		TransferID:  req.TransferID,
-		Fulfilment:  fulfilment,
-		State:       "COMMITTED",
-		CompletedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// Persist — advance phase to 'transfer'
-	_, err := db.ExecContext(ctx,
-		`UPDATE mw_mojaloop_transactions SET phase='transfer', transfer_id=?, fulfilment=?, updated_at=CURRENT_TIMESTAMP WHERE quote_id=?`,
-		req.TransferID, fulfilment, req.QuoteID)
-	if err != nil {
-		log.Warn().Err(err).Msg("mojaloop: persist transfer error")
-	}
-	return transfer, nil
-}
-
-func (m *embeddedMojaloop) SettleBatch(ctx context.Context, settlementModel string) (*MojaSettlement, error) {
-	settlementID := fmt.Sprintf("settle-%d", time.Now().UnixNano())
-
-	// Aggregate all committed transfers
-	rows, err := db.QueryContext(ctx,
-		`SELECT payer_fsp, payee_fsp, SUM(amount) FROM mw_mojaloop_transactions WHERE phase='transfer' GROUP BY payer_fsp, payee_fsp`)
-	if err != nil {
-		return nil, fmt.Errorf("settlement query: %w", err)
-	}
-	defer rows.Close()
-
-	accountMap := make(map[string]*MojaSettleAcct)
-	for rows.Next() {
-		var payer, payee string
-		var amount float64
-		if err := rows.Scan(&payer, &payee, &amount); err != nil {
-			continue
-		}
-		if _, ok := accountMap[payer]; !ok {
-			accountMap[payer] = &MojaSettleAcct{FSPID: payer}
-		}
-		if _, ok := accountMap[payee]; !ok {
-			accountMap[payee] = &MojaSettleAcct{FSPID: payee}
-		}
-		accountMap[payer].Debit += amount
-		accountMap[payee].Credit += amount
-	}
-
-	var accounts []MojaSettleAcct
-	for _, acct := range accountMap {
-		acct.NetPos = acct.Credit - acct.Debit
-		accounts = append(accounts, *acct)
-	}
-
-	// Mark transfers as settled
-	db.ExecContext(ctx,
-		`UPDATE mw_mojaloop_transactions SET phase='settlement', settlement_id=?, updated_at=CURRENT_TIMESTAMP WHERE phase='transfer'`,
-		settlementID)
-
-	return &MojaSettlement{
-		SettlementID: settlementID,
-		State:        "SETTLED",
-		Accounts:     accounts,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-	}, nil
-}
-
-func (m *embeddedMojaloop) GetTransaction(ctx context.Context, txID string) (*MojaTransaction, error) {
-	var tx MojaTransaction
-	var quoteID, transferID, settlementID, ilp, condition, fulfilment, errInfo sql.NullString
-	err := db.QueryRowContext(ctx,
-		`SELECT id, payer_fsp, payee_fsp, amount, currency, phase, quote_id, transfer_id, settlement_id, ilp_packet, condition, fulfilment, error_info, created_at, updated_at
-		 FROM mw_mojaloop_transactions WHERE id=?`, txID).Scan(
-		&tx.ID, &tx.PayerFSP, &tx.PayeeFSP, &tx.Amount, &tx.Currency, &tx.Phase,
-		&quoteID, &transferID, &settlementID, &ilp, &condition, &fulfilment, &errInfo,
-		&tx.CreatedAt, &tx.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("transaction not found: %w", err)
-	}
-	tx.QuoteID = quoteID.String
-	tx.TransferID = transferID.String
-	tx.SettlementID = settlementID.String
-	tx.ILPPacket = ilp.String
-	tx.Condition = condition.String
-	tx.Fulfilment = fulfilment.String
-	tx.ErrorInfo = errInfo.String
-	return &tx, nil
-}
-
-func (m *embeddedMojaloop) ListTransactions(ctx context.Context, phase string, limit int) ([]MojaTransaction, error) {
-	query := `SELECT id, payer_fsp, payee_fsp, amount, currency, phase, created_at, updated_at FROM mw_mojaloop_transactions`
-	args := []interface{}{}
-	if phase != "" {
-		query += ` WHERE phase=?`
-		args = append(args, phase)
-	}
-	query += ` ORDER BY created_at DESC LIMIT ?`
-	args = append(args, limit)
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var txs []MojaTransaction
-	for rows.Next() {
-		var tx MojaTransaction
-		if err := rows.Scan(&tx.ID, &tx.PayerFSP, &tx.PayeeFSP, &tx.Amount, &tx.Currency, &tx.Phase, &tx.CreatedAt, &tx.UpdatedAt); err != nil {
-			continue
-		}
-		txs = append(txs, tx)
-	}
-	return txs, nil
-}
-
-func (m *embeddedMojaloop) Status() MWStatus {
-	return MWStatus{Name: "Mojaloop", Connected: true, Mode: "embedded (DB-backed)", Details: "4-phase ILP pattern"}
-}
-
-func (m *embeddedMojaloop) HandleCallback(ctx context.Context, callbackType string, resourceID string, payload []byte) error {
-	log.Info().Str("type", callbackType).Str("resource_id", resourceID).Msg("mojaloop embedded: callback received")
-	if db == nil {
-		return nil
-	}
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO mw_mojaloop_callbacks (type, resource_id, payload, status, received_at)
-		 VALUES ($1, $2, $3, 'received', NOW())
-		 ON CONFLICT (resource_id, type) DO UPDATE SET payload=$3, status='received', received_at=NOW()`,
-		callbackType, resourceID, string(payload))
-	return err
-}
-
-func (m *embeddedMojaloop) RegisterCallbackURL(callbackURL string) {
-	m.callbackURL = callbackURL
-}
-
-func (m *embeddedMojaloop) Close() error { return nil }
-
-func initMojaloopClient() MojaloopClient {
-	baseURL := os.Getenv("MOJALOOP_URL")
-	if baseURL != "" {
-		log.Info().Str("url", baseURL).Msg("Mojaloop: connecting")
-		client := &mojaHTTPClient{
-			client:  NewResilientHTTPClient("mojaloop"),
-			baseURL: baseURL,
-		}
-		// Check connectivity via /health endpoint (TTK), PartyLookup, or simple GET
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		connected := false
-		// Try /health first (Mojaloop TTK)
-		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil) // #nosec G704 -- baseURL is admin-configured env var
-		if resp, err := client.client.Client.Do(req); err == nil {               // #nosec G704
-			resp.Body.Close()
-			if resp.StatusCode < 500 {
-				connected = true
-			}
-		}
-		if !connected {
-			// Try PartyLookup as fallback
-			_, err := client.PartyLookup(ctx, "MSISDN", "test")
-			if err == nil {
-				connected = true
-			}
-		}
-		if connected {
-			log.Info().Str("url", baseURL).Msg("Mojaloop connected to external service")
-			return client
-		}
-		log.Warn().Msg("Mojaloop: external connection failed, using embedded")
-	}
-	env := os.Getenv("APP_ENV")
-	if env == "production" || env == "staging" {
-		log.Fatal().Msg("Mojaloop is REQUIRED in production/staging for financial settlement. Set MOJALOOP_URL")
-	}
-	log.Warn().Msg("Mojaloop using embedded DB-backed implementation (DEV ONLY)")
-	return &embeddedMojaloop{}
-}
 
 // HTTP handlers for Mojaloop endpoints
 func handleMojaPartyLookup(w http.ResponseWriter, r *http.Request) {

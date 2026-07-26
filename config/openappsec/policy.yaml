@@ -16,6 +16,13 @@ policies:
       practices:
         - webapp-default-practice
       custom-response: appsec-default-web-user-response
+    - host: "device-gateway.inec.local"
+      mode: prevent-learn
+      triggers:
+        - appsec-default-log-trigger
+      practices:
+        - webapp-default-practice
+      custom-response: appsec-default-web-user-response
 
 practices:
   - name: webapp-default-practice

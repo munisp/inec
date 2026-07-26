@@ -720,6 +720,9 @@ func handleAdvanceWorkflow(w http.ResponseWriter, r *http.Request) {
 var bvasSyncMu sync.Mutex
 
 func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
+	if rejectLegacyDeviceIngress(w) {
+		return
+	}
 	var req struct {
 		DeviceID string                   `json:"device_id"`
 		Items    []map[string]interface{} `json:"items"`
@@ -772,6 +775,9 @@ func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBVASHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if rejectLegacyDeviceIngress(w) {
+		return
+	}
 	var req struct {
 		DeviceID        string  `json:"device_id"`
 		BatteryLevel    int     `json:"battery_level"`
@@ -906,48 +912,10 @@ func handleGetPortal(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePortalSync(w http.ResponseWriter, r *http.Request) {
-	if _, err := requireRole(r, "admin"); err != nil {
-		writeError(w, 403, err.Error())
-		return
-	}
-	id := mux.Vars(r)["id"]
-	var req struct {
-		SyncType   string `json:"sync_type"`
-		EntityType string `json:"entity_type"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
-		return
-	}
-	if req.SyncType == "" {
-		req.SyncType = "pull"
-	}
-	if req.EntityType == "" {
-		req.EntityType = "result"
-	}
-
-	var numSynced int
-	switch req.EntityType {
-	case "result":
-		db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=(SELECT MAX(id) FROM elections)").Scan(&numSynced)
-	case "voter":
-		db.QueryRow("SELECT COUNT(*) FROM voters WHERE status='verified'").Scan(&numSynced)
-	default:
-		db.QueryRow("SELECT COUNT(*) FROM results").Scan(&numSynced)
-	}
-	if numSynced == 0 {
-		numSynced = 1
-	}
-	numFailed := 0
-
-	syncID := insertReturningID(db, `INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, records_synced, records_failed, status, completed_at)
-		VALUES (?,?,?,?,?,'completed',CURRENT_TIMESTAMP)`,
-		id, req.SyncType, req.EntityType, numSynced, numFailed)
-
-	dbExecLog("portal_sync", "UPDATE portal_connections SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", id)
-
-	logAudit("PORTAL_SYNC", "portal", id, 0, map[string]interface{}{"sync_type": req.SyncType, "entity": req.EntityType, "synced": numSynced})
-	writeJSON(w, 200, M{"sync_id": syncID, "records_synced": numSynced, "records_failed": numFailed, "status": "completed"})
+	// The generic portal implementation cannot establish an authoritative external
+	// receipt. Keep the compatibility function explicitly unavailable rather than
+	// counting local records as a completed portal exchange.
+	handleLegacyPortalSyncDisabled(w, r)
 }
 
 func handlePortalSyncLog(w http.ResponseWriter, r *http.Request) {

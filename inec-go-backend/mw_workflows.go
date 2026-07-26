@@ -142,50 +142,11 @@ type MaterialPaymentRequest struct {
 	Description  string  `json:"description"`
 }
 
-// ProcessMaterialPayment uses Mojaloop for paying logistics vendors.
-func ProcessMaterialPayment(ctx context.Context, req MaterialPaymentRequest) error {
-	if mwHub == nil || mwHub.Mojaloop == nil {
-		log.Warn().Msg("Mojaloop not available, payment queued")
-		dbExecLog("payment_queue", "INSERT INTO payment_queue (election_id, recipient_id, amount, currency, status) VALUES (?,?,?,?,'queued')",
-			req.ElectionID, req.RecipientID, req.Amount, req.Currency)
-		return nil
-	}
-
-	// Phase 1: Party lookup
-	party, err := mwHub.Mojaloop.PartyLookup(ctx, "MSISDN", req.RecipientID)
-	if err != nil {
-		return fmt.Errorf("payee lookup failed: %w", err)
-	}
-
-	// Phase 2: Quote
-	quote, err := mwHub.Mojaloop.CreateQuote(ctx, MojaQuoteRequest{
-		QuoteID:  fmt.Sprintf("INEC-Q-%d-%d", req.ElectionID, time.Now().Unix()),
-		PayerFSP: "INEC-FSP",
-		PayeeFSP: party.FSPID,
-		Amount:   req.Amount,
-		Currency: req.Currency,
-	})
-	if err != nil {
-		return fmt.Errorf("quote failed: %w", err)
-	}
-
-	// Phase 3: Transfer
-	_, err = mwHub.Mojaloop.CreateTransfer(ctx, MojaTransferRequest{
-		TransferID: fmt.Sprintf("INEC-T-%d-%d", req.ElectionID, time.Now().Unix()),
-		QuoteID:    quote.QuoteID,
-		PayerFSP:   "INEC-FSP",
-		PayeeFSP:   party.FSPID,
-		Amount:     req.Amount,
-		Currency:   req.Currency,
-		ILPPacket:  quote.ILPPacket,
-		Condition:  quote.Condition,
-	})
-	if err != nil {
-		return fmt.Errorf("transfer failed: %w", err)
-	}
-
-	log.Info().Float64("amount", req.Amount).Str("recipient", req.RecipientID).Msg("material payment processed")
-	return nil
+// ProcessMaterialPayment is retired. Operational logistics and reimbursement
+// commitments must use the independently approved settlement control plane; it
+// intentionally has no queue, in-memory fallback, or generic transfer bypass.
+func ProcessMaterialPayment(_ context.Context, _ MaterialPaymentRequest) error {
+	return fmt.Errorf("legacy material payment is disabled; use the operational settlement commitment workflow")
 }
 
 // --- Permify Authorization Checks ---

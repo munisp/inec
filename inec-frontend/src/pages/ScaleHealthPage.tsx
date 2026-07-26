@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { api } from '@/lib/api';
 
 interface HealthData {
   database?: Record<string, unknown>;
@@ -7,6 +8,11 @@ interface HealthData {
   sse_connections?: number;
   rate_limiter?: Record<string, unknown>;
   middleware_modes?: Array<{ Name: string; IsReal: boolean; Connection: string }>;
+}
+
+interface DeviceGatewayHealth {
+  status: string;
+  components?: Record<string, boolean | string | number>;
 }
 
 interface IntegrityHealth {
@@ -21,23 +27,26 @@ export default function ScaleHealthPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [modes, setModes] = useState<Array<{ Name: string; IsReal: boolean; Connection: string }>>([]);
   const [integrity, setIntegrity] = useState<IntegrityHealth | null>(null);
+  const [deviceGateway, setDeviceGateway] = useState<DeviceGatewayHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const loadHealth = useCallback(async () => {
-    try {
-      const opts = { credentials: 'include' as RequestCredentials };
-      const [h, m, i] = await Promise.all([
-        fetch('/scale/health', opts).then(r => r.ok ? r.json() : null),
-        fetch('/middleware/modes', opts).then(r => r.ok ? r.json() : []),
-        fetch('/integrity/health', opts).then(async r => {
-          try { return await r.json() as IntegrityHealth; } catch { return null; }
-        }),
-      ]);
-      if (h) setHealth(h);
-      setModes(m);
-      setIntegrity(i);
-    } catch { /* */ }
+    const [healthResult, modesResult, integrityResult, gatewayResult] = await Promise.allSettled([
+      api.getScaleHealth() as Promise<HealthData>,
+      api.getMiddlewareStatus() as Promise<Array<{ Name: string; IsReal: boolean; Connection: string }>>,
+      api.getIntegrityHealth() as Promise<IntegrityHealth>,
+      api.getDeviceGatewayHealth() as Promise<DeviceGatewayHealth>,
+    ]);
+    if (healthResult.status === 'fulfilled') setHealth(healthResult.value);
+    if (modesResult.status === 'fulfilled') setModes(modesResult.value);
+    if (integrityResult.status === 'fulfilled') setIntegrity(integrityResult.value);
+    if (gatewayResult.status === 'fulfilled') {
+      setDeviceGateway(gatewayResult.value);
+    } else {
+      // A 503 is intentionally shown as unavailable. It is not a degraded-ready state.
+      setDeviceGateway({ status: 'unavailable' });
+    }
     setLoading(false);
   }, []);
 
@@ -129,6 +138,23 @@ export default function ScaleHealthPage() {
                 <h3 className="font-semibold">Rate Limiter</h3>
               </div>
               {renderKV(health.rate_limiter)}
+            </div>
+          )}
+
+          {deviceGateway && (
+            <div className={`rounded-xl p-5 border shadow-sm ${deviceGateway.status === 'ready' ? 'bg-green-50/60 border-green-200 dark:bg-green-950/20 dark:border-green-900' : 'bg-amber-50/60 border-amber-200 dark:bg-amber-950/20 dark:border-amber-900'}`}>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-8 h-8 rounded-lg bg-white/70 flex items-center justify-center text-lg" aria-hidden="true">⌁</div>
+                <div>
+                  <h3 className="font-semibold">BVAS device gateway</h3>
+                  <p className="text-xs text-zinc-500">mTLS ingress and external-device delivery boundary</p>
+                </div>
+              </div>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between border-b border-black/5 py-1.5"><span className="text-zinc-600">Status</span><span className="font-semibold capitalize">{deviceGateway.status}</span></div>
+                {Object.entries(deviceGateway.components || {}).map(([name, connected]) => <div key={name} className="flex justify-between border-b border-black/5 py-1.5 last:border-0"><span className="text-zinc-600 capitalize">{name.replace(/_/g, ' ')}</span><span className={`font-semibold ${connected === true ? 'text-green-700 dark:text-green-300' : 'text-amber-800 dark:text-amber-200'}`}>{String(connected)}</span></div>)}
+              </div>
+              {deviceGateway.status !== 'ready' && <p className="mt-3 text-xs text-amber-900 dark:text-amber-100">Device events remain fail closed until every required component reports ready.</p>}
             </div>
           )}
 

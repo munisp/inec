@@ -836,9 +836,9 @@ func handleSignResult(w http.ResponseWriter, r *http.Request) {
 	if mwHub != nil && mwHub.Kafka != nil {
 		mwHub.Kafka.Produce(r.Context(), KafkaMessage{Topic: "result-chain.signed", Key: fmt.Sprint(body.ResultID), Value: M{"result_id": body.ResultID, "hash": resultHash, "chain_position": chainPos}, Timestamp: time.Now()})
 	}
-	if mwHub != nil && mwHub.TigerBeetle != nil {
-		mwHub.TigerBeetle.CreateTransfer(r.Context(), TBTransfer{DebitAccountID: "signing", CreditAccountID: fmt.Sprintf("result-%d", body.ResultID), Amount: 1, Code: 200, Ledger: 1})
-	}
+	// TigerBeetle is intentionally not used for result-signature activity. It is
+	// reserved for independently approved device logistics/reimbursement commitments
+	// and must not carry result, voter, ballot, or electoral outcome information.
 	writeJSON(w, 200, M{"status": "signed", "signature": sig, "result_hash": resultHash, "chain_position": chainPos})
 }
 

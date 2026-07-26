@@ -25,8 +25,8 @@ import {
 } from '@/components/ui/select';
 import {
   MapPin, Layers, Eye, EyeOff, Flame, Hexagon, Radio, Shield,
-  AlertTriangle, Download, Satellite, Globe, BarChart3, Search,
-  RefreshCw, Box, Users, Cpu, Database, Activity, Navigation,
+  AlertTriangle, Download, Satellite, Globe, Search,
+  RefreshCw, Box, Users, Cpu, Database,
   ArrowLeft, Cloud, Battery, Mic, Building2,
   ExternalLink,
 } from 'lucide-react';
@@ -51,7 +51,7 @@ import {
   createOfficialTrackingLayer,
   createAnalysisResultLayer,
 } from '@/lib/geolibre/deck-layers';
-import type { INECLayerType, IncidentFeature, PollingUnitFeature } from '@/lib/geolibre/types';
+import type { INECLayerType, PollingUnitFeature } from '@/lib/geolibre/types';
 import type { Layer } from '@deck.gl/core';
 import { NIGERIA_CENTER } from '@/lib/geolibre/types';
 
@@ -1217,148 +1217,146 @@ function LayerToggle({ label, icon: Icon, active, count, liveIndicator, onToggle
 // SPATIAL ANALYSIS TAB
 // ═══════════════════════════════════════════════════════════════════════════
 
+type ExternalDeviceQualityGroup = {
+  assessment_status: string;
+  spatial_status: string;
+  events: number;
+  manual_review_count: number;
+  average_risk_score: number;
+};
+
+type ExternalDeviceQualityResponse = {
+  status: string;
+  groups: ExternalDeviceQualityGroup[];
+};
+
+type DeviceGatewayOperationalStatus = {
+  status: string;
+  enrollments?: Record<string, number>;
+  delivery?: Record<string, number>;
+  notice?: string;
+};
+
+type IReVPortalStatus = {
+  status?: string;
+  required?: boolean;
+  submissions?: Record<string, number>;
+};
+
 function SpatialAnalysisTab() {
-  const store = useGeoLibreStore();
-  const [queryType, setQueryType] = useState<string>('buffer');
-  const [bufferRadius, setBufferRadius] = useState('5');
-  const [results, setResults] = useState<Record<string, unknown> | null>(null);
+  const [quality, setQuality] = useState<ExternalDeviceQualityResponse | null>(null);
+  const [deviceTrust, setDeviceTrust] = useState<DeviceGatewayOperationalStatus | null>(null);
+  const [irevStatus, setIReVStatus] = useState<IReVPortalStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [trustLoading, setTrustLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [trustError, setTrustError] = useState<string | null>(null);
 
-  const tools = [
-    { id: 'buffer', label: 'Buffer Analysis', desc: 'Create buffer zones around polling units to find overlapping coverage areas', icon: Navigation },
-    { id: 'hotspot', label: 'Hotspot Detection', desc: 'Identify spatial clusters of incidents, low turnout, or anomalies using Getis-Ord Gi*', icon: Flame },
-    { id: 'voronoi', label: 'Voronoi Tessellation', desc: 'Divide Nigeria into service areas — each voter goes to their nearest PU', icon: Hexagon },
-    { id: 'h3-aggregate', label: 'H3 Hex Aggregation', desc: 'Aggregate election data into H3 hexagonal cells for uniform spatial analysis', icon: Hexagon },
-    { id: 'nearest', label: 'Nearest Neighbor', desc: 'Find the N closest polling units to any point or incident location', icon: Search },
-    { id: 'density', label: 'Kernel Density', desc: 'Generate smooth density surface from polling unit voter registration counts', icon: BarChart3 },
-    { id: 'coverage', label: 'Coverage Analysis', desc: 'Calculate % of population within X km of a polling unit using census data', icon: Globe },
-    { id: 'anomaly', label: 'Spatial Anomaly', desc: 'Detect statistically unusual turnout/result patterns using spatial autocorrelation', icon: AlertTriangle },
-  ];
-
-  const runAnalysis = useCallback(async () => {
-    const puCount = store.pollingUnits.features.length;
-    if (puCount === 0) {
-      setResults({ error: 'No polling unit data loaded. Load data from the Live Map tab first.' });
-      return;
+  const loadQuality = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await api.getExternalDeviceQuality(100) as ExternalDeviceQualityResponse;
+      if (!Array.isArray(response.groups)) throw new Error('lakehouse returned an invalid device-quality contract');
+      setQuality(response);
+    } catch (cause) {
+      setQuality(null);
+      setError(cause instanceof Error ? cause.message : 'external-device quality is unavailable');
+    } finally {
+      setLoading(false);
     }
+  }, []);
 
-    setResults({ status: 'running', tool: queryType });
-    const pus = store.pollingUnits.features;
-    let analysisResult: Record<string, unknown>;
-
-    switch (queryType) {
-      case 'buffer': {
-        const radius = parseFloat(bufferRadius);
-        const totalPUs = pus.length;
-        const withResults = pus.filter((p: PollingUnitFeature) => p.properties.status !== 'no_result').length;
-        analysisResult = {
-          tool: 'Buffer Analysis', radius_km: radius, total_pus: totalPUs,
-          pus_with_results: withResults,
-          coverage_pct: ((withResults / totalPUs) * 100).toFixed(1) + '%',
-          estimated_area_km2: (totalPUs * Math.PI * radius * radius).toFixed(0),
-          overlap_zones: Math.max(0, Math.floor(totalPUs * 0.15)),
-        };
-        break;
-      }
-      case 'hotspot': {
-        const incidents = store.incidents.features;
-        const stateIncidents: Record<string, number> = {};
-        incidents.forEach((i: IncidentFeature) => {
-          stateIncidents[i.properties.state_code] = (stateIncidents[i.properties.state_code] || 0) + 1;
-        });
-        const hotspots = Object.entries(stateIncidents)
-          .sort(([, a], [, b]) => b - a).slice(0, 5)
-          .map(([state, count]) => ({ state, incidents: count }));
-        analysisResult = {
-          tool: 'Hotspot Detection', total_incidents: incidents.length, hotspot_states: hotspots,
-          critical_count: incidents.filter((i: IncidentFeature) => i.properties.severity === 'critical').length,
-          high_count: incidents.filter((i: IncidentFeature) => i.properties.severity === 'high').length,
-        };
-        break;
-      }
-      case 'h3-aggregate': {
-        const stateTurnout: Record<string, { total: number; cast: number; count: number }> = {};
-        pus.forEach((pu: PollingUnitFeature) => {
-          const sc = pu.properties.state_code;
-          if (!stateTurnout[sc]) stateTurnout[sc] = { total: 0, cast: 0, count: 0 };
-          stateTurnout[sc].total += pu.properties.registered_voters;
-          stateTurnout[sc].cast += pu.properties.total_votes_cast || 0;
-          stateTurnout[sc].count += 1;
-        });
-        analysisResult = {
-          tool: 'H3 Hex Aggregation', total_hexagons: Object.keys(stateTurnout).length,
-          state_metrics: Object.entries(stateTurnout).map(([state, d]) => ({
-            state, pus: d.count, registered: d.total, cast: d.cast,
-            turnout_pct: d.total > 0 ? ((d.cast / d.total) * 100).toFixed(1) + '%' : '0%',
-          })),
-        };
-        break;
-      }
-      default:
-        analysisResult = {
-          tool: queryType, status: 'available',
-          message: `${queryType} analysis requires loading spatial data first.`,
-          pus_loaded: puCount,
-        };
+  const loadDeviceTrust = useCallback(async () => {
+    setTrustLoading(true);
+    setTrustError(null);
+    const [statusResult, portalResult] = await Promise.allSettled([
+      api.getDeviceGatewayStatus() as Promise<DeviceGatewayOperationalStatus>,
+      api.getIReVStatus() as Promise<IReVPortalStatus>,
+    ]);
+    if (statusResult.status === 'fulfilled') {
+      setDeviceTrust(statusResult.value);
+    } else {
+      setDeviceTrust(null);
+      setTrustError(statusResult.reason instanceof Error ? statusResult.reason.message : 'authoritative device-trust status is unavailable');
     }
+    setIReVStatus(portalResult.status === 'fulfilled' ? portalResult.value : null);
+    setTrustLoading(false);
+  }, []);
 
-    setResults(analysisResult);
-  }, [queryType, bufferRadius, store.pollingUnits, store.incidents]);
+  useEffect(() => { void loadQuality(); void loadDeviceTrust(); }, [loadDeviceTrust, loadQuality]);
 
   return (
-    <div className="flex h-full">
-      <div className="w-80 border-r bg-white overflow-y-auto p-4 space-y-3">
-        <h3 className="text-sm font-semibold">Spatial Analysis Tools</h3>
-        <p className="text-xs text-muted-foreground">
-          GeoLibre-powered spatial analysis for election data. Select a tool and run analysis against loaded data.
-        </p>
-        {tools.map(tool => (
-          <button key={tool.id}
-            className={`w-full text-left p-3 rounded-lg border transition-colors ${queryType === tool.id ? 'border-primary bg-primary/5' : 'hover:bg-muted'}`}
-            onClick={() => setQueryType(tool.id)}>
-            <div className="flex items-center gap-2">
-              <tool.icon className="w-4 h-4 text-primary" />
-              <span className="text-sm font-medium">{tool.label}</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">{tool.desc}</p>
-          </button>
-        ))}
-        {queryType === 'buffer' && (
-          <div className="space-y-1">
-            <label className="text-xs font-medium">Buffer Radius (km)</label>
-            <Input type="number" value={bufferRadius} onChange={e => setBufferRadius(e.target.value)} className="h-8 text-xs" />
+    <div className="h-full overflow-y-auto p-6 bg-muted/20">
+      <div className="max-w-5xl mx-auto space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold">Authoritative Device Spatial Quality</h3>
+            <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
+              This view reports only redacted device events accepted by the signed gateway and assessed through the lakehouse and Apache Sedona authority. It does not infer locations, coverage, or readiness when an authoritative source is unavailable.
+            </p>
           </div>
-        )}
-        <Button className="w-full" onClick={runAnalysis}>
-          <Activity className="w-4 h-4 mr-2" /> Run Analysis
-        </Button>
-      </div>
-      <div className="flex-1 p-6 overflow-y-auto">
-        {results ? (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">{(results.tool as string) || 'Analysis'} Results</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="bg-muted p-4 rounded text-xs overflow-auto max-h-[60vh] whitespace-pre-wrap">
-                {JSON.stringify(results, null, 2)}
-              </pre>
-              <div className="flex gap-2 mt-4">
-                <Button variant="outline" size="sm"
-                  onClick={() => downloadGeoJSON(results, `inec-${queryType}-analysis.json`)}>
-                  <Download className="w-3.5 h-3.5 mr-1" /> Export JSON
-                </Button>
-              </div>
+          <Button variant="outline" onClick={() => { void loadQuality(); void loadDeviceTrust(); }} disabled={loading || trustLoading}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${(loading || trustLoading) ? 'animate-spin' : ''}`} /> Refresh
+          </Button>
+        </div>
+
+        {error && (
+          <Card className="border-amber-300 bg-amber-50">
+            <CardContent className="pt-6 flex gap-3 text-amber-900">
+              <AlertTriangle className="w-5 h-5 shrink-0" />
+              <div><p className="font-medium">Spatial quality is unavailable</p><p className="text-sm mt-1">{error}</p></div>
             </CardContent>
           </Card>
-        ) : (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            <div className="text-center">
-              <Database className="w-12 h-12 mx-auto mb-4 opacity-30" />
-              <p className="text-sm">Select a spatial analysis tool and click Run Analysis</p>
-              <p className="text-xs mt-1">Data is loaded from the Live Map tab</p>
-            </div>
-          </div>
         )}
+
+        <Card className={trustError ? 'border-amber-300 bg-amber-50' : undefined}>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><Shield className="w-4 h-4" /> Device trust, delivery, and IReV receipt state</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {trustLoading && !deviceTrust ? <p className="text-sm text-muted-foreground">Loading authoritative device-trust status…</p> : trustError ? <div className="flex gap-3 text-sm text-amber-900"><AlertTriangle className="w-5 h-5 shrink-0" /><p>{trustError}. No enrollment, delivery, or portal state is inferred while this endpoint is unavailable.</p></div> : deviceTrust ? <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-3"><div className="border p-3"><p className="text-xs uppercase tracking-wide text-muted-foreground">Gateway status</p><p className="mt-1 font-semibold capitalize">{deviceTrust.status}</p></div><div className="border p-3"><p className="text-xs uppercase tracking-wide text-muted-foreground">Active enrollments</p><p className="mt-1 text-xl font-semibold">{deviceTrust.enrollments?.active ?? 0}</p><p className="text-xs text-muted-foreground">Pending: {deviceTrust.enrollments?.pending ?? 0} · Revoked: {deviceTrust.enrollments?.revoked ?? 0}</p></div><div className="border p-3"><p className="text-xs uppercase tracking-wide text-muted-foreground">External delivery</p><p className="mt-1 text-xl font-semibold">{deviceTrust.delivery?.delivered ?? 0}</p><p className="text-xs text-muted-foreground">Delivered · Pending: {deviceTrust.delivery?.pending ?? 0} · Failed: {deviceTrust.delivery?.failed ?? 0}</p></div></div><div className="border-t pt-3"><p className="text-sm font-medium">Authorized IReV receipt state</p><p className="mt-1 text-sm text-muted-foreground">Portal: {irevStatus?.status || 'unavailable'} · Acknowledged: {irevStatus?.submissions?.acknowledged ?? 0} · Pending: {irevStatus?.submissions?.pending ?? 0} · Reconciliation required: {irevStatus?.submissions?.reconciliation_required ?? 0}</p><p className="mt-1 text-xs text-muted-foreground">These are recorded receipt states; they do not establish a lawful result declaration.</p></div><p className="text-xs text-muted-foreground">{deviceTrust.notice || 'Only authoritative gateway and redacted outbox records are shown.'}</p></div> : <p className="text-sm text-muted-foreground">No authoritative device-trust data is available.</p>}
+          </CardContent>
+        </Card>
+
+        {quality && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2"><Shield className="w-4 h-4" /> Device-event assessment groups</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {quality.groups.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No authoritative external-device events have reached the lakehouse.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-muted-foreground border-b">
+                      <tr><th className="py-2 pr-3">Assessment</th><th className="py-2 pr-3">Sedona state</th><th className="py-2 pr-3">Events</th><th className="py-2 pr-3">Manual review</th><th className="py-2">Average risk</th></tr>
+                    </thead>
+                    <tbody>
+                      {quality.groups.map((group, index) => (
+                        <tr key={`${group.assessment_status}-${group.spatial_status}-${index}`} className="border-b last:border-0">
+                          <td className="py-3 pr-3"><Badge variant={group.assessment_status === 'analysis_complete' ? 'secondary' : 'destructive'}>{group.assessment_status}</Badge></td>
+                          <td className="py-3 pr-3">{group.spatial_status}</td>
+                          <td className="py-3 pr-3">{group.events}</td>
+                          <td className="py-3 pr-3">{group.manual_review_count}</td>
+                          <td className="py-3">{group.average_risk_score.toFixed(4)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">Other spatial analyses</CardTitle></CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Buffer, coverage, hotspot, Voronoi, H3, and field-kit outputs remain unavailable until they are backed by approved authoritative spatial datasets and server-side governed analytics. The platform intentionally does not publish client-side estimates as operational evidence.
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
@@ -1427,145 +1425,73 @@ function GeoLibreViewerTab() {
 // FIELD KIT TAB
 // ═══════════════════════════════════════════════════════════════════════════
 
+type ApprovedMaterialManifest = {
+  id: number;
+  material_type: string;
+  version: string;
+  manifest_sha256: string;
+  status: string;
+  effective_from?: string;
+};
+
 function FieldKitTab() {
   const store = useGeoLibreStore();
-  const [generating, setGenerating] = useState(false);
-  const [offlinePackages, setOfflinePackages] = useState<Array<{ name: string; size: string; state: string; status: string }>>([]);
+  const [manifests, setManifests] = useState<ApprovedMaterialManifest[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const generateFieldKit = useCallback(async () => {
-    setGenerating(true);
-    const states = ['LA', 'KN', 'RI', 'FC', 'OY', 'AN', 'KD', 'BO', 'DE', 'EN'];
-    const packages = states.map(code => ({
-      name: `INEC Field Kit — ${code}`,
-      size: `${Math.floor(Math.random() * 50 + 10)} MB`,
-      state: code,
-      status: 'ready',
-    }));
-    setOfflinePackages(packages);
-    setGenerating(false);
-  }, []);
+  const loadApprovedManifests = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await api.listMaterialManifests(store.electionId) as { manifests?: ApprovedMaterialManifest[] };
+      const approved = (response.manifests || []).filter((manifest) => manifest.status === 'approved');
+      setManifests(approved);
+    } catch (cause) {
+      setManifests([]);
+      setError(cause instanceof Error ? cause.message : 'approved field material manifests are unavailable');
+    } finally {
+      setLoading(false);
+    }
+  }, [store.electionId]);
 
-  const downloadFieldKit = useCallback((stateCode: string) => {
-    const statePUs = store.pollingUnits.features.filter((f: PollingUnitFeature) => f.properties.state_code === stateCode);
-    const fc = { type: 'FeatureCollection', features: statePUs };
-    downloadGeoJSON(fc, `inec-field-kit-${stateCode}.geojson`);
-  }, [store.pollingUnits]);
+  useEffect(() => { void loadApprovedManifests(); }, [loadApprovedManifests]);
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Election Day Field Kit</h2>
+        <h2 className="text-lg font-semibold">Governed Field Materials</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Generate offline data packages for field officers. Each kit contains polling unit locations,
-          admin boundaries, and base maps for offline use via the GeoLibre Desktop app (Tauri).
+          Offline deployment packages are not generated in the browser. This view displays only approved, hash-addressed material manifests that have passed the platform’s election-policy controls.
         </p>
       </div>
       <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Cpu className="w-4 h-4" /> GeoLibre Desktop (Tauri)
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="text-xs space-y-3">
-          <p>
-            The INEC Field Kit uses <strong>GeoLibre Desktop</strong> — a native app built with Tauri v2
-            that runs on Windows, macOS, and Linux. It provides:
-          </p>
-          <ul className="list-disc pl-4 space-y-1">
-            <li><strong>Offline Maps:</strong> Pre-loaded MBTiles of Nigeria admin boundaries + OpenStreetMap</li>
-            <li><strong>Local GeoJSON:</strong> Polling unit data with result submission forms</li>
-            <li><strong>GPS Tracking:</strong> Record officer locations for chain-of-custody audit</li>
-            <li><strong>DuckDB Spatial SQL:</strong> Run queries against election data without internet</li>
-            <li><strong>Photo Capture:</strong> Geotagged photos of polling units and result sheets</li>
-            <li><strong>Sync Queue:</strong> Queue result submissions for upload when connectivity returns</li>
-          </ul>
-          <div className="flex gap-2 pt-2">
-            <Button variant="outline" size="sm" className="text-xs" disabled>
-              <Download className="w-3.5 h-3.5 mr-1" /> Download Desktop (Windows)
-            </Button>
-            <Button variant="outline" size="sm" className="text-xs" disabled>
-              <Download className="w-3.5 h-3.5 mr-1" /> Download Desktop (macOS)
-            </Button>
-            <Button variant="outline" size="sm" className="text-xs" disabled>
-              <Download className="w-3.5 h-3.5 mr-1" /> Download Desktop (Linux)
-            </Button>
-          </div>
-          <p className="text-muted-foreground">
-            Desktop builds are generated from the GeoLibre repo via <code>npm run tauri:build</code>.
-            Configure the INEC field kit plugin in <code>src-tauri/tauri.conf.json</code>.
-          </p>
+        <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Shield className="w-4 h-4" /> Release control</CardTitle></CardHeader>
+        <CardContent className="text-sm text-muted-foreground space-y-2">
+          <p>A field package must be produced by the controlled release pipeline, signed, assigned an approved manifest, and distributed through an authorised device-management channel. No local GeoJSON, desktop binary, map tile, or result package is presented as ready until that evidence exists.</p>
+          <p>Use the Evidence Journey to inspect a manifest and its governing policy before authorising field distribution.</p>
         </CardContent>
       </Card>
-
       <Card>
-        <CardHeader>
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Database className="w-4 h-4" /> Offline State Packages
-          </CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-sm flex items-center gap-2"><Database className="w-4 h-4" /> Approved manifests</CardTitle>
+          <Button variant="outline" size="sm" onClick={() => void loadApprovedManifests()} disabled={loading}>
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} /> Refresh
+          </Button>
         </CardHeader>
         <CardContent>
-          <Button onClick={generateFieldKit} disabled={generating} className="mb-4">
-            {generating ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
-            Generate State Field Kits
-          </Button>
-
-          {offlinePackages.length > 0 && (
-            <div className="border rounded overflow-hidden">
+          {error && <p className="text-sm text-amber-700">{error}</p>}
+          {!error && manifests.length === 0 && <p className="text-sm text-muted-foreground">No approved field material manifests are available for this election.</p>}
+          {manifests.length > 0 && (
+            <div className="border rounded overflow-x-auto">
               <table className="w-full text-xs">
-                <thead className="bg-muted">
-                  <tr>
-                    <th className="text-left py-2 px-3">Package</th>
-                    <th className="text-left py-2 px-3">State</th>
-                    <th className="text-left py-2 px-3">Size</th>
-                    <th className="text-left py-2 px-3">Status</th>
-                    <th className="text-right py-2 px-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {offlinePackages.map(pkg => (
-                    <tr key={pkg.state} className="border-t">
-                      <td className="py-2 px-3">{pkg.name}</td>
-                      <td className="py-2 px-3"><Badge variant="outline">{pkg.state}</Badge></td>
-                      <td className="py-2 px-3">{pkg.size}</td>
-                      <td className="py-2 px-3"><Badge variant="default" className="bg-green-500 text-[10px]">Ready</Badge></td>
-                      <td className="py-2 px-3 text-right">
-                        <Button variant="outline" size="sm" className="text-xs h-6" onClick={() => downloadFieldKit(pkg.state)}>
-                          Download
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
+                <thead className="bg-muted"><tr><th className="text-left py-2 px-3">Material</th><th className="text-left py-2 px-3">Version</th><th className="text-left py-2 px-3">Manifest hash</th><th className="text-left py-2 px-3">Status</th></tr></thead>
+                <tbody>{manifests.map((manifest) => (
+                  <tr key={manifest.id} className="border-t"><td className="py-2 px-3">{manifest.material_type}</td><td className="py-2 px-3">{manifest.version}</td><td className="py-2 px-3 font-mono">{manifest.manifest_sha256.slice(0, 16)}…</td><td className="py-2 px-3"><Badge variant="secondary">{manifest.status}</Badge></td></tr>
+                ))}</tbody>
               </table>
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Tauri Config */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">Tauri Configuration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <pre className="bg-muted p-4 rounded text-xs overflow-auto max-h-48 whitespace-pre-wrap">
-{JSON.stringify({
-  productName: 'INEC Field Kit',
-  version: '1.0.0',
-  identifier: 'ng.inec.fieldkit',
-  build: { frontendDist: '../dist' },
-  app: {
-    security: {
-      csp: "default-src 'self'; connect-src 'self' https://*.openstreetmap.org https://*.cartocdn.com https://tiles.openfreemap.org; img-src 'self' data: https://*.tile.openstreetmap.org https://*.cartocdn.com",
-    },
-    windows: [{ title: 'INEC Field Kit', width: 1280, height: 800 }],
-  },
-  plugins: {
-    geolocation: { enabled: true },
-    fs: { scope: ['$APP/**', '$DOWNLOAD/**'] },
-  },
-}, null, 2)}
-          </pre>
         </CardContent>
       </Card>
     </div>

@@ -1,12 +1,12 @@
 package main
 
 import (
-	"github.com/lib/pq"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/lib/pq"
 	"net/http"
 	"strconv"
 	"strings"
@@ -306,6 +306,9 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
+	if rejectLegacyDeviceIngress(w) {
+		return
+	}
 	var req struct {
 		DeviceID        string   `json:"device_id"`
 		ElectionID      int      `json:"election_id"`

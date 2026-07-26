@@ -300,42 +300,6 @@ func checkPermission(role, permission string) bool {
 	return allowed
 }
 
-func createTBTransfer(resultID int64, amount int64, userData string) (*TBTransfer, error) {
-	if mwHub == nil || mwHub.TigerBeetle == nil {
-		return nil, fmt.Errorf("TigerBeetle client is unavailable")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return mwHub.TigerBeetle.CreateTransfer(ctx, TBTransfer{
-		DebitAccountID:  "inec-operational",
-		CreditAccountID: "inec-official",
-		Amount:          amount,
-		Ledger:          1,
-		Code:            1,
-		Status:          "PENDING",
-		UserData:        userData,
-		IdempotencyKey:  fmt.Sprintf("result:%d:%s", resultID, userData),
-	})
-}
-
-func postTBTransfer(transferID string) error {
-	if mwHub == nil || mwHub.TigerBeetle == nil {
-		return fmt.Errorf("TigerBeetle client is unavailable")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return mwHub.TigerBeetle.PostTransfer(ctx, transferID)
-}
-
-func voidTBTransfer(transferID string) error {
-	if mwHub == nil || mwHub.TigerBeetle == nil {
-		return fmt.Errorf("TigerBeetle client is unavailable")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return mwHub.TigerBeetle.VoidTransfer(ctx, transferID)
-}
-
 func startResultWorkflow(workflowType string, resultID int64, data map[string]interface{}) *WorkflowStatus {
 	ctx := context.Background()
 	ws, _ := mwHub.Temporal.StartWorkflow(ctx, WorkflowInput{

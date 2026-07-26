@@ -3,6 +3,26 @@ import { api } from '@/lib/api';
 
 type RecordValue = Record<string, unknown>;
 
+interface IReVPortalStatus {
+  status?: string;
+  required?: boolean;
+  portal_connection_id?: number;
+  submissions?: Record<string, number>;
+}
+
+interface IReVReceipt extends RecordValue {
+  submission_status?: string;
+  external_receipt_id?: string;
+  external_transaction_id?: string;
+  external_status?: string;
+  payload_sha256?: string;
+  evidence_event_hash?: string;
+  acknowledged_at?: string;
+  submitted_at?: string;
+  last_error_code?: string;
+  last_error_detail?: string;
+}
+
 interface IntegrityJourney {
   result?: RecordValue;
   policy_version_id?: number;
@@ -19,7 +39,7 @@ interface IntegrityJourney {
   };
 }
 
-function value(record: RecordValue | undefined, key: string) {
+function value(record: RecordValue | undefined | null, key: string) {
   const item = record?.[key];
   return item === undefined || item === null || item === '' ? '—' : String(item);
 }
@@ -41,6 +61,8 @@ export default function EvidenceJourneyPage() {
   const [resultId, setResultId] = useState(initialResultId);
   const [electionId, setElectionId] = useState('');
   const [journey, setJourney] = useState<IntegrityJourney | null>(null);
+  const [irevStatus, setIReVStatus] = useState<IReVPortalStatus | null>(null);
+  const [irevReceipt, setIReVReceipt] = useState<IReVReceipt | null>(null);
   const [materials, setMaterials] = useState<RecordValue[]>([]);
   const [loading, setLoading] = useState(false);
   const [verificationLoading, setVerificationLoading] = useState(false);
@@ -52,6 +74,8 @@ export default function EvidenceJourneyPage() {
   const verification = journey?.verification;
   const fabricAnchors = journey?.fabric_anchors || [];
   const committedFabricAnchors = fabricAnchors.filter((anchor) => anchor.status === 'committed');
+  const irevReceiptState = String(irevReceipt?.submission_status || 'not_recorded').toLowerCase();
+  const irevReceiptAccepted = irevReceiptState === 'acknowledged' || irevReceiptState === 'accepted';
 
   const copy = async (label: string, text: unknown) => {
     if (typeof text !== 'string' || !navigator.clipboard) return;
@@ -72,6 +96,14 @@ export default function EvidenceJourneyPage() {
       setJourney(response);
       const identifier = response.result?.election_id;
       if (typeof identifier === 'number') setElectionId(String(identifier));
+      const [portalResult, receiptResult] = await Promise.allSettled([
+        api.getIReVStatus() as Promise<IReVPortalStatus>,
+        api.getIReVReceipt(parsedResultId) as Promise<IReVReceipt>,
+      ]);
+      setIReVStatus(portalResult.status === 'fulfilled' ? portalResult.value : null);
+      // A 404 means that no receipt has been recorded. It must never be displayed
+      // as a successful portal submission or be used to infer result validity.
+      setIReVReceipt(receiptResult.status === 'fulfilled' ? receiptResult.value : null);
     } catch (caught: unknown) {
       setJourney(null);
       setError(`Evidence journey is unavailable: ${(caught as Error).message}`);
@@ -151,6 +183,12 @@ export default function EvidenceJourneyPage() {
           <section className={`border p-5 ${verification?.chain_valid && verification.signature_valid !== false ? 'border-green-300 bg-green-50 dark:border-green-900 dark:bg-green-950/20' : 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'}`}>
             <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-zinc-950 dark:text-white">Evidence verification</h2><p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200">The verification service recomputes chain links and, when signatures exist, checks the configured signer.</p></div><div className="flex gap-2 text-xs font-semibold"><span className="border border-current px-2 py-1">Chain: {verification?.chain_valid ? 'valid' : 'unverified'}</span><span className="border border-current px-2 py-1">Signature: {verification?.signature_checked ? (verification?.signature_valid ? 'valid' : 'invalid') : 'not checked'}</span></div></div>
             {verification?.failure_reasons?.length ? <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-900 dark:text-amber-100">{verification.failure_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
+          </section>
+
+          <section className={`border p-5 ${irevReceiptAccepted ? 'border-green-300 bg-green-50 dark:border-green-900 dark:bg-green-950/20' : 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-zinc-950 dark:text-white">Authorized IReV portal receipt</h2><p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200">A receipt is evidence of an external portal response only after its state and reference are verified. It does not replace lawful collation or declaration.</p></div><span className="border border-current px-2 py-1 text-xs font-semibold">{title(irevReceiptState)}</span></div>
+            <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs uppercase tracking-wide text-zinc-500">Portal state</p><p className="mt-1 font-semibold text-zinc-950 dark:text-white">{title(irevStatus?.status || 'unavailable')}</p></div><div><p className="text-xs uppercase tracking-wide text-zinc-500">Receipt reference</p><p className="mt-1 font-mono text-xs text-zinc-950 dark:text-white">{hash(irevReceipt?.external_receipt_id)}</p></div><div><p className="text-xs uppercase tracking-wide text-zinc-500">External status</p><p className="mt-1 font-semibold text-zinc-950 dark:text-white">{title(irevReceipt?.external_status)}</p></div><div><p className="text-xs uppercase tracking-wide text-zinc-500">Acknowledged</p><p className="mt-1 text-xs text-zinc-950 dark:text-white">{value(irevReceipt, 'acknowledged_at')}</p></div></div>
+            {!irevReceipt ? <p className="mt-4 text-sm text-amber-900 dark:text-amber-100">No verified IReV receipt is recorded for this result. This is not evidence of portal acceptance; the authorized interface may be unavailable, unconfigured, pending, or have rejected the submission.</p> : irevReceipt.last_error_code ? <p className="mt-4 text-sm text-amber-900 dark:text-amber-100">Receipt reconciliation requires attention: {value(irevReceipt, 'last_error_code')}.</p> : null}
           </section>
 
           <section className={`border p-5 ${fabricAnchors.length > 0 && committedFabricAnchors.length === fabricAnchors.length ? 'border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/20' : 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'}`}>

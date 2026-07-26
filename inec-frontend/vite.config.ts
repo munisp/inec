@@ -96,6 +96,8 @@ export default defineConfig({
     },
   },
   server: {
+    // Enables local development previews through the trusted Manus proxy only.
+    allowedHosts: ['.manus.computer'],
     proxy: apiProxy,
   },
   preview: {
