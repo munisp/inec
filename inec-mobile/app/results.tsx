@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { electionApi, Result, CollationSummary } from '../src/lib/api';
 import { EmptyState } from '../src/components/EmptyState';
 import { CardSkeleton } from '../src/components/SkeletonLoader';
@@ -146,6 +146,18 @@ export default function ResultsScreen() {
                   ))}
                 </View>
               )}
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={`View evidence for polling unit ${r.polling_unit_code}`}
+                style={styles.evidenceButton}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  router.push({ pathname: '/evidence', params: { result_id: String(r.id), election_id: String(electionId) } });
+                }}
+              >
+                <Ionicons name="finger-print-outline" size={15} color="#166534" />
+                <Text style={styles.evidenceButtonText}>View evidence journey</Text>
+              </TouchableOpacity>
             </View>
           ))
         )
@@ -214,6 +226,8 @@ const styles = StyleSheet.create({
   partyPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#f9fafb', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   partyDot: { width: 8, height: 8, borderRadius: 4 },
   partyPillText: { fontSize: 11, fontWeight: '600', color: '#374151' },
+  evidenceButton: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 11, paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, backgroundColor: '#f0fdf4' },
+  evidenceButtonText: { fontSize: 11, fontWeight: '700', color: '#166534' },
   collationCard: { marginHorizontal: 16, marginBottom: 10, backgroundColor: '#fff', borderRadius: 14, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
   collationHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   collationName: { fontSize: 15, fontWeight: '700', color: '#111827' },

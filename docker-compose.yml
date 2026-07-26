@@ -205,6 +205,7 @@ services:
         condition: service_healthy
     environment:
     - PORT=8088
+    - APP_ENV=${APP_ENV:?APP_ENV must be set}
     - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - DATABASE_REPLICA_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pg-replica:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - PGPOOL_HOST=pgpool
@@ -229,6 +230,9 @@ services:
     - HSM_MASTER_KEY=${HSM_MASTER_KEY:?HSM_MASTER_KEY must be set}
     - LAKEHOUSE_URL=http://lakehouse:8090
     - RUST_INFERENCE_URL=http://inference-engine:8091
+    - INTEGRITY_SIGNING_REQUIRED=${INTEGRITY_SIGNING_REQUIRED:?INTEGRITY_SIGNING_REQUIRED must be set}
+    - INTEGRITY_SERVICE_TOKEN=${INTEGRITY_SERVICE_TOKEN:?INTEGRITY_SERVICE_TOKEN must be set}
+    - INEC_CVR_URL=${INEC_CVR_URL:?INEC_CVR_URL must be set}
     - BIOMETRIC_PIPELINE_URL=http://biometric-go:8092
     - SATELLITE_SERVICE_URL=http://satellite-change-detection:8204
     - DOCUMENT_AI_URL=http://document-ai:8089
@@ -247,8 +251,20 @@ services:
       inference-engine:
         condition: service_healthy
     environment:
+    - APP_ENV=${APP_ENV:?APP_ENV must be set}
     - VLM_ENDPOINT=${VLM_ENDPOINT:?VLM_ENDPOINT must be set}
     - VLM_MODEL=${VLM_MODEL:?VLM_MODEL must be set}
+    - OCR_MODEL_DIR=${OCR_MODEL_DIR:?OCR_MODEL_DIR must be set}
+    - DOCLING_MODEL=${DOCLING_MODEL:?DOCLING_MODEL must be set}
+    - SECONDARY_OCR_ENDPOINT=${SECONDARY_OCR_ENDPOINT:-}
+    - SECONDARY_OCR_ENGINE=${SECONDARY_OCR_ENGINE:?SECONDARY_OCR_ENGINE must be set}
+    - SECONDARY_OCR_REQUIRED=${SECONDARY_OCR_REQUIRED:?SECONDARY_OCR_REQUIRED must be set}
+    - DOCUMENT_INTEGRITY_POLICY_VERSION=${DOCUMENT_INTEGRITY_POLICY_VERSION:?DOCUMENT_INTEGRITY_POLICY_VERSION must be set}
+    - DOCUMENT_ANALYSIS_VERSION=${DOCUMENT_ANALYSIS_VERSION:?DOCUMENT_ANALYSIS_VERSION must be set}
+    - MAX_DOCUMENT_BYTES=${MAX_DOCUMENT_BYTES:?MAX_DOCUMENT_BYTES must be set}
+    - MIN_OCR_CONFIDENCE=${MIN_OCR_CONFIDENCE:?MIN_OCR_CONFIDENCE must be set}
+    - MIN_VLM_COMPLETENESS=${MIN_VLM_COMPLETENESS:?MIN_VLM_COMPLETENESS must be set}
+    - MIN_DOCUMENT_EDGE=${MIN_DOCUMENT_EDGE:?MIN_DOCUMENT_EDGE must be set}
     - BIOMETRIC_LIVENESS_URL=http://inference-engine:8091/liveness/predict
     - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
     - UPLOAD_DIR=/tmp/document-ai-uploads
@@ -267,12 +283,17 @@ services:
     restart: unless-stopped
   inference-engine:
     build:
-      context: .
-      dockerfile: ./services/inference-engine/Dockerfile
+      context: ./services/inference-engine
+      dockerfile: Dockerfile
     environment:
     - PORT=8091
+    - APP_ENV=${APP_ENV:?APP_ENV must be set}
     - MODELS_DIR=/app/models
-    - CORS_ORIGINS=https://inec.local,http://localhost:3000
+    - INTEGRITY_SERVICE_TOKEN=${INTEGRITY_SERVICE_TOKEN:?INTEGRITY_SERVICE_TOKEN must be set}
+    - INTEGRITY_SIGNING_KEY=${INTEGRITY_SIGNING_KEY:?INTEGRITY_SIGNING_KEY must be set}
+    - INTEGRITY_VERIFYING_KEY=${INTEGRITY_VERIFYING_KEY:-}
+    - INTEGRITY_SIGNER_KEY_ID=${INTEGRITY_SIGNER_KEY_ID:?INTEGRITY_SIGNER_KEY_ID must be set}
+    - CORS_ORIGINS=${CORS_ORIGINS:?CORS_ORIGINS must be set}
     healthcheck:
       interval: 30s
       retries: 5
@@ -285,6 +306,8 @@ services:
       timeout: 10s
     networks:
     - inec-network
+    volumes:
+    - ./ml/models:/app/models:ro
     restart: unless-stopped
   kafka:
     environment:

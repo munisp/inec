@@ -45,6 +45,7 @@ const WebhookManagementPage = lazy(() => import('@/pages/WebhookManagementPage')
 const UserManagementPage = lazy(() => import('@/pages/UserManagementPage'));
 const DuplicateDetectionPage = lazy(() => import('@/pages/DuplicateDetectionPage'));
 const DocumentAIPage = lazy(() => import('@/pages/DocumentAIPage'));
+const EvidenceJourneyPage = lazy(() => import('@/pages/EvidenceJourneyPage'));
 const ExportCenterPage = lazy(() => import('@/pages/ExportCenterPage'));
 const CommandCenterPage = lazy(() => import('@/pages/CommandCenterPage'));
 const CitizenPortalPage = lazy(() => import('@/pages/CitizenPortalPage'));
@@ -154,6 +155,7 @@ function AppContent() {
     'user-management': <UserManagementPage />,
     'duplicate-detection': <DuplicateDetectionPage />,
     'document-ai': <DocumentAIPage />,
+    'evidence-journey': <EvidenceJourneyPage />,
     'export-center': <ExportCenterPage />,
     'command-center': <CommandCenterPage />,
     'citizen-portal': <CitizenPortalPage />,

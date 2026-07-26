@@ -118,6 +118,7 @@ func main() {
 	initTracing()
 	initObserverTables()
 	initDocumentAISchema()
+	initEvidenceIntegritySchema()
 	initKYBSchema()
 	initDataSecuritySchema()
 	initElectionFSMSchema()
@@ -254,6 +255,20 @@ func main() {
 	r.HandleFunc("/audit/trail", readAuth(handleAuditTrail)).Methods("GET")
 	r.HandleFunc("/audit/verify/{id:[0-9]+}", readAuth(handleVerifyResult)).Methods("GET")
 	r.HandleFunc("/audit/stats", readAuth(handleAuditStats)).Methods("GET")
+
+	// Evidence integrity — immutable result provenance, reconciliation, and material policy controls.
+	r.HandleFunc("/integrity/results/{id:[0-9]+}/journey", readAuth(handleIntegrityJourney)).Methods("GET")
+	r.HandleFunc("/integrity/results/{id:[0-9]+}/verify", readAuth(handleVerifyIntegrityJourney)).Methods("GET")
+	r.HandleFunc("/integrity/health", readAuth(handleIntegrityHealth)).Methods("GET")
+	r.HandleFunc("/integrity/voter-services", readAuth(handleIntegrityVoterServices)).Methods("GET")
+	r.HandleFunc("/integrity/results/{id:[0-9]+}/cases", writeAuth(handleOpenReconciliationCase)).Methods("POST")
+	r.HandleFunc("/integrity/cases/{id:[0-9]+}/resolve", writeAuth(handleResolveReconciliationCase)).Methods("POST")
+	r.HandleFunc("/integrity/collation/bundles", writeAuth(handleBuildCollationEvidenceBundle)).Methods("POST")
+	r.HandleFunc("/integrity/collation/{election_id:[0-9]+}/{level}/{area_code}", readAuth(handleGetCollationEvidenceBundle)).Methods("GET")
+	r.HandleFunc("/integrity/policies", adminOnly(handleCreateElectionPolicy)).Methods("POST")
+	r.HandleFunc("/integrity/policies", readAuth(handleListElectionPolicies)).Methods("GET")
+	r.HandleFunc("/integrity/material-manifests", adminOnly(handleCreateMaterialManifest)).Methods("POST")
+	r.HandleFunc("/integrity/material-manifests", readAuth(handleListMaterialManifests)).Methods("GET")
 
 	// Incidents — officer/admin create, write auth update, read for listing
 	r.HandleFunc("/incidents", adminOrOfficer(handleCreateIncident)).Methods("POST")

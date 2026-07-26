@@ -51,7 +51,7 @@ import {
   createOfficialTrackingLayer,
   createAnalysisResultLayer,
 } from '@/lib/geolibre/deck-layers';
-import type { INECLayerType } from '@/lib/geolibre/types';
+import type { INECLayerType, IncidentFeature, PollingUnitFeature } from '@/lib/geolibre/types';
 import type { Layer } from '@deck.gl/core';
 import { NIGERIA_CENTER } from '@/lib/geolibre/types';
 
@@ -767,7 +767,7 @@ function LiveMapTab() {
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     return store.pollingUnits.features
-      .filter(f => {
+      .filter((f: PollingUnitFeature) => {
         const q = searchQuery.toLowerCase();
         return f.properties.name.toLowerCase().includes(q) ||
           f.properties.code.toLowerCase().includes(q) ||
@@ -807,7 +807,7 @@ function LiveMapTab() {
           </div>
           {(searchResults.length > 0 || places.length > 0) && (
             <div className="absolute z-30 top-9 left-0 right-0 bg-white border rounded shadow-lg max-h-48 overflow-y-auto">
-              {searchResults.map(f => (
+              {searchResults.map((f: PollingUnitFeature) => (
                 <button key={f.properties.code}
                   className="w-full text-left px-2 py-1 text-xs hover:bg-muted flex items-center gap-1"
                   onClick={() => {
@@ -1249,7 +1249,7 @@ function SpatialAnalysisTab() {
       case 'buffer': {
         const radius = parseFloat(bufferRadius);
         const totalPUs = pus.length;
-        const withResults = pus.filter(p => p.properties.status !== 'no_result').length;
+        const withResults = pus.filter((p: PollingUnitFeature) => p.properties.status !== 'no_result').length;
         analysisResult = {
           tool: 'Buffer Analysis', radius_km: radius, total_pus: totalPUs,
           pus_with_results: withResults,
@@ -1262,7 +1262,7 @@ function SpatialAnalysisTab() {
       case 'hotspot': {
         const incidents = store.incidents.features;
         const stateIncidents: Record<string, number> = {};
-        incidents.forEach(i => {
+        incidents.forEach((i: IncidentFeature) => {
           stateIncidents[i.properties.state_code] = (stateIncidents[i.properties.state_code] || 0) + 1;
         });
         const hotspots = Object.entries(stateIncidents)
@@ -1270,14 +1270,14 @@ function SpatialAnalysisTab() {
           .map(([state, count]) => ({ state, incidents: count }));
         analysisResult = {
           tool: 'Hotspot Detection', total_incidents: incidents.length, hotspot_states: hotspots,
-          critical_count: incidents.filter(i => i.properties.severity === 'critical').length,
-          high_count: incidents.filter(i => i.properties.severity === 'high').length,
+          critical_count: incidents.filter((i: IncidentFeature) => i.properties.severity === 'critical').length,
+          high_count: incidents.filter((i: IncidentFeature) => i.properties.severity === 'high').length,
         };
         break;
       }
       case 'h3-aggregate': {
         const stateTurnout: Record<string, { total: number; cast: number; count: number }> = {};
-        pus.forEach(pu => {
+        pus.forEach((pu: PollingUnitFeature) => {
           const sc = pu.properties.state_code;
           if (!stateTurnout[sc]) stateTurnout[sc] = { total: 0, cast: 0, count: 0 };
           stateTurnout[sc].total += pu.properties.registered_voters;
@@ -1446,7 +1446,7 @@ function FieldKitTab() {
   }, []);
 
   const downloadFieldKit = useCallback((stateCode: string) => {
-    const statePUs = store.pollingUnits.features.filter(f => f.properties.state_code === stateCode);
+    const statePUs = store.pollingUnits.features.filter((f: PollingUnitFeature) => f.properties.state_code === stateCode);
     const fc = { type: 'FeatureCollection', features: statePUs };
     downloadGeoJSON(fc, `inec-field-kit-${stateCode}.geojson`);
   }, [store.pollingUnits]);

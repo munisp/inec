@@ -7,6 +7,7 @@ Provides:
 - Video Analysis: Frame extraction + ballot counting anomaly detection
 """
 
+import hashlib
 import io
 import json
 import os
@@ -45,6 +46,23 @@ DOCLING_MODEL = os.getenv("DOCLING_MODEL", "docling-v2")
 NIMC_VERIFICATION_URL = os.getenv("NIMC_VERIFICATION_URL", "").strip()
 IDENTITY_VERIFICATION_URL = os.getenv("IDENTITY_VERIFICATION_URL", "").strip()
 SANCTIONS_SCREENING_URL = os.getenv("SANCTIONS_SCREENING_URL", "").strip()
+
+# Evidence-integrity configuration. A secondary OCR endpoint is optional in
+# development but may be required by deployment policy. It is intended for a
+# self-hosted GOT-OCR 2.0 or olmOCR-compatible service, never a public fallback.
+SECONDARY_OCR_ENDPOINT = os.getenv("SECONDARY_OCR_ENDPOINT", "").strip()
+SECONDARY_OCR_ENGINE = os.getenv("SECONDARY_OCR_ENGINE", "got-ocr2.0").strip()
+SECONDARY_OCR_REQUIRED = os.getenv("SECONDARY_OCR_REQUIRED", "false").lower() == "true"
+DOCUMENT_INTEGRITY_POLICY_VERSION = os.getenv(
+    "DOCUMENT_INTEGRITY_POLICY_VERSION", "unconfigured"
+).strip()
+DOCUMENT_ANALYSIS_VERSION = os.getenv(
+    "DOCUMENT_ANALYSIS_VERSION", "evidence-consensus-v1"
+).strip()
+MAX_DOCUMENT_BYTES = int(os.getenv("MAX_DOCUMENT_BYTES", "20000000"))
+MIN_OCR_CONFIDENCE = float(os.getenv("MIN_OCR_CONFIDENCE", "0.75"))
+MIN_VLM_COMPLETENESS = float(os.getenv("MIN_VLM_COMPLETENESS", "0.80"))
+MIN_DOCUMENT_EDGE = int(os.getenv("MIN_DOCUMENT_EDGE", "720"))
 
 Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -494,6 +512,434 @@ class DocLingEngine:
 
 
 docling_engine = DocLingEngine()
+
+
+# ─── Evidence Integrity Consensus ────────────────────────────────────────────
+
+
+def _canonical_json(value: Any) -> bytes:
+    """Serialize analysis metadata reproducibly for content-addressed manifests."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    ).encode("utf-8")
+
+
+def _sha256_hex(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _package_version(distribution: str, fallback: str) -> str:
+    try:
+        from importlib.metadata import version
+
+        return version(distribution)
+    except Exception:
+        return fallback
+
+
+def _normalise_tokens(value: str) -> set[str]:
+    return {token for token in re.findall(r"[A-Z0-9]{2,}", value.upper())}
+
+
+def _image_evidence(image_bytes: bytes) -> dict[str, Any]:
+    """Create reproducible technical evidence without claiming authenticity.
+
+    The perceptual fingerprint is a compact derivative for duplicate comparison;
+    the SHA-256 remains the authoritative content address.
+    """
+    try:
+        import numpy as np
+        from PIL import Image, UnidentifiedImageError
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Document-integrity image dependencies are unavailable",
+        ) from exc
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None
+
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        image.load()
+        width, height = image.size
+        mode = image.mode
+        grayscale = image.convert("L")
+        resized = grayscale.resize((16, 16))
+        pixels = list(resized.getdata())
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Uploaded evidence is not a decodable document image",
+        ) from exc
+
+    pixel_mean = sum(pixels) / len(pixels)
+    perceptual_bits = "".join("1" if pixel >= pixel_mean else "0" for pixel in pixels)
+    perceptual_hash = format(int(perceptual_bits, 2), "064x")
+    grayscale_array = np.array(grayscale)
+    if cv2 is not None:
+        blur_variance = float(cv2.Laplacian(grayscale_array, cv2.CV_64F).var())
+        blur_method = "opencv_laplacian_variance"
+    else:
+        # Pillow/NumPy fallback preserves an objective technical quality signal
+        # when the optional OpenCV wheel is unavailable. It is never used to
+        # approve a result; it only informs manual-review routing.
+        gradient_x = np.diff(grayscale_array.astype(float), axis=1)
+        gradient_y = np.diff(grayscale_array.astype(float), axis=0)
+        blur_variance = float((np.var(gradient_x) + np.var(gradient_y)) / 2)
+        blur_method = "numpy_gradient_variance_fallback"
+    quality_findings: list[dict[str, Any]] = []
+    if min(width, height) < MIN_DOCUMENT_EDGE:
+        quality_findings.append(
+            {
+                "code": "image_resolution_below_minimum",
+                "severity": "high",
+                "detail": (
+                    f"Image dimensions {width}x{height} are below the "
+                    f"{MIN_DOCUMENT_EDGE}px minimum edge threshold."
+                ),
+            }
+        )
+    if blur_variance < 80.0:
+        quality_findings.append(
+            {
+                "code": "image_blur_detected",
+                "severity": "medium",
+                "detail": (
+                    "Image edge variance is low; document text may not be "
+                    "reliably recoverable."
+                ),
+            }
+        )
+    return {
+        "content_sha256": _sha256_hex(image_bytes),
+        "perceptual_hash": perceptual_hash,
+        "byte_size": len(image_bytes),
+        "width": width,
+        "height": height,
+        "mode": mode,
+        "blur_variance": round(blur_variance, 3),
+        "blur_method": blur_method,
+        "quality_findings": quality_findings,
+    }
+
+
+def _secondary_ocr_consensus(image_bytes: bytes) -> dict[str, Any]:
+    """Call only an explicitly configured self-hosted secondary OCR service.
+
+    The contract is intentionally narrow: `POST {endpoint}/extract` accepts a
+    JSON image payload and returns `{text, confidence, fields?}`. If an operator
+    marks this engine required, an unavailable or malformed response is an
+    analysis-unavailable condition rather than a hidden fallback.
+    """
+    if not SECONDARY_OCR_ENDPOINT:
+        if SECONDARY_OCR_REQUIRED:
+            raise HTTPException(
+                status_code=503,
+                detail="A required self-hosted secondary OCR service is not configured",
+            )
+        return {"status": "not_configured", "engine": SECONDARY_OCR_ENGINE}
+
+    import base64
+
+    request_body = _canonical_json(
+        {
+            "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+            "document_type": "ec8a",
+            "response_format": "structured_json",
+        }
+    )
+    request = urllib.request.Request(
+        f"{SECONDARY_OCR_ENDPOINT.rstrip('/')}/extract",
+        data=request_body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw_response = response.read()
+        payload = json.loads(raw_response.decode("utf-8"))
+        text = payload.get("text")
+        confidence = payload.get("confidence")
+        if not isinstance(text, str) or not isinstance(confidence, (int, float)):
+            raise ValueError("secondary OCR response lacks text/confidence")
+        if not 0.0 <= float(confidence) <= 1.0:
+            raise ValueError("secondary OCR confidence is outside [0, 1]")
+        return {
+            "status": "completed",
+            "engine": SECONDARY_OCR_ENGINE,
+            "text": text,
+            "confidence": float(confidence),
+            "fields": payload.get("fields", {}),
+        }
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        if SECONDARY_OCR_REQUIRED:
+            raise HTTPException(
+                status_code=503,
+                detail="Required secondary OCR analysis is unavailable or invalid",
+            ) from exc
+        log.warning(
+            "secondary_ocr_unavailable", engine=SECONDARY_OCR_ENGINE, error=str(exc)
+        )
+        return {
+            "status": "unavailable",
+            "engine": SECONDARY_OCR_ENGINE,
+            "reason": "optional_secondary_ocr_unavailable",
+        }
+
+
+def _docling_has_table(result: DocLingResult) -> bool:
+    return any(table.headers or table.rows for table in result.tables)
+
+
+def _consensus_findings(
+    image_evidence: dict[str, Any],
+    ocr_result: EC8AExtraction,
+    vlm_result: VLMResult,
+    docling_result: DocLingResult,
+    secondary_ocr: dict[str, Any],
+) -> list[dict[str, Any]]:
+    findings = list(image_evidence["quality_findings"])
+    if DOCUMENT_INTEGRITY_POLICY_VERSION == "unconfigured":
+        findings.append(
+            {
+                "code": "policy_version_unconfigured",
+                "severity": "high",
+                "detail": (
+                    "The analysis has no configured election-integrity policy "
+                    "version and requires manual review."
+                ),
+            }
+        )
+    if ocr_result.confidence_score < MIN_OCR_CONFIDENCE:
+        findings.append(
+            {
+                "code": "paddleocr_confidence_below_policy",
+                "severity": "high",
+                "detail": (
+                    f"PaddleOCR confidence {ocr_result.confidence_score:.3f} "
+                    f"is below the policy threshold {MIN_OCR_CONFIDENCE:.3f}."
+                ),
+            }
+        )
+    for warning in ocr_result.extraction_warnings:
+        severity = (
+            "high" if "!=" in warning or "exceeds" in warning.lower() else "medium"
+        )
+        findings.append(
+            {
+                "code": "paddleocr_validation_warning",
+                "severity": severity,
+                "detail": warning,
+            }
+        )
+    if not vlm_result.is_valid_ec8a:
+        findings.append(
+            {
+                "code": "vlm_form_type_unconfirmed",
+                "severity": "high",
+                "detail": "The VLM could not confirm the expected EC8A form type.",
+            }
+        )
+    if vlm_result.tampering_detected:
+        findings.append(
+            {
+                "code": "vlm_tampering_indicator",
+                "severity": "critical",
+                "detail": (
+                    "The VLM detected a potential alteration indicator; this is "
+                    "evidence for review, not an automatic rejection."
+                ),
+                "indicators": vlm_result.tampering_indicators,
+            }
+        )
+    if not vlm_result.orientation_correct:
+        findings.append(
+            {
+                "code": "document_orientation_unconfirmed",
+                "severity": "medium",
+                "detail": (
+                    "The VLM reports that the document orientation is not reliable."
+                ),
+            }
+        )
+    if vlm_result.completeness_score < MIN_VLM_COMPLETENESS:
+        findings.append(
+            {
+                "code": "vlm_completeness_below_policy",
+                "severity": "high",
+                "detail": (
+                    f"VLM completeness {vlm_result.completeness_score:.3f} "
+                    f"is below the policy threshold {MIN_VLM_COMPLETENESS:.3f}."
+                ),
+            }
+        )
+    if not _docling_has_table(docling_result):
+        findings.append(
+            {
+                "code": "docling_table_not_detected",
+                "severity": "high",
+                "detail": (
+                    "Docling did not recover a structured result table from the "
+                    "submitted document."
+                ),
+            }
+        )
+    if secondary_ocr.get("status") == "completed":
+        primary_tokens = _normalise_tokens(ocr_result.raw_ocr_text)
+        secondary_tokens = _normalise_tokens(str(secondary_ocr.get("text", "")))
+        if primary_tokens and secondary_tokens:
+            overlap = len(primary_tokens & secondary_tokens) / max(
+                len(primary_tokens), len(secondary_tokens)
+            )
+            if overlap < 0.35:
+                findings.append(
+                    {
+                        "code": "secondary_ocr_disagreement",
+                        "severity": "high",
+                        "detail": (
+                            f"PaddleOCR and {SECONDARY_OCR_ENGINE} token overlap "
+                            f"is only {overlap:.2f}."
+                        ),
+                    }
+                )
+        elif not secondary_tokens:
+            findings.append(
+                {
+                    "code": "secondary_ocr_empty",
+                    "severity": "high",
+                    "detail": (
+                        f"{SECONDARY_OCR_ENGINE} returned no usable document text."
+                    ),
+                }
+            )
+    elif secondary_ocr.get("status") == "unavailable":
+        findings.append(
+            {
+                "code": "secondary_ocr_unavailable",
+                "severity": "medium",
+                "detail": (
+                    "The optional secondary OCR engine was unavailable; the "
+                    "evidence requires manual review."
+                ),
+            }
+        )
+    return findings
+
+
+def _decision_from_findings(findings: list[dict[str, Any]]) -> tuple[str, bool, str]:
+    # Automation collects evidence and requests review. It never renders a final
+    # electoral verdict or silently converts a model score into approval.
+    if any(finding["code"] == "image_resolution_below_minimum" for finding in findings):
+        return (
+            "rejected_for_quality",
+            True,
+            "evidence_rejected_for_quality_manual_resubmission_required",
+        )
+    if findings:
+        return (
+            "manual_review_required",
+            True,
+            "evidence_collected_manual_review_required",
+        )
+    return (
+        "analysis_complete",
+        False,
+        "evidence_collected_pending_authorized_result_workflow",
+    )
+
+
+def analyze_evidence_bundle(
+    image_bytes: bytes, filename: str, report_id: Optional[int]
+) -> dict[str, Any]:
+    """Run the evidence pipeline with conservative, review-safe semantics."""
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Document evidence file is empty")
+    if len(image_bytes) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Document evidence exceeds {MAX_DOCUMENT_BYTES} byte limit",
+        )
+
+    image_evidence = _image_evidence(image_bytes)
+    ocr_result = ocr_engine.extract_ec8a(image_bytes)
+    vlm_result = vlm_engine.analyze_document(image_bytes, "ec8a")
+    docling_result = docling_engine.extract_tables(image_bytes, filename)
+    secondary_ocr = _secondary_ocr_consensus(image_bytes)
+    findings = _consensus_findings(
+        image_evidence, ocr_result, vlm_result, docling_result, secondary_ocr
+    )
+    assessment_status, requires_manual_review, decision = _decision_from_findings(
+        findings
+    )
+    docling_confidence = max(
+        (table.confidence for table in docling_result.tables), default=0.0
+    )
+    secondary_confidence = secondary_ocr.get("confidence")
+    confidence_inputs = [
+        ocr_result.confidence_score,
+        vlm_result.completeness_score,
+        docling_confidence,
+    ]
+    if isinstance(secondary_confidence, (int, float)):
+        confidence_inputs.append(float(secondary_confidence))
+    combined_confidence = round(sum(confidence_inputs) / len(confidence_inputs), 3)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    engine_versions = {
+        "paddleocr": _package_version("paddleocr", "configured-local-model"),
+        "vlm": os.getenv("VLM_MODEL", "unconfigured"),
+        "docling": _package_version("docling", DOCLING_MODEL),
+        "secondary_ocr": SECONDARY_OCR_ENGINE
+        if secondary_ocr.get("status") != "not_configured"
+        else "not_configured",
+        "analysis": DOCUMENT_ANALYSIS_VERSION,
+    }
+    manifest = {
+        "schema_version": "inec-election-evidence-manifest/v1",
+        "analysis_version": DOCUMENT_ANALYSIS_VERSION,
+        "policy_version": DOCUMENT_INTEGRITY_POLICY_VERSION,
+        "report_id": report_id,
+        "filename": filename,
+        "created_at": timestamp,
+        "document": image_evidence,
+        "engine_versions": engine_versions,
+        "engine_status": {
+            "paddleocr": "completed",
+            "vlm": "completed",
+            "docling": "completed",
+            "secondary_ocr": secondary_ocr.get("status"),
+        },
+        "assessment_status": assessment_status,
+        "decision": decision,
+        "combined_confidence": combined_confidence,
+        "requires_manual_review": requires_manual_review,
+        "findings": findings,
+    }
+    manifest_sha256 = _sha256_hex(_canonical_json(manifest))
+    return {
+        "report_id": report_id,
+        "ocr": ocr_result.model_dump(),
+        "vlm": vlm_result.model_dump(),
+        "docling": docling_result.model_dump(),
+        "secondary_ocr": secondary_ocr,
+        "image_evidence": image_evidence,
+        "engine_versions": engine_versions,
+        "findings": findings,
+        "assessment_status": assessment_status,
+        "decision": decision,
+        "combined_confidence": combined_confidence,
+        "requires_manual_review": requires_manual_review,
+        "integrity_manifest": manifest,
+        "manifest_sha256": manifest_sha256,
+        "timestamp": timestamp,
+    }
 
 
 # ─── Video Analysis ───────────────────────────────────────────────────────────
@@ -1184,10 +1630,23 @@ async def health():
         "sanctions_screening": "configured"
         if SANCTIONS_SCREENING_URL
         else "unavailable",
+        "secondary_ocr": (
+            "configured"
+            if SECONDARY_OCR_ENDPOINT
+            else ("required_but_unconfigured" if SECONDARY_OCR_REQUIRED else "optional")
+        ),
+        "integrity_policy": (
+            "configured"
+            if DOCUMENT_INTEGRITY_POLICY_VERSION != "unconfigured"
+            else "unavailable"
+        ),
     }
     return {
         "status": "healthy"
-        if all(value in {"available", "configured"} for value in services.values())
+        if all(
+            value in {"available", "configured", "optional"}
+            for value in services.values()
+        )
         else "degraded",
         "services": services,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1285,38 +1744,29 @@ async def kyc_liveness(
     return result.model_dump()
 
 
+@app.post("/integrity/photo-report")
+async def analyze_integrity_photo_report(
+    file: Annotated[UploadFile, File(...)],
+    report_id: Annotated[Optional[int], Form()] = None,
+):
+    """Explicit integrity endpoint for content-addressed photo evidence bundles."""
+    content = await file.read()
+    return analyze_evidence_bundle(content, file.filename or "photo.jpg", report_id)
+
+
 @app.post("/analyze/photo-report")
 async def analyze_photo_report(
     file: Annotated[UploadFile, File(...)],
     report_id: Annotated[Optional[int], Form()] = None,
 ):
-    """Full pipeline: OCR + VLM + DocLing on a single uploaded photo.
-    This is the main endpoint called by the Go backend after observer upload."""
+    """Create a conservative, content-addressed evidence bundle for a report.
+
+    The endpoint preserves legacy OCR/VLM/Docling fields, while adding an
+    integrity manifest, engine version evidence, findings, and an explicit
+    manual-review decision. It does not approve or finalise an election result.
+    """
     content = await file.read()
-
-    # Run all analyses
-    ocr_result = ocr_engine.extract_ec8a(content)
-    vlm_result = vlm_engine.analyze_document(content, "ec8a")
-    docling_result = docling_engine.extract_tables(
-        content, file.filename or "photo.jpg"
-    )
-
-    # Combine into single response
-    return {
-        "report_id": report_id,
-        "ocr": ocr_result.model_dump(),
-        "vlm": vlm_result.model_dump(),
-        "docling": docling_result.model_dump(),
-        "combined_confidence": round(
-            (ocr_result.confidence_score + vlm_result.completeness_score) / 2, 3
-        ),
-        "requires_manual_review": (
-            ocr_result.confidence_score < 0.6
-            or vlm_result.tampering_detected
-            or len(ocr_result.extraction_warnings) > 2
-        ),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    return analyze_evidence_bundle(content, file.filename or "photo.jpg", report_id)
 
 
 if __name__ == "__main__":

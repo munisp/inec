@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Activity, Plus, Eye, CheckCircle, Shield, AlertTriangle } from 'lucide-react';
+import { Activity, Plus, Eye, CheckCircle, Shield, AlertTriangle, Fingerprint } from 'lucide-react';
 
 interface Party { code: string; name: string; abbreviation: string; color: string; }
 interface State { code: string; name: string; }
@@ -257,6 +257,15 @@ export default function ResultsPage() {
                             )}
                           </DialogContent>
                         </Dialog>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-green-700"
+                          title="View evidence journey"
+                          onClick={() => { window.location.hash = `/evidence-journey?result_id=${r.id}`; }}
+                        >
+                          <Fingerprint className="w-3.5 h-3.5" />
+                        </Button>
                         {canManage && r.status === 'pending' && (
                           <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-600" onClick={() => handleAction(r.id, 'validate')}>
                             <CheckCircle className="w-3.5 h-3.5" />

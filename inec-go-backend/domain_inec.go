@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -104,15 +103,19 @@ func ValidateEC8A(form *FormEC8A) []string {
 
 // handleSubmitEC8A processes a Form EC8A submission with full validation.
 func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardAuth(w, r)
+	if !ok {
+		return
+	}
 	var form FormEC8A
 	if err := decodeAndValidate(r, &form); err != nil {
-		writeError(w, 400, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	violations := ValidateEC8A(&form)
 	if len(violations) > 0 {
-		writeJSON(w, 422, M{
+		writeJSON(w, http.StatusUnprocessableEntity, M{
 			"error":      "Form EC8A validation failed",
 			"violations": violations,
 			"status":     "rejected",
@@ -120,75 +123,111 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist result and party scores
+	formPayload, err := canonicalJSON(form)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to canonicalize EC8A form")
+		return
+	}
+	formHash := sha256Hex(formPayload)
+	userID := claimUserID(claims)
+
+	// A result with evidence is immutable. Corrections must be made through a
+	// reconciliation case rather than by silently overwriting the source form.
 	tx, err := db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeError(w, 500, "database transaction failed")
+		writeError(w, http.StatusInternalServerError, "database transaction failed")
 		return
 	}
 	defer tx.Rollback()
-
-	// Insert main result row
-	var resultID int
-	err = tx.QueryRowContext(r.Context(),
-		`INSERT INTO results (election_id, polling_unit_code, status, total_valid_votes, rejected_votes, total_votes_cast, accredited_voters, submitted_at)
-		 VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7)
-		 ON CONFLICT (election_id, polling_unit_code) DO UPDATE SET
-		   total_valid_votes = EXCLUDED.total_valid_votes,
-		   rejected_votes = EXCLUDED.rejected_votes,
-		   total_votes_cast = EXCLUDED.total_votes_cast,
-		   accredited_voters = EXCLUDED.accredited_voters,
-		   submitted_at = EXCLUDED.submitted_at
-		 RETURNING id`,
-		form.ElectionID, form.PollingUnitCode, form.TotalValidVotes, form.RejectedBallots,
-		form.TotalVotesPolled, form.AccreditedVoters, time.Now()).Scan(&resultID)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("failed to insert result: %v", err))
+	var existingResultID int64
+	existingErr := tx.QueryRowContext(r.Context(), convertPlaceholders("SELECT id FROM results WHERE election_id=? AND polling_unit_code=?"), form.ElectionID, form.PollingUnitCode).Scan(&existingResultID)
+	if existingErr == nil {
+		var eventCount int
+		if err := tx.QueryRowContext(r.Context(), convertPlaceholders("SELECT COUNT(*) FROM result_evidence_events WHERE result_id=?"), existingResultID).Scan(&eventCount); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to inspect existing result evidence")
+			return
+		}
+		if eventCount > 0 {
+			writeError(w, http.StatusConflict, "an evidence-bearing result already exists; open a reconciliation case instead of overwriting it")
+			return
+		}
+		writeError(w, http.StatusConflict, "a legacy result already exists for this polling unit and requires supervised migration")
+		return
+	}
+	if existingErr != sql.ErrNoRows {
+		writeError(w, http.StatusInternalServerError, "failed to inspect existing result")
 		return
 	}
 
-	// Insert party scores
+	resultID, err := integrityInsertReturningID(r.Context(), tx, `INSERT INTO results
+		(election_id, polling_unit_code, presiding_officer_id, status, total_valid_votes, rejected_votes,
+		total_votes_cast, accredited_voters, ec8a_hash, submitted_at)
+		VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+		form.ElectionID, form.PollingUnitCode, nullIntArg(userID), form.TotalValidVotes, form.RejectedBallots,
+		form.TotalVotesPolled, form.AccreditedVoters, "sha256:"+formHash)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to insert result: %v", err))
+		return
+	}
 	for _, pr := range form.PartyResults {
-		_, err := tx.ExecContext(r.Context(),
-			`INSERT INTO result_party_scores (result_id, party_code, votes)
-			 VALUES ($1, $2, $3)
-			 ON CONFLICT (result_id, party_code) DO UPDATE SET votes = EXCLUDED.votes`,
-			resultID, pr.PartyCode, pr.Votes)
-		if err != nil {
-			writeError(w, 500, fmt.Sprintf("failed to insert score for party %s: %v", pr.PartyCode, err))
+		if _, err := tx.ExecContext(r.Context(), convertPlaceholders(`INSERT INTO result_party_scores (result_id, party_code, votes)
+			VALUES (?, ?, ?)`), resultID, pr.PartyCode, pr.Votes); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to insert score for party %s: %v", pr.PartyCode, err))
 			return
 		}
 	}
-
+	policyVersionID, err := requirePolicyVersion(r.Context(), tx, form.ElectionID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+		ResultID:        resultID,
+		EventType:       "RESULT_SUBMITTED",
+		PolicyVersionID: policyVersionID,
+		Visibility:      integrityVisibilityObserver,
+		CreatedBy:       userID,
+		PublicPayload: M{
+			"polling_unit_code": form.PollingUnitCode,
+			"status":            "pending",
+			"total_votes_cast":  form.TotalVotesPolled,
+		},
+		PrivatePayload: M{
+			"ec8a_form": form,
+			"ec8a_hash": "sha256:" + formHash,
+		},
+	}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "EC8A evidence could not be recorded: "+err.Error())
+		return
+	}
 	if err := tx.Commit(); err != nil {
-		writeError(w, 500, "commit failed")
+		writeError(w, http.StatusInternalServerError, "commit failed")
 		return
 	}
 
-	// Emit Kafka event
 	if mwHub != nil && mwHub.Kafka != nil {
 		mwHub.Kafka.Produce(r.Context(), KafkaMessage{
 			Topic: TopicResultSubmitted,
 			Key:   form.PollingUnitCode,
 			Value: map[string]interface{}{
-				"election_id":       form.ElectionID,
-				"polling_unit":      form.PollingUnitCode,
-				"total_valid_votes": form.TotalValidVotes,
-				"party_count":       len(form.PartyResults),
+				"result_id":           resultID,
+				"election_id":         form.ElectionID,
+				"polling_unit":        form.PollingUnitCode,
+				"total_valid_votes":   form.TotalValidVotes,
+				"party_count":         len(form.PartyResults),
+				"evidence_content_id": formHash,
 			},
 		})
 	}
-
-	// Cache in Redis
 	if mwHub != nil && mwHub.Redis != nil {
 		cacheKey := fmt.Sprintf("ec8a:%d:%s", form.ElectionID, form.PollingUnitCode)
-		data, _ := json.Marshal(form)
-		mwHub.Redis.Set(r.Context(), cacheKey, string(data), 30*time.Minute)
+		mwHub.Redis.Set(r.Context(), cacheKey, string(formPayload), 30*time.Minute)
 	}
-
-	writeJSON(w, 201, M{
+	writeJSON(w, http.StatusCreated, M{
+		"id":         resultID,
 		"status":     "accepted",
-		"message":    "Form EC8A submitted and validated",
+		"message":    "Form EC8A submitted with immutable evidence provenance",
+		"ec8a_hash":  "sha256:" + formHash,
 		"violations": []string{},
 	})
 }

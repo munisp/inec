@@ -4,13 +4,26 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Users, Search, UserPlus, CreditCard, MapPin, BarChart3 } from 'lucide-react';
+import { Users, Search, UserPlus, CreditCard, MapPin, BarChart3, ExternalLink } from 'lucide-react';
 
 interface VoterStats {
   total: number; active: number; verified: number; registered: number;
   pvc_collected: number; pvc_collection_rate: number;
   by_state: Array<{state_code: string; name: string; count: number; pvc_collected: number}>;
   by_gender: Array<{gender: string; count: number}>;
+}
+
+interface OfficialVoterService {
+  id: string;
+  label: string;
+  url: string;
+  purpose: string;
+  authoritative: boolean;
+}
+
+interface VoterServicesResponse {
+  services: OfficialVoterService[];
+  notice: string;
 }
 
 export default function VoterRegistrationPage() {
@@ -21,8 +34,11 @@ export default function VoterRegistrationPage() {
   const [stateFilter, setStateFilter] = useState('');
   const [total, setTotal] = useState(0);
   const [tab, setTab] = useState<'voters'|'stats'|'centers'>('stats');
+  const [officialService, setOfficialService] = useState<OfficialVoterService | null>(null);
+  const [voterServiceNotice, setVoterServiceNotice] = useState('This platform does not submit voter applications, hold voter-register copies, or determine eligibility.');
+  const [voterServiceError, setVoterServiceError] = useState(false);
 
-  useEffect(() => { loadStats(); loadCenters(); }, []);
+  useEffect(() => { loadStats(); loadCenters(); loadOfficialVoterService(); }, []);
   useEffect(() => { if (tab === 'voters') loadVoters(); }, [tab, search, stateFilter]);
 
   const loadStats = async () => {
@@ -39,6 +55,18 @@ export default function VoterRegistrationPage() {
   };
   const loadCenters = async () => {
     try { const d = await api.getEMSRegistrationCenters(); setCenters(d || []); } catch {}
+  };
+  const loadOfficialVoterService = async () => {
+    try {
+      const response = await api.getIntegrityVoterServices() as unknown as VoterServicesResponse;
+      const service = response.services?.find((item) => item.authoritative) || null;
+      setOfficialService(service);
+      setVoterServiceNotice(response.notice || voterServiceNotice);
+      setVoterServiceError(!service);
+    } catch {
+      setOfficialService(null);
+      setVoterServiceError(true);
+    }
   };
 
   const statusColor = (s: string) => {
@@ -64,6 +92,22 @@ export default function VoterRegistrationPage() {
           ))}
         </div>
       </div>
+
+      <Card className={voterServiceError ? 'border-amber-300 bg-amber-50/60' : 'border-green-200 bg-green-50/60'}>
+        <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="font-semibold text-zinc-900">Need to register, transfer, or update your voter record?</p>
+            <p className="mt-1 text-sm text-zinc-600">{voterServiceError ? 'Official voter-service navigation is currently unavailable. Please use INEC’s official channels directly.' : voterServiceNotice}</p>
+          </div>
+          {officialService ? (
+            <Button className="shrink-0 bg-green-700 hover:bg-green-800" onClick={() => window.open(officialService.url, '_blank', 'noopener,noreferrer')}>
+              {officialService.label} <ExternalLink className="ml-2 h-4 w-4" />
+            </Button>
+          ) : (
+            <Button variant="outline" className="shrink-0" onClick={loadOfficialVoterService}>Retry service lookup</Button>
+          )}
+        </CardContent>
+      </Card>
 
       {tab === 'stats' && stats && (
         <>

@@ -511,6 +511,40 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "failed to save party scores")
 		return
 	}
+
+	// A submission is not considered an integrity-controlled lifecycle event until
+	// it has an immutable evidence record. In production this also requires an
+	// approved policy version and a reachable Ed25519 signing service.
+	policyVersionID, err := requirePolicyVersion(r.Context(), tx, req.ElectionID)
+	if err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+		ResultID:        resultID,
+		EventType:       "RESULT_SUBMITTED",
+		PolicyVersionID: policyVersionID,
+		Visibility:      integrityVisibilityObserver,
+		CreatedBy:       userID,
+		PublicPayload: M{
+			"polling_unit_code": req.PollingUnitCode,
+			"status":            "pending",
+			"total_votes_cast":  totalCast,
+		},
+		PrivatePayload: M{
+			"election_id":       req.ElectionID,
+			"polling_unit_code": req.PollingUnitCode,
+			"party_scores":      req.PartyScores,
+			"accredited_voters": req.AccreditedVoters,
+			"rejected_votes":    req.RejectedVotes,
+			"ec8a_hash":         ec8aHash,
+		},
+	}); err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusServiceUnavailable, "result evidence could not be recorded: "+err.Error())
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, 500, "failed to commit result")
 		return
@@ -575,7 +609,8 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var status, puCode string
-	if err := tx.QueryRow(convertPlaceholders("SELECT status, polling_unit_code FROM results WHERE id=? FOR UPDATE"), id).Scan(&status, &puCode); err != nil {
+	var electionID int
+	if err := tx.QueryRow(convertPlaceholders("SELECT status, polling_unit_code, election_id FROM results WHERE id=? FOR UPDATE"), id).Scan(&status, &puCode, &electionID); err != nil {
 		tx.Rollback()
 		writeError(w, 404, "Result not found")
 		return
@@ -585,8 +620,55 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'validated'; allowed transitions: %v", status, validTransitions[status]))
 		return
 	}
-	tx.Exec(convertPlaceholders("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?"), id)
-	tx.Commit()
+	resultID, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil {
+		tx.Rollback()
+		writeError(w, 400, "invalid result id")
+		return
+	}
+	policyVersionID, policyErr := requirePolicyVersion(r.Context(), tx, electionID)
+	if policyErr != nil {
+		tx.Rollback()
+		writeError(w, http.StatusConflict, policyErr.Error())
+		return
+	}
+	blocked, blockErr := resultHasBlockingCasesTx(r.Context(), tx, resultID)
+	if blockErr != nil {
+		tx.Rollback()
+		writeError(w, http.StatusInternalServerError, "failed to check reconciliation cases")
+		return
+	}
+	if blocked {
+		tx.Rollback()
+		writeError(w, http.StatusConflict, "result has unresolved blocking reconciliation cases and cannot be validated")
+		return
+	}
+	if _, err := tx.Exec(convertPlaceholders("UPDATE results SET status='validated', validated_at=CURRENT_TIMESTAMP WHERE id=?"), id); err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusInternalServerError, "failed to validate result")
+		return
+	}
+	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+		ResultID:        resultID,
+		EventType:       "RESULT_VALIDATED",
+		PolicyVersionID: policyVersionID,
+		Visibility:      integrityVisibilityPublic,
+		CreatedBy:       uid,
+		PublicPayload: M{
+			"status": "validated", "polling_unit_code": puCode,
+		},
+		PrivatePayload: M{
+			"phase": "Edge Validation", "polling_unit": puCode,
+		},
+	}); err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusServiceUnavailable, "validation evidence could not be recorded: "+err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit validation")
+		return
+	}
 	logAudit("RESULT_VALIDATED", "result", id, uid, map[string]interface{}{"phase": "Edge Validation", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
 
@@ -603,29 +685,67 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	user, err := requireRole(r, "admin", "collation_officer")
 	if err != nil {
-		writeError(w, 403, err.Error())
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	id := mux.Vars(r)["id"]
+	idInt, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil || idInt <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid result id")
+		return
+	}
+	userRole, _ := user["role"].(string)
+	if !checkPermission(userRole, "finalize_result") {
+		writeError(w, http.StatusForbidden, "Permission denied by Permify")
+		return
+	}
+	uid := claimUserID(user)
+
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database transaction error")
+		return
+	}
+	defer tx.Rollback()
+
 	var status, puCode string
-	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
-		writeError(w, 404, "Result not found")
+	var electionID int
+	var tbTransferID sql.NullString
+	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=?"
+	if usePostgres {
+		query += " FOR UPDATE"
+	}
+	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &tbTransferID); err != nil {
+		writeError(w, http.StatusNotFound, "Result not found")
 		return
 	}
 	if !canTransition(status, "finalized") {
-		writeError(w, 400, fmt.Sprintf("cannot transition from '%s' to 'finalized'; only 'validated' results can be finalized", status))
+		writeError(w, http.StatusConflict, fmt.Sprintf("cannot transition from '%s' to 'finalized'; only 'validated' results can be finalized", status))
 		return
 	}
-	userSub, _ := user["sub"].(string)
-	uid, _ := strconv.Atoi(userSub)
-	userRole, _ := user["role"].(string)
-	if !checkPermission(userRole, "finalize_result") {
-		writeError(w, 403, "Permission denied by Permify")
+	policyVersionID, err := requirePolicyVersion(r.Context(), tx, electionID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-
-	var tbTransferID sql.NullString
-	dbQueryRowCtx(r.Context(), "SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
+	blocked, err := resultHasBlockingCasesTx(r.Context(), tx, idInt)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check reconciliation cases")
+		return
+	}
+	if blocked {
+		writeError(w, http.StatusConflict, "result has unresolved blocking reconciliation cases and cannot be finalized")
+		return
+	}
+	var evidenceCount int
+	if err := tx.QueryRowContext(r.Context(), convertPlaceholders("SELECT COUNT(*) FROM result_evidence_events WHERE result_id=?"), idInt).Scan(&evidenceCount); err != nil || evidenceCount == 0 {
+		writeError(w, http.StatusConflict, "result has no immutable evidence chain and cannot be finalized")
+		return
+	}
+	if integritySigningRequired() && (!tbTransferID.Valid || tbTransferID.String == "") {
+		writeError(w, http.StatusConflict, "a recorded TigerBeetle transfer is required for production finalisation")
+		return
+	}
 	if tbTransferID.Valid && tbTransferID.String != "" {
 		if err := postTBTransfer(tbTransferID.String); err != nil {
 			log.Error().Err(err).Str("transfer_id", tbTransferID.String).Msg("Native TigerBeetle transfer posting failed")
@@ -634,50 +754,88 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	idInt, _ := strconv.ParseInt(id, 10, 64)
+	// External Fabric/IPFS anchoring is deliberately not fabricated. The result is
+	// finalized only after the real TigerBeetle transition and evidence signature.
+	if _, err := tx.ExecContext(r.Context(), convertPlaceholders(`UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
+		tigerbeetle_status='POSTED', hyperledger_status='NOT_CONFIGURED', hyperledger_tx_id=NULL, ipfs_cid=NULL WHERE id=?`), idInt); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to finalize result")
+		return
+	}
+	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+		ResultID:        idInt,
+		EventType:       "RESULT_FINALIZED",
+		PolicyVersionID: policyVersionID,
+		Visibility:      integrityVisibilityPublic,
+		CreatedBy:       uid,
+		PublicPayload: M{
+			"status": "finalized", "polling_unit_code": puCode, "tigerbeetle_status": "POSTED",
+		},
+		PrivatePayload: M{
+			"phase": "Finalization", "polling_unit": puCode, "external_anchoring": "not_configured",
+		},
+	}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "finalisation evidence could not be recorded: "+err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit finalisation")
+		return
+	}
 
-	// External Fabric/IPFS anchoring is deliberately not fabricated. The
-	// election result is finalized only after its real TigerBeetle transfer is
-	// posted; external anchoring remains explicitly unconfigured.
-	dbExecCtx(r.Context(), `UPDATE results SET status='finalized', finalized_at=CURRENT_TIMESTAMP,
-		tigerbeetle_status='POSTED', hyperledger_status='NOT_CONFIGURED', hyperledger_tx_id=NULL, ipfs_cid=NULL WHERE id=?`, id)
 	logAudit("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"phase": "Finalization", "polling_unit": puCode, "external_anchoring": "not_configured"})
-
-	go publishResultEvent(TopicResultFinalized, idInt, puCode, 0, uid,
+	go publishResultEvent(TopicResultFinalized, idInt, puCode, electionID, uid,
 		map[string]interface{}{"phase": "Finalization", "external_anchoring": "not_configured"})
 	go publishAuditEvent("RESULT_FINALIZED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
-
 	startResultWorkflow("ResultFinalizationWorkflow", idInt, map[string]interface{}{"result_id": id})
 
-	writeJSON(w, 200, M{"status": "finalized", "phase": "Finalization", "tigerbeetle_status": "POSTED", "hyperledger_status": "NOT_CONFIGURED", "external_anchoring": "not_configured"})
+	writeJSON(w, http.StatusOK, M{"status": "finalized", "phase": "Finalization", "tigerbeetle_status": "POSTED", "hyperledger_status": "NOT_CONFIGURED", "external_anchoring": "not_configured"})
 }
 
 func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	user, err := requireRole(r, "admin", "observer")
 	if err != nil {
-		writeError(w, 403, err.Error())
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	id := mux.Vars(r)["id"]
+	idInt, parseErr := strconv.ParseInt(id, 10, 64)
+	if parseErr != nil || idInt <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid result id")
+		return
+	}
+	userRole, _ := user["role"].(string)
+	if !checkPermission(userRole, "dispute_result") {
+		writeError(w, http.StatusForbidden, "Permission denied by Permify")
+		return
+	}
+	uid := claimUserID(user)
+
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database transaction error")
+		return
+	}
+	defer tx.Rollback()
 	var status, puCode string
-	if err := dbQueryRowCtx(r.Context(), "SELECT status, polling_unit_code FROM results WHERE id=?", id).Scan(&status, &puCode); err != nil {
-		writeError(w, 404, "Result not found")
+	var electionID int
+	var tbTransferID sql.NullString
+	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=?"
+	if usePostgres {
+		query += " FOR UPDATE"
+	}
+	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &tbTransferID); err != nil {
+		writeError(w, http.StatusNotFound, "Result not found")
 		return
 	}
 	if !canTransition(status, "disputed") {
-		writeError(w, 400, fmt.Sprintf("cannot dispute result with status '%s'; already in terminal state", status))
+		writeError(w, http.StatusConflict, fmt.Sprintf("cannot dispute result with status '%s'; already in terminal state", status))
 		return
 	}
-	userSub, _ := user["sub"].(string)
-	uid, _ := strconv.Atoi(userSub)
-	userRole, _ := user["role"].(string)
-	if !checkPermission(userRole, "dispute_result") {
-		writeError(w, 403, "Permission denied by Permify")
+	policyVersionID, err := requirePolicyVersion(r.Context(), tx, electionID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-
-	var tbTransferID sql.NullString
-	dbQueryRowCtx(r.Context(), "SELECT tigerbeetle_transfer_id FROM results WHERE id=?", id).Scan(&tbTransferID)
 	if tbTransferID.Valid && tbTransferID.String != "" {
 		if err := voidTBTransfer(tbTransferID.String); err != nil {
 			log.Error().Err(err).Str("transfer_id", tbTransferID.String).Msg("Native TigerBeetle transfer voiding failed")
@@ -685,17 +843,35 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	dbExecCtx(r.Context(), "UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?", id)
+	if _, err := tx.ExecContext(r.Context(), convertPlaceholders("UPDATE results SET status='disputed', tigerbeetle_status='VOIDED' WHERE id=?"), idInt); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to mark result disputed")
+		return
+	}
+	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+		ResultID:        idInt,
+		EventType:       "RESULT_DISPUTED",
+		PolicyVersionID: policyVersionID,
+		Visibility:      integrityVisibilityObserver,
+		CreatedBy:       uid,
+		PublicPayload: M{
+			"status": "disputed", "polling_unit_code": puCode,
+		},
+		PrivatePayload: M{
+			"phase": "Dispute", "polling_unit": puCode,
+		},
+	}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "dispute evidence could not be recorded: "+err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit dispute")
+		return
+	}
 	logAudit("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"phase": "Dispute", "polling_unit": puCode})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
-
-	idInt, _ := strconv.ParseInt(id, 10, 64)
-	go publishResultEvent(TopicResultDisputed, idInt, puCode, 0, uid,
-		map[string]interface{}{"phase": "Dispute"})
+	go publishResultEvent(TopicResultDisputed, idInt, puCode, electionID, uid, map[string]interface{}{"phase": "Dispute"})
 	go publishAuditEvent("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
-
-	writeJSON(w, 200, M{"status": "disputed", "tigerbeetle_status": "VOIDED"})
+	writeJSON(w, http.StatusOK, M{"status": "disputed", "tigerbeetle_status": "VOIDED"})
 }
 
 func handleListResults(w http.ResponseWriter, r *http.Request) {

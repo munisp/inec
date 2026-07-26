@@ -74,13 +74,21 @@ type DocLingTable struct {
 }
 
 type FullPhotoAnalysis struct {
-	ReportID       *int           `json:"report_id"`
-	OCR            EC8AExtraction `json:"ocr"`
-	VLM            VLMAnalysis    `json:"vlm"`
-	DocLing        M              `json:"docling"`
-	CombinedConf   float64        `json:"combined_confidence"`
-	RequiresReview bool           `json:"requires_manual_review"`
-	Timestamp      string         `json:"timestamp"`
+	ReportID          *int           `json:"report_id"`
+	OCR               EC8AExtraction `json:"ocr"`
+	VLM               VLMAnalysis    `json:"vlm"`
+	DocLing           M              `json:"docling"`
+	SecondaryOCR      M              `json:"secondary_ocr"`
+	ImageEvidence     M              `json:"image_evidence"`
+	EngineVersions    M              `json:"engine_versions"`
+	Findings          []M            `json:"findings"`
+	AssessmentStatus  string         `json:"assessment_status"`
+	Decision          string         `json:"decision"`
+	IntegrityManifest M              `json:"integrity_manifest"`
+	ManifestSHA256    string         `json:"manifest_sha256"`
+	CombinedConf      float64        `json:"combined_confidence"`
+	RequiresReview    bool           `json:"requires_manual_review"`
+	Timestamp         string         `json:"timestamp"`
 }
 
 // ── Video Analysis Types ──
@@ -141,6 +149,12 @@ func initDocumentAISchema() {
 		party_results_json TEXT,
 		raw_ocr_text TEXT,
 		warnings_json TEXT,
+		assessment_status TEXT NOT NULL DEFAULT 'analysis_complete',
+		decision TEXT NOT NULL DEFAULT 'evidence_collected_pending_authorized_result_workflow',
+		manifest_sha256 TEXT,
+		integrity_manifest_json TEXT,
+		engine_versions_json TEXT,
+		findings_json TEXT,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE TABLE IF NOT EXISTS video_analyses (
@@ -184,65 +198,213 @@ func initDocumentAISchema() {
 	);
 	`
 	execMulti(db, schema)
+	// Existing development/test databases may already have document_analyses.
+	// These additions are idempotently attempted and production uses migration 19.
+	for _, statement := range []string{
+		"ALTER TABLE document_analyses ADD COLUMN assessment_status TEXT NOT NULL DEFAULT 'analysis_complete'",
+		"ALTER TABLE document_analyses ADD COLUMN decision TEXT NOT NULL DEFAULT 'evidence_collected_pending_authorized_result_workflow'",
+		"ALTER TABLE document_analyses ADD COLUMN manifest_sha256 TEXT",
+		"ALTER TABLE document_analyses ADD COLUMN integrity_manifest_json TEXT",
+		"ALTER TABLE document_analyses ADD COLUMN engine_versions_json TEXT",
+		"ALTER TABLE document_analyses ADD COLUMN findings_json TEXT",
+	} {
+		dbExecLog("document_ai_integrity_schema", statement)
+	}
 }
 
 // ── Handlers ──
 
 // handleAnalyzePhoto triggers AI analysis on an uploaded observer report photo.
 func handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardAuth(w, r)
+	if !ok {
+		return
+	}
 	reportIDStr := r.URL.Query().Get("report_id")
-	if reportIDStr == "" {
-		writeError(w, 400, "report_id query param required")
+	reportID, err := strconv.Atoi(reportIDStr)
+	if err != nil || reportID <= 0 {
+		writeError(w, http.StatusBadRequest, "a positive report_id query parameter is required")
 		return
 	}
-	reportID, _ := strconv.Atoi(reportIDStr)
 
-	// Get the photo URL from the report
 	var photoURL string
-	row := db.QueryRow("SELECT photo_url FROM observer_reports WHERE id=?", reportID)
-	if err := row.Scan(&photoURL); err != nil {
-		writeError(w, 404, "report not found")
+	if err := dbQueryRowCtx(r.Context(), "SELECT photo_url FROM observer_reports WHERE id=?", reportID).Scan(&photoURL); err != nil {
+		writeError(w, http.StatusNotFound, "report not found")
 		return
 	}
-
-	// Read the file from disk — validate path stays within uploads directory
 	filePath := filepath.Clean(strings.TrimPrefix(photoURL, "/"))
 	if !strings.HasPrefix(filePath, "uploads"+string(os.PathSeparator)) && !strings.HasPrefix(filePath, "uploads/") {
-		writeError(w, 400, "invalid file path")
+		writeError(w, http.StatusBadRequest, "invalid file path")
 		return
 	}
-	fileBytes, err := os.ReadFile(filePath) // #nosec G304 -- path validated above
+	fileBytes, err := os.ReadFile(filePath) // #nosec G304 -- path is constrained to the application upload prefix above.
 	if err != nil {
-		writeError(w, 500, "cannot read photo file: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "cannot read photo file: "+err.Error())
 		return
 	}
 
-	// Call the configured Document AI service. Failed analysis must not be represented as queued success.
 	analysis, err := callDocumentAIAnalyze(fileBytes, filepath.Base(filePath), reportID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "document AI analysis unavailable: "+err.Error())
 		return
 	}
-
-	// Persist analysis results
-	partyJSON, _ := json.Marshal(analysis.OCR.PartyResults)
-	warningsJSON, _ := json.Marshal(analysis.OCR.Warnings)
-	dbExecLog("doc_analysis_insert", `INSERT INTO document_analyses 
-		(report_id, analysis_type, ocr_confidence, vlm_tampering_detected, vlm_quality, combined_confidence, requires_review, party_results_json, raw_ocr_text, warnings_json) 
-		VALUES (?, 'full', ?, ?, ?, ?, ?, ?, ?, ?)`,
-		reportID, analysis.OCR.ConfidenceScore,
-		docAIBoolToInt(analysis.VLM.TamperingDetected), analysis.VLM.DocumentQuality,
-		analysis.CombinedConf, docAIBoolToInt(analysis.RequiresReview),
-		string(partyJSON), analysis.OCR.RawOCRText, string(warningsJSON))
-
-	// Update report status based on analysis
-	if analysis.VLM.TamperingDetected {
-		dbExecLog("report_flag", "UPDATE observer_reports SET status='flagged' WHERE id=?", reportID)
-	} else if analysis.CombinedConf > 0.7 {
-		dbExecLog("report_verify", "UPDATE observer_reports SET status='verified' WHERE id=?", reportID)
+	contentSHA, _ := analysis.ImageEvidence["content_sha256"].(string)
+	if len(contentSHA) != 64 {
+		writeError(w, http.StatusServiceUnavailable, "document AI did not return a valid content-addressed evidence hash")
+		return
 	}
 
-	writeJSON(w, 200, analysis)
+	partyJSON, _ := json.Marshal(analysis.OCR.PartyResults)
+	warningsJSON, _ := json.Marshal(analysis.OCR.Warnings)
+	manifestJSON, _ := json.Marshal(analysis.IntegrityManifest)
+	engineJSON, _ := json.Marshal(analysis.EngineVersions)
+	findingsJSON, _ := json.Marshal(analysis.Findings)
+	artifactMetadataJSON, _ := json.Marshal(M{
+		"report_id":           reportID,
+		"assessment_status":   analysis.AssessmentStatus,
+		"decision":            analysis.Decision,
+		"manifest_sha256":     analysis.ManifestSHA256,
+		"image_evidence":      analysis.ImageEvidence,
+		"document_ai_version": analysis.EngineVersions["analysis"],
+	})
+	userID := claimUserID(claims)
+
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database transaction failed")
+		return
+	}
+	defer tx.Rollback()
+
+	var electionID int
+	var resultID int64
+	linkErr := tx.QueryRowContext(r.Context(), convertPlaceholders(`SELECT r.election_id, r.id
+		FROM observer_reports o JOIN results r
+		ON r.election_id=o.election_id AND r.polling_unit_code=o.polling_unit_code
+		WHERE o.id=? ORDER BY r.id DESC LIMIT 1`), reportID).Scan(&electionID, &resultID)
+	if linkErr != nil {
+		if err := tx.QueryRowContext(r.Context(), convertPlaceholders("SELECT election_id FROM observer_reports WHERE id=?"), reportID).Scan(&electionID); err != nil {
+			writeError(w, http.StatusNotFound, "report election context not found")
+			return
+		}
+		resultID = 0
+	}
+	policyVersionID, err := requirePolicyVersion(r.Context(), tx, electionID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	var resultArg interface{}
+	if resultID > 0 {
+		resultArg = resultID
+	}
+	var policyArg interface{}
+	if policyVersionID > 0 {
+		policyArg = policyVersionID
+	}
+	var artifactID int64
+	artifactQuery := `INSERT INTO evidence_artifacts
+		(election_id, result_id, artifact_kind, content_sha256, media_type, storage_uri, original_filename,
+		 byte_size, metadata_json, policy_version_id, uploaded_by)
+		VALUES (?, ?, 'ec8a_image', ?, 'image/jpeg', ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(content_sha256) DO UPDATE SET metadata_json=EXCLUDED.metadata_json
+		RETURNING id`
+	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(artifactQuery), electionID, resultArg, contentSHA,
+		photoURL, filepath.Base(filePath), len(fileBytes), string(artifactMetadataJSON), policyArg, nullIntArg(userID)).Scan(&artifactID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store document evidence artifact")
+		return
+	}
+
+	if _, err := tx.ExecContext(r.Context(), convertPlaceholders(`INSERT INTO document_analyses
+		(report_id, analysis_type, ocr_confidence, vlm_tampering_detected, vlm_quality, combined_confidence,
+		requires_review, party_results_json, raw_ocr_text, warnings_json, assessment_status, decision,
+		manifest_sha256, integrity_manifest_json, engine_versions_json, findings_json)
+		VALUES (?, 'evidence_consensus', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		reportID, analysis.OCR.ConfidenceScore, docAIBoolToInt(analysis.VLM.TamperingDetected),
+		analysis.VLM.DocumentQuality, analysis.CombinedConf, docAIBoolToInt(analysis.RequiresReview),
+		string(partyJSON), analysis.OCR.RawOCRText, string(warningsJSON), analysis.AssessmentStatus,
+		analysis.Decision, analysis.ManifestSHA256, string(manifestJSON), string(engineJSON), string(findingsJSON)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist document analysis")
+		return
+	}
+
+	assessmentJSON, _ := json.Marshal(analysis)
+	if _, err := tx.ExecContext(r.Context(), convertPlaceholders(`INSERT INTO document_integrity_assessments
+		(result_id, report_id, artifact_id, assessment_status, combined_confidence, requires_manual_review,
+		manifest_sha256, engine_versions, assessment_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(artifact_id, manifest_sha256) DO NOTHING`), resultArg, reportID, artifactID,
+		analysis.AssessmentStatus, analysis.CombinedConf, docAIBoolToInt(analysis.RequiresReview),
+		analysis.ManifestSHA256, string(engineJSON), string(assessmentJSON)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist document integrity assessment")
+		return
+	}
+
+	var caseID int64
+	if resultID > 0 {
+		if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+			ResultID: resultID, EventType: "ANALYSIS_ATTACHED", PolicyVersionID: policyVersionID,
+			ArtifactID: artifactID, Visibility: integrityVisibilityObserver, CreatedBy: userID,
+			PublicPayload: M{
+				"artifact_id": artifactID, "manifest_sha256": analysis.ManifestSHA256,
+				"assessment_status": analysis.AssessmentStatus, "requires_manual_review": analysis.RequiresReview,
+			},
+			PrivatePayload: M{
+				"engine_versions": analysis.EngineVersions, "findings": analysis.Findings,
+				"decision": analysis.Decision,
+			},
+		}); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "document evidence event could not be recorded: "+err.Error())
+			return
+		}
+		if analysis.RequiresReview {
+			caseType, severity := "ocr_arithmetic", "high"
+			if analysis.VLM.TamperingDetected {
+				caseType, severity = "tampering_indicator", "critical"
+			} else if analysis.AssessmentStatus == "rejected_for_quality" {
+				caseType, severity = "artifact_quality", "high"
+			}
+			caseID, err = integrityInsertReturningID(r.Context(), tx, `INSERT INTO reconciliation_cases
+				(result_id, election_id, case_type, severity, status, blocking, expected_value, observed_value,
+				reason_code, description, evidence_artifact_id, policy_version_id, opened_by)
+				VALUES (?, ?, ?, ?, 'open', 1, ?, ?, ?, ?, ?, ?, ?)`,
+				resultID, electionID, caseType, severity,
+				`{"assessment_status":"analysis_complete"}`, string(findingsJSON),
+				"document_integrity_review_required", "Document evidence analysis requires accountable manual review.",
+				artifactID, policyArg, nullIntArg(userID))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to open document reconciliation case")
+				return
+			}
+			if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
+				ResultID: resultID, EventType: "RECONCILIATION_CASE_OPENED", PolicyVersionID: policyVersionID,
+				ArtifactID: artifactID, Visibility: integrityVisibilityObserver, CreatedBy: userID,
+				PublicPayload:  M{"case_id": caseID, "case_type": caseType, "severity": severity, "blocking": true},
+				PrivatePayload: M{"case_id": caseID, "findings": analysis.Findings},
+			}); err != nil {
+				writeError(w, http.StatusServiceUnavailable, "document reconciliation event could not be recorded: "+err.Error())
+				return
+			}
+		}
+	}
+
+	reportStatus := "analysis_complete"
+	if analysis.RequiresReview {
+		reportStatus = "under_review"
+	}
+	if _, err := tx.ExecContext(r.Context(), convertPlaceholders("UPDATE observer_reports SET status=? WHERE id=?"), reportStatus, reportID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update observer report status")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit document evidence analysis")
+		return
+	}
+	analysisResponse := M{"analysis": analysis, "artifact_id": artifactID, "observer_report_status": reportStatus}
+	if caseID > 0 {
+		analysisResponse["reconciliation_case_id"] = caseID
+	}
+	writeJSON(w, http.StatusOK, analysisResponse)
 }
 
 func docAIBoolToInt(b bool) int {
@@ -538,13 +700,16 @@ func handleDocumentAnalysisStatus(w http.ResponseWriter, r *http.Request) {
 	reportID, _ := strconv.Atoi(reportIDStr)
 
 	var analysisType, vlmQuality, partyJSON, warningsJSON string
+	var assessmentStatus, decision, manifestSHA, manifestJSON, engineJSON, findingsJSON string
 	var ocrConf, combinedConf float64
 	var tamperingDetected, requiresReview int
 	var rawText string
 
-	err := db.QueryRow(`SELECT analysis_type, ocr_confidence, vlm_tampering_detected, vlm_quality, combined_confidence, requires_review, party_results_json, raw_ocr_text, warnings_json 
+	err := db.QueryRow(`SELECT analysis_type, ocr_confidence, vlm_tampering_detected, vlm_quality, combined_confidence, requires_review, party_results_json, raw_ocr_text, warnings_json,
+		COALESCE(assessment_status, ''), COALESCE(decision, ''), COALESCE(manifest_sha256, ''), COALESCE(integrity_manifest_json, ''), COALESCE(engine_versions_json, ''), COALESCE(findings_json, '')
 		FROM document_analyses WHERE report_id=? ORDER BY id DESC LIMIT 1`, reportID).Scan(
-		&analysisType, &ocrConf, &tamperingDetected, &vlmQuality, &combinedConf, &requiresReview, &partyJSON, &rawText, &warningsJSON)
+		&analysisType, &ocrConf, &tamperingDetected, &vlmQuality, &combinedConf, &requiresReview, &partyJSON, &rawText, &warningsJSON,
+		&assessmentStatus, &decision, &manifestSHA, &manifestJSON, &engineJSON, &findingsJSON)
 
 	if err != nil {
 		writeJSON(w, 200, M{
@@ -556,8 +721,13 @@ func handleDocumentAnalysisStatus(w http.ResponseWriter, r *http.Request) {
 
 	var partyResults []M
 	var warnings []string
+	var manifest, engineVersions M
+	var findings []M
 	json.Unmarshal([]byte(partyJSON), &partyResults)
 	json.Unmarshal([]byte(warningsJSON), &warnings)
+	json.Unmarshal([]byte(manifestJSON), &manifest)
+	json.Unmarshal([]byte(engineJSON), &engineVersions)
+	json.Unmarshal([]byte(findingsJSON), &findings)
 
 	writeJSON(w, 200, M{
 		"report_id":           reportID,
@@ -567,6 +737,12 @@ func handleDocumentAnalysisStatus(w http.ResponseWriter, r *http.Request) {
 		"document_quality":    vlmQuality,
 		"combined_confidence": combinedConf,
 		"requires_review":     requiresReview == 1,
+		"assessment_status":   assessmentStatus,
+		"decision":            decision,
+		"manifest_sha256":     manifestSHA,
+		"integrity_manifest":  manifest,
+		"engine_versions":     engineVersions,
+		"findings":            findings,
 		"party_results":       partyResults,
 		"warnings":            warnings,
 	})
@@ -591,7 +767,7 @@ func callDocumentAIAnalyze(fileBytes []byte, filename string, reportID int) (*Fu
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", baseURL+"/analyze/photo-report", body)
+	req, err := http.NewRequest("POST", baseURL+"/integrity/photo-report", body)
 	if err != nil {
 		return nil, err
 	}

@@ -187,6 +187,13 @@ export interface VideoAnalysis {
   analysis_summary: string;
 }
 
+export interface EvidenceFinding {
+  code: string;
+  severity: 'low' | 'medium' | 'high' | 'critical' | string;
+  detail: string;
+  indicators?: string[];
+}
+
 export interface DocumentAnalysis {
   report_id: number;
   ocr: {
@@ -208,6 +215,61 @@ export interface DocumentAnalysis {
   };
   combined_confidence: number;
   requires_manual_review: boolean;
+  assessment_status?: string;
+  decision?: string;
+  manifest_sha256?: string;
+  engine_versions?: Record<string, string>;
+  findings?: EvidenceFinding[];
+  image_evidence?: {
+    content_sha256?: string;
+    perceptual_hash?: string;
+    width?: number;
+    height?: number;
+    blur_method?: string;
+  };
+}
+
+export interface DocumentAnalysisResponse {
+  analysis: DocumentAnalysis;
+  artifact_id: number;
+  observer_report_status: string;
+  reconciliation_case_id?: number;
+}
+
+export interface IntegrityVerification {
+  chain_valid?: boolean;
+  signature_checked?: boolean;
+  signature_valid?: boolean;
+  event_count?: number;
+  failure_reasons?: string[];
+}
+
+export interface IntegrityJourney {
+  result?: Record<string, unknown>;
+  events?: Array<Record<string, unknown>>;
+  reconciliation_cases?: Array<Record<string, unknown>>;
+  artifacts?: Array<Record<string, unknown>>;
+  policy?: Record<string, unknown>;
+  policy_version_id?: number;
+  verification?: IntegrityVerification;
+}
+
+export interface MaterialManifestsResponse {
+  election_id: number;
+  material_manifests: Array<Record<string, unknown>>;
+}
+
+export interface OfficialVoterService {
+  id: string;
+  label: string;
+  url: string;
+  purpose: string;
+  authoritative: boolean;
+}
+
+export interface OfficialVoterServicesResponse {
+  services: OfficialVoterService[];
+  notice: string;
 }
 
 export const kycApi = {
@@ -223,10 +285,29 @@ export const kycApi = {
 
 export const documentAIApi = {
   analyze: (reportId: number) =>
-    api<DocumentAnalysis>(`/document-ai/analyze?report_id=${reportId}`, { method: 'POST' }),
+    api<DocumentAnalysisResponse>(`/document-ai/analyze?report_id=${reportId}`, { method: 'POST' }),
 
   status: (reportId: number) =>
-    api<{ report_id: number; status: string; ocr_confidence?: number; tampering_detected?: boolean }>(`/document-ai/status?report_id=${reportId}`),
+    api<{
+      report_id: number;
+      status: string;
+      ocr_confidence?: number;
+      tampering_detected?: boolean;
+      assessment_status?: string;
+      decision?: string;
+      manifest_sha256?: string;
+      engine_versions?: Record<string, string>;
+      findings?: EvidenceFinding[];
+      requires_review?: boolean;
+    }>(`/document-ai/status?report_id=${reportId}`),
+};
+
+export const integrityApi = {
+  journey: (resultId: number) => api<IntegrityJourney>(`/integrity/results/${resultId}/journey`),
+  verify: (resultId: number) => api<IntegrityVerification>(`/integrity/results/${resultId}/verify`),
+  materialManifests: (electionId?: number) =>
+    api<MaterialManifestsResponse>(`/integrity/material-manifests${electionId ? `?election_id=${electionId}` : ''}`),
+  voterServices: () => api<OfficialVoterServicesResponse>('/integrity/voter-services'),
 };
 
 // ── Disputes API ──

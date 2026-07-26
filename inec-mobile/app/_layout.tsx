@@ -132,6 +132,7 @@ export default function RootLayout() {
         <Stack.Screen name="disputes" options={{ title: 'Disputes' }} />
         <Stack.Screen name="elections" options={{ title: 'Elections' }} />
         <Stack.Screen name="results" options={{ title: 'Results & Collation' }} />
+        <Stack.Screen name="evidence" options={{ title: 'Result Evidence' }} />
         <Stack.Screen name="document-ai" options={{ title: 'Document AI' }} />
         <Stack.Screen name="scale-health" options={{ title: 'System Health' }} />
         <Stack.Screen name="geofencing" options={{ title: 'Geofencing' }} />

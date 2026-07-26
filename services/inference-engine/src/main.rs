@@ -10,12 +10,15 @@
 
 use axum::{
     extract::{Json, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use std::{fs, path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -36,6 +39,58 @@ struct ModelGovernance {
     sha256: Option<String>,
     approved: bool,
     reason: Option<String>,
+}
+
+struct IntegritySigner {
+    signing_key: Option<SigningKey>,
+    verifying_key: Option<VerifyingKey>,
+    key_id: String,
+    service_token: Option<String>,
+}
+
+impl IntegritySigner {
+    fn load() -> Self {
+        let key_id = std::env::var("INTEGRITY_SIGNER_KEY_ID")
+            .unwrap_or_else(|_| "unconfigured".to_string());
+        let service_token = std::env::var("INTEGRITY_SERVICE_TOKEN")
+            .ok()
+            .filter(|token| !token.trim().is_empty());
+        let signing_key = std::env::var("INTEGRITY_SIGNING_KEY")
+            .ok()
+            .and_then(|encoded| BASE64_STANDARD.decode(encoded.trim()).ok())
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+            .map(|bytes| SigningKey::from_bytes(&bytes));
+        let verifying_key = if let Some(key) = signing_key.as_ref() {
+            Some(key.verifying_key())
+        } else {
+            std::env::var("INTEGRITY_VERIFYING_KEY")
+                .ok()
+                .and_then(|encoded| BASE64_STANDARD.decode(encoded.trim()).ok())
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok())
+        };
+        Self { signing_key, verifying_key, key_id, service_token }
+    }
+
+    fn signing_ready(&self) -> bool {
+        self.signing_key.is_some() && self.service_token.is_some() && self.key_id != "unconfigured"
+    }
+
+    fn authorizes(&self, headers: &HeaderMap) -> bool {
+        let Some(expected) = self.service_token.as_ref() else {
+            return false;
+        };
+        let Some(header) = headers.get("authorization").and_then(|value| value.to_str().ok()) else {
+            return false;
+        };
+        let Some(provided) = header.strip_prefix("Bearer ") else {
+            return false;
+        };
+        let provided_bytes = provided.as_bytes();
+        let expected_bytes = expected.as_bytes();
+        provided_bytes.len() == expected_bytes.len()
+            && bool::from(provided_bytes.ct_eq(expected_bytes))
+    }
 }
 
 impl ModelGovernance {
@@ -106,6 +161,7 @@ struct AppState {
     face_model: Option<FaceModel>,
     liveness_model: Option<LivenessModel>,
     neo4j: Option<Neo4jClient>,
+    integrity_signer: IntegritySigner,
 }
 
 impl AppState {
@@ -117,13 +173,25 @@ impl AppState {
         if !anomaly_governance.approved {
             warn!(reason = ?anomaly_governance.reason, "Anomaly model governance approval is unavailable");
         }
-        let anomaly_model = AnomalyModel::load(&format!("{}/anomaly_xgboost.onnx", models_dir))
-            .map_err(|e| warn!("Anomaly model not loaded: {}", e))
-            .ok();
+        let anomaly_model_path = format!("{}/anomaly_xgboost.onnx", models_dir);
+        let anomaly_model = if Path::new(&anomaly_model_path).is_file() {
+            AnomalyModel::load(&anomaly_model_path)
+                .map_err(|e| warn!("Anomaly model not loaded: {}", e))
+                .ok()
+        } else {
+            warn!(path = %anomaly_model_path, "Anomaly model file is absent; inference remains unavailable");
+            None
+        };
 
-        let liveness_model = LivenessModel::load(&format!("{}/liveness_cdcn.onnx", models_dir))
-            .map_err(|e| warn!("Liveness model not loaded: {}", e))
-            .ok();
+        let liveness_model_path = format!("{}/liveness_cdcn.onnx", models_dir);
+        let liveness_model = if Path::new(&liveness_model_path).is_file() {
+            LivenessModel::load(&liveness_model_path)
+                .map_err(|e| warn!("Liveness model not loaded: {}", e))
+                .ok()
+        } else {
+            warn!(path = %liveness_model_path, "Liveness model file is absent; liveness inference remains unavailable");
+            None
+        };
 
         let face_model = FaceModel::new()
             .map_err(|e| warn!("Face model not loaded: {}", e))
@@ -132,16 +200,21 @@ impl AppState {
         let neo4j = Neo4jClient::connect().await
             .map_err(|e| warn!("Neo4j not connected: {}", e))
             .ok();
+        let integrity_signer = IntegritySigner::load();
+        if !integrity_signer.signing_ready() {
+            warn!("Evidence integrity signing is not configured; production callers must fail closed");
+        }
 
         info!(
             anomaly = anomaly_model.is_some(),
             face = face_model.is_some(),
             liveness = liveness_model.is_some(),
             neo4j = neo4j.is_some(),
+            integrity_signer = integrity_signer.signing_ready(),
             "Inference engine initialized"
         );
 
-        Self { anomaly_model, anomaly_governance, face_model, liveness_model, neo4j }
+        Self { anomaly_model, anomaly_governance, face_model, liveness_model, neo4j, integrity_signer }
     }
 }
 
@@ -219,6 +292,31 @@ struct GraphQueryRequest {
 }
 
 #[derive(Deserialize)]
+struct IntegritySignRequest {
+    payload_sha256: String,
+}
+
+#[derive(Serialize)]
+struct IntegritySignResponse {
+    payload_sha256: String,
+    signature: String,
+    key_id: String,
+}
+
+#[derive(Deserialize)]
+struct IntegrityVerifyRequest {
+    payload_sha256: String,
+    signature: String,
+    key_id: String,
+}
+
+#[derive(Serialize)]
+struct IntegrityVerifyResponse {
+    valid: bool,
+    key_id: String,
+}
+
+#[derive(Deserialize)]
 struct GpsSpoofRequest {
     device_id: String,
     current_lat: f64,
@@ -268,6 +366,15 @@ struct ModelsStatus {
     face_embeddings: bool,
     liveness_cdcn: bool,
     neo4j_connected: bool,
+    integrity_signer: bool,
+}
+
+#[derive(Serialize)]
+struct IntegritySignerHealthResponse {
+    status: String,
+    signing_ready: bool,
+    verifying_ready: bool,
+    key_id: Option<String>,
 }
 
 // ── Handlers ──
@@ -290,8 +397,39 @@ async fn health(State(state): State<SharedState>) -> (StatusCode, Json<HealthRes
                 face_embeddings: s.face_model.is_some(),
                 liveness_cdcn: s.liveness_model.is_some(),
                 neo4j_connected: s.neo4j.is_some(),
+                integrity_signer: s.integrity_signer.signing_ready(),
             },
             inference_device: "CPU".into(),
+        }),
+    )
+}
+
+async fn integrity_signer_health(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<IntegritySignerHealthResponse>) {
+    let s = state.read().await;
+    if !s.integrity_signer.authorizes(&headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(IntegritySignerHealthResponse {
+                status: "unauthorized".into(),
+                signing_ready: false,
+                verifying_ready: false,
+                key_id: None,
+            }),
+        );
+    }
+    let signing_ready = s.integrity_signer.signing_ready();
+    let verifying_ready = s.integrity_signer.verifying_key.is_some();
+    let status = if signing_ready { "healthy" } else { "unavailable" };
+    (
+        if signing_ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
+        Json(IntegritySignerHealthResponse {
+            status: status.into(),
+            signing_ready,
+            verifying_ready,
+            key_id: signing_ready.then(|| s.integrity_signer.key_id.clone()),
         }),
     )
 }
@@ -602,6 +740,55 @@ async fn detect_gps_spoof(
     })
 }
 
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn sign_integrity(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(req): Json<IntegritySignRequest>,
+) -> Result<Json<IntegritySignResponse>, StatusCode> {
+    if !valid_sha256(&req.payload_sha256) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let state = state.read().await;
+    if !state.integrity_signer.authorizes(&headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let signing_key = state.integrity_signer.signing_key.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    if state.integrity_signer.key_id == "unconfigured" {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let signature = signing_key.sign(req.payload_sha256.as_bytes());
+    Ok(Json(IntegritySignResponse {
+        payload_sha256: req.payload_sha256,
+        signature: BASE64_STANDARD.encode(signature.to_bytes()),
+        key_id: state.integrity_signer.key_id.clone(),
+    }))
+}
+
+async fn verify_integrity(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(req): Json<IntegrityVerifyRequest>,
+) -> Result<Json<IntegrityVerifyResponse>, StatusCode> {
+    if !valid_sha256(&req.payload_sha256) || req.signature.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let state = state.read().await;
+    if !state.integrity_signer.authorizes(&headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let verifying_key = state.integrity_signer.verifying_key.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let signature_bytes = BASE64_STANDARD.decode(req.signature.trim()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let signature_array = <[u8; 64]>::try_from(signature_bytes.as_slice()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let signature = Signature::from_bytes(&signature_array);
+    let key_matches = req.key_id == state.integrity_signer.key_id;
+    let valid = key_matches && verifying_key.verify(req.payload_sha256.as_bytes(), &signature).is_ok();
+    Ok(Json(IntegrityVerifyResponse { valid, key_id: state.integrity_signer.key_id.clone() }))
+}
+
 async fn query_graph(
     State(state): State<SharedState>,
     Json(req): Json<GraphQueryRequest>,
@@ -637,6 +824,9 @@ async fn main() {
         .route("/face/compare", post(compare_faces))
         .route("/graph/neighborhood", post(query_graph))
         .route("/gps/spoof-detect", post(detect_gps_spoof))
+        .route("/integrity/sign", post(sign_integrity))
+        .route("/integrity/verify", post(verify_integrity))
+        .route("/integrity/health", get(integrity_signer_health).post(integrity_signer_health))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -646,4 +836,47 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn accepts_only_canonical_sha256_hex() {
+        assert!(valid_sha256(&"a".repeat(64)));
+        assert!(valid_sha256(&"F".repeat(64)));
+        assert!(!valid_sha256("short"));
+        assert!(!valid_sha256(&"z".repeat(64)));
+    }
+
+    #[test]
+    fn requires_exact_bearer_token_for_integrity_operations() {
+        let signing_key = SigningKey::from_bytes(&[17_u8; 32]);
+        let signer = IntegritySigner {
+            verifying_key: Some(signing_key.verifying_key()),
+            signing_key: Some(signing_key),
+            key_id: "inec-test-key".to_string(),
+            service_token: Some("service-secret".to_string()),
+        };
+        let mut accepted = HeaderMap::new();
+        accepted.insert("authorization", HeaderValue::from_static("Bearer service-secret"));
+        assert!(signer.authorizes(&accepted));
+
+        let mut rejected = HeaderMap::new();
+        rejected.insert("authorization", HeaderValue::from_static("Bearer different-secret"));
+        assert!(!signer.authorizes(&rejected));
+        assert!(!signer.authorizes(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn ed25519_integrity_signature_round_trip_verifies() {
+        let signing_key = SigningKey::from_bytes(&[23_u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let digest = "a2d7798c9f4f094c0f7dbbd6f1d9b58975523ffcc5e6980b57eae3dac0dbcb81";
+        let signature = signing_key.sign(digest.as_bytes());
+        assert!(verifying_key.verify(digest.as_bytes(), &signature).is_ok());
+        assert!(verifying_key.verify(b"different digest", &signature).is_err());
+    }
 }

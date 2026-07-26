@@ -46,6 +46,7 @@ const NAV_ITEMS = [
   { label: 'KYC Verification', icon: UserCheck, path: 'kyc-verification' },
   { label: 'Geofencing', icon: Crosshair, path: 'geofencing' },
   { label: 'Document AI', icon: FileSearch, path: 'document-ai' },
+  { label: 'Evidence Journey', icon: Fingerprint, path: 'evidence-journey' },
   { label: 'Duplicate Detection', icon: Copy, path: 'duplicate-detection' },
   { label: 'Export Center', icon: Download, path: 'export-center' },
   { label: 'Scale Health', icon: Activity, path: 'scale-health', section: 'Infrastructure' },

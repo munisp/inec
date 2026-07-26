@@ -583,6 +583,20 @@ export const api = {
   getDocumentAnalysisStatus: (reportId?: number) =>
     request(`/document-ai/status${reportId ? `?report_id=${reportId}` : ''}`),
 
+  // Evidence integrity: deterministic result lifecycle, review cases, and published materials.
+  getIntegrityJourney: (resultId: number) =>
+    request(`/integrity/results/${resultId}/journey`),
+  verifyIntegrityJourney: (resultId: number) =>
+    request(`/integrity/results/${resultId}/verify`),
+  listIntegrityPolicies: (electionId?: number) =>
+    request(`/integrity/policies${electionId ? `?election_id=${electionId}` : ''}`),
+  listMaterialManifests: (electionId?: number) =>
+    request(`/integrity/material-manifests${electionId ? `?election_id=${electionId}` : ''}`),
+  getCollationEvidenceBundle: (electionId: number, level: string, areaCode: string) =>
+    request(`/integrity/collation/${electionId}/${encodeURIComponent(level)}/${encodeURIComponent(areaCode)}`),
+  getIntegrityVoterServices: () => request('/integrity/voter-services'),
+  getIntegrityHealth: () => request('/integrity/health'),
+
   // KYC (already exists in pages but not in api object)
   kycVerify: (form: FormData) =>
     request('/kyc/verify', { method: 'POST', body: form as unknown as string }),

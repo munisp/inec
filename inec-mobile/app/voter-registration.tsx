@@ -1,123 +1,99 @@
-import { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { api as apiCall } from '../src/lib/api';
-
-interface RegistrationResult {
-  vin: string;
-  pvc_number: string;
-  message: string;
-}
+import { integrityApi, OfficialVoterService } from '../src/lib/api';
 
 export default function VoterRegistrationScreen() {
-  const [formData, setFormData] = useState({
-    first_name: '',
-    last_name: '',
-    date_of_birth: '',
-    phone: '',
-    state_code: '',
-    lga_code: '',
-  });
-  const [result, setResult] = useState<RegistrationResult | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [service, setService] = useState<OfficialVoterService | null>(null);
+  const [notice, setNotice] = useState('This platform does not submit voter applications, retain voter-register copies, or determine eligibility.');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const updateField = (field: string, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+  const loadService = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await integrityApi.voterServices();
+      const authoritative = response.services.find((item) => item.authoritative) || null;
+      if (!authoritative) throw new Error('No authorised voter-service route is currently available.');
+      setService(authoritative);
+      setNotice(response.notice || notice);
+    } catch (caught: unknown) {
+      setService(null);
+      setError(caught instanceof Error ? caught.message : 'Official voter-service navigation is unavailable.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const submitRegistration = async () => {
-    if (!formData.first_name || !formData.last_name || !formData.date_of_birth) {
-      Alert.alert('Required Fields', 'Please fill in first name, last name, and date of birth.');
+  useEffect(() => { void loadService(); }, []);
+
+  const openOfficialService = async () => {
+    if (!service) return;
+    const canOpen = await Linking.canOpenURL(service.url);
+    if (!canOpen) {
+      Alert.alert('Service unavailable', 'This device cannot open the official voter-service address.');
       return;
     }
-    setLoading(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    try {
-      const res = await apiCall<RegistrationResult>('/ems/voters/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          ward_code: 'W001',
-          polling_unit_code: 'PU001',
-          biometric_data: 'pending_capture',
-        }),
-      });
-      setResult(res);
-      Alert.alert('Success', `Voter registered. VIN: ${res.vin}`);
-    } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Registration failed');
-    }
-    setLoading(false);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await Linking.openURL(service.url);
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <Ionicons name="person-add-outline" size={24} color="#166534" />
-          <Text style={styles.cardTitle}>Voter Registration</Text>
-        </View>
-        <Text style={styles.muted}>Register new voters with biometric enrollment at INEC registration centers.</Text>
+        <View style={styles.iconWrap}><Ionicons name="person-add-outline" size={27} color="#166534" /></View>
+        <Text style={styles.eyebrow}>OFFICIAL VOTER SERVICE</Text>
+        <Text style={styles.title}>Registration and voter-record services</Text>
+        <Text style={styles.description}>{notice}</Text>
 
-        {[
-          { key: 'first_name', label: 'First Name', placeholder: 'Enter first name' },
-          { key: 'last_name', label: 'Last Name', placeholder: 'Enter last name' },
-          { key: 'date_of_birth', label: 'Date of Birth', placeholder: 'YYYY-MM-DD' },
-          { key: 'phone', label: 'Phone Number', placeholder: '+234...' },
-          { key: 'state_code', label: 'State Code', placeholder: 'e.g. LA, KN, AB' },
-          { key: 'lga_code', label: 'LGA Code', placeholder: 'Local Government Area code' },
-        ].map((field) => (
-          <View key={field.key} style={{ marginBottom: 12 }}>
-            <Text style={styles.fieldLabel}>{field.label}</Text>
-            <TextInput
-              style={styles.input}
-              placeholder={field.placeholder}
-              value={formData[field.key as keyof typeof formData]}
-              onChangeText={(v) => updateField(field.key, v)}
-              autoCapitalize={field.key === 'state_code' ? 'characters' : 'words'}
-            />
+        {loading ? <Text style={styles.status}>Retrieving authorised service navigation…</Text> : null}
+        {error ? <View style={styles.errorBox}><Text style={styles.errorText}>{error}</Text><TouchableOpacity accessibilityRole="button" onPress={loadService}><Text style={styles.retry}>Retry lookup</Text></TouchableOpacity></View> : null}
+
+        {service ? <>
+          <View style={styles.serviceBox}>
+            <Text style={styles.serviceLabel}>{service.label}</Text>
+            <Text style={styles.servicePurpose}>{service.purpose}</Text>
+            <Text style={styles.serviceUrl} numberOfLines={1}>{service.url}</Text>
           </View>
-        ))}
-
-        <TouchableOpacity style={styles.button} onPress={submitRegistration} disabled={loading} activeOpacity={0.8}>
-          <Text style={styles.buttonText}>{loading ? 'Registering...' : 'Register Voter'}</Text>
-        </TouchableOpacity>
+          <TouchableOpacity accessibilityRole="link" accessibilityLabel={`Open ${service.label}`} style={styles.button} onPress={openOfficialService} activeOpacity={0.8}>
+            <Text style={styles.buttonText}>Open official INEC service</Text>
+            <Ionicons name="open-outline" size={18} color="#fff" />
+          </TouchableOpacity>
+        </> : null}
       </View>
 
-      {result && (
-        <View style={[styles.card, { backgroundColor: '#dcfce7' }]}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="checkmark-circle" size={24} color="#166534" />
-            <Text style={[styles.cardTitle, { color: '#166534' }]}>Registration Complete</Text>
-          </View>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>VIN</Text>
-            <Text style={styles.infoValue}>{result.vin}</Text>
-          </View>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>PVC Number</Text>
-            <Text style={styles.infoValue}>{result.pvc_number}</Text>
-          </View>
-          <Text style={[styles.muted, { marginTop: 8 }]}>Biometric capture required at enrollment center.</Text>
+      <View style={styles.guidanceCard}>
+        <Ionicons name="information-circle-outline" size={20} color="#0369a1" />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.guidanceTitle}>Why this redirects to INEC</Text>
+          <Text style={styles.guidanceText}>Registration, transfer, correction, eligibility, and biometric enrolment must remain in the official process. The platform provides safe navigation and may display authorised operational information; it never creates a VIN or PVC record locally.</Text>
         </View>
-      )}
+      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f9fafb', padding: 16 },
-  card: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
-  muted: { fontSize: 13, color: '#9ca3af', marginBottom: 8 },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 4 },
-  input: { borderWidth: 1, borderColor: '#d1d5db', borderRadius: 12, padding: 14, fontSize: 15, backgroundColor: '#f9fafb' },
-  button: { backgroundColor: '#166534', borderRadius: 12, padding: 14, alignItems: 'center', marginTop: 8 },
-  buttonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#bbf7d0' },
-  infoLabel: { fontSize: 13, color: '#166534' },
-  infoValue: { fontSize: 13, fontWeight: '600', color: '#166534' },
+  container: { flex: 1, backgroundColor: '#f8fafc' },
+  content: { padding: 16, paddingBottom: 40 },
+  card: { backgroundColor: '#fff', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#d1fae5' },
+  iconWrap: { width: 48, height: 48, borderRadius: 24, backgroundColor: '#ecfdf5', alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  eyebrow: { color: '#166534', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+  title: { color: '#111827', fontSize: 22, fontWeight: '800', marginTop: 4 },
+  description: { color: '#475569', fontSize: 13, lineHeight: 19, marginTop: 9 },
+  status: { color: '#475569', fontSize: 13, marginTop: 18 },
+  errorBox: { marginTop: 18, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', borderRadius: 10, padding: 12 },
+  errorText: { color: '#991b1b', fontSize: 13 },
+  retry: { color: '#166534', fontWeight: '800', fontSize: 13, marginTop: 8 },
+  serviceBox: { marginTop: 18, padding: 13, borderRadius: 11, backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0' },
+  serviceLabel: { color: '#14532d', fontSize: 14, fontWeight: '800' },
+  servicePurpose: { color: '#166534', fontSize: 12, lineHeight: 17, marginTop: 5 },
+  serviceUrl: { color: '#047857', fontFamily: 'monospace', fontSize: 10, marginTop: 8 },
+  button: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 14, borderRadius: 10, paddingVertical: 13, backgroundColor: '#166534' },
+  buttonText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  guidanceCard: { flexDirection: 'row', gap: 10, backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe', borderRadius: 14, padding: 14, marginTop: 14 },
+  guidanceTitle: { color: '#0c4a6e', fontSize: 13, fontWeight: '800' },
+  guidanceText: { color: '#1e3a5f', fontSize: 12, lineHeight: 18, marginTop: 4 },
 });

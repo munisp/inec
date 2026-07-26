@@ -9,21 +9,34 @@ interface HealthData {
   middleware_modes?: Array<{ Name: string; IsReal: boolean; Connection: string }>;
 }
 
+interface IntegrityHealth {
+  status: string;
+  signing_required: boolean;
+  signer: Record<string, unknown>;
+  open_blocking_reconciliation_cases: number;
+  events_with_unavailable_signer: number;
+}
+
 export default function ScaleHealthPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [modes, setModes] = useState<Array<{ Name: string; IsReal: boolean; Connection: string }>>([]);
+  const [integrity, setIntegrity] = useState<IntegrityHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const loadHealth = useCallback(async () => {
     try {
       const opts = { credentials: 'include' as RequestCredentials };
-      const [h, m] = await Promise.all([
+      const [h, m, i] = await Promise.all([
         fetch('/scale/health', opts).then(r => r.ok ? r.json() : null),
         fetch('/middleware/modes', opts).then(r => r.ok ? r.json() : []),
+        fetch('/integrity/health', opts).then(async r => {
+          try { return await r.json() as IntegrityHealth; } catch { return null; }
+        }),
       ]);
       if (h) setHealth(h);
       setModes(m);
+      setIntegrity(i);
     } catch { /* */ }
     setLoading(false);
   }, []);
@@ -116,6 +129,24 @@ export default function ScaleHealthPage() {
                 <h3 className="font-semibold">Rate Limiter</h3>
               </div>
               {renderKV(health.rate_limiter)}
+            </div>
+          )}
+
+          {integrity && (
+            <div className={`rounded-xl p-5 border shadow-sm ${integrity.status === 'healthy' ? 'bg-green-50/60 border-green-200 dark:bg-green-950/20 dark:border-green-900' : 'bg-amber-50/60 border-amber-200 dark:bg-amber-950/20 dark:border-amber-900'}`}>
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-8 h-8 rounded-lg bg-white/70 flex items-center justify-center">🔐</div>
+                <div>
+                  <h3 className="font-semibold">Evidence Integrity</h3>
+                  <p className="text-xs text-zinc-500">Signed result lifecycle and reconciliation controls</p>
+                </div>
+              </div>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between border-b border-black/5 py-1.5"><span className="text-zinc-600">Status</span><span className="font-semibold capitalize">{integrity.status}</span></div>
+                <div className="flex justify-between border-b border-black/5 py-1.5"><span className="text-zinc-600">Signing required</span><span className="font-semibold">{String(integrity.signing_required)}</span></div>
+                <div className="flex justify-between border-b border-black/5 py-1.5"><span className="text-zinc-600">Blocking cases</span><span className="font-semibold">{integrity.open_blocking_reconciliation_cases}</span></div>
+                <div className="flex justify-between py-1.5"><span className="text-zinc-600">Unavailable signer events</span><span className="font-semibold">{integrity.events_with_unavailable_signer}</span></div>
+              </div>
             </div>
           )}
         </div>
