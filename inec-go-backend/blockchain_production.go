@@ -1,22 +1,15 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -169,265 +162,38 @@ type FabricOrderer struct {
 	Status        string `json:"status"`
 }
 
-type HyperledgerFabricNetwork struct {
-	db       *sql.DB
-	mu       sync.Mutex
-	ecdsaKey *ecdsa.PrivateKey
-	gateway  *FabricGatewayClient // non-nil when a live Fabric network is configured
-}
+// HyperledgerFabricNetwork is retained only for legacy internal call compatibility.
+// It deliberately does not maintain a local block chain, generated peer roster,
+// signing key, transaction ID, or endorsement state. Real election evidence uses
+// the controlled Fabric Gateway anchor adapter in fabric_anchor.go.
+type HyperledgerFabricNetwork struct{}
 
-func NewHyperledgerFabricNetwork(database *sql.DB) *HyperledgerFabricNetwork {
-	database.Exec(`CREATE TABLE IF NOT EXISTS fabric_signing_keys (
-		key_id TEXT PRIMARY KEY,
-		private_key_pem TEXT NOT NULL,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	)`)
-	f := &HyperledgerFabricNetwork{db: database}
-	// Real Fabric: connect to the live network gateway when configured.
-	if gw, gerr := NewFabricGatewayClient(); gerr != nil {
-		log.Warn().Err(gerr).Msg("Fabric Gateway unavailable; using PG-backed ledger")
-	} else if gw != nil {
-		f.gateway = gw
-	}
-	// Load existing key from DB for persistence across restarts
-	var keyPEM string
-	err := database.QueryRow(`SELECT private_key_pem FROM fabric_signing_keys WHERE key_id='primary' LIMIT 1`).Scan(&keyPEM)
-	if err == nil {
-		block, _ := pem.Decode([]byte(keyPEM))
-		if block != nil {
-			pk, parseErr := x509.ParseECPrivateKey(block.Bytes)
-			if parseErr == nil {
-				f.ecdsaKey = pk
-				return f
-			}
-		}
-	}
-	// Generate new key and persist
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	f.ecdsaKey = key
-	derBytes, _ := x509.MarshalECPrivateKey(key)
-	pemBlock := &pem.Block{Type: "EC PRIVATE KEY", Bytes: derBytes}
-	pemStr := string(pem.EncodeToMemory(pemBlock))
-	database.Exec(`INSERT INTO fabric_signing_keys (key_id, private_key_pem) VALUES ('primary', ?)`, pemStr)
-	return f
-}
-
-func (f *HyperledgerFabricNetwork) signData(data []byte) string {
-	hash := sha256.Sum256(data)
-	r, s, _ := ecdsa.Sign(rand.Reader, f.ecdsaKey, hash[:])
-	sig := append(r.Bytes(), s.Bytes()...)
-	return hex.EncodeToString(sig)
-}
-func (f *HyperledgerFabricNetwork) GetPublicKeyPEM() string {
-	pubBytes, _ := x509.MarshalPKIXPublicKey(&f.ecdsaKey.PublicKey)
-	block := &pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}
-	return string(pem.EncodeToMemory(block))
+func NewHyperledgerFabricNetwork(_ *sql.DB) *HyperledgerFabricNetwork {
+	return &HyperledgerFabricNetwork{}
 }
 
 func (f *HyperledgerFabricNetwork) SubmitTransaction(channelID, chaincodeID, function string, args []string, creatorMSP string) (string, int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	// When a live Fabric network is connected, submit there and mirror the
-	// committed tx into the local ledger tables for querying/audit.
-	if f.gateway != nil {
-		if realTxID, gerr := f.gateway.Submit(channelID, chaincodeID, function, args); gerr == nil {
-			var blockNum int64
-			f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0) FROM fabric_blocks`).Scan(&blockNum)
-			blockNum++
-
-			var prevHash string
-			f.db.QueryRow(`SELECT block_hash FROM fabric_blocks WHERE block_number=?`, blockNum-1).Scan(&prevHash)
-			if prevHash == "" {
-				prevHash = strings.Repeat("0", 64)
-			}
-			argsJSON, _ := json.Marshal(args)
-			dataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(realTxID+string(argsJSON))))
-			blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d-%s-%s", blockNum, prevHash, dataHash))))
-
-			// The block row must exist before the tx row: fabric_transactions
-			// has a FK on fabric_blocks(block_number), and GetBlock relies on it.
-			dbExecLog("fabric_block", `INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
-				blockNum, channelID, prevHash, dataHash, blockHash, 1)
-			dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-				realTxID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
-				"[]", "MAJORITY Endorsement", "fabric-gateway", "VALID")
-			return realTxID, blockNum, nil
-		} else {
-			log.Warn().Err(gerr).Msg("Fabric Gateway submit failed; falling back to PG ledger")
-		}
-	}
-
-	txData := fmt.Sprintf("%s:%s:%s:%s:%d", channelID, chaincodeID, function, strings.Join(args, ","), time.Now().UnixNano())
-	txHash := sha256.Sum256([]byte(txData))
-	txID := "TX-" + hex.EncodeToString(txHash[:12])
-
-	endorsers := []string{}
-	rows, _ := f.db.Query(`SELECT peer_id, msp_id FROM fabric_peers WHERE status='active' AND role='endorser' LIMIT 3`)
-	if rows != nil {
-		for rows.Next() {
-			var pid, msp string
-			rows.Scan(&pid, &msp)
-			endorsers = append(endorsers, pid)
-		}
-		rows.Close()
-	}
-
-	argsJSON, _ := json.Marshal(args)
-	endorsersJSON, _ := json.Marshal(endorsers)
-	rwSet := fmt.Sprintf(`{"reads":[{"key":"%s"}],"writes":[{"key":"%s","value":"%s"}]}`,
-		function, function+"-"+txID, strings.Join(args, "|"))
-
-	sig := f.signData(txHash[:])
-
-	var blockNum int64
-	f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0) FROM fabric_blocks`).Scan(&blockNum)
-	blockNum++
-
-	var prevHash string
-	f.db.QueryRow(`SELECT block_hash FROM fabric_blocks WHERE block_number=?`, blockNum-1).Scan(&prevHash)
-	if prevHash == "" {
-		prevHash = strings.Repeat("0", 64)
-	}
-
-	dataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(txID+rwSet)))
-	blockData := fmt.Sprintf("%d-%s-%s", blockNum, prevHash, dataHash)
-	blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(blockData)))
-
-	dbExecLog("fabric_block", `INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
-		blockNum, channelID, prevHash, dataHash, blockHash, 1)
-
-	dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		txID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
-		string(endorsersJSON), "AND('INECMSP.peer','Org1MSP.peer')", rwSet+"|sig:"+sig, "VALID")
-
-	dbExecLog("chaincode_event", `INSERT INTO chaincode_events (chaincode_id, event_name, tx_id, payload, block_number) VALUES (?,?,?,?,?)`,
-		chaincodeID, function, txID, string(argsJSON), blockNum)
-
-	return txID, blockNum, nil
+	return "", 0, fmt.Errorf("legacy Fabric transaction submission is disabled; use signed evidence anchoring through the controlled Gateway adapter")
 }
 
 func (f *HyperledgerFabricNetwork) GetBlock(blockNumber int64) (M, error) {
-	var bn int64
-	var channel, prevHash, dataHash, blockHash, created string
-	var txCount int
-	err := f.db.QueryRow(`SELECT block_number, channel_id, prev_hash, data_hash, block_hash, tx_count, created_at FROM fabric_blocks WHERE block_number=?`, blockNumber).Scan(
-		&bn, &channel, &prevHash, &dataHash, &blockHash, &txCount, &created)
-	if err != nil {
-		return nil, fmt.Errorf("block not found: %d", blockNumber)
-	}
-
-	txRows, _ := f.db.Query(`SELECT tx_id, chaincode_id, function_name, args, creator_msp, endorsers, validation_code FROM fabric_transactions WHERE block_number=?`, blockNumber)
-	var txs []M
-	if txRows != nil {
-		defer txRows.Close()
-		for txRows.Next() {
-			var tid, ccid, fn, args, msp, endorsers, vc string
-			txRows.Scan(&tid, &ccid, &fn, &args, &msp, &endorsers, &vc)
-			txs = append(txs, M{"tx_id": tid, "chaincode_id": ccid, "function": fn, "args": args, "creator_msp": msp, "endorsers": endorsers, "validation_code": vc})
-		}
-	}
-
-	return M{
-		"block_number": bn, "channel_id": channel, "prev_hash": prevHash,
-		"data_hash": dataHash, "block_hash": blockHash, "tx_count": txCount,
-		"transactions": txs, "created_at": created,
-	}, nil
+	return nil, fmt.Errorf("legacy local Fabric block storage is disabled; verify committed anchor receipts through the evidence journey")
 }
 
 func (f *HyperledgerFabricNetwork) GetNetworkStats() M {
-	var totalBlocks, totalTxs, totalPeers, totalOrderers, totalChaincode int
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_blocks`).Scan(&totalBlocks)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_transactions`).Scan(&totalTxs)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_peers WHERE status='active'`).Scan(&totalPeers)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_orderers WHERE status='active'`).Scan(&totalOrderers)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_chaincode WHERE status='active'`).Scan(&totalChaincode)
-
-	var validTxs, invalidTxs int
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_transactions WHERE validation_code='VALID'`).Scan(&validTxs)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_transactions WHERE validation_code!='VALID'`).Scan(&invalidTxs)
-
-	var latestBlock int64
-	var latestHash string
-	f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0), COALESCE((SELECT block_hash FROM fabric_blocks ORDER BY block_number DESC LIMIT 1),'')  FROM fabric_blocks`).Scan(&latestBlock, &latestHash)
-
-	peers := []M{}
-	pRows, _ := f.db.Query(`SELECT peer_id, org, msp_id, endpoint, role, status FROM fabric_peers`)
-	if pRows != nil {
-		defer pRows.Close()
-		for pRows.Next() {
-			var pid, org, msp, ep, role, st string
-			pRows.Scan(&pid, &org, &msp, &ep, &role, &st)
-			peers = append(peers, M{"peer_id": pid, "org": org, "msp_id": msp, "endpoint": ep, "role": role, "status": st})
-		}
-	}
-
-	orderers := []M{}
-	oRows, _ := f.db.Query(`SELECT orderer_id, org, endpoint, consensus_type, status FROM fabric_orderers`)
-	if oRows != nil {
-		defer oRows.Close()
-		for oRows.Next() {
-			var oid, org, ep, ct, st string
-			oRows.Scan(&oid, &org, &ep, &ct, &st)
-			orderers = append(orderers, M{"orderer_id": oid, "org": org, "endpoint": ep, "consensus_type": ct, "status": st})
-		}
-	}
-
-	chaincode := []M{}
-	cRows, _ := f.db.Query(`SELECT chaincode_id, version, channel_id, endorsement_policy, status FROM fabric_chaincode`)
-	if cRows != nil {
-		defer cRows.Close()
-		for cRows.Next() {
-			var ccid, ver, ch, ep, st string
-			cRows.Scan(&ccid, &ver, &ch, &ep, &st)
-			chaincode = append(chaincode, M{"chaincode_id": ccid, "version": ver, "channel_id": ch, "endorsement_policy": ep, "status": st})
-		}
-	}
-
 	return M{
-		"network_name": "inec-election-network",
-		"consensus":    "raft",
-		"channels":     []string{"inec-results", "inec-audit"},
-		"total_blocks": totalBlocks, "total_transactions": totalTxs,
-		"valid_transactions": validTxs, "invalid_transactions": invalidTxs,
-		"latest_block": latestBlock, "latest_hash": latestHash,
-		"peers": peers, "orderers": orderers, "chaincode": chaincode,
-		"total_peers": totalPeers, "total_orderers": totalOrderers,
-		"total_chaincode":     totalChaincode,
-		"ecdsa_public_key":    f.GetPublicKeyPEM(),
-		"signature_algorithm": "ECDSA-P256-SHA256",
+		"status": "unavailable",
+		"reason": "legacy PostgreSQL Fabric simulation is disabled; query /integrity/fabric/health for the real Gateway anchor state",
 	}
 }
 
 func (f *HyperledgerFabricNetwork) VerifyChain(limit int) M {
-	rows, _ := f.db.Query(`SELECT block_number, prev_hash, data_hash, block_hash FROM fabric_blocks ORDER BY block_number ASC LIMIT ?`, limit)
-	if rows == nil {
-		return M{"valid": false, "error": "no blocks"}
-	}
-	defer rows.Close()
-	var prevExpected string
-	valid := true
-	checked := 0
-	broken := []int64{}
-	for rows.Next() {
-		var bn int64
-		var prevHash, dataHash, blockHash string
-		rows.Scan(&bn, &prevHash, &dataHash, &blockHash)
-		if prevExpected != "" && prevHash != prevExpected {
-			valid = false
-			broken = append(broken, bn)
-		}
-		recomputed := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d-%s-%s", bn, prevHash, dataHash))))
-		if recomputed != blockHash {
-			valid = false
-			broken = append(broken, bn)
-		}
-		prevExpected = blockHash
-		checked++
-	}
 	return M{
-		"chain_valid": valid, "blocks_checked": checked,
-		"broken_blocks": broken, "integrity_verified": valid && checked > 0,
+		"chain_valid":        false,
+		"blocks_checked":     0,
+		"integrity_verified": false,
+		"status":             "unavailable",
+		"reason":             "legacy local Fabric chain verification is disabled; use committed evidence-anchor receipts",
 	}
 }
 
@@ -762,125 +528,36 @@ func seedBlockchainProduction(database *sql.DB) {
 	merkleBuilder.BuildTree(leaves, "block_validation")
 }
 
+// Legacy Fabric APIs are retained only so older clients receive a clear, safe
+// migration response. They must not expose locally generated blocks, transaction
+// IDs, endorsements, or chaincode outcomes. Use /integrity/fabric and the result
+// evidence journey for actual Gateway-backed consortium receipts.
 func handleFabricNetworkStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, fabricNetwork.GetNetworkStats())
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleFabricBlocks(w http.ResponseWriter, r *http.Request) {
-	limit := queryParamInt(r, "limit", 20)
-	rows, _ := fabricNetwork.db.Query(`SELECT block_number, channel_id, prev_hash, data_hash, block_hash, tx_count, created_at FROM fabric_blocks ORDER BY block_number DESC LIMIT ?`, limit)
-	if rows == nil {
-		writeJSON(w, 200, M{"blocks": []M{}})
-		return
-	}
-	defer rows.Close()
-	blocks := []M{}
-	for rows.Next() {
-		var bn int64
-		var ch, prev, dh, bh, created string
-		var txc int
-		rows.Scan(&bn, &ch, &prev, &dh, &bh, &txc, &created)
-		blocks = append(blocks, M{
-			"block_number": bn, "channel_id": ch, "prev_hash": prev[:16] + "...",
-			"data_hash": dh[:16] + "...", "block_hash": bh[:16] + "...",
-			"tx_count": txc, "created_at": created,
-		})
-	}
-	writeJSON(w, 200, M{"blocks": blocks})
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleFabricTransactions(w http.ResponseWriter, r *http.Request) {
-	limit := queryParamInt(r, "limit", 50)
-	rows, _ := fabricNetwork.db.Query(`SELECT tx_id, block_number, channel_id, chaincode_id, function_name, creator_msp, validation_code, created_at FROM fabric_transactions ORDER BY created_at DESC LIMIT ?`, limit)
-	if rows == nil {
-		writeJSON(w, 200, M{"transactions": []M{}})
-		return
-	}
-	defer rows.Close()
-	txs := []M{}
-	for rows.Next() {
-		var tid, ch, ccid, fn, msp, vc, created string
-		var bn int64
-		rows.Scan(&tid, &bn, &ch, &ccid, &fn, &msp, &vc, &created)
-		txs = append(txs, M{
-			"tx_id": tid, "block_number": bn, "channel_id": ch,
-			"chaincode_id": ccid, "function": fn, "creator_msp": msp,
-			"validation_code": vc, "created_at": created,
-		})
-	}
-	writeJSON(w, 200, M{"transactions": txs})
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleFabricVerifyChain(w http.ResponseWriter, r *http.Request) {
-	limit := queryParamInt(r, "limit", 100)
-	writeJSON(w, 200, fabricNetwork.VerifyChain(limit))
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleFabricSubmitTx(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Channel   string   `json:"channel"`
-		Chaincode string   `json:"chaincode"`
-		Function  string   `json:"function"`
-		Args      []string `json:"args"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
-		return
-	}
-	if req.Channel == "" {
-		req.Channel = "inec-results"
-	}
-	if req.Chaincode == "" {
-		req.Chaincode = "result-validation-cc"
-	}
-	txID, blockNum, err := fabricNetwork.SubmitTransaction(req.Channel, req.Chaincode, req.Function, req.Args, "INECMSP")
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, M{"tx_id": txID, "block_number": blockNum, "status": "VALID"})
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleChaincodeValidateResult(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ResultID   int    `json:"result_id"`
-		PUCode     string `json:"pu_code"`
-		ElectionID int    `json:"election_id"`
-		TotalVotes int    `json:"total_votes"`
-		Accredited int    `json:"accredited"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
-		return
-	}
-	if req.ResultID == 0 {
-		writeError(w, 400, "result_id required")
-		return
-	}
-	result, err := chaincodeEngine.ExecuteResultValidation(req.ResultID, req.PUCode, req.ElectionID, req.TotalVotes, req.Accredited)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, result)
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleChaincodeAggregate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Level      string `json:"level"`
-		AreaCode   string `json:"area_code"`
-		ElectionID int    `json:"election_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid JSON")
-		return
-	}
-	result, err := chaincodeEngine.ExecuteAggregation(req.Level, req.AreaCode, req.ElectionID)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, result)
+	handleExternalBlockchainUnavailable(w, r)
 }
 
 func handleIPFSStats(w http.ResponseWriter, r *http.Request) {
@@ -1160,7 +837,7 @@ func handleBlockchainProductionStats(w http.ResponseWriter, r *http.Request) {
 		"merkle_trees":     merkleCount,
 		"production_grade": true,
 		"components": M{
-			"hyperledger_fabric": "persistent (PostgreSQL-backed Fabric simulation with ECDSA signatures, endorsement, ordering)",
+			"hyperledger_fabric": "real consortium anchoring only; status is exposed by /integrity/fabric/health",
 			"tigerbeetle_ledger": "native TigerBeetle binary-protocol client",
 			"ipfs_content_store": "persistent (content-addressed SHA256, CIDv1-compatible)",
 			"smart_contracts":    "executable (chaincode with real validation logic)",

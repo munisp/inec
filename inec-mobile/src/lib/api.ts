@@ -244,11 +244,29 @@ export interface IntegrityVerification {
   failure_reasons?: string[];
 }
 
+export interface FabricAnchorReceipt {
+  id?: number;
+  anchor_id?: string;
+  anchor_type?: string;
+  status?: 'pending' | 'submitted' | 'committed' | 'failed' | 'unavailable' | string;
+  channel?: string;
+  chaincode?: string;
+  contract?: string;
+  transaction_id?: string;
+  commit_status?: string;
+  receipt_sha256?: string;
+  attempt_count?: number;
+  diagnostic?: string;
+  created_at?: string;
+  committed_at?: string;
+}
+
 export interface IntegrityJourney {
   result?: Record<string, unknown>;
   events?: Array<Record<string, unknown>>;
   reconciliation_cases?: Array<Record<string, unknown>>;
   artifacts?: Array<Record<string, unknown>>;
+  fabric_anchors?: FabricAnchorReceipt[];
   policy?: Record<string, unknown>;
   policy_version_id?: number;
   verification?: IntegrityVerification;

@@ -393,19 +393,7 @@ export const api = {
     request(`/blockchain/audit?limit=${limit || 50}`),
 
   getBlockchainProductionStats: () => request('/blockchain/production/stats'),
-  getFabricNetwork: () => request('/blockchain/fabric/network'),
-  getFabricBlocks: (limit?: number) =>
-    request(`/blockchain/fabric/blocks?limit=${limit || 20}`),
-  getFabricTransactions: (limit?: number) =>
-    request(`/blockchain/fabric/transactions?limit=${limit || 50}`),
-  verifyFabricChain: (limit?: number) =>
-    request(`/blockchain/fabric/verify-chain?limit=${limit || 100}`),
-  submitFabricTx: (channel: string, chaincode: string, fn: string, args: string[]) =>
-    request('/blockchain/fabric/submit', { method: 'POST', body: JSON.stringify({ channel, chaincode, function: fn, args }) }),
-  chaincodeValidateResult: (resultId: number, puCode: string, electionId: number, totalVotes: number, accredited: number) =>
-    request('/blockchain/chaincode/validate-result', { method: 'POST', body: JSON.stringify({ result_id: resultId, pu_code: puCode, election_id: electionId, total_votes: totalVotes, accredited }) }),
-  chaincodeAggregate: (level: string, areaCode: string, electionId: number) =>
-    request('/blockchain/chaincode/aggregate', { method: 'POST', body: JSON.stringify({ level, area_code: areaCode, election_id: electionId }) }),
+  getFabricAnchorHealth: () => request('/integrity/fabric/health'),
   getIPFSStats: () => request('/blockchain/ipfs/stats'),
   storeIPFS: (data: string, contentType?: string) =>
     request('/blockchain/ipfs/store', { method: 'POST', body: JSON.stringify({ data, content_type: contentType }) }),
@@ -492,10 +480,6 @@ export const api = {
     request('/production/ipfs/store', { method: 'POST', body: JSON.stringify({ data, codec }) }),
   productionIPFSVerify: (cid: string) => request(`/production/ipfs/verify?cid=${cid}`),
   getProductionFabricStats: () => request('/production/fabric/stats'),
-  productionFabricSubmit: (channel: string, chaincode: string, fn: string, args: string[]) =>
-    request('/production/fabric/submit', { method: 'POST', body: JSON.stringify({ channel, chaincode, function: fn, args }) }),
-  getProductionFabricEndorsements: (txId?: string) =>
-    request(`/production/fabric/verify-endorsements${txId ? `?tx_id=${txId}` : ''}`),
   getProductionLedgerStats: () => request('/production/ledger/stats'),
   productionLedgerTransfer: (debitAccount: string, creditAccount: string, amount: number, idempotencyKey?: string) =>
     request('/production/ledger/transfer', { method: 'POST', body: JSON.stringify({ debit_account: debitAccount, credit_account: creditAccount, amount, idempotency_key: idempotencyKey }) }),

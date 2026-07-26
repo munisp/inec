@@ -1,0 +1,58 @@
+# Hyperledger Fabric consortium integration overlay.
+# Use only with a separately governed, pre-provisioned Fabric network:
+#   docker compose --env-file .env -f docker-compose.yml -f docker-compose.fabric.yml up -d
+# This overlay intentionally does not create peers, orderers, CAs, channels, or
+# identities. Those assets must be controlled by the participating institutions.
+
+networks:
+  fabric-consortium:
+    external: true
+    name: ${FABRIC_DOCKER_NETWORK:?FABRIC_DOCKER_NETWORK must name the approved external Fabric network}
+
+services:
+  go-backend:
+    depends_on:
+      fabric-gateway-health:
+        condition: service_completed_successfully
+    environment:
+      FABRIC_ANCHORING_ENABLED: ${FABRIC_ANCHORING_ENABLED:?FABRIC_ANCHORING_ENABLED must be set}
+      FABRIC_ANCHORING_REQUIRED: ${FABRIC_ANCHORING_REQUIRED:?FABRIC_ANCHORING_REQUIRED must be set}
+      FABRIC_ANCHOR_RETRY_SECONDS: ${FABRIC_ANCHOR_RETRY_SECONDS:?FABRIC_ANCHOR_RETRY_SECONDS must be set}
+      FABRIC_GATEWAY_ENDPOINT: ${FABRIC_GATEWAY_ENDPOINT:?FABRIC_GATEWAY_ENDPOINT must be set}
+      FABRIC_TLS_SERVER_NAME: ${FABRIC_TLS_SERVER_NAME:-}
+      FABRIC_MSP_ID: ${FABRIC_MSP_ID:?FABRIC_MSP_ID must be set}
+      FABRIC_CHANNEL: ${FABRIC_CHANNEL:?FABRIC_CHANNEL must be set}
+      FABRIC_CHAINCODE: ${FABRIC_CHAINCODE:?FABRIC_CHAINCODE must be set}
+      FABRIC_CONTRACT: ${FABRIC_CONTRACT:-}
+      FABRIC_ENDORSING_MSPS: ${FABRIC_ENDORSING_MSPS:?FABRIC_ENDORSING_MSPS must be set}
+      FABRIC_TLS_ROOT_CERT_FILE: /run/secrets/fabric/tls-root-cert.pem
+      FABRIC_CLIENT_CERT_FILE: /run/secrets/fabric/client-cert.pem
+      FABRIC_CLIENT_KEY_FILE: /run/secrets/fabric/client-key.pem
+    networks:
+      - inec-network
+      - fabric-consortium
+    volumes:
+      - ${FABRIC_SECRETS_DIR:?FABRIC_SECRETS_DIR must point to the protected Fabric client identity directory}:/run/secrets/fabric:ro
+
+  # This one-shot health gate checks connectivity and identity file presence only.
+  # It cannot approve or initialize a consortium and does not create Fabric state.
+  fabric-gateway-health:
+    image: alpine:3.21
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        test -s /run/secrets/fabric/tls-root-cert.pem
+        test -s /run/secrets/fabric/client-cert.pem
+        test -s /run/secrets/fabric/client-key.pem
+        host="$${FABRIC_GATEWAY_ENDPOINT%:*}"
+        port="$${FABRIC_GATEWAY_ENDPOINT##*:}"
+        test "$${host}" != "$${port}"
+        nc -z -w 10 "$${host}" "$${port}"
+    environment:
+      FABRIC_GATEWAY_ENDPOINT: ${FABRIC_GATEWAY_ENDPOINT:?FABRIC_GATEWAY_ENDPOINT must be set}
+    networks:
+      - fabric-consortium
+    volumes:
+      - ${FABRIC_SECRETS_DIR:?FABRIC_SECRETS_DIR must point to the protected Fabric client identity directory}:/run/secrets/fabric:ro
+    restart: "no"

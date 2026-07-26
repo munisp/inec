@@ -9,6 +9,7 @@ interface IntegrityJourney {
   events?: RecordValue[];
   artifacts?: RecordValue[];
   reconciliation_cases?: RecordValue[];
+  fabric_anchors?: RecordValue[];
   verification?: {
     chain_valid?: boolean;
     signature_checked?: boolean;
@@ -49,6 +50,8 @@ export default function EvidenceJourneyPage() {
   const parsedResultId = Number(resultId);
   const canLoad = Number.isInteger(parsedResultId) && parsedResultId > 0;
   const verification = journey?.verification;
+  const fabricAnchors = journey?.fabric_anchors || [];
+  const committedFabricAnchors = fabricAnchors.filter((anchor) => anchor.status === 'committed');
 
   const copy = async (label: string, text: unknown) => {
     if (typeof text !== 'string' || !navigator.clipboard) return;
@@ -148,6 +151,11 @@ export default function EvidenceJourneyPage() {
           <section className={`border p-5 ${verification?.chain_valid && verification.signature_valid !== false ? 'border-green-300 bg-green-50 dark:border-green-900 dark:bg-green-950/20' : 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'}`}>
             <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-zinc-950 dark:text-white">Evidence verification</h2><p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200">The verification service recomputes chain links and, when signatures exist, checks the configured signer.</p></div><div className="flex gap-2 text-xs font-semibold"><span className="border border-current px-2 py-1">Chain: {verification?.chain_valid ? 'valid' : 'unverified'}</span><span className="border border-current px-2 py-1">Signature: {verification?.signature_checked ? (verification?.signature_valid ? 'valid' : 'invalid') : 'not checked'}</span></div></div>
             {verification?.failure_reasons?.length ? <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-900 dark:text-amber-100">{verification.failure_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
+          </section>
+
+          <section className={`border p-5 ${fabricAnchors.length > 0 && committedFabricAnchors.length === fabricAnchors.length ? 'border-sky-300 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/20' : 'border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20'}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-zinc-950 dark:text-white">Consortium ledger anchors</h2><p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200">Only signed evidence hashes and verification receipts are committed to Hyperledger Fabric. EC8A documents and private reconciliation details remain off-chain.</p></div><span className="border border-current px-2 py-1 text-xs font-semibold">Committed: {committedFabricAnchors.length}/{fabricAnchors.length}</span></div>
+            {fabricAnchors.length === 0 ? <p className="mt-3 text-sm text-amber-900 dark:text-amber-100">No consortium receipt has been recorded for this result. This does not invalidate the local evidence chain, but it is not independent Fabric confirmation.</p> : <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[720px] text-sm"><thead><tr className="border-b border-current/20 text-left"><th className="pb-2">Anchor</th><th className="pb-2">State</th><th className="pb-2">Fabric transaction</th><th className="pb-2">Channel / chaincode</th><th className="pb-2">Receipt</th></tr></thead><tbody>{fabricAnchors.map((anchor) => <tr key={String(anchor.id || anchor.anchor_id)} className="border-b border-current/10"><td className="py-3"><button onClick={() => copy(`fabric-anchor-${String(anchor.id)}`, anchor.anchor_id)} className="font-mono text-xs text-sky-800 hover:underline dark:text-sky-300">{copied === `fabric-anchor-${String(anchor.id)}` ? 'Copied' : hash(anchor.anchor_id)}</button></td><td className="py-3 font-medium">{title(anchor.status)}</td><td className="py-3"><button onClick={() => copy(`fabric-tx-${String(anchor.id)}`, anchor.transaction_id)} className="font-mono text-xs text-sky-800 hover:underline dark:text-sky-300">{copied === `fabric-tx-${String(anchor.id)}` ? 'Copied' : hash(anchor.transaction_id)}</button></td><td className="py-3 text-xs">{value(anchor, 'channel')} / {value(anchor, 'chaincode')}</td><td className="py-3 text-xs">{value(anchor, 'receipt_sha256') === '—' ? 'Not committed' : <button onClick={() => copy(`fabric-receipt-${String(anchor.id)}`, anchor.receipt_sha256)} className="font-mono text-sky-800 hover:underline dark:text-sky-300">{copied === `fabric-receipt-${String(anchor.id)}` ? 'Copied' : hash(anchor.receipt_sha256)}</button>}</td></tr>)}</tbody></table></div>}
           </section>
 
           <section className="border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-900">

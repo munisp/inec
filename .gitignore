@@ -85,3 +85,10 @@ data/
 logs/
 # OpenAppSec generated runtime state
 config/openappsec/agent-config/
+
+# Hyperledger Fabric local credentials and generated deployment artifacts
+fabric/packages/
+fabric/identities/
+fabric/connection-profiles/*.json
+!fabric/connection-profiles/*.example.json
+fabric-client-identity/

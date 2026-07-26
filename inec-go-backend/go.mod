@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3
-	github.com/hyperledger/fabric-gateway v1.11.0
+	github.com/hyperledger/fabric-gateway v1.12.0
 	github.com/lib/pq v1.12.3
 	github.com/miekg/pkcs11 v1.1.2
 	github.com/opensearch-project/opensearch-go/v2 v2.3.0

@@ -215,6 +215,7 @@ func initEvidenceIntegritySchema() {
 			}
 		}
 	}
+	initFabricAnchorSchema()
 }
 
 func integritySigningRequired() bool {
@@ -580,7 +581,7 @@ func recordIntegrityEventTx(ctx context.Context, tx *sql.Tx, input integrityEven
 	if err != nil {
 		return integrityEventRecord{}, err
 	}
-	return integrityEventRecord{
+	record := integrityEventRecord{
 		SequenceNo:     sequence,
 		EventHash:      eventHash,
 		PriorEventHash: priorHash,
@@ -588,7 +589,17 @@ func recordIntegrityEventTx(ctx context.Context, tx *sql.Tx, input integrityEven
 		Signature:      signature,
 		SignerKeyID:    keyID,
 		SignerStatus:   signerStatus,
-	}, nil
+	}
+	if fabricAnchoringEnabled() {
+		var eventID int64
+		if err := tx.QueryRowContext(ctx, convertPlaceholders(`SELECT id FROM result_evidence_events WHERE event_hash=?`), eventHash).Scan(&eventID); err != nil {
+			return integrityEventRecord{}, fmt.Errorf("load committed evidence event for Fabric anchoring: %w", err)
+		}
+		if _, err := queueFabricAnchorForEventTx(ctx, tx, eventID, record, input); err != nil {
+			return integrityEventRecord{}, err
+		}
+	}
+	return record, nil
 }
 
 func nullStringArg(value string) interface{} {
@@ -704,6 +715,11 @@ func handleIntegrityJourney(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load reconciliation cases")
 		return
 	}
+	fabricAnchors, err := listFabricAnchorsForResult(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load Fabric anchor receipts")
+		return
+	}
 	verification := verifyEvidenceChain(r.Context(), id, events)
 	policyID, _ := activePolicyVersionID(r.Context(), electionID)
 	writeJSON(w, http.StatusOK, M{
@@ -715,6 +731,7 @@ func handleIntegrityJourney(w http.ResponseWriter, r *http.Request) {
 		"events":               events,
 		"artifacts":            artifacts,
 		"reconciliation_cases": cases,
+		"fabric_anchors":       fabricAnchors,
 		"verification":         verification,
 		"public_safe":          true,
 	})

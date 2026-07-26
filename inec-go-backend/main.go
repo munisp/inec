@@ -119,6 +119,7 @@ func main() {
 	initObserverTables()
 	initDocumentAISchema()
 	initEvidenceIntegritySchema()
+	startFabricAnchorWorker()
 	initKYBSchema()
 	initDataSecuritySchema()
 	initElectionFSMSchema()
@@ -260,6 +261,8 @@ func main() {
 	r.HandleFunc("/integrity/results/{id:[0-9]+}/journey", readAuth(handleIntegrityJourney)).Methods("GET")
 	r.HandleFunc("/integrity/results/{id:[0-9]+}/verify", readAuth(handleVerifyIntegrityJourney)).Methods("GET")
 	r.HandleFunc("/integrity/health", readAuth(handleIntegrityHealth)).Methods("GET")
+	r.HandleFunc("/integrity/fabric/health", readAuth(handleFabricAnchorHealth)).Methods("GET")
+	r.HandleFunc("/integrity/fabric/anchors/{id:[0-9]+}/retry", writeAuth(handleFabricAnchorRetry)).Methods("POST")
 	r.HandleFunc("/integrity/voter-services", readAuth(handleIntegrityVoterServices)).Methods("GET")
 	r.HandleFunc("/integrity/results/{id:[0-9]+}/cases", writeAuth(handleOpenReconciliationCase)).Methods("POST")
 	r.HandleFunc("/integrity/cases/{id:[0-9]+}/resolve", writeAuth(handleResolveReconciliationCase)).Methods("POST")
@@ -909,6 +912,9 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	// Stop Fabric anchor retries before releasing application dependencies.
+	stopFabricAnchorWorker()
 
 	// Close middleware connections
 	if mwHub != nil {

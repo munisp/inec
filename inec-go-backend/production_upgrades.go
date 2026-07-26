@@ -1783,145 +1783,50 @@ func (i *ProductionIPFSEngine) GetStats() M {
 }
 
 type ProductionFabricEngine struct {
-	db       *sql.DB
-	mu       sync.Mutex
-	ecdsaKey *ecdsa.PrivateKey
-	peers    []string
+	db *sql.DB
 }
 
+// ProductionFabricEngine is a compatibility facade over the real Fabric Gateway
+// anchor adapter. It deliberately does not synthesize peers, blocks, signatures,
+// transaction IDs, or endorsements in the application database.
 func NewProductionFabricEngine(database *sql.DB) *ProductionFabricEngine {
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	return &ProductionFabricEngine{
-		db:       database,
-		ecdsaKey: key,
-		peers:    []string{"peer0.inec.ng", "peer1.inec.ng", "peer0.observer.ng"},
-	}
+	return &ProductionFabricEngine{db: database}
 }
 
 func (f *ProductionFabricEngine) SubmitWithEndorsement(channelID, chaincodeID, function string, args []string, creatorMSP string) (string, int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	txData := fmt.Sprintf("%s:%s:%s:%s:%d", channelID, chaincodeID, function, strings.Join(args, ","), time.Now().UnixNano())
-	txHash := sha256.Sum256([]byte(txData))
-	txID := "TX-" + hex.EncodeToString(txHash[:12])
-
-	proposalHash := hex.EncodeToString(sha256.New().Sum([]byte(txData))[:16])
-
-	endorseStart := time.Now()
-	for idx, peer := range f.peers {
-		mspID := "INECMSP"
-		if idx == 2 {
-			mspID = "ObserverMSP"
-		}
-
-		sigData := []byte(proposalHash + peer)
-		sigHash := sha256.Sum256(sigData)
-		r, s, _ := ecdsa.Sign(rand.Reader, f.ecdsaKey, sigHash[:])
-		sig := hex.EncodeToString(append(r.Bytes(), s.Bytes()...))
-
-		endorseMs := time.Since(endorseStart).Milliseconds()
-		if endorseMs < 1 {
-			endorseMs = 1
-		}
-		dbExecLog("fabric_endorse", `INSERT INTO fabric_endorsement_log (tx_id, peer_id, msp_id, signature, proposal_hash, endorsement_time_ms) VALUES (?,?,?,?,?,?)`,
-			txID, peer, mspID, sig, proposalHash, endorseMs)
-	}
-
-	stateKey := fmt.Sprintf("%s|%s|%s", channelID, chaincodeID, function+"-"+txID)
-	stateValue, _ := json.Marshal(args)
-
-	var blockNum int64
-	f.db.QueryRow(`SELECT COALESCE(MAX(block_number),0) FROM fabric_blocks`).Scan(&blockNum)
-	blockNum++
-
-	dbExecLog("fabric_state", `INSERT INTO fabric_state_db (composite_key, channel_id, chaincode_id, key, value, version_block, version_tx) VALUES (?,?,?,?,?,?,?)`,
-		stateKey, channelID, chaincodeID, function+"-"+txID, string(stateValue), blockNum, 0)
-
-	var prevHash string
-	f.db.QueryRow(`SELECT block_hash FROM fabric_blocks WHERE block_number=?`, blockNum-1).Scan(&prevHash)
-	if prevHash == "" {
-		prevHash = strings.Repeat("0", 64)
-	}
-
-	dataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(txID+string(stateValue))))
-	blockData := fmt.Sprintf("%d-%s-%s", blockNum, prevHash, dataHash)
-	blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(blockData)))
-
-	dbExecLog("fabric_block", `INSERT INTO fabric_blocks (block_number, channel_id, prev_hash, data_hash, block_hash, tx_count) VALUES (?,?,?,?,?,?)`,
-		blockNum, channelID, prevHash, dataHash, blockHash, 1)
-
-	argsJSON, _ := json.Marshal(args)
-	endorsersJSON, _ := json.Marshal(f.peers)
-	rwSet := fmt.Sprintf(`{"reads":[],"writes":[{"key":"%s","value":"%s"}]}`, function+"-"+txID, string(stateValue))
-
-	dbExecLog("fabric_tx", `INSERT INTO fabric_transactions (tx_id, block_number, channel_id, chaincode_id, function_name, args, creator_msp, endorsers, endorsement_policy, rw_set, validation_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		txID, blockNum, channelID, chaincodeID, function, string(argsJSON), creatorMSP,
-		string(endorsersJSON), "AND('INECMSP.peer','ObserverMSP.peer')", rwSet, "VALID")
-
-	return txID, blockNum, nil
+	return "", 0, fmt.Errorf("arbitrary Fabric submission is disabled; create signed election evidence and use the controlled Fabric anchor workflow")
 }
 
 func (f *ProductionFabricEngine) VerifyEndorsements(txID string) (bool, M) {
-	var count int
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_endorsement_log WHERE tx_id=?`, txID).Scan(&count)
-
-	endorsements := make([]M, 0)
-	rows, _ := f.db.Query(`SELECT peer_id, msp_id, signature, proposal_hash, endorsement_time_ms FROM fabric_endorsement_log WHERE tx_id=?`, txID)
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var peer, msp, sig, propHash string
-			var timeMs int
-			rows.Scan(&peer, &msp, &sig, &propHash, &timeMs)
-			endorsements = append(endorsements, M{
-				"peer": peer, "msp": msp, "signature": sig[:32] + "...",
-				"proposal_hash": propHash, "time_ms": timeMs,
-			})
+	var anchorID, status, commitStatus, channelID, chaincodeID string
+	err := f.db.QueryRow(`SELECT anchor_id, status, COALESCE(commit_status,''), COALESCE(fabric_channel,''), COALESCE(chaincode_id,'')
+		FROM fabric_anchor_requests WHERE transaction_id=?`, txID).Scan(&anchorID, &status, &commitStatus, &channelID, &chaincodeID)
+	if err != nil {
+		return false, M{
+			"transaction_id": txID,
+			"valid":          false,
+			"status":         "unavailable",
+			"reason":         "no confirmed Fabric anchor receipt was found",
 		}
 	}
-
-	inecEndorsed := false
-	observerEndorsed := false
-	for _, e := range endorsements {
-		if e["msp"] == "INECMSP" {
-			inecEndorsed = true
-		}
-		if e["msp"] == "ObserverMSP" {
-			observerEndorsed = true
-		}
-	}
-	policyMet := inecEndorsed && observerEndorsed
-
-	return policyMet, M{
-		"tx_id":        txID,
-		"endorsements": endorsements,
-		"count":        count,
-		"policy_met":   policyMet,
-		"policy":       "AND('INECMSP.peer','ObserverMSP.peer')",
-		"production":   true,
+	valid := status == "committed" && commitStatus == "VALID"
+	return valid, M{
+		"transaction_id": txID,
+		"anchor_id":      anchorID,
+		"channel":        channelID,
+		"chaincode":      chaincodeID,
+		"commit_status":  commitStatus,
+		"status":         status,
+		"valid":          valid,
+		"consortium":     true,
 	}
 }
 
 func (f *ProductionFabricEngine) GetStats() M {
-	var blocks, txs, endorsements, stateEntries int
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_blocks`).Scan(&blocks)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_transactions`).Scan(&txs)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_endorsement_log`).Scan(&endorsements)
-	f.db.QueryRow(`SELECT COUNT(*) FROM fabric_state_db`).Scan(&stateEntries)
-
-	return M{
-		"total_blocks":       blocks,
-		"total_transactions": txs,
-		"total_endorsements": endorsements,
-		"state_db_entries":   stateEntries,
-		"consensus":          "Raft",
-		"endorsement_policy": "AND('INECMSP.peer','ObserverMSP.peer')",
-		"peers":              f.peers,
-		"signing":            "ECDSA P-256",
-		"state_db":           "persistent (PostgreSQL)",
-		"production":         true,
-	}
+	status := fabricAnchorHealth(context.Background())
+	status["mode"] = "real_gateway_anchor_adapter"
+	status["local_endorsements"] = "disabled"
+	return status
 }
 
 type ProductionTBEngine struct {
@@ -2284,51 +2189,27 @@ func handleProductionFabricStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleProductionFabricSubmit(w http.ResponseWriter, r *http.Request) {
-	if prodFabric == nil {
-		writeJSON(w, 503, M{"error": "Fabric engine not initialized"})
-		return
-	}
-	var req struct {
-		ChannelID   string   `json:"channel_id"`
-		ChaincodeID string   `json:"chaincode_id"`
-		Function    string   `json:"function"`
-		Args        []string `json:"args"`
-		CreatorMSP  string   `json:"creator_msp"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "invalid request")
-		return
-	}
-	if req.ChannelID == "" {
-		req.ChannelID = "inec-channel"
-	}
-	if req.ChaincodeID == "" {
-		req.ChaincodeID = "election-cc"
-	}
-	if req.CreatorMSP == "" {
-		req.CreatorMSP = "INECMSP"
-	}
-	txID, blockNum, err := prodFabric.SubmitWithEndorsement(req.ChannelID, req.ChaincodeID, req.Function, req.Args, req.CreatorMSP)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 201, M{"tx_id": txID, "block_number": blockNum, "endorsed": true, "peers": prodFabric.peers})
+	writeError(w, http.StatusServiceUnavailable,
+		"arbitrary Fabric submissions are disabled; only signed result-evidence anchors can be submitted through the controlled integrity workflow")
 }
 
 func handleProductionFabricVerifyEndorsements(w http.ResponseWriter, r *http.Request) {
 	if prodFabric == nil {
-		writeJSON(w, 503, M{"error": "Fabric engine not initialized"})
+		writeJSON(w, http.StatusServiceUnavailable, M{"error": "Fabric anchor adapter is not initialized"})
 		return
 	}
 	txID := queryParam(r, "tx_id", "")
 	if txID == "" {
-		writeError(w, 400, "tx_id parameter required")
+		writeError(w, http.StatusBadRequest, "tx_id parameter required")
 		return
 	}
 	valid, details := prodFabric.VerifyEndorsements(txID)
 	details["valid"] = valid
-	writeJSON(w, 200, details)
+	if !valid {
+		writeJSON(w, http.StatusServiceUnavailable, details)
+		return
+	}
+	writeJSON(w, http.StatusOK, details)
 }
 
 func handleProductionTBStats(w http.ResponseWriter, r *http.Request) {
@@ -2384,6 +2265,7 @@ func handleProductionTBJournal(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleProductionUpgradeStatus(w http.ResponseWriter, r *http.Request) {
+	fabricStatus := fabricAnchorHealth(r.Context())
 	status := M{
 		"production_upgrades": true,
 		"components": M{
@@ -2406,10 +2288,7 @@ func handleProductionUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 				"status": "disabled",
 				"reason": "a real IPFS API integration has not been configured",
 			},
-			"fabric": M{
-				"status": "disabled",
-				"reason": "a real Hyperledger Fabric gateway integration has not been configured",
-			},
+			"fabric": fabricStatus,
 			"tigerbeetle": M{
 				"status":      "native_client_required",
 				"journaling":  false,
