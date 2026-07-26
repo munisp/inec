@@ -18,11 +18,11 @@ import httpx
 import numpy as np
 import structlog
 from fastapi import FastAPI, HTTPException, Request
-
-from external_device import ExternalDeviceEvent, ExternalDeviceLakehouse
 from pydantic import BaseModel
 from scipy import stats as scipy_stats
 from sklearn.ensemble import IsolationForest
+
+from external_device import ExternalDeviceEvent, ExternalDeviceLakehouse
 
 log = structlog.get_logger()
 
