@@ -42,7 +42,7 @@ jobs:
           DATABASE_URL: postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable
         run: go test -v -race -coverprofile=coverage.out ./...
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-coverage
           path: inec-go-backend/coverage.out
@@ -216,7 +216,7 @@ jobs:
           API_URL: http://localhost:8088
       - name: Upload E2E report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-report
           path: e2e/playwright-report/
