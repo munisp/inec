@@ -142,7 +142,7 @@ spec:
         - name: talentgraph-auth-pull
       containers:
         - name: backend
-          image: registry.digitalocean.com/talentgraph-auth/inec-backend:archive-20260722-112511
+          image: registry.digitalocean.com/talentgraph-auth/inec-backend:archive-20260727-143405
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -296,7 +296,7 @@ spec:
         - name: talentgraph-auth-pull
       containers:
         - name: frontend
-          image: registry.digitalocean.com/talentgraph-auth/inec-frontend:archive-20260722-112655
+          image: registry.digitalocean.com/talentgraph-auth/inec-frontend:archive-20260727-150554
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
