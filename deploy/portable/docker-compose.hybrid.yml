@@ -1,18 +1,19 @@
 services:
   frontend:
-    image: ${INEC_FRONTEND_IMAGE:?set INEC_FRONTEND_IMAGE to an immutable ghcr.io image reference}
+    image: ${INEC_FRONTEND_IMAGE:?set INEC_FRONTEND_IMAGE to the published immutable GHCR frontend image}
     build: null
     pull_policy: always
 
   go-backend:
-    image: ${INEC_BACKEND_IMAGE:?set INEC_BACKEND_IMAGE to an immutable ghcr.io image reference}
+    image: ${INEC_BACKEND_IMAGE:?set INEC_BACKEND_IMAGE to the published immutable GHCR backend image}
     build: null
     pull_policy: always
 
   caddy:
-    image: ${INEC_CADDY_IMAGE:?set INEC_CADDY_IMAGE to an immutable ghcr.io image reference}
-    build: null
-    pull_policy: always
+    image: inec-portable-caddy:${PORTABLE_SOURCE_SHA:?set PORTABLE_SOURCE_SHA to the checked-out source revision}
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
     environment:
       CADDY_ADMIN: 0.0.0.0:2019
       INEC_PUBLIC_HOST: ${INEC_PUBLIC_HOST:?set the public INEC hostname}
@@ -24,8 +25,10 @@ services:
       - caddy-config:/config
 
   campaign-dashboard:
-    image: ${CAMPAIGN_DASHBOARD_IMAGE:?set CAMPAIGN_DASHBOARD_IMAGE to an immutable ghcr.io image reference}
-    pull_policy: always
+    image: inec-portable-campaign-dashboard:${PORTABLE_SOURCE_SHA:?set PORTABLE_SOURCE_SHA to the checked-out source revision}
+    build:
+      context: ./campaign-platform
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       NODE_ENV: production
