@@ -1,0 +1,52 @@
+services:
+  frontend:
+    image: ${INEC_FRONTEND_IMAGE:?set INEC_FRONTEND_IMAGE to an immutable ghcr.io image reference}
+    build: null
+    pull_policy: always
+
+  go-backend:
+    image: ${INEC_BACKEND_IMAGE:?set INEC_BACKEND_IMAGE to an immutable ghcr.io image reference}
+    build: null
+    pull_policy: always
+
+  caddy:
+    image: ${INEC_CADDY_IMAGE:?set INEC_CADDY_IMAGE to an immutable ghcr.io image reference}
+    build: null
+    pull_policy: always
+    environment:
+      CADDY_ADMIN: 0.0.0.0:2019
+      INEC_PUBLIC_HOST: ${INEC_PUBLIC_HOST:?set the public INEC hostname}
+      CAMPAIGN_PUBLIC_HOST: ${CAMPAIGN_PUBLIC_HOST:?set the public campaign hostname}
+    volumes:
+      - ./deploy/portable/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./config/caddy/coraza.conf:/etc/caddy/coraza.conf:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  campaign-dashboard:
+    image: ${CAMPAIGN_DASHBOARD_IMAGE:?set CAMPAIGN_DASHBOARD_IMAGE to an immutable ghcr.io image reference}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8206"
+      DATABASE_URL: postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      OAUTH_SERVER_URL: ${OAUTH_SERVER_URL:-}
+      OWNER_OPEN_ID: ${OWNER_OPEN_ID:-}
+      BUILT_IN_FORGE_API_URL: ${BUILT_IN_FORGE_API_URL:-}
+      BUILT_IN_FORGE_API_KEY: ${BUILT_IN_FORGE_API_KEY:-}
+      VITE_APP_ID: ${VITE_APP_ID:-}
+    depends_on:
+      pgpool:
+        condition: service_healthy
+    networks:
+      - inec-network
+    expose:
+      - "8206"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8206/api/v1/campaign/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

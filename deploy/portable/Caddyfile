@@ -1,0 +1,115 @@
+{
+    admin 0.0.0.0:2019
+
+    storage redis {
+        address redis:6379
+        key_prefix caddy
+    }
+
+    servers {
+        protocols h1 h2 h3
+    }
+
+    order coraza_waf first
+    order authenticate before respond
+}
+
+# Caddy provisions public certificates automatically for publicly resolvable hosts.
+# For localhost and .local names it uses its internal CA, which makes this usable
+# for an isolated Docker host without embedding certificates in the repository.
+{$INEC_PUBLIC_HOST:inec.local} {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://*; connect-src 'self' https://* wss://*;"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    coraza_waf {
+        load_owasp_crs
+        directives `
+            Include /etc/caddy/coraza.conf
+            Include @owasp_crs/*.conf
+        `
+    }
+
+    handle /geolibre/* {
+        reverse_proxy geolibre-web:80
+    }
+
+    handle /geolibre-collab/* {
+        reverse_proxy geolibre-collab:8080
+    }
+
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy apisix:9080 {
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up Host {host}
+        }
+    }
+
+    handle /auth/* {
+        reverse_proxy keycloak:8080 {
+            header_up Host {host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle /workflows/* {
+        reverse_proxy temporal-ui:8080
+    }
+
+    handle {
+        reverse_proxy frontend:80
+    }
+
+    log {
+        output file /var/log/caddy/inec-access.log {
+            roll_size 100MiB
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+}
+
+{$CAMPAIGN_PUBLIC_HOST:campaign.local} {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Content-Security-Policy "default-src 'self' 'unsafe-inline' data: blob: https://*; connect-src 'self' https://* wss://*;"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    coraza_waf {
+        load_owasp_crs
+        directives `
+            Include /etc/caddy/coraza.conf
+            Include @owasp_crs/*.conf
+        `
+    }
+
+    reverse_proxy campaign-dashboard:8206 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+    }
+
+    log {
+        output file /var/log/caddy/campaign-access.log {
+            roll_size 100MiB
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+}
