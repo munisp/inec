@@ -29,6 +29,9 @@ export default function Login() {
         setError(data.error || "Login failed");
         return;
       }
+      if (typeof data.sessionCookie === "string" && data.sessionCookie.includes("=")) {
+        sessionStorage.setItem("manus-cookie", data.sessionCookie);
+      }
       navigate("/");
       window.location.reload();
     } catch {

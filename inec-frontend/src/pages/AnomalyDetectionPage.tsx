@@ -52,10 +52,24 @@ export default function AnomalyDetectionPage() {
   const [severityFilter, setSeverityFilter] = useState<string>('');
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [gnnScore, setGnnScore] = useState<Record<string, unknown> | null>(null);
+  const [serviceError, setServiceError] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
     try {
+      setServiceError(null);
+      const modelStatus = await api.getAnomalyModelStatus().catch((caught: unknown) => {
+        setServiceError(caught instanceof Error ? caught.message : 'The approved anomaly inference service is unavailable.');
+        return null;
+      });
+      if (!modelStatus) {
+        setAnomalies([]);
+        setSummary({});
+        setIntegrity(null);
+        setBenford(null);
+        setMethods([]);
+        setGnnScore(null);
+      } else {
       const [anomalyRes, integrityRes, benfordRes, methodsRes, gnnRes] = await Promise.all([
         api.getAIAnomalies(1, severityFilter || undefined).catch(() => ({ anomalies: [], summary: {} })),
         api.getAIIntegrity(1).catch(() => null),
@@ -69,6 +83,7 @@ export default function AnomalyDetectionPage() {
       setBenford(benfordRes);
       setMethods(methodsRes?.methods || []);
       setGnnScore(gnnRes);
+      }
     } catch {
       // fallback
     }
@@ -97,6 +112,13 @@ export default function AnomalyDetectionPage() {
           {t('refresh')}
         </Button>
       </div>
+
+      {serviceError ? (
+        <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div><p className="font-semibold">Anomaly analysis is temporarily unavailable</p><p className="mt-1">{serviceError}</p><p className="mt-1 text-xs">No anomaly, integrity, Benford, or graph score is shown until the approved inference service responds.</p></div>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>

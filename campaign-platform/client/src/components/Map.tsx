@@ -86,17 +86,23 @@ declare global {
   }
 }
 
-const API_KEY = import.meta.env.VITE_FRONTEND_FORGE_API_KEY;
-const FORGE_BASE_URL =
-  import.meta.env.VITE_FRONTEND_FORGE_API_URL ||
-  "https://forge.butterfly-effect.dev";
-const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
+function configuredRuntimeValue(value: string | undefined): string | null {
+  const normalized = value?.trim();
+  if (!normalized || /^(undefined|null|false)$/i.test(normalized) || normalized.includes("%VITE_")) {
+    return null;
+  }
+  return normalized;
+}
+
+const API_KEY = configuredRuntimeValue(import.meta.env.VITE_FRONTEND_FORGE_API_KEY);
+const FORGE_BASE_URL = configuredRuntimeValue(import.meta.env.VITE_FRONTEND_FORGE_API_URL) || "https://forge.butterfly-effect.dev";
+const MAPS_PROXY_URL = `${FORGE_BASE_URL.replace(/\/$/, "")}/v1/maps/proxy`;
 
 let mapScriptPromise: Promise<void> | null = null;
 
 function loadMapScript(): Promise<void> {
   if (window.google?.maps) return Promise.resolve();
-  if (!API_KEY) return Promise.reject(new Error("The map service is not configured."));
+  if (!API_KEY) return Promise.reject(new Error("Interactive map configuration is unavailable. Use the searchable polling-unit list while an administrator configures the map service."));
   if (mapScriptPromise) return mapScriptPromise;
 
   mapScriptPromise = new Promise<void>((resolve, reject) => {

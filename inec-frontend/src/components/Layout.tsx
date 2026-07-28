@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useAuth } from '@/lib/auth';
 import { useI18n } from '@/lib/i18n';
 import { useTheme } from '@/components/ThemeProvider';
@@ -79,12 +79,24 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
   const { lang, setLang } = useI18n();
   const { theme, setTheme, resolved } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const desktopNavRef = useRef<HTMLElement>(null);
+  const mobileNavRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      [desktopNavRef.current, mobileNavRef.current].forEach((nav) => {
+        if (!nav || nav.offsetParent === null) return;
+        nav.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: 'nearest' });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [currentPage, sidebarOpen]);
 
   const ThemeIcon = resolved === 'dark' ? Moon : Sun;
 
-  const NavContent = () => (
-    <div className="flex flex-col h-full">
-      <div className="p-4 border-b border-zinc-200 dark:border-zinc-700">
+  const NavContent = ({ navigationRef }: { navigationRef: RefObject<HTMLElement | null> }) => (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 p-4 border-b border-zinc-200 dark:border-zinc-700">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-[#4A1525] flex items-center justify-center">
             <Vote className="w-5 h-5 text-white" />
@@ -95,12 +107,13 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           </div>
         </div>
       </div>
-      <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto scrollbar-thin" aria-label="Main navigation" role="navigation">
-        {NAV_ITEMS.map((item: typeof NAV_ITEMS[number]) => {
+      <nav ref={navigationRef} className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain p-2 scrollbar-thin [scrollbar-gutter:stable]" aria-label="Main navigation">
+        {NAV_ITEMS.map((item: typeof NAV_ITEMS[number], index) => {
           const isActive = currentPage === item.path;
+          const showSection = Boolean(item.section && item.section !== NAV_ITEMS[index - 1]?.section);
           return (
             <div key={item.path}>
-              {item.section && (
+              {showSection && (
                 <div className="px-3 pt-4 pb-1" role="separator">
                   <span className="text-[10px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">{item.section}</span>
                 </div>
@@ -123,7 +136,7 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           );
         })}
       </nav>
-      <div className="p-3 border-t border-zinc-200 dark:border-zinc-700 space-y-2">
+      <div className="shrink-0 p-3 border-t border-zinc-200 dark:border-zinc-700 space-y-2">
         <div className="flex items-center gap-1 px-1">
           {([
             { value: 'light' as const, icon: Sun, label: 'Light' },
@@ -159,19 +172,19 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
   );
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-900 transition-colors duration-200">
-      <aside className="hidden lg:flex lg:fixed lg:inset-y-0 lg:w-56 lg:flex-col border-r border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/50">
-        <NavContent />
+    <div className="min-h-[100dvh] bg-zinc-50 dark:bg-zinc-900 transition-colors duration-200">
+      <aside className="hidden lg:fixed lg:inset-y-0 lg:flex lg:h-[100dvh] lg:w-56 lg:flex-col border-r border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/50">
+        <NavContent navigationRef={desktopNavRef} />
       </aside>
 
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 bg-white dark:bg-zinc-800 border px-2 py-1 rounded text-sm z-[100]">Skip to content</a>
       <header className="lg:hidden sticky top-0 z-50 flex items-center justify-between px-4 h-14 bg-white/80 dark:bg-zinc-800/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-700" role="banner">
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon"><Menu className="h-5 w-5" /></Button>
+            <Button variant="ghost" size="icon" aria-label="Open navigation menu" title="Open navigation menu"><Menu className="h-5 w-5" /></Button>
           </SheetTrigger>
-          <SheetContent side="left" className="p-0 w-56">
-            <NavContent />
+          <SheetContent side="left" className="h-[100dvh] max-h-[100dvh] w-56 overflow-hidden p-0">
+            <NavContent navigationRef={mobileNavRef} />
           </SheetContent>
         </Sheet>
         <div className="flex items-center gap-2">

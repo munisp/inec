@@ -34,6 +34,13 @@ export function registerLocalAuthRoutes(app: Express) {
 
     const cookieOptions = getSessionCookieOptions(req);
     res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-    res.json({ ok: true, user: { username: user.username, fullName: user.fullName, role: user.role } });
+    // Keep the HttpOnly cookie as the primary session mechanism. The tab-scoped
+    // mirror supports the existing bearer fallback for embedded browsers that
+    // retain a SameSite=None cookie but do not send it on a same-origin API call.
+    res.json({
+      ok: true,
+      user: { username: user.username, fullName: user.fullName, role: user.role },
+      sessionCookie: `${COOKIE_NAME}=${sessionToken}`,
+    });
   });
 }

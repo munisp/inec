@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
@@ -31,6 +31,7 @@ import BudgetPlanner from "./pages/BudgetPlanner";
 import CandidateProfilePage from "./pages/CandidateProfilePage";
 import CampaignTeam from "./pages/CampaignTeam";
 import MobileNav from "./components/MobileNav";
+import AnalyticsTracker from "./components/AnalyticsTracker";
 import Dashboard from "./pages/Dashboard";
 import PetitionSignPage from "./pages/PetitionSignPage";
 import Login from "./pages/Login";
@@ -73,6 +74,22 @@ function Router() {
   );
 }
 
+const PUBLIC_ROUTES = ["/login", "/join", "/candidate-website"];
+
+function CampaignAppShell() {
+  const [location] = useLocation();
+  const isPublicRoute = PUBLIC_ROUTES.includes(location) || location.startsWith("/sign/");
+
+  return (
+    <>
+      <div className={isPublicRoute ? undefined : "pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0"}>
+        <Router />
+      </div>
+      {!isPublicRoute && <MobileNav />}
+    </>
+  );
+}
+
 // NOTE: About Theme
 // - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
 //   to keep consistent foreground/background color across components
@@ -87,9 +104,9 @@ function App() {
       >
         <TooltipProvider>
           <Toaster />
+          <AnalyticsTracker />
           <OfflineBanner />
-          <Router />
-          <MobileNav />
+          <CampaignAppShell />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

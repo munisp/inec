@@ -114,21 +114,23 @@ export default function CommandCenterPage() {
   }, [fetchData, autoRefresh]);
 
   useEffect(() => {
-    try {
-      const baseUrl = window.location.origin.replace('5175', '8088');
-      const es = new EventSource(`${baseUrl}/command-center/stream`, { withCredentials: true });
-      es.onmessage = (event) => {
-        try {
-          const update = JSON.parse(event.data);
-          if (update.states) {
-            setData(prev => prev ? { ...prev, states: update.states, timestamp: update.timestamp } : prev);
-            setLastUpdated(new Date());
-          }
-        } catch { /* ignore parse errors */ }
-      };
-      sseRef.current = es;
-      return () => es.close();
-    } catch { /* SSE not available */ }
+    const configuredBase = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+    const es = new EventSource(`${configuredBase}/command-center/stream`, { withCredentials: true });
+    es.onmessage = (event) => {
+      try {
+        const update = JSON.parse(event.data);
+        if (update.states) {
+          setData(prev => prev ? { ...prev, states: update.states, timestamp: update.timestamp } : prev);
+          setLastUpdated(new Date());
+        }
+      } catch { /* Ignore a malformed optional live update; polling remains authoritative. */ }
+    };
+    es.onerror = () => {
+      // Polling continues to provide the verified command state when SSE is unavailable.
+      es.close();
+    };
+    sseRef.current = es;
+    return () => es.close();
   }, []);
 
   const handleLoadShed = async (level: number) => {

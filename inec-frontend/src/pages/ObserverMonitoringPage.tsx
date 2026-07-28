@@ -1,7 +1,23 @@
 import { useState, useEffect, useRef } from 'react';
 import { Eye, Radio, Upload, Bell, MapPin, Activity, Users, FileText, AlertTriangle } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8088';
+const API = import.meta.env.VITE_API_URL ?? '';
+
+async function observerRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${API}${path}`, { ...options, credentials: 'include' });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(body || `Observer service returned ${response.status}.`);
+  }
+  if (!body.trim()) {
+    throw new Error('Observer service returned an empty response.');
+  }
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error('Observer service returned an invalid response.');
+  }
+}
 
 interface ResultEvent {
   type: string;
@@ -48,11 +64,13 @@ export default function ObserverMonitoringPage() {
   const [partyData, setPartyData] = useState<PartyDashboard | null>(null);
   const [selectedParty, setSelectedParty] = useState('APC');
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [serviceReady, setServiceReady] = useState(false);
+  const [serviceError, setServiceError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // SSE Connection for live updates
   useEffect(() => {
-    if (tab !== 'live') return;
+    if (tab !== 'live' || !serviceReady) return;
     const es = new EventSource(`${API}/observer/stream`, { withCredentials: true });
     eventSourceRef.current = es;
 
@@ -78,37 +96,48 @@ export default function ObserverMonitoringPage() {
     es.onerror = () => setConnected(false);
 
     return () => { es.close(); setConnected(false); };
-  }, [tab]);
+  }, [tab, serviceReady]);
 
-  // Fetch observer stats
+  // Probe the observer service once before opening optional SSE streams or tab data.
   useEffect(() => {
-    fetch(`${API}/observer/stats`, { credentials: 'include' })
-      .then(r => r.json()).then(setStats).catch(e => console.error('observer stats:', e));
+    void observerRequest<Record<string, number>>('/observer/stats')
+      .then((data) => {
+        setStats(data);
+        setServiceReady(true);
+        setServiceError(null);
+      })
+      .catch((error: unknown) => {
+        setServiceReady(false);
+        setServiceError(error instanceof Error ? error.message : 'Observer monitoring is currently unavailable.');
+      });
   }, []);
 
   // Fetch reports
   useEffect(() => {
-    if (tab === 'reports') {
-      fetch(`${API}/observer/reports`, { credentials: 'include' })
-        .then(r => r.json()).then(d => setReports(Array.isArray(d) ? d : [])).catch(e => console.error('observer reports:', e));
+    if (tab === 'reports' && serviceReady) {
+      void observerRequest<ObserverReport[]>('/observer/reports')
+        .then((data) => setReports(Array.isArray(data) ? data : []))
+        .catch((error: unknown) => setServiceError(error instanceof Error ? error.message : 'Observer reports are currently unavailable.'));
     }
-  }, [tab]);
+  }, [tab, serviceReady]);
 
   // Fetch alert rules
   useEffect(() => {
-    if (tab === 'alerts') {
-      fetch(`${API}/observer/alerts`, { credentials: 'include' })
-        .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert rules:', e));
+    if (tab === 'alerts' && serviceReady) {
+      void observerRequest<AlertRule[]>('/observer/alerts')
+        .then((data) => setAlertRules(Array.isArray(data) ? data : []))
+        .catch((error: unknown) => setServiceError(error instanceof Error ? error.message : 'Observer alerts are currently unavailable.'));
     }
-  }, [tab]);
+  }, [tab, serviceReady]);
 
   // Fetch party dashboard
   useEffect(() => {
-    if (tab === 'party') {
-      fetch(`${API}/observer/party-dashboard?party=${selectedParty}`, { credentials: 'include' })
-        .then(r => r.json()).then(setPartyData).catch(e => console.error('party data:', e));
+    if (tab === 'party' && serviceReady) {
+      void observerRequest<PartyDashboard>(`/observer/party-dashboard?party=${encodeURIComponent(selectedParty)}`)
+        .then(setPartyData)
+        .catch((error: unknown) => setServiceError(error instanceof Error ? error.message : 'Party monitoring data is currently unavailable.'));
     }
-  }, [tab, selectedParty]);
+  }, [tab, selectedParty, serviceReady]);
 
   return (
     <div className="space-y-4">
@@ -122,6 +151,13 @@ export default function ObserverMonitoringPage() {
         </div>
       </div>
 
+      {serviceError && (
+        <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div><p className="font-semibold">Observer monitoring is temporarily unavailable</p><p className="mt-1">{serviceError}</p></div>
+        </div>
+      )}
+
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <StatCard icon={Users} label="Observers" value={stats.total_observers || 0} />
@@ -132,15 +168,15 @@ export default function ObserverMonitoringPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-zinc-200">
+      <div className="flex overflow-x-auto border-b border-zinc-200" role="tablist" aria-label="Observer monitoring views">
         {[
           { key: 'live', icon: Radio, label: 'Live Feed' },
           { key: 'reports', icon: Upload, label: 'Reports' },
           { key: 'alerts', icon: Bell, label: 'Alerts' },
           { key: 'party', icon: Eye, label: 'Party Dashboard' },
         ].map(t => (
-          <button key={t.key} onClick={() => setTab(t.key as typeof tab)}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t.key ? 'border-green-600 text-green-700' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}>
+          <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key as typeof tab)}
+            className={`shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t.key ? 'border-green-600 text-green-700' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}>
             <t.icon className="w-4 h-4" />{t.label}
           </button>
         ))}
@@ -150,8 +186,9 @@ export default function ObserverMonitoringPage() {
       {tab === 'live' && <LiveFeedTab events={events} connected={connected} />}
       {tab === 'reports' && <ReportsTab reports={reports} />}
       {tab === 'alerts' && <AlertsTab rules={alertRules} onRefresh={() => {
-        fetch(`${API}/observer/alerts`, { credentials: 'include' })
-          .then(r => r.json()).then(d => setAlertRules(Array.isArray(d) ? d : [])).catch(e => console.error('alert refresh:', e));
+        void observerRequest<AlertRule[]>('/observer/alerts')
+          .then((data) => setAlertRules(Array.isArray(data) ? data : []))
+          .catch((caught: unknown) => setServiceError(caught instanceof Error ? caught.message : 'Observer alerts are currently unavailable.'));
       }} />}
       {tab === 'party' && <PartyTab data={partyData} party={selectedParty} onPartyChange={setSelectedParty} />}
     </div>
@@ -205,6 +242,7 @@ function LiveFeedTab({ events, connected }: { events: ResultEvent[]; connected: 
 
 function ReportsTab({ reports }: { reports: ObserverReport[] }) {
   const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -212,15 +250,16 @@ function ReportsTab({ reports }: { reports: ObserverReport[] }) {
     const form = e.currentTarget;
     const formData = new FormData(form);
     setUploading(true);
+    setError(null);
     try {
-      await fetch(`${API}/observer/reports`, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData,
-      });
+      const response = await fetch(`${API}/observer/reports`, { method: 'POST', credentials: 'include', body: formData });
+      if (!response.ok) throw new Error((await response.text()) || `Report submission failed (${response.status}).`);
       form.reset();
-    } catch { /* handled */ }
-    setUploading(false);
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : 'Report submission failed.');
+    } finally {
+      setUploading(false);
+    }
   };
 
   return (
@@ -228,6 +267,7 @@ function ReportsTab({ reports }: { reports: ObserverReport[] }) {
       {/* Upload Form */}
       <form onSubmit={handleUpload} className="bg-white rounded-lg border border-zinc-200 p-4 space-y-3">
         <h3 className="font-medium text-sm text-zinc-700">Submit Observer Report</h3>
+        {error ? <p role="alert" className="text-sm text-red-700">{error}</p> : null}
         <div className="grid grid-cols-2 gap-3">
           <input name="polling_unit_code" placeholder="Polling Unit Code" required className="border rounded px-3 py-2 text-sm" />
           <input name="election_id" type="number" placeholder="Election ID" required className="border rounded px-3 py-2 text-sm" />
@@ -274,32 +314,37 @@ function ReportsTab({ reports }: { reports: ObserverReport[] }) {
 }
 
 function AlertsTab({ rules, onRefresh }: { rules: AlertRule[]; onRefresh: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+
   const handleCreate = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget;
     const data = Object.fromEntries(new FormData(form));
-    await fetch(`${API}/observer/alerts`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    form.reset();
-    onRefresh();
+    setError(null);
+    try {
+      await observerRequest('/observer/alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      form.reset();
+      onRefresh();
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : 'Alert-rule creation failed.');
+    }
   };
 
   const handleDelete = async (id: number) => {
-    await fetch(`${API}/observer/alerts/${id}`, {
-      method: 'DELETE',
-      credentials: 'include',
-    });
-    onRefresh();
+    setError(null);
+    try {
+      await observerRequest(`/observer/alerts/${id}`, { method: 'DELETE' });
+      onRefresh();
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : 'Alert-rule deletion failed.');
+    }
   };
 
   return (
     <div className="space-y-4">
       <form onSubmit={handleCreate} className="bg-white rounded-lg border border-zinc-200 p-4 space-y-3">
         <h3 className="font-medium text-sm text-zinc-700">Create Alert Rule</h3>
+        {error ? <p role="alert" className="text-sm text-red-700">{error}</p> : null}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <input name="party_code" placeholder="Party Code (e.g. APC)" className="border rounded px-3 py-2 text-sm" />
           <input name="state_code" placeholder="State Code" className="border rounded px-3 py-2 text-sm" />

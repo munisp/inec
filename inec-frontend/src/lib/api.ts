@@ -58,7 +58,16 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
         }
         throw new ApiError(res.status, err.detail || err.error || 'Request failed');
       }
-      return res.json();
+      if (res.status === 204) return null;
+      const body = await res.text();
+      if (!body.trim()) {
+        throw new ApiError(502, 'The service returned an empty response. Please retry or check its operational status.');
+      }
+      try {
+        return JSON.parse(body);
+      } catch {
+        throw new ApiError(502, 'The service returned an invalid response. Please retry or check its operational status.');
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) throw err;
@@ -481,11 +490,6 @@ export const api = {
     request('/production/ipfs/store', { method: 'POST', body: JSON.stringify({ data, codec }) }),
   productionIPFSVerify: (cid: string) => request(`/production/ipfs/verify?cid=${cid}`),
   getProductionFabricStats: () => request('/production/fabric/stats'),
-  getProductionLedgerStats: () => request('/production/ledger/stats'),
-  productionLedgerTransfer: (debitAccount: string, creditAccount: string, amount: number, idempotencyKey?: string) =>
-    request('/production/ledger/transfer', { method: 'POST', body: JSON.stringify({ debit_account: debitAccount, credit_account: creditAccount, amount, idempotency_key: idempotencyKey }) }),
-  getProductionLedgerJournal: (transferId?: string) =>
-    request(`/production/ledger/journal${transferId ? `?transfer_id=${transferId}` : ''}`),
   getDBMetrics: () => request('/db/metrics'),
   getDBPool: () => request('/db/pool'),
   getPgpoolStatus: () => request('/pgpool/status'),

@@ -29,15 +29,34 @@ export default function WorkflowEnginePage() {
   const [workflows, setWorkflows] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [advancing, setAdvancing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { loadWorkflows(); }, []);
 
   const loadWorkflows = async () => {
-    try { const d = await api.getEMSWorkflows(); setWorkflows(d || []); } catch {}
+    setLoading(true);
+    try {
+      setError(null);
+      const d = await api.getEMSWorkflows();
+      setWorkflows(d || []);
+    } catch (caught: unknown) {
+      setWorkflows([]);
+      setError(caught instanceof Error ? caught.message : 'Workflow service is currently unavailable.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadWorkflow = async (id: number) => {
-    try { const d = await api.getEMSWorkflow(id); setSelected(d); } catch {}
+    try {
+      setError(null);
+      const d = await api.getEMSWorkflow(id);
+      setSelected(d);
+    } catch (caught: unknown) {
+      setSelected(null);
+      setError(caught instanceof Error ? caught.message : 'Workflow details are currently unavailable.');
+    }
   };
 
   const advanceWorkflow = async (id: number) => {
@@ -46,23 +65,31 @@ export default function WorkflowEnginePage() {
       await api.advanceEMSWorkflow(id);
       await loadWorkflow(id);
       await loadWorkflows();
-    } catch {}
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : 'Workflow advancement failed.');
+    }
     setAdvancing(false);
   };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-zinc-900">Workflow Engine</h1>
-        <p className="text-sm text-zinc-500">End-to-end election pipeline: Registration → Accreditation → Voting → Collation → Declaration → Certification</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-zinc-900">Workflow Engine</h1>
+          <p className="text-sm text-zinc-500">End-to-end election pipeline: Registration → Accreditation → Voting → Collation → Declaration → Certification</p>
+        </div>
+        <Button type="button" variant="outline" onClick={() => void loadWorkflows()} disabled={loading}>{loading ? 'Checking…' : 'Refresh workflows'}</Button>
       </div>
+
+      {error ? <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100"><p className="font-semibold">Workflow service is temporarily unavailable</p><p className="mt-1">{error}</p></div> : null}
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-3">
           <h3 className="text-sm font-medium text-zinc-700">Active Workflows</h3>
           {workflows.map((wf: any) => (
-            <Card key={wf.id} className={`cursor-pointer transition-colors ${selected?.id === wf.id ? 'ring-2 ring-green-500' : 'hover:bg-zinc-50'}`}
-              onClick={() => loadWorkflow(wf.id)}>
+            <Card key={wf.id} role="button" tabIndex={0} aria-pressed={selected?.id === wf.id} className={`cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${selected?.id === wf.id ? 'ring-2 ring-green-500' : 'hover:bg-zinc-50'}`}
+              onClick={() => void loadWorkflow(wf.id)}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void loadWorkflow(wf.id); } }}>
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -81,7 +108,7 @@ export default function WorkflowEnginePage() {
               </CardContent>
             </Card>
           ))}
-          {workflows.length === 0 && <p className="text-sm text-zinc-400">No workflows found</p>}
+          {workflows.length === 0 && <p className="text-sm text-zinc-400">{loading ? 'Loading workflows…' : error ? 'No workflow data is available while the service is offline.' : 'No workflows found'}</p>}
         </div>
 
         <div className="lg:col-span-2">

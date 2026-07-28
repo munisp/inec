@@ -35,39 +35,49 @@ export default function SMSVerificationPage() {
   const [sessionId] = useState(() => `sess_${Date.now()}`);
 
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+  const [gatewayError, setGatewayError] = useState<string | null>(null);
 
   const handleSMSVerify = async () => {
     if (!phone || !puCode) return;
     setSmsLoading(true);
     setSmsResult(null);
+    setGatewayError(null);
     try {
       const res = await api.smsVerify(phone, puCode);
       setSmsResult(res);
     } catch (e: unknown) {
-      setSmsResult({ status: 'error', message: e instanceof Error ? e.message : 'Request failed' });
+      const message = e instanceof Error ? e.message : 'Request failed';
+      setSmsResult({ status: 'error', message });
+      setGatewayError(message);
     }
     setSmsLoading(false);
   };
 
   const handleUSSDSend = async () => {
     setUssdLoading(true);
+    setGatewayError(null);
     try {
       const res = await api.ussdGateway(sessionId, ussdPhone || '+2348000000000', ussdText);
       setUssdSession(res);
       setUssdHistory(prev => [...prev, `> ${ussdText || '(start)'}`, res.response || res.message || '']);
       setUssdText('');
     } catch (e: unknown) {
-      setUssdHistory(prev => [...prev, `Error: ${e instanceof Error ? e.message : 'Failed'}`]);
+      const message = e instanceof Error ? e.message : 'Failed';
+      setUssdHistory(prev => [...prev, `Error: ${message}`]);
+      setGatewayError(message);
     }
     setUssdLoading(false);
   };
 
   const loadStats = async () => {
     try {
+      setGatewayError(null);
       const res = await api.getSMSStats();
       setStats(res);
-    } catch {
-      setStats({ error: 'Could not load stats' });
+    } catch (caught: unknown) {
+      const message = caught instanceof Error ? caught.message : 'SMS/USSD statistics are unavailable.';
+      setStats({ error: message });
+      setGatewayError(message);
     }
   };
 
@@ -77,6 +87,8 @@ export default function SMSVerificationPage() {
         <h1 className="text-2xl font-bold text-zinc-900">{t('sms_verification')}</h1>
         <p className="text-sm text-zinc-500 mt-1">{t('sms_desc')}</p>
       </div>
+
+      {gatewayError ? <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100"><p className="font-semibold">SMS/USSD gateway is temporarily unavailable</p><p className="mt-1">{gatewayError}</p><p className="mt-1 text-xs">No verification result is inferred while the approved gateway is offline. You can retry after service restoration.</p></div> : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>

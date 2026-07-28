@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -42,33 +42,50 @@ export default function PublicAPIPage() {
   const [loading, setLoading] = useState(false);
   const [usage, setUsage] = useState<Record<string, unknown> | null>(null);
   const [copied, setCopied] = useState('');
+  const [activeTab, setActiveTab] = useState('docs');
+  const [serviceError, setServiceError] = useState<string | null>(null);
 
   const loadKeys = async () => {
     try {
+      setServiceError(null);
       const res = await api.getAPIKeys();
       setKeys(res.data || res.keys || []);
-    } catch { /* empty */ }
+    } catch (caught: unknown) {
+      setKeys([]);
+      setServiceError(caught instanceof Error ? caught.message : 'API-key administration is currently unavailable.');
+    }
   };
 
   const loadUsage = async () => {
     try {
+      setServiceError(null);
       const res = await api.getAPIUsage();
       setUsage(res);
-    } catch { /* empty */ }
+    } catch (caught: unknown) {
+      setUsage(null);
+      setServiceError(caught instanceof Error ? caught.message : 'API usage information is currently unavailable.');
+    }
   };
 
-  useEffect(() => { loadKeys(); }, []);
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    if (tab === 'keys') void loadKeys();
+    if (tab === 'usage') void loadUsage();
+  };
 
   const handleGenerate = async () => {
     if (!newKeyName || !newKeyOwner) return;
     setLoading(true);
     try {
+      setServiceError(null);
       const res = await api.generateAPIKey(newKeyName, newKeyOwner);
       setGeneratedKey(res.api_key || res.key || '');
       setNewKeyName('');
       setNewKeyOwner('');
       loadKeys();
-    } catch { /* empty */ }
+    } catch (caught: unknown) {
+      setServiceError(caught instanceof Error ? caught.message : 'API-key generation is currently unavailable.');
+    }
     setLoading(false);
   };
 
@@ -91,6 +108,8 @@ export default function PublicAPIPage() {
         <h1 className="text-2xl font-bold text-zinc-900">{t('public_api')}</h1>
         <p className="text-sm text-zinc-500 mt-1">{t('public_api_desc')}</p>
       </div>
+
+      {serviceError ? <div role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100"><p className="font-semibold">API administration is temporarily unavailable</p><p className="mt-1">{serviceError}</p></div> : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
@@ -134,11 +153,11 @@ export default function PublicAPIPage() {
         </Card>
       </div>
 
-      <Tabs defaultValue="docs" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
         <TabsList>
           <TabsTrigger value="docs">{t('api_docs')}</TabsTrigger>
           <TabsTrigger value="keys">{t('api_keys')}</TabsTrigger>
-          <TabsTrigger value="usage" onClick={loadUsage}>{t('usage')}</TabsTrigger>
+          <TabsTrigger value="usage">{t('usage')}</TabsTrigger>
           <TabsTrigger value="examples">{t('examples')}</TabsTrigger>
         </TabsList>
 

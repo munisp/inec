@@ -53,7 +53,11 @@ export default function ProductionPage() {
         api.getProductionPADStats(),
         api.getProductionIPFSStats(),
         api.getProductionFabricStats(),
-        api.getProductionLedgerStats(),
+        api.getOperationalSettlementHealth().catch((caught: unknown) => ({
+          status: 'unavailable',
+          components: { operational_settlement_enabled: false, tigerbeetle: false, permify: false, mojaloop: false },
+          reason: caught instanceof Error ? caught.message : 'Operational settlement health is unavailable.',
+        })),
         api.getDBMetrics(),
         api.getPgpoolStatus(),
       ]);
@@ -179,13 +183,13 @@ export default function ProductionPage() {
               </CardContent>
             </Card>
             <Card>
-              <CardHeader><CardTitle className="text-sm">TigerBeetle Ledger</CardTitle></CardHeader>
+              <CardHeader><CardTitle className="text-sm">Operational settlement boundary</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <p><span className="text-zinc-500">Accounts:</span> {ledger?.total_accounts}</p>
-                <p><span className="text-zinc-500">Transfers:</span> {ledger?.total_transfers}</p>
-                <p><span className="text-zinc-500">Journal Entries:</span> {ledger?.journal_entries}</p>
-                <p><span className="text-zinc-500">ACID:</span> <Badge variant="outline">{ledger?.acid ? 'Yes' : 'No'}</Badge></p>
-                <p><span className="text-zinc-500">Idempotency:</span> <Badge variant="outline">{ledger?.idempotency ? 'Yes' : 'No'}</Badge></p>
+                <p><span className="text-zinc-500">State:</span> <Badge variant="outline">{ledger?.status || 'unavailable'}</Badge></p>
+                <p><span className="text-zinc-500">Native TigerBeetle:</span> {ledger?.components?.tigerbeetle ? 'Connected' : 'Unavailable'}</p>
+                <p><span className="text-zinc-500">Permify approval:</span> {ledger?.components?.permify ? 'Connected' : 'Unavailable'}</p>
+                <p><span className="text-zinc-500">Mojaloop dispatch:</span> {ledger?.components?.mojaloop ? 'Authorized and connected' : 'Disabled or unavailable'}</p>
+                <p className="text-xs text-zinc-500">Scope: {ledger?.scope || 'device logistics and reimbursement commitments only'}</p>
               </CardContent>
             </Card>
           </div>
@@ -297,40 +301,20 @@ export default function ProductionPage() {
 
         <TabsContent value="ledger" className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <MetricCard label="Accounts" value={ledger?.total_accounts || 0} />
-            <MetricCard label="Transfers" value={ledger?.total_transfers || 0} />
-            <MetricCard label="Journal Entries" value={ledger?.journal_entries || 0} />
-            <MetricCard label="ACID" value={ledger?.acid ? 'Enabled' : 'Disabled'} />
+            <MetricCard label="Settlement state" value={ledger?.status || 'Unavailable'} />
+            <MetricCard label="TigerBeetle" value={ledger?.components?.tigerbeetle ? 'Connected' : 'Unavailable'} />
+            <MetricCard label="Permify approval" value={ledger?.components?.permify ? 'Connected' : 'Unavailable'} />
+            <MetricCard label="Mojaloop" value={ledger?.components?.mojaloop ? 'Connected' : 'Disabled'} />
           </div>
-          {ledger?.accounts && (
-            <Card>
-              <CardHeader><CardTitle className="text-sm">Accounts</CardTitle></CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead><tr className="border-b text-left text-zinc-500">
-                      <th className="py-2 pr-4">Account</th>
-                      <th className="py-2 pr-4">Ledger</th>
-                      <th className="py-2 pr-4">Balance</th>
-                      <th className="py-2 pr-4">Debits Posted</th>
-                      <th className="py-2 pr-4">Credits Posted</th>
-                    </tr></thead>
-                    <tbody>
-                      {ledger.accounts.map((a: any) => (
-                        <tr key={a.id} className="border-b">
-                          <td className="py-2 pr-4 font-mono text-xs">{a.id}</td>
-                          <td className="py-2 pr-4">{a.ledger}</td>
-                          <td className="py-2 pr-4 font-medium">{a.balance?.toLocaleString()}</td>
-                          <td className="py-2 pr-4">{a.debits_posted?.toLocaleString()}</td>
-                          <td className="py-2 pr-4">{a.credits_posted?.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+          <Card>
+            <CardHeader><CardTitle className="text-sm">Approved operational commitment boundary</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-sm text-zinc-700 dark:text-zinc-200">
+              <p>Native TigerBeetle commitments are limited to independently approved BVAS device logistics and reimbursement workflows. Electoral results, voter records, and generic payment requests do not create ledger transfers.</p>
+              <p><span className="text-zinc-500">Operational settlement switch:</span> {ledger?.components?.operational_settlement_enabled ? 'Enabled by authorized configuration' : 'Disabled by default'}</p>
+              <p><span className="text-zinc-500">External dispatch:</span> {ledger?.components?.mojaloop_enabled ? 'Mojaloop authorization configured' : 'Mojaloop remains disabled'}</p>
+              {ledger?.reason ? <p className="text-xs text-amber-700 dark:text-amber-300">{ledger.reason}</p> : null}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="database" className="space-y-4">
