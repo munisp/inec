@@ -16,6 +16,7 @@ Can run inference on CPU (ONNX Runtime) at ~30ms per frame.
 """
 
 import os
+import sys
 import json
 import argparse
 from datetime import datetime, timezone
@@ -284,14 +285,36 @@ def generate_synthetic_pad_data(n_samples: int = 10000):
     return images[perm], depth_labels[perm], live_labels[perm]
 
 
-def train_pad_model(output_dir: str | None = None, epochs: int = 10):
-    """Train CDCN liveness model."""
+def train_pad_model(output_dir: str | None = None, epochs: int = 10,
+                    data_dir: str | None = None, allow_synthetic: bool = False):
+    """Train CDCN liveness model.
+
+    INTEGRITY: this model is served in production at /liveness/predict. It must
+    be trained on a real certified PAD dataset (e.g. OULU-NPU). There is no
+    real-dataset loader wired up yet, so unless allow_synthetic is explicitly
+    set we refuse to train rather than silently ship a noise-trained model.
+    """
     if not TORCH_AVAILABLE:
         print("ERROR: PyTorch required. Install with: pip install torch torchvision")
-        return
+        sys.exit(2)
 
     output_path = Path(output_dir) if output_dir else MODELS_DIR
     output_path.mkdir(parents=True, exist_ok=True)
+
+    if data_dir:
+        print(f"ERROR: real dataset loading from {data_dir} is not implemented; "
+              "refusing to train on synthetic noise silently. "
+              "Implement an OULU-NPU/CASIA-SURF loader before production training.")
+        sys.exit(2)
+
+    if not allow_synthetic:
+        print("ERROR: refusing to train production liveness/PAD model on synthetic noise; "
+              "provide a real certified dataset (pass --allow-synthetic for an "
+              "explicitly non-production experiment)")
+        sys.exit(2)
+
+    print("WARNING: --allow-synthetic set — training on torch.randn noise. "
+          "The resulting model is NOT valid for production PAD use.")
 
     print("Initializing CDCN model...")
     model = CDCNLivenessModel()
@@ -301,7 +324,7 @@ def train_pad_model(output_dir: str | None = None, epochs: int = 10):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,} ({n_params/1e6:.1f}M)")
 
-    # Generate synthetic data (replace with real dataset in production)
+    # Generate synthetic data (explicitly non-production; NOT a real PAD dataset)
     print("Generating synthetic training data...")
     images, depth_labels, live_labels = generate_synthetic_pad_data(1000)
 
@@ -350,11 +373,16 @@ def train_pad_model(output_dir: str | None = None, epochs: int = 10):
             "liveness_score": [1, 1],
         },
         "n_parameters": n_params,
-        "attack_types_detected": [
-            "print_attack", "screen_replay", "3d_mask", "deepfake_injection",
-            "partial_attack", "paper_cutout",
-        ],
-        "iso_30107_level": "Level 2",
+        # INTEGRITY: no real attack data was ever presented to this model, so we
+        # must not claim any attack-type coverage or ISO 30107 compliance level.
+        "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+        "attack_types_detected": [],
+        "attack_types_note": (
+            "No attack types validated — model was trained on synthetic noise, "
+            "not on a certified PAD dataset (OULU-NPU / CASIA-SURF)."
+        ),
+        "iso_30107_level": None,
+        "iso_30107_note": "Not evaluated or certified to any ISO 30107 PAD level.",
         "cpu_inference": True,
         "inference_latency": {
             "cpu_ms": "25-40ms per frame",
@@ -365,7 +393,11 @@ def train_pad_model(output_dir: str | None = None, epochs: int = 10):
             "Custom Nigerian face spoof dataset (1,000+ subjects)",
             "Print/screen/mask attack samples per subject",
         ],
-        "evaluation_protocol": "ISO 30107-3 (APCER, BPCER, ACER)",
+        "evaluation_protocol": None,
+        "evaluation_protocol_note": (
+            "No APCER/BPCER/ACER evaluation performed; ISO 30107-3 evaluation "
+            "is required before any production deployment."
+        ),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -379,6 +411,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train INEC Liveness/PAD model")
     parser.add_argument("--output", type=str, help="Output directory")
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--data", type=str, help="Path to a real certified PAD dataset (loader not yet implemented)")
+    parser.add_argument("--allow-synthetic", action="store_true",
+                        help="Explicitly allow training on synthetic noise (artifact marked NOT_FOR_PRODUCTION)")
     args = parser.parse_args()
 
-    train_pad_model(output_dir=args.output, epochs=args.epochs)
+    train_pad_model(output_dir=args.output, epochs=args.epochs,
+                    data_dir=args.data, allow_synthetic=args.allow_synthetic)

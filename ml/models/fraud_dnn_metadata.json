@@ -46,5 +46,7 @@
     "round_number_flag"
   ],
   "weights_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn.pt",
-  "scaler_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn_scaler.pkl"
+  "scaler_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn_scaler.pkl",
+  "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+  "integrity_note": "Trained on generate_nigerian_election_data() synthetic output; test metrics are not evidence of production performance. Retrain on real certified results before deployment."
 }

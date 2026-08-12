@@ -11,6 +11,7 @@ Outputs: ONNX model + feature importance + evaluation metrics.
 """
 
 import os
+import sys
 import json
 import argparse
 from datetime import datetime, timezone
@@ -205,8 +206,16 @@ FEATURE_COLUMNS = [
 ]
 
 
-def train_model(data_path: str | None = None, output_dir: str | None = None):
-    """Train XGBoost anomaly detection model."""
+def train_model(data_path: str | None = None, output_dir: str | None = None,
+                allow_synthetic: bool = False):
+    """Train XGBoost anomaly detection model.
+
+    INTEGRITY: this model is served in production at /anomaly/predict. It must
+    only be trained on real, labeled election results. Without --data we refuse
+    to train (exit non-zero) rather than silently ship a noise-trained model.
+    Synthetic training is still possible for demos, but ONLY via the explicit
+    allow_synthetic flag, and the artifact is marked SYNTHETIC_NOT_FOR_PRODUCTION.
+    """
     output_path = Path(output_dir) if output_dir else MODELS_DIR
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -214,9 +223,20 @@ def train_model(data_path: str | None = None, output_dir: str | None = None):
     if data_path and Path(data_path).exists():
         print(f"Loading training data from {data_path}")
         df = pd.read_parquet(data_path)
+        trained_on = "real"
+    elif data_path:
+        print(f"ERROR: training data not found at {data_path}")
+        sys.exit(2)
+    elif not allow_synthetic:
+        print("ERROR: refusing to train production anomaly model on synthetic data; "
+              "provide --data parquet of real labeled results "
+              "(or pass --allow-synthetic for an explicitly non-production experiment)")
+        sys.exit(2)
     else:
-        print("Generating synthetic training data (50,000 samples, 5% anomaly rate)...")
+        print("WARNING: --allow-synthetic set — training on SYNTHETIC data. "
+              "The resulting model is NOT valid for production use.")
         df = generate_synthetic_training_data(n_samples=50000, anomaly_rate=0.05)
+        trained_on = "SYNTHETIC_NOT_FOR_PRODUCTION"
         # Save for reproducibility
         data_save_path = DATA_DIR / "processed" / "anomaly_training_data.parquet"
         data_save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,6 +343,7 @@ def train_model(data_path: str | None = None, output_dir: str | None = None):
         "model_type": "xgboost_classifier",
         "version": "1.0.0",
         "trained_at": datetime.now(timezone.utc).isoformat(),
+        "trained_on": trained_on,
         "n_samples": len(df),
         "n_features": len(FEATURE_COLUMNS),
         "feature_columns": FEATURE_COLUMNS,
@@ -357,9 +378,11 @@ def train_model(data_path: str | None = None, output_dir: str | None = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train INEC anomaly detection model")
-    parser.add_argument("--data", type=str, help="Path to training data (parquet)")
+    parser.add_argument("--data", type=str, help="Path to training data (parquet of real labeled results)")
     parser.add_argument("--output", type=str, help="Output directory for model artifacts")
     parser.add_argument("--samples", type=int, default=50000, help="Number of synthetic samples")
+    parser.add_argument("--allow-synthetic", action="store_true",
+                        help="Explicitly allow training on synthetic data (artifact marked NOT_FOR_PRODUCTION)")
     args = parser.parse_args()
 
-    train_model(data_path=args.data, output_dir=args.output)
+    train_model(data_path=args.data, output_dir=args.output, allow_synthetic=args.allow_synthetic)

@@ -11,6 +11,7 @@ Model saved to: services/ml-models/gnn/gnn_election_validation.onnx
 """
 
 import os
+import sys
 import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -510,12 +511,27 @@ def main():
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained model')
     parser.add_argument('--model-type', type=str, default='gat',
                        choices=['gcn', 'gat'], help='GNN architecture')
-    
+    parser.add_argument('--allow-synthetic', action='store_true',
+                        help='Explicitly allow training on synthetic election data '
+                             '(artifact marked SYNTHETIC_NOT_FOR_PRODUCTION)')
+
     args = parser.parse_args()
-    
+
+    if not args.allow_synthetic:
+        # INTEGRITY: this trainer has no real-data path — it only generates a
+        # synthetic election graph. Refuse to train by default rather than
+        # silently ship a noise-trained model.
+        print("ERROR: refusing to train production GNN model on synthetic election data; "
+              "no real-data loader is implemented "
+              "(pass --allow-synthetic for an explicitly non-production experiment)")
+        sys.exit(2)
+
+    print("WARNING: --allow-synthetic set — training on SYNTHETIC election data. "
+          "The resulting model is NOT valid for production use.")
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    
+
     # Create synthetic data
     nodes, graph_builder = create_synthetic_election_data(
         num_nodes=args.num_nodes,
@@ -586,8 +602,12 @@ def main():
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': None,
         'val_auc': results['best_val_auc'],
+        # INTEGRITY: provenance marker — this trainer only produces
+        # synthetic-data models (it exits unless --allow-synthetic was given).
+        'trained_on': 'SYNTHETIC_NOT_FOR_PRODUCTION',
     }, GNN_MODEL_PATH)
     print(f"✓ Model saved to {GNN_MODEL_PATH}")
+    print("WARNING: model was trained on SYNTHETIC data — do NOT deploy to production")
 
 
 if __name__ == "__main__":

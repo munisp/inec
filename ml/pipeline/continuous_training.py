@@ -288,8 +288,19 @@ class ContinuousTrainingPipeline:
             "drift_status": drift,
         }
 
+    # Minimum real training samples required before a retrained model may be
+    # auto-promoted to production.
+    MIN_REAL_SAMPLES_FOR_PROMOTION = 1000
+
     def retrain(self, use_ray: bool = False) -> dict:
-        """Trigger model retraining."""
+        """Trigger model retraining.
+
+        INTEGRITY: retraining uses ONLY real data ingested from PostgreSQL.
+        If insufficient real data is available, the retrain is skipped with a
+        warning — no model is trained, registered, or promoted. Auto-promotion
+        additionally requires the artifact metadata to prove trained_on == "real"
+        and a minimum real-sample count.
+        """
         log.info("retraining_started", use_ray=use_ray)
 
         if use_ray:
@@ -298,8 +309,32 @@ class ContinuousTrainingPipeline:
             report = engine.train_distributed(["anomaly", "gnn"])
             engine.shutdown()
         else:
-            from ml.training.anomaly_detection.train import train_model
-            _, _, metadata = train_model()
+            from ml.training.anomaly_detection.train import (
+                train_model, FEATURE_COLUMNS,
+            )
+
+            # Real data only — never fall back to the synthetic generator.
+            data = self.ingest_from_postgres()
+            required_cols = set(FEATURE_COLUMNS) | {"label"}
+            if len(data) < self.MIN_REAL_SAMPLES_FOR_PROMOTION:
+                log.warning(
+                    "retrain_skipped_insufficient_real_data",
+                    rows=len(data),
+                    min_required=self.MIN_REAL_SAMPLES_FOR_PROMOTION,
+                )
+                return {"status": "skipped", "reason": "insufficient_real_data",
+                        "rows": len(data), "auto_promoted": False}
+            if not required_cols.issubset(data.columns):
+                missing = sorted(required_cols - set(data.columns))
+                log.warning("retrain_skipped_missing_columns", missing=missing)
+                return {"status": "skipped",
+                        "reason": f"ingested data missing required columns: {missing}",
+                        "auto_promoted": False}
+
+            data_path = DATA_DIR / "processed" / "retrain_real_data.parquet"
+            data_path.parent.mkdir(parents=True, exist_ok=True)
+            data.to_parquet(data_path)
+            _, _, metadata = train_model(data_path=str(data_path))
             report = {"anomaly": metadata}
 
         # Register new model version
@@ -311,18 +346,36 @@ class ContinuousTrainingPipeline:
             str(MODELS_DIR / "anomaly_xgboost.json"),
         )
 
-        # Auto-promote if metrics are good
-        metrics = report.get("anomaly", {}).get("metrics", {})
-        if metrics.get("roc_auc", 0) > 0.95:
+        # Auto-promote ONLY if metrics are good AND the model was trained on
+        # enough REAL data (never synthetic). roc_auc > 0.95 on synthetic data
+        # is trivially achievable and is not evidence of production quality.
+        anomaly_report = report.get("anomaly", {})
+        metrics = anomaly_report.get("metrics", {})
+        trained_on_real = anomaly_report.get("trained_on") == "real"
+        enough_real_samples = (
+            anomaly_report.get("n_samples", 0) >= self.MIN_REAL_SAMPLES_FOR_PROMOTION
+        )
+        auto_promoted = bool(
+            metrics.get("roc_auc", 0) > 0.95 and trained_on_real and enough_real_samples
+        )
+        if auto_promoted:
             self.registry.promote_to_production(model_id)
             log.info("model_auto_promoted", model_id=model_id, roc_auc=metrics.get("roc_auc"))
+        else:
+            log.warning(
+                "model_auto_promotion_blocked",
+                model_id=model_id,
+                roc_auc=metrics.get("roc_auc"),
+                trained_on=anomaly_report.get("trained_on"),
+                n_samples=anomaly_report.get("n_samples"),
+            )
 
         self._last_retrain = datetime.now(timezone.utc)
 
         return {
             "model_id": model_id,
             "report": report,
-            "auto_promoted": metrics.get("roc_auc", 0) > 0.95,
+            "auto_promoted": auto_promoted,
         }
 
     def run_continuous_cycle(self) -> dict:
@@ -351,33 +404,130 @@ class ContinuousTrainingPipeline:
         }
 
     def _compute_features(self, df: pd.DataFrame) -> Optional[np.ndarray]:
-        """Compute feature matrix from raw election data."""
+        """Compute feature matrix from raw election data.
+
+        INTEGRITY: every feature must be derived from the actual result rows.
+        Rows missing data needed for a feature are excluded — feature values
+        are never fabricated as constants. Feature order matches FEATURE_COLUMNS
+        in ml/training/anomaly_detection/train.py:
+            [registered_voters, accredited_voters, turnout_rate,
+             total_valid_votes, rejected_votes, party_a_votes, party_b_votes,
+             party_a_share, party_b_share, vote_margin,
+             benford_deviation, submission_delay_hours,
+             regional_mean_turnout, turnout_vs_region,
+             rejected_rate, overvoting_flag, round_number_flag]
+        """
         if df.empty:
             return None
 
+        # Regional mean turnout per state (from the rows themselves).
+        work = df.copy()
+        work["_turnout"] = work["accredited_voters"] / work["registered_voters"].clip(lower=1)
+        if "state_code" in work.columns:
+            work["_regional_mean"] = work.groupby("state_code")["_turnout"].transform("mean")
+        else:
+            work["_regional_mean"] = work["_turnout"].mean()
+
+        # Benford deviation per election (chi-squared over first digits of the
+        # per-PU vote totals within each election_id group).
+        benford_by_election: dict = {}
+        if "election_id" in work.columns:
+            for election_id, group in work.groupby("election_id"):
+                benford_by_election[election_id] = self._benford_deviation(
+                    group["total_valid_votes"].dropna().tolist()
+                )
+
+        # Per-party vote columns: accept either long form (party_code/votes
+        # rows) or wide form (party_a_votes / party_b_votes columns).
+        has_wide_parties = {"party_a_votes", "party_b_votes"}.issubset(work.columns)
+
+        # Submission delay from timestamps, if present.
+        has_timestamps = {"submitted_at", "poll_closed_at"}.issubset(work.columns)
+
         features = []
-        for _, row in df.iterrows():
-            reg = row.get("registered_voters", 1000)
-            acc = row.get("accredited_voters", 500)
-            valid = row.get("total_valid_votes", 450)
-            rej = row.get("rejected_votes", 50)
-            turnout = acc / max(reg, 1)
+        for _, row in work.iterrows():
+            try:
+                reg = float(row["registered_voters"])
+                acc = float(row["accredited_voters"])
+                valid = float(row["total_valid_votes"])
+                rej = float(row["rejected_votes"])
+            except (KeyError, TypeError, ValueError):
+                continue  # exclude rows lacking the core counts
+            if reg <= 0 or acc <= 0:
+                continue
+            turnout = acc / reg
+
+            # Party votes / shares / margin — only from real per-party data.
+            if has_wide_parties:
+                pa = float(row["party_a_votes"])
+                pb = float(row["party_b_votes"])
+            else:
+                continue  # no real per-party votes available: exclude the row
+            pa_share = pa / max(valid, 1)
+            pb_share = pb / max(valid, 1)
+            margin = abs(pa - pb) / max(valid, 1)
+
+            # Benford deviation from the row's election group; skip if unknown.
+            if "election_id" in row.index:
+                benford = benford_by_election.get(row["election_id"])
+            else:
+                benford = None
+            if benford is None:
+                continue
+
+            # Submission delay from real timestamps; skip if unavailable.
+            if has_timestamps:
+                try:
+                    delay = (
+                        pd.to_datetime(row["submitted_at"])
+                        - pd.to_datetime(row["poll_closed_at"])
+                    ).total_seconds() / 3600.0
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(delay) or delay < 0:
+                    continue
+            else:
+                continue
+
+            regional_mean = float(row["_regional_mean"])
 
             features.append([
                 reg, acc, turnout, valid, rej,
-                valid // 2, valid // 3,  # party estimates
-                0.5, 0.33,  # share estimates
-                0.17,  # margin
-                0.02,  # benford placeholder
-                3.0,   # delay placeholder
-                0.55,  # regional mean
-                turnout - 0.55,
-                rej / max(acc, 1),
+                pa, pb,
+                pa_share, pb_share,
+                margin,
+                benford,
+                delay,
+                regional_mean,
+                turnout - regional_mean,
+                rej / acc,
                 int(valid > acc),
-                int(valid > 0 and (valid % 100 == 0 or valid % 50 == 0)),
+                int(valid > 0 and (int(valid) % 100 == 0 or int(valid) % 50 == 0)),
             ])
 
+        if not features:
+            log.warning(
+                "feature_computation_yielded_no_rows",
+                detail="no result rows had all required real fields; "
+                       "refusing to fabricate feature constants",
+            )
+            return None
+
         return np.array(features, dtype=np.float32)
+
+    @staticmethod
+    def _benford_deviation(votes: list) -> Optional[float]:
+        """Chi-squared deviation of first-digit distribution from Benford's Law."""
+        expected = np.array([30.1, 17.6, 12.5, 9.7, 7.9, 6.7, 5.8, 5.1, 4.6])
+        first_digits = [int(str(abs(int(v)))[0]) for v in votes if v and v > 0]
+        if len(first_digits) < 30:
+            return None
+        observed = np.zeros(9)
+        for d in first_digits:
+            if 1 <= d <= 9:
+                observed[d - 1] += 1
+        observed = observed / observed.sum() * 100
+        return float(np.sum((observed - expected) ** 2 / expected))
 
     def get_status(self) -> dict:
         """Get continuous training pipeline status."""

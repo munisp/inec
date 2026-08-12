@@ -13,6 +13,7 @@ Datasets:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -225,14 +226,17 @@ def main():
         train_dataset = DummyPADDataset(num_samples=args.num_samples * 2, real_ratio=0.5)
         val_dataset = DummyPADDataset(num_samples=args.num_samples, real_ratio=0.5)
     else:
-        print(f"Dataset '{args.dataset}' selected.")
-        print("Note: Replace DummyPADDataset with real dataset loading code.")
-        print(f"Expected dataset: {args.dataset}")
+        # INTEGRITY: real dataset loaders are not implemented. Previously this
+        # branch printed download URLs and then silently trained on the dummy
+        # dataset anyway, producing a fake PAD model. Fail loudly instead.
+        print(f"ERROR: dataset loader for '{args.dataset}' not implemented; "
+              "refusing to train on dummy data silently.")
+        print("Download a certified dataset and implement its loader before training:")
         print("  OULU-NPU: https://www.cse.cuhk.edu.hk/leojia/projects/PAD/oulu_npua.zip")
         print("  LivDet:   https://www.nist.gov/programs-projects/livedetection")
         print("  SiW:      https://www.tru.ac.in/ce/wp-content/uploads/2021/04/SiW.pdf")
-        train_dataset = DummyPADDataset(num_samples=args.num_samples * 2, real_ratio=0.5)
-        val_dataset = DummyPADDataset(num_samples=args.num_samples, real_ratio=0.5)
+        print("For an explicitly non-production dummy run, pass --dataset dummy.")
+        sys.exit(2)
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)

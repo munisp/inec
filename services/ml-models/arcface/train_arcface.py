@@ -11,6 +11,7 @@ Model saved to: services/biometric-python/models/arcface_embedding.onnx
 """
 
 import os
+import sys
 import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -426,7 +427,10 @@ def main():
     parser.add_argument('--embedding-size', type=int, default=512, help='Embedding dimension')
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained weights')
     parser.add_argument('--export-onnx', action='store_true', help='Export to ONNX')
-    
+    parser.add_argument('--allow-synthetic', action='store_true',
+                        help='Explicitly allow training on synthetic data when the real face '
+                             'dataset is absent (artifact marked SYNTHETIC_NOT_FOR_PRODUCTION)')
+
     args = parser.parse_args()
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -465,12 +469,23 @@ def main():
     # Load dataset
     dataset_path = Path(__file__).parent / ".." / ".." / "datasets" / args.dataset
     
+    trained_on = "real"
     if dataset_path.exists():
         train_dataset = FaceRecognitionDataset(str(dataset_path), transform=train_transform)
         val_dataset = FaceRecognitionDataset(str(dataset_path), transform=val_transform)
+    elif not args.allow_synthetic:
+        # INTEGRITY: the exported artifact is served at /face/compare. Training it
+        # on generated Gaussian-blob "faces" ships a fake face-recognition model.
+        print(f"ERROR: dataset '{args.dataset}' not found at {dataset_path}")
+        print("Refusing to train a production face-recognition model on synthetic noise. "
+              "Provide a real face dataset at that path, or pass --allow-synthetic "
+              "for an explicitly non-production experiment.")
+        sys.exit(2)
     else:
+        trained_on = "SYNTHETIC_NOT_FOR_PRODUCTION"
         print(f"⚠ Dataset not found at {dataset_path}")
-        print("Generating synthetic dataset...")
+        print("WARNING: --allow-synthetic set — generating synthetic dataset. "
+              "The resulting model is NOT valid for production face matching.")
         # Metric learning needs multiple identities, each with a CONSISTENT
         # facial structure across its images (so the model learns to cluster an
         # identity), plus per-image variation (lighting/pose/noise). Pure noise
@@ -528,11 +543,28 @@ def main():
     
     print(f"\n✓ Training complete!")
     print(f"  Best Validation Accuracy: {results['best_val_accuracy']:.4f}")
-    
+
+    # INTEGRITY: record data provenance so the serving side can distinguish a
+    # synthetic experiment from a model trained on a real face corpus.
+    import json as _json
+    with open(MODEL_DIR / "arcface.metadata.json", "w") as _f:
+        _json.dump({
+            "model": "arcface",
+            "dataset": args.dataset,
+            "trained_on": trained_on,
+            "best_val_accuracy": results["best_val_accuracy"],
+            "note": ("Synthetic-training artifact — NOT valid for production face matching"
+                     if trained_on != "real" else
+                     "Trained on a real face dataset"),
+        }, _f, indent=2)
+
     # Export to ONNX
     if args.export_onnx:
         export_arcface_to_onnx(model, device)
-        print("✓ ArcFace model ready for production deployment")
+        if trained_on != "real":
+            print("WARNING: exported ONNX was trained on SYNTHETIC data — do NOT deploy to production")
+        else:
+            print("✓ ArcFace model ready for production deployment")
 
 
 if __name__ == "__main__":

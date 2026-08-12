@@ -255,61 +255,10 @@ def _normal_cdf(x: float) -> float:
 # ═══════════════════════════════════════════════════════════════════════════
 # P4: Federated Learning Framework
 # ═══════════════════════════════════════════════════════════════════════════
-
-class FLConfig(BaseModel):
-    epsilon: float = 1.0  # differential privacy budget
-    clip_norm: float = 1.0  # gradient clipping
-    min_participants: int = 3
-    rounds: int = 10
-    model_type: str = "turnout_prediction"
-
-
-class FLRound(BaseModel):
-    round_number: int
-    participants: int
-    local_accuracies: list[float]
-    global_accuracy: float | None
-    status: str
-
-
-def simulate_fl_round(
-    round_number: int,
-    participant_data: list[dict[str, Any]],
-    config: FLConfig | None = None,
-) -> FLRound:
-    """Simulate a federated learning round with differential privacy."""
-    if config is None:
-        config = FLConfig()
-
-    if len(participant_data) < config.min_participants:
-        return FLRound(
-            round_number=round_number,
-            participants=len(participant_data),
-            local_accuracies=[],
-            global_accuracy=None,
-            status="insufficient_participants",
-        )
-
-    # Simulate local training
-    local_accuracies = []
-    for p in participant_data:
-        contacts = p.get("contacts", 0)
-        pledges = p.get("pledges", 0)
-        base_accuracy = 0.5 + min(contacts / 10000, 0.3)
-        noise = (hash(str(p)) % 100 - 50) / 1000  # DP noise
-        accuracy = round(min(base_accuracy + noise, 0.95), 4)
-        local_accuracies.append(accuracy)
-
-    # Federated averaging
-    global_accuracy = round(sum(local_accuracies) / len(local_accuracies), 4)
-
-    return FLRound(
-        round_number=round_number,
-        participants=len(participant_data),
-        local_accuracies=local_accuracies,
-        global_accuracy=global_accuracy,
-        status="completed",
-    )
+# INTEGRITY: simulate_fl_round() (and its FLConfig/FLRound models) was removed.
+# It fabricated federated-learning accuracies (0.5 + contacts/10000 + hash-based
+# "DP noise") and returned them as real FLRound results. No real FL training
+# exists here; fabricating metrics is worse than failing loudly.
 
 
 # ═══════════════════════════════════════════════════════════════════════════

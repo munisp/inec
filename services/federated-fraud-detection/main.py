@@ -182,6 +182,16 @@ async def predict_fraud(req: FraudPredictionRequest):
             detail=f"Expected {FEATURE_DIM} features, got {len(req.features)}"
         )
 
+    # INTEGRITY: before any aggregation round the global weights are all zero,
+    # so sigmoid(0)=0.5 "medium" risk would be returned for every polling
+    # unit — a fabricated score. Fail loudly instead.
+    if round_number == 0:
+        raise HTTPException(
+            status_code=503,
+            detail="model not yet trained (round 0): no federated aggregation "
+                   "round has completed, so no fraud score is available",
+        )
+
     prob = predict_fraud_probability(req.features)
     risk_level = "critical" if prob > 0.8 else "high" if prob > 0.6 else "medium" if prob > 0.4 else "low"
 

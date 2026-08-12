@@ -25,5 +25,7 @@
     "days_since_last_contact",
     "whatsapp_interactions"
   ],
-  "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt"
+  "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt",
+  "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+  "integrity_note": "Trained on generate_voter_engagement_data() synthetic output; R2 is not evidence of production performance. Retrain on real voter engagement data before deployment."
 }

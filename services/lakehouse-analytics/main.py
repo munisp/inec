@@ -176,6 +176,19 @@ class Lakehouse:
         ).fetchall()
         return [r[0] for r in result]
 
+    def get_vote_records(self) -> list[tuple[str, int]]:
+        """Per-polling-unit vote totals WITH their real polling unit codes.
+
+        INTEGRITY: anomaly results are persisted to anomaly_log and must carry
+        the real PU code from the source row — never a fabricated array index.
+        """
+        result = self.conn.execute(
+            """SELECT polling_unit_code, SUM(votes) AS votes
+               FROM election_results WHERE votes > 0
+               GROUP BY polling_unit_code ORDER BY polling_unit_code"""
+        ).fetchall()
+        return [(str(row[0]), int(row[1])) for row in result]
+
     def get_stats(self) -> dict:
         total = self.conn.execute("SELECT COUNT(*) FROM election_results").fetchone()[0]
         tables = self.conn.execute(
@@ -216,7 +229,9 @@ class AnomalyDetector:
         )
         self.is_fitted = False
 
-    def detect_anomalies(self, vote_counts: list[int]) -> list[AnomalyResult]:
+    def detect_anomalies(
+        self, vote_counts: list[int], polling_unit_codes: list[str | None]
+    ) -> list[AnomalyResult]:
         """Return conservative, explainable statistical outliers.
 
         Isolation Forest's contamination setting requires a proportion of an
@@ -224,7 +239,15 @@ class AnomalyDetector:
         generator, but it is unsafe to publish as an election-quality finding on
         its own. A candidate must also exceed the established 3.5 modified-z
         threshold using the batch median and median absolute deviation (MAD).
+
+        INTEGRITY: each anomaly is attributed to the REAL polling unit code of
+        its source row. If a code is genuinely unavailable (None), the anomaly
+        is omitted from the result rather than given a fabricated identifier.
         """
+        if len(vote_counts) != len(polling_unit_codes):
+            raise ValueError(
+                "each anomaly observation requires its real polling-unit identifier"
+            )
         if len(vote_counts) < 10:
             return []
 
@@ -250,10 +273,15 @@ class AnomalyDetector:
             isolation_confidence = min(1.0, max(0.0, float(-score) * 4.0))
             confidence = round(max(robust_confidence, isolation_confidence), 4)
             severity = "critical" if confidence > 0.8 else "high" if confidence > 0.6 else "medium"
+            pu_code = polling_unit_codes[i]
+            if not pu_code:
+                # INTEGRITY: omit anomalies we cannot attribute to a real PU
+                # rather than persist a fabricated identifier to anomaly_log.
+                continue
             anomalies.append(
                 AnomalyResult(
                     id=f"anomaly-{i}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
-                    polling_unit_code=f"PU-{i:05d}",
+                    polling_unit_code=pu_code,
                     anomaly_type="statistical_outlier",
                     severity=severity,
                     confidence=confidence,
@@ -468,8 +496,10 @@ async def stats():
 
 @app.get("/ai/anomalies")
 async def detect_anomalies():
-    votes = lakehouse.get_vote_distribution()
-    anomalies = detector.detect_anomalies(votes)
+    records = lakehouse.get_vote_records()
+    votes = [votes for _, votes in records]
+    polling_unit_codes = [code for code, _ in records]
+    anomalies = detector.detect_anomalies(votes, polling_unit_codes)
     for a in anomalies:
         lakehouse.log_anomaly(a)
     return {"anomalies": [a.model_dump() for a in anomalies], "total": len(anomalies)}
@@ -484,9 +514,11 @@ async def benford_analysis():
 
 @app.get("/ai/integrity")
 async def integrity_score():
-    votes = lakehouse.get_vote_distribution()
+    records = lakehouse.get_vote_records()
+    votes = [votes for _, votes in records]
+    polling_unit_codes = [code for code, _ in records]
     benford = detector.benford_analysis(votes)
-    anomalies = detector.detect_anomalies(votes)
+    anomalies = detector.detect_anomalies(votes, polling_unit_codes)
     result = detector.integrity_score(votes, benford, len(anomalies))
     return result.model_dump()
 
