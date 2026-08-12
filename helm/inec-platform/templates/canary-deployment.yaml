@@ -33,7 +33,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: backend
-          image: "{{ .Values.canary.image.repository | default .Values.backend.image.repository }}:{{ .Values.canary.image.tag }}"
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.canary.image.repository | default .Values.backend.image.repository }}:{{ .Values.canary.image.tag | default .Values.global.tag }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           ports:
             - containerPort: 8080

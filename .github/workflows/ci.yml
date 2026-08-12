@@ -89,6 +89,53 @@ jobs:
       - name: Test imports
         working-directory: services/lakehouse-analytics
         run: python -c "from main import app; print('FastAPI app loaded')"
+      - name: Run tests
+        working-directory: services/lakehouse-analytics
+        run: |
+          pip install pytest
+          pytest tests/ -q
+
+  rust-services:
+    name: Rust Services - Check & Test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - services/gotv-engine
+          - services/rust-hot-path
+          - services/biometric-rust
+          - services/inference-engine-v2
+          - services/fluvio-stream
+          - services/geolibre-spatial
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.service }}
+      # NOTE: --locked is used when a Cargo.lock is committed; services without
+      # one fall back to a plain check. Service owners should commit Cargo.lock
+      # (it is no longer gitignored) and drop the fallback.
+      - name: Cargo check
+        working-directory: ${{ matrix.service }}
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo check --locked
+          else
+            echo "No Cargo.lock committed; running unlocked check"
+            cargo check
+          fi
+      - name: Cargo test
+        working-directory: ${{ matrix.service }}
+        run: |
+          if [ -d tests ] || grep -rqs -e '#\[test\]' -e '#\[tokio::test\]' src/; then
+            cargo test
+          else
+            echo "No tests present; skipping cargo test"
+          fi
 
   docker-build:
     name: Docker Build
@@ -118,6 +165,25 @@ jobs:
           docker push ghcr.io/${{ github.repository_owner }}/inec-backend:latest
           docker push ghcr.io/${{ github.repository_owner }}/inec-frontend:latest
           docker push ghcr.io/${{ github.repository_owner }}/inec-analytics:latest
+
+  service-docker-build:
+    name: Service Docker Build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # NOTE: gotv-engine/biometric-rust Dockerfiles land with the rust
+        # hardening PR; gotv-analytics/python-pipeline-optimizer with the
+        # python hardening PR. This matrix requires all four to be present.
+        context:
+          - services/gotv-engine
+          - services/biometric-rust
+          - services/gotv-analytics
+          - services/python-pipeline-optimizer
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build ${{ matrix.context }}
+        run: docker build -t inec-ci/$(basename ${{ matrix.context }}):${{ github.sha }} ./${{ matrix.context }}
 
   mobile-typecheck:
     name: Mobile App - Type Check
@@ -208,7 +274,6 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
       - name: Run E2E tests
-        continue-on-error: true
         working-directory: e2e
         run: npx playwright test
         env:

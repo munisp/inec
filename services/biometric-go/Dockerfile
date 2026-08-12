@@ -7,7 +7,7 @@ RUN go mod download
 COPY *.go .
 RUN CGO_ENABLED=0 go build -o /abis-pipeline .
 
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/static-debian12:nonroot  # runs as uid 65532
 
 COPY --from=builder /abis-pipeline /abis-pipeline
 

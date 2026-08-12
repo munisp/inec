@@ -95,7 +95,7 @@
       "clientId": "inec-service-account",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
-      "secret": "super-secret-service-token-do-not-use-in-prod",
+      "secret": "${SEDONA_SERVICE_TOKEN}",
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
@@ -103,7 +103,7 @@
     },
     {
       "clientId": "caddy-edge",
-      "secret": "caddy-secret-edge-proxy",
+      "secret": "${CADDY_CLIENT_SECRET}",
       "redirectUris": [
         "https://localhost/auth/oauth2/callback",
         "https://inec.local/auth/oauth2/callback"

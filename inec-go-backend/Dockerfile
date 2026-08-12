@@ -13,6 +13,9 @@ RUN apk add --no-cache ca-certificates postgresql16-client curl
 WORKDIR /app
 COPY --from=builder /app/inec-go-backend .
 COPY --from=builder /app/migrations ./migrations/
+# Run as a non-root user; /data is a named volume the app writes to.
+RUN adduser -D -u 10001 app && mkdir -p /data && chown app:app /data
+USER app
 EXPOSE 8088
 ENV PORT=8088
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

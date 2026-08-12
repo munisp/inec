@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/inec-inference-engine /usr/local/bin/
+# Run as a non-root user; models are mounted read-only.
+RUN useradd -u 10001 app
+USER app
 EXPOSE 8091
 ENV RUST_LOG=info
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

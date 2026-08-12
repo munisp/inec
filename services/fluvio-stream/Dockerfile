@@ -21,5 +21,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/fluvio-stream /usr/local/bin/fluvio-stream
 
+# Run as a non-root user; /data holds the offset checkpoint file (named volume).
+RUN useradd -u 10001 app && mkdir -p /data && chown app:app /data
+USER app
 EXPOSE 8100
 ENTRYPOINT ["/usr/local/bin/fluvio-stream"]

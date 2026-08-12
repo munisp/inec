@@ -9,6 +9,8 @@ required=(
   INEC_ADMIN_PASSWORD
   OFFICER_PASSWORD
   OBSERVER_PASSWORD
+  SEDONA_SERVICE_TOKEN
+  CADDY_CLIENT_SECRET
 )
 
 for name in "${required[@]}"; do
@@ -36,6 +38,8 @@ sed \
   -e "s|\${ADMIN_PASSWORD}|${INEC_ADMIN_PASSWORD}|g" \
   -e "s|\${OFFICER_PASSWORD}|${OFFICER_PASSWORD}|g" \
   -e "s|\${OBSERVER_PASSWORD}|${OBSERVER_PASSWORD}|g" \
+  -e "s|\${SEDONA_SERVICE_TOKEN}|${SEDONA_SERVICE_TOKEN}|g" \
+  -e "s|\${CADDY_CLIENT_SECRET}|${CADDY_CLIENT_SECRET}|g" \
   "${template}" > "${target}"
 
 chmod 600 "${target}"

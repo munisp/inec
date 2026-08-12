@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
+# Run as a non-root user. Uploads go to /tmp (world-writable).
+RUN useradd -u 10001 app
+USER app
 EXPOSE 8089
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8089"]

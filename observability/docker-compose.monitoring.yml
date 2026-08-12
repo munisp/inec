@@ -30,7 +30,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3000}"
     volumes:
@@ -142,5 +142,8 @@ volumes:
   tempo-data:
 
 networks:
+  # This stack joins the main application's network. Create it once before
+  # first use:  docker network create inec-network
+  # (or start the root docker-compose.yml first, which creates it).
   inec-network:
     external: true

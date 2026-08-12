@@ -4,14 +4,18 @@
 global:
   environment: production
   domain: inec.gov.ng
-  imageRegistry: ghcr.io/munisp
+  # Container registry that hosts the platform images. Replace before deploying.
+  imageRegistry: ghcr.io/REPLACE_WITH_YOUR_ORG
+  # Default image tag for all services. Pin to an immutable release tag or
+  # digest in production; never deploy "latest".
+  tag: "REPLACE_WITH_RELEASE_TAG"
 
 # Backend (Go)
 backend:
   replicaCount: 3
   image:
-    repository: ghcr.io/munisp/inec-backend
-    tag: latest
+    repository: inec-backend
+    tag: ""  # defaults to global.tag
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -67,8 +71,8 @@ backend:
 frontend:
   replicaCount: 2
   image:
-    repository: ghcr.io/munisp/inec-frontend
-    tag: latest
+    repository: inec-frontend
+    tag: ""  # defaults to global.tag
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -86,8 +90,8 @@ inference:
   enabled: true
   replicaCount: 2
   image:
-    repository: ghcr.io/munisp/inec-inference
-    tag: latest
+    repository: inec-inference
+    tag: ""  # defaults to global.tag
   service:
     port: 8090
   resources:
@@ -103,8 +107,8 @@ rustInference:
   enabled: true
   replicaCount: 2
   image:
-    repository: ghcr.io/munisp/inec-rust-inference
-    tag: latest
+    repository: inec-rust-inference
+    tag: ""  # defaults to global.tag
   service:
     port: 8091
   resources:

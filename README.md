@@ -192,6 +192,35 @@ inec/
 
 ## 📊 Production Readiness
 
+### Production hardening (2026-08-12)
+
+An infrastructure/deployment hardening pass was applied on 2026-08-12. See
+`INEC_MOCKWARE_AUDIT_REPORT.md` for the current authoritative audit and
+remediation status; older audit documents (`AI_ML_PRODUCTION_AUDIT.md`,
+`AUDIT_REPORT.md`) are superseded and retained for historical context only.
+
+Key changes:
+
+- Removed a committed database backup containing PII and added ignore rules
+  for dumps, archives, local `.env.*` files, and `* copy/` directories.
+- Removed the orphaned, unauthenticated etcd service; APISIX runs in
+  standalone data-plane mode handling edge concerns only (JWT is enforced by
+  the go-backend middleware).
+- Fixed the host-port conflict on 8090, bound Caddy/Neo4j admin and database
+  ports to loopback, and added restart policies and memory/CPU limits to
+  long-running services.
+- Replaced hardcoded secrets (Keycloak realm, Neo4j, replication, Grafana)
+  with fail-closed `${VAR:?}` guards; every required variable is documented
+  in `.env.example` and `.env.production.example`.
+- Service containers now run as non-root users, and each internal service
+  requires its own API key (see the "service-to-service API keys" section of
+  the env examples).
+
+**Required-environment contract:** services fail closed at startup when their
+required environment variables are unset. Copy `.env.example` (development) or
+`.env.production.example` (production) to `.env`, fill every
+`replace_with_…`/blank value, and never commit the result.
+
 The platform source is designed to **fail closed** when authoritative election data, approved model artifacts, or external verification providers are unavailable. It does not treat demo records, neutral model scores, placeholder OCR output, or synthetic geospatial observations as production data. Source-controlled readiness is necessary but not sufficient for an official deployment: the Kasicloud host, real credentials, data provenance, model approval evidence, provider contracts, backups, and operational ownership must be verified separately.
 
 ### Kasicloud Deployment Go/No-Go Checklist

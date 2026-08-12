@@ -30,5 +30,8 @@ COPY services/ml-models/biometric-python/models/arcface_embedding.onnx /app/mode
 
 ENV MODELS_DIR=/app/models \
     RUST_LOG=info
+# Run as a non-root user.
+RUN useradd -u 10001 app
+USER app
 EXPOSE 8091
 CMD ["inec-inference-engine"]
