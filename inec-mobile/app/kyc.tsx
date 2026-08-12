@@ -26,6 +26,7 @@ export default function KYCScreen() {
   const [selfiePhoto, setSelfiePhoto] = useState<string | null>(null);
   const [kycResult, setKycResult] = useState<KYCResult | null>(null);
   const [livenessResult, setLivenessResult] = useState<LivenessResult | null>(null);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const cameraRef = useRef<CameraView>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -66,6 +67,7 @@ export default function KYCScreen() {
     if (!selfiePhoto) return;
     goToStep('processing');
     setProcessing(true);
+    setVerificationError(null);
     try {
       const form = new FormData();
       form.append('selfie', { uri: selfiePhoto, type: 'image/jpeg', name: 'selfie.jpg' } as unknown as Blob);
@@ -75,7 +77,9 @@ export default function KYCScreen() {
         result.passed ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning
       );
     } catch {
-      setLivenessResult({ user_id: 0, passed: false, confidence: 0, method: 'error', anti_spoofing_score: 0, checks: [], timestamp: '' });
+      // Never fabricate a liveness outcome — report that verification is unavailable.
+      setLivenessResult(null);
+      setVerificationError('Liveness check is unavailable — please check your connection and try again.');
     }
 
     if (idPhoto && selfiePhoto) {
@@ -88,7 +92,9 @@ export default function KYCScreen() {
         const result = await kycApi.verify(form);
         setKycResult(result);
       } catch {
-        setKycResult({ user_id: 0, status: 'rejected', identity_match_score: 0, document_verified: false, face_match_score: 0, liveness_passed: false, risk_score: 1, checks_performed: [], flags: ['verification_error'], verification_timestamp: '' });
+        // Never fabricate a KYC verdict — report that verification is unavailable.
+        setKycResult(null);
+        setVerificationError('Identity verification is unavailable — please check your connection and try again.');
       }
     }
     setProcessing(false);
@@ -213,6 +219,19 @@ export default function KYCScreen() {
 
       {step === 'result' && (
         <View>
+          {verificationError && (
+            <View style={[styles.resultCard, { borderLeftColor: '#f59e0b' }]}>
+              <View style={styles.resultHeader}>
+                <Ionicons name="alert-circle" size={24} color="#f59e0b" />
+                <Text style={styles.resultTitle}>Verification Unavailable</Text>
+              </View>
+              <Text style={styles.checkText}>{verificationError}</Text>
+              <Text style={[styles.checkText, { marginTop: 4, color: '#6b7280' }]}>
+                No verification outcome was produced. Your result will not show a pass or fail until the check completes successfully.
+              </Text>
+            </View>
+          )}
+
           {livenessResult && (
             <View style={[styles.resultCard, { borderLeftColor: livenessResult.passed ? '#22c55e' : '#ef4444' }]}>
               <View style={styles.resultHeader}>
@@ -272,7 +291,7 @@ export default function KYCScreen() {
             </View>
           )}
 
-          <TouchableOpacity style={styles.retryButton} onPress={() => { setIdPhoto(null); setSelfiePhoto(null); setKycResult(null); setLivenessResult(null); goToStep('start'); }}>
+          <TouchableOpacity style={styles.retryButton} onPress={() => { setIdPhoto(null); setSelfiePhoto(null); setKycResult(null); setLivenessResult(null); setVerificationError(null); goToStep('start'); }}>
             <Ionicons name="refresh" size={18} color="#166534" />
             <Text style={styles.retryButtonText}>Start Over</Text>
           </TouchableOpacity>

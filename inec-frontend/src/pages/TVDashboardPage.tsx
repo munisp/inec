@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
+import { useResolvedElection } from '@/lib/gotv-session';
 
 interface PartyTotal {
   party: string;
@@ -27,12 +28,21 @@ export default function TVDashboardPage() {
   const [cycleIdx, setCycleIdx] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { electionId, loading: electionsLoading } = useResolvedElection();
 
   useEffect(() => {
+    if (electionsLoading) return;
+    // Never default to a hardcoded election id — require a resolved election
+    // (explicit selection or the latest active election from the API).
+    if (!electionId) {
+      setData(null);
+      setError('no-active-election-resolved');
+      return;
+    }
     const load = () => {
       const apiUrl = import.meta.env.VITE_API_URL ?? '';
       const token = localStorage.getItem('token') || localStorage.getItem('inec_token') || '';
-      fetch(`${apiUrl}/public/tv-dashboard?election_id=1`, {
+      fetch(`${apiUrl}/public/tv-dashboard?election_id=${electionId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -48,7 +58,7 @@ export default function TVDashboardPage() {
     load();
     const interval = setInterval(load, 10000);
     return () => clearInterval(interval);
-  }, [refreshKey]);
+  }, [refreshKey, electionId, electionsLoading]);
 
   useEffect(() => {
     const interval = setInterval(() => setCycleIdx(i => i + 1), 8000);
