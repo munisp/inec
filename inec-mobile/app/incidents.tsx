@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platfo
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface Incident {
   id: number;
@@ -26,6 +27,7 @@ export default function IncidentsScreen() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterSeverity, setFilterSeverity] = useState('all');
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const loadIncidents = async () => {
     setLoading(true);
@@ -39,6 +41,8 @@ export default function IncidentsScreen() {
   useEffect(() => { loadIncidents(); }, []);
 
   const submitIncident = async () => {
+    // Write path: never submit against a hardcoded election id.
+    if (!electionId) { Alert.alert('Error', 'Election is still resolving — please wait.'); return; }
     if (!title || !description) {
       Alert.alert('Error', 'Title and description required');
       return;
@@ -47,7 +51,7 @@ export default function IncidentsScreen() {
     try {
       await api('/incidents', {
         method: 'POST',
-        body: JSON.stringify({ title, description, severity, polling_unit_code: puCode, election_id: 1 }),
+        body: JSON.stringify({ title, description, severity, polling_unit_code: puCode, election_id: electionId }),
       });
       setShowForm(false);
       setTitle(''); setDescription(''); setPuCode('');
@@ -81,6 +85,20 @@ export default function IncidentsScreen() {
 
   const sevDist = incidents.reduce((a, i) => { a[i.severity] = (a[i.severity] || 0) + 1; return a; }, {} as Record<string, number>);
   const statDist = incidents.reduce((a, i) => { a[i.status] = (a[i.status] || 0) + 1; return a; }, {} as Record<string, number>);
+
+  // Gate rendering until the election scope is resolved — never fetch with a hardcoded id.
+  if (electionLoading || !electionId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        {electionLoading ? (
+          <ActivityIndicator size="large" color="#166534" />
+        ) : (
+          <Text style={{ color: '#6b7280', textAlign: 'center' }}>No active election is available.</Text>
+        )}
+      </View>
+    );
+  }
+
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 100 : 80 }}>

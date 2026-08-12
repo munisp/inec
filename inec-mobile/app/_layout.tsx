@@ -7,7 +7,7 @@ import Constants from 'expo-constants';
 import type { EventSubscription } from 'expo-modules-core';
 import { getDb } from '../src/lib/offline';
 import { NetworkBanner } from '../src/components/NetworkBanner';
-import { getAuthMode, isRouteAllowed, type AuthMode } from '../lib/auth-context';
+import { getAuthMode, isRouteAllowed, PUBLIC_ROUTES, type AuthMode } from '../lib/auth-context';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -82,10 +82,17 @@ export default function RootLayout() {
 
   // Route guard: redirect unauthorized navigation
   useEffect(() => {
-    if (authMode === 'none') return;
-
     const routeName = pathname.replace(/^\//, '');
     if (!routeName) return;
+
+    // Unauthenticated users may only visit public routes — bounce everything
+    // else to the login screen.
+    if (authMode === 'none') {
+      if (!PUBLIC_ROUTES.has(routeName)) {
+        router.replace('/');
+      }
+      return;
+    }
 
     if (!isRouteAllowed(routeName, authMode)) {
       // GOTV user trying to access INEC screen → redirect to canvasser

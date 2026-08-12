@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import NetInfo from '@react-native-community/netinfo';
 import { api, getToken } from './api';
-import { encryptField, decryptField } from './crypto';
+import { obfuscateField, deobfuscateField } from './crypto';
 
 let db: SQLite.SQLiteDatabase | null = null;
 
@@ -240,24 +240,26 @@ export async function getCachedElectionData<T = unknown>(key: string): Promise<T
   return row ? JSON.parse(row.data) as T : null;
 }
 
-// Queue biometric verification for offline sync (encrypts sensitive voter_id at rest)
+// Queue biometric verification for offline sync (obfuscates sensitive voter_id at rest —
+// keyed XOR obfuscation only, NOT encryption; see src/lib/crypto.ts header)
 export async function queueBiometricVerification(verification: {
   voter_id: string; device_serial: string; verification_type: string;
   latitude: number; longitude: number;
 }): Promise<number> {
   const database = await getDb();
-  // Encrypt voter_id and device_serial — these are PII/sensitive identifiers
-  const encryptedVoterId = await encryptField(verification.voter_id);
-  const encryptedDeviceSerial = await encryptField(verification.device_serial);
+  // Obfuscate voter_id and device_serial — these are PII/sensitive identifiers.
+  // NOTE: obfuscation only, NOT encryption (see src/lib/crypto.ts header).
+  const obfuscatedVoterId = await obfuscateField(verification.voter_id);
+  const obfuscatedDeviceSerial = await obfuscateField(verification.device_serial);
   const result = await database.runAsync(
     `INSERT INTO pending_biometric_verifications (voter_id, device_serial, verification_type, latitude, longitude)
      VALUES (?, ?, ?, ?, ?)`,
-    [encryptedVoterId, encryptedDeviceSerial, verification.verification_type, verification.latitude, verification.longitude]
+    [obfuscatedVoterId, obfuscatedDeviceSerial, verification.verification_type, verification.latitude, verification.longitude]
   );
   return result.lastInsertRowId;
 }
 
-// Decrypt biometric verification records for sync
+// De-obfuscate biometric verification records for sync
 export async function getDecryptedBiometricVerifications(): Promise<Array<{
   id: number; voter_id: string; device_serial: string; verification_type: string;
   latitude: number; longitude: number;
@@ -270,8 +272,8 @@ export async function getDecryptedBiometricVerifications(): Promise<Array<{
 
   return Promise.all(rows.map(async (row) => ({
     ...row,
-    voter_id: await decryptField(row.voter_id),
-    device_serial: await decryptField(row.device_serial),
+    voter_id: await deobfuscateField(row.voter_id),
+    device_serial: await deobfuscateField(row.device_serial),
   })));
 }
 

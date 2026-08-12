@@ -253,7 +253,7 @@ export default function GOTVCanvasserScreen() {
             <Text style={styles.sectionTitle}>Contact (optional)</Text>
             {selectedContact ? (
               <View style={styles.contactCard}>
-                <Text style={styles.contactName}>{selectedContact.full_name_encrypted}</Text>
+                <Text style={styles.contactName}>{selectedContact.full_name_masked}</Text>
                 <Text style={styles.contactDetail}>
                   {selectedContact.state_code} / {selectedContact.lga_code} — {selectedContact.voter_status}
                 </Text>
@@ -270,7 +270,7 @@ export default function GOTVCanvasserScreen() {
                     onPress={() => setSelectedContact(c)}
                   >
                     <Text style={styles.chipText} numberOfLines={1}>
-                      {c.full_name_encrypted || c.phone_masked}
+                      {c.full_name_masked || c.phone_masked}
                     </Text>
                   </TouchableOpacity>
                 ))}

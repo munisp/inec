@@ -1,8 +1,15 @@
 // Offline-first storage for GOTV canvasser workflow.
-// Uses expo-sqlite v56 (openDatabaseAsync) + expo-secure-store for field-level encryption.
+// Uses expo-sqlite v56 (openDatabaseAsync) + expo-secure-store for key custody.
+//
+// SECURITY — HONEST DEGRADATION: the PRAGMA key below only encrypts the
+// database when expo-sqlite is built with SQLCipher (dev-client build); in
+// Expo Go / the managed build it is a no-op. There is NO real at-rest
+// encryption here, so only non-sensitive fields are stored and voter names
+// are masked (see maskName / cacheContacts).
 
 import * as SQLite from 'expo-sqlite';
 import * as SecureStore from 'expo-secure-store';
+import { getRandomBytesAsync } from 'expo-crypto';
 
 export type SyncStatus = 'pending' | 'syncing' | 'synced' | 'failed';
 
@@ -42,7 +49,9 @@ export interface PendingLocationUpdate {
 export interface CachedContact {
   contact_id: string;
   phone_masked: string;
-  full_name_encrypted: string;
+  // Masked display name only (see maskName) — cleartext voter names are PII
+  // and are never cached offline while DB-level encryption is unavailable.
+  full_name_masked: string;
   state_code: string;
   lga_code: string;
   ward_code: string;
@@ -62,18 +71,29 @@ export interface ConflictLogEntry {
 
 let db: SQLite.SQLiteDatabase | null = null;
 
-async function getEncryptionKey(): Promise<string> {
+async function getDatabaseKey(): Promise<string> {
   let key = await SecureStore.getItemAsync('gotv_db_key');
   if (!key) {
-    // Generate a random encryption key on first use
-    const bytes = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
+    // Generate a key with a cryptographically secure RNG (never Math.random).
+    // Only used by SQLCipher when available — see module header.
+    const bytes = await getRandomBytesAsync(32);
     key = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     await SecureStore.setItemAsync('gotv_db_key', key);
   }
   return key;
+}
+
+/**
+ * Mask a voter's full name so the offline contact cache never holds cleartext
+ * PII: keeps the first name initial and surname length class only.
+ * e.g. "Adaeze Okonkwo" -> "A. O*******"
+ */
+export function maskName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '';
+  const first = parts[0];
+  const masked = parts.slice(1).map(p => (p.length <= 1 ? p : `${p[0]}${'*'.repeat(p.length - 1)}`));
+  return [`${first[0]}.`, ...masked].join(' ');
 }
 
 export async function getDB(): Promise<SQLite.SQLiteDatabase> {
@@ -84,13 +104,15 @@ export async function getDB(): Promise<SQLite.SQLiteDatabase> {
   // Enable WAL mode for better concurrent read/write
   await db.execAsync('PRAGMA journal_mode = WAL;');
 
-  // Set up encryption key for field-level encryption via PRAGMA
-  const encKey = await getEncryptionKey();
+  // Apply the database key via PRAGMA. This only has an effect when expo-sqlite
+  // is built with SQLCipher (dev-client build); in Expo Go it is a harmless
+  // no-op and the DB file is UNENCRYPTED — hence only non-sensitive/masked
+  // fields may be stored (see module header).
+  const dbKey = await getDatabaseKey();
   try {
-    await db.execAsync(`PRAGMA key = '${encKey}';`);
+    await db.execAsync(`PRAGMA key = '${dbKey}';`);
   } catch {
-    // SQLCipher may not be available — continue without DB-level encryption
-    // Field-level encryption via SecureStore still works
+    // SQLCipher not available — continue without DB-level encryption.
   }
 
   // Create tables
@@ -131,7 +153,7 @@ export async function getDB(): Promise<SQLite.SQLiteDatabase> {
     CREATE TABLE IF NOT EXISTS cached_contacts (
       contact_id TEXT PRIMARY KEY,
       phone_masked TEXT,
-      full_name_encrypted TEXT,
+      full_name_masked TEXT,
       state_code TEXT,
       lga_code TEXT,
       ward_code TEXT,
@@ -154,6 +176,15 @@ export async function getDB(): Promise<SQLite.SQLiteDatabase> {
       value TEXT NOT NULL
     );
   `);
+
+  // Legacy installs cached names under a misleading "encrypted" column —
+  // rename it and purge any rows written before masking was enforced.
+  try {
+    await db.execAsync('ALTER TABLE cached_contacts RENAME COLUMN full_name_encrypted TO full_name_masked;');
+    await db.execAsync('DELETE FROM cached_contacts;');
+  } catch {
+    // Column already renamed (or table freshly created) — nothing to migrate.
+  }
 
   return db;
 }
@@ -253,9 +284,11 @@ export async function cacheContacts(contacts: CachedContact[]): Promise<void> {
   for (const c of contacts) {
     await database.runAsync(
       `INSERT OR REPLACE INTO cached_contacts
-       (contact_id, phone_masked, full_name_encrypted, state_code, lga_code, ward_code, voter_status, cached_at)
+       (contact_id, phone_masked, full_name_masked, state_code, lga_code, ward_code, voter_status, cached_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      c.contact_id, c.phone_masked, c.full_name_encrypted,
+      // Defensive: mask again at the storage boundary so no caller can
+      // accidentally persist a cleartext name.
+      c.contact_id, c.phone_masked, maskName(c.full_name_masked),
       c.state_code, c.lga_code, c.ward_code, c.voter_status, c.cached_at,
     );
   }
@@ -278,7 +311,7 @@ export async function getCachedContacts(stateCode?: string, lgaCode?: string): P
   if (conditions.length > 0) {
     query += ' WHERE ' + conditions.join(' AND ');
   }
-  query += ' ORDER BY full_name_encrypted LIMIT 200';
+  query += ' ORDER BY full_name_masked LIMIT 200';
 
   return database.getAllAsync<CachedContact>(query, ...args);
 }

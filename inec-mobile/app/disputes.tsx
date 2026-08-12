@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from 'expo-router';
 import { disputeApi, Dispute, DisputeStats } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 import { EmptyState } from '../src/components/EmptyState';
 import { CardSkeleton } from '../src/components/SkeletonLoader';
 
@@ -27,6 +28,7 @@ export default function DisputesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showFileModal, setShowFileModal] = useState(false);
   const [filing, setFiling] = useState(false);
+  const { electionId } = useResolvedElection();
   const [formCategory, setFormCategory] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formPuCode, setFormPuCode] = useState('');
@@ -56,11 +58,13 @@ export default function DisputesScreen() {
       Alert.alert('Missing Fields', 'Please fill all required fields');
       return;
     }
+    // Write path: never file against a hardcoded election id.
+    if (!electionId) { Alert.alert('Please wait', 'Election is still resolving.'); return; }
     setFiling(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       await disputeApi.file({
-        election_id: 1,
+        election_id: electionId,
         polling_unit_code: formPuCode,
         category: formCategory,
         description: formDescription,
@@ -231,7 +235,7 @@ export default function DisputesScreen() {
               textAlignVertical="top"
             />
 
-            <TouchableOpacity style={styles.submitButton} onPress={fileDispute} disabled={filing} activeOpacity={0.8}>
+            <TouchableOpacity style={styles.submitButton} onPress={fileDispute} disabled={filing || !electionId} activeOpacity={0.8}>
               <Ionicons name="paper-plane" size={18} color="#fff" />
               <Text style={styles.submitButtonText}>{filing ? 'Filing...' : 'Submit Dispute'}</Text>
             </TouchableOpacity>

@@ -1,42 +1,49 @@
 /**
- * Field-level encryption for sensitive SQLite data.
+ * Field-level obfuscation for sensitive SQLite data.
  *
- * Uses expo-secure-store for key storage and a simple XOR cipher
- * with a device-specific key for field-level encryption of biometric
- * and voter data at rest.
+ * SECURITY — HONEST DEGRADATION: this is NOT encryption. It is a keyed XOR
+ * obfuscation that only defeats casual inspection of a dumped database file.
+ * It provides NO confidentiality against an attacker with the device key
+ * (stored alongside the data in SecureStore on the same device).
  *
- * In production, this should be replaced with AES-256-GCM via
- * expo-crypto once native module support is confirmed for the
- * target Expo SDK version.
+ * Real at-rest encryption requires either:
+ *  - SQLCipher via a dev-client build (expo-sqlite with SQLCipher native
+ *    module), or
+ *  - AES-256-GCM via a vetted native binding.
+ * Neither is available in Expo Go / the current managed build, so sensitive
+ * fields are obfuscated (never "encrypted") and callers should prefer storing
+ * only non-sensitive fields or masked values wherever possible.
+ *
+ * The one hard requirement this module DOES meet: the obfuscation key is
+ * generated with a cryptographically secure RNG (expo-crypto
+ * getRandomBytesAsync), never Math.random.
  */
 import * as SecureStore from 'expo-secure-store';
+import { getRandomBytesAsync } from 'expo-crypto';
 
-const ENCRYPTION_KEY_ALIAS = 'inec_db_encryption_key';
+const OBFUSCATION_KEY_ALIAS = 'inec_db_encryption_key';
 const KEY_LENGTH = 32;
 
 let cachedKey: Uint8Array | null = null;
 
 /**
- * Get or generate the device-specific encryption key.
+ * Get or generate the device-specific obfuscation key.
  * Stored in SecureStore (iOS Keychain / Android Keystore).
  */
-async function getEncryptionKey(): Promise<Uint8Array> {
+async function getObfuscationKey(): Promise<Uint8Array> {
   if (cachedKey) return cachedKey;
 
-  const stored = await SecureStore.getItemAsync(ENCRYPTION_KEY_ALIAS);
+  const stored = await SecureStore.getItemAsync(OBFUSCATION_KEY_ALIAS);
   if (stored) {
     cachedKey = new Uint8Array(JSON.parse(stored));
     return cachedKey;
   }
 
-  // Generate a new random key
-  const key = new Uint8Array(KEY_LENGTH);
-  for (let i = 0; i < KEY_LENGTH; i++) {
-    key[i] = Math.floor(Math.random() * 256);
-  }
+  // Generate a new key with a cryptographically secure RNG.
+  const key = await getRandomBytesAsync(KEY_LENGTH);
 
   await SecureStore.setItemAsync(
-    ENCRYPTION_KEY_ALIAS,
+    OBFUSCATION_KEY_ALIAS,
     JSON.stringify(Array.from(key)),
     { requireAuthentication: false }
   );
@@ -46,51 +53,53 @@ async function getEncryptionKey(): Promise<Uint8Array> {
 }
 
 /**
- * Encrypt a string value for storage in SQLite.
- * Returns a base64-encoded encrypted string.
+ * Obfuscate a string value for storage in SQLite.
+ * Returns a base64-encoded obfuscated string.
+ *
+ * NOTE: keyed XOR — obfuscation only, NOT encryption. See module header.
  */
-export async function encryptField(plaintext: string): Promise<string> {
+export async function obfuscateField(plaintext: string): Promise<string> {
   if (!plaintext) return '';
 
-  const key = await getEncryptionKey();
+  const key = await getObfuscationKey();
   const textBytes = new TextEncoder().encode(plaintext);
-  const encrypted = new Uint8Array(textBytes.length);
+  const obfuscated = new Uint8Array(textBytes.length);
 
   for (let i = 0; i < textBytes.length; i++) {
-    encrypted[i] = textBytes[i] ^ key[i % key.length];
+    obfuscated[i] = textBytes[i] ^ key[i % key.length];
   }
 
   // Convert to base64 manually (React Native compatible)
-  return btoa(String.fromCharCode(...encrypted));
+  return btoa(String.fromCharCode(...obfuscated));
 }
 
 /**
- * Decrypt a base64-encoded encrypted string from SQLite.
+ * Reverse obfuscateField for a base64-encoded value from SQLite.
  */
-export async function decryptField(ciphertext: string): Promise<string> {
-  if (!ciphertext) return '';
+export async function deobfuscateField(obfuscated: string): Promise<string> {
+  if (!obfuscated) return '';
 
-  const key = await getEncryptionKey();
-  const raw = atob(ciphertext);
-  const encryptedBytes = new Uint8Array(raw.length);
+  const key = await getObfuscationKey();
+  const raw = atob(obfuscated);
+  const obfuscatedBytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) {
-    encryptedBytes[i] = raw.charCodeAt(i);
+    obfuscatedBytes[i] = raw.charCodeAt(i);
   }
 
-  const decrypted = new Uint8Array(encryptedBytes.length);
-  for (let i = 0; i < encryptedBytes.length; i++) {
-    decrypted[i] = encryptedBytes[i] ^ key[i % key.length];
+  const restored = new Uint8Array(obfuscatedBytes.length);
+  for (let i = 0; i < obfuscatedBytes.length; i++) {
+    restored[i] = obfuscatedBytes[i] ^ key[i % key.length];
   }
 
-  return new TextDecoder().decode(decrypted);
+  return new TextDecoder().decode(restored);
 }
 
 /**
- * Check if encryption is available (SecureStore accessible).
+ * Check if obfuscation is available (SecureStore accessible).
  */
-export async function isEncryptionAvailable(): Promise<boolean> {
+export async function isObfuscationAvailable(): Promise<boolean> {
   try {
-    await getEncryptionKey();
+    await getObfuscationKey();
     return true;
   } catch {
     return false;

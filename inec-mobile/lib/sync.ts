@@ -10,10 +10,11 @@ import {
   logConflict, setSyncMeta, getPendingCounts,
   type PendingDoorKnock, type PendingPledge, type PendingLocationUpdate,
 } from './storage';
-import { getMobileToken } from './gotv-auth';
+import { getMobileToken, GOTV_API } from './gotv-auth';
 
-// Use GOTV mobile backend (standalone from INEC portal)
-const API_URL = process.env.EXPO_PUBLIC_GOTV_API_URL ?? 'http://localhost:8103';
+// Use GOTV mobile backend (standalone from INEC portal). GOTV_API throws at
+// startup in non-dev builds when EXPO_PUBLIC_GOTV_API_URL is unset.
+const API_URL = GOTV_API;
 
 export type SyncState = 'idle' | 'syncing' | 'offline' | 'error';
 

@@ -10,7 +10,8 @@
         "simulator": true
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://localhost:8000"
+        "EXPO_PUBLIC_API_URL": "http://localhost:8000",
+        "EXPO_PUBLIC_GOTV_API_URL": "http://localhost:8103"
       }
     },
     "preview": {
@@ -19,7 +20,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api-staging.inecnigeria.org"
+        "EXPO_PUBLIC_API_URL": "https://TODO-REPLACE-WITH-REAL-STAGING-API-HOST.invalid",
+        "EXPO_PUBLIC_GOTV_API_URL": "https://TODO-REPLACE-WITH-REAL-STAGING-GOTV-HOST.invalid"
       }
     },
     "production": {
@@ -27,19 +29,8 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.inecnigeria.org"
-      }
-    }
-  },
-  "submit": {
-    "production": {
-      "android": {
-        "serviceAccountKeyPath": "./google-services.json",
-        "track": "internal"
-      },
-      "ios": {
-        "appleId": "inec-dev@inecnigeria.org",
-        "ascAppId": "1234567890"
+        "EXPO_PUBLIC_API_URL": "https://TODO-REPLACE-WITH-REAL-PRODUCTION-API-HOST.invalid",
+        "EXPO_PUBLIC_GOTV_API_URL": "https://TODO-REPLACE-WITH-REAL-PRODUCTION-GOTV-HOST.invalid"
       }
     }
   }

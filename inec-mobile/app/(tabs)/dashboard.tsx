@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, RefreshControl, TouchableOpacity, Platform,
+  View, Text, TextInput, StyleSheet, ScrollView, RefreshControl, TouchableOpacity, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -28,6 +28,12 @@ export default function DashboardScreen() {
   const [checkedIn, setCheckedIn] = useState(false);
   const [checkInStatus, setCheckInStatus] = useState('');
   const [checkingIn, setCheckingIn] = useState(false);
+  // The polling unit is never defaulted — the observer must explicitly enter
+  // the PU they are physically assigned to before checking in.
+  const [puCode, setPuCode] = useState('');
+  const PU_CODE_RE = /^[A-Z0-9][A-Z0-9\-/]{2,31}$/;
+  const normalizedPu = puCode.trim().toUpperCase();
+  const puValid = PU_CODE_RE.test(normalizedPu);
 
   const loadDashboard = useCallback(async () => {
     if (!selectedParty) {
@@ -52,6 +58,12 @@ export default function DashboardScreen() {
   }, [loadDashboard]);
 
   const handleCheckIn = async () => {
+    // Block check-in until a valid PU code has been explicitly entered.
+    if (!puValid) {
+      setCheckInStatus('Enter your assigned polling unit code before checking in');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
     setCheckingIn(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const location = await getCurrentLocation();
@@ -63,7 +75,7 @@ export default function DashboardScreen() {
     }
 
     try {
-      const result = await observerApi.checkIn('PU-001', location.latitude, location.longitude);
+      const result = await observerApi.checkIn(normalizedPu, location.latitude, location.longitude);
       setCheckedIn(result.within_geofence);
       setCheckInStatus(
         result.within_geofence
@@ -100,15 +112,24 @@ export default function DashboardScreen() {
             <Text style={styles.checkInSubtitle}>Verify your location at the assigned PU</Text>
           </View>
         </View>
+        <TextInput
+          style={[styles.puInput, puCode.length > 0 && !puValid ? styles.puInputInvalid : null]}
+          value={puCode}
+          onChangeText={(v) => { setPuCode(v.toUpperCase()); setCheckedIn(false); }}
+          placeholder="Assigned PU code (e.g. LA-001-W001-PU001)"
+          autoCapitalize="characters"
+          autoCorrect={false}
+          maxLength={32}
+        />
         <TouchableOpacity
-          style={[styles.checkInButton, checkedIn && styles.checkInButtonChecked]}
+          style={[styles.checkInButton, checkedIn && styles.checkInButtonChecked, !puValid && styles.checkInButtonDisabled]}
           onPress={handleCheckIn}
-          disabled={checkingIn}
+          disabled={checkingIn || !puValid}
           activeOpacity={0.8}
         >
           <Ionicons name={checkedIn ? 'checkmark-circle' : 'navigate'} size={18} color="#fff" />
           <Text style={styles.checkInButtonText}>
-            {checkingIn ? 'Checking in...' : checkedIn ? 'Checked In' : 'Check In Now'}
+            {checkingIn ? 'Checking in...' : checkedIn ? 'Checked In' : puValid ? `Check In at ${normalizedPu}` : 'Enter PU Code to Check In'}
           </Text>
         </TouchableOpacity>
         {checkInStatus ? (
@@ -244,6 +265,19 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   checkInButtonChecked: { backgroundColor: '#059669' },
+  checkInButtonDisabled: { opacity: 0.5 },
+  puInput: {
+    borderWidth: 1.5,
+    borderColor: '#d1d5db',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: '#111827',
+    backgroundColor: '#fff',
+    marginBottom: 10,
+  },
+  puInputInvalid: { borderColor: '#ef4444' },
   checkInButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   checkInStatusBox: {
     flexDirection: 'row',
