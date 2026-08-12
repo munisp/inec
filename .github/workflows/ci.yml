@@ -95,6 +95,43 @@ jobs:
           pip install pytest
           pytest tests/ -q
 
+  python-services-tests:
+    name: Python Services - Smoke Tests (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every FastAPI service with a test suite. The fail-closed smoke tests
+        # (auth 401/503, key rotation, health structure) gate PRs — a service
+        # that silently loses its auth middleware fails CI.
+        service:
+          - ai-anomaly-detection
+          - biometric-python
+          - campaign-planning
+          - digital-twin-simulation
+          - document-ai
+          - federated-fraud-detection
+          - gotv-analytics
+          - homomorphic-tally
+          - model-serving
+          - predictive-resource-allocation
+          - python-pipeline-optimizer
+          - satellite-change-detection
+          - sedona-spatial
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        working-directory: services/${{ matrix.service }}
+        run: |
+          pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || pip install -r requirements.txt
+          pip install pytest httpx slowapi
+      - name: Run smoke tests
+        working-directory: services/${{ matrix.service }}
+        run: pytest . -q
+
   rust-services:
     name: Rust Services - Check & Test
     runs-on: ubuntu-latest
