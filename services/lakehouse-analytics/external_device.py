@@ -101,7 +101,7 @@ class SedonaSpatialGateway:
             "observed_at": event.observed_at.isoformat(),
         }
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=3.0)) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/device-geofence/validate",
                     json=payload,

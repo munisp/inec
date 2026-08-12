@@ -101,7 +101,17 @@ async def lifespan(app: FastAPI):
     await pipeline_engine.stop()
 
 
-app = FastAPI(title="INEC Pipeline Optimizer", lifespan=lifespan)
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+_PRODUCTION = os.getenv("APP_ENV", "development").strip().lower() == "production"
+
+app = FastAPI(
+    title="INEC Pipeline Optimizer",
+    lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
+)
 
 
 class PipelineEngine:

@@ -358,7 +358,8 @@ class VLMEngine:
             try:
                 import httpx
 
-                self._client = httpx.Client(timeout=60.0)
+                # Explicit connect budget; long read for VLM inference.
+                self._client = httpx.Client(timeout=httpx.Timeout(60.0, connect=5.0))
             except ImportError:
                 pass
         return self._client

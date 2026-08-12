@@ -391,6 +391,11 @@ detector = AnomalyDetector()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global lakehouse, external_device_lakehouse
+    # SECURITY: fail fast in production when required secrets are missing.
+    if _PRODUCTION and not LAKEHOUSE_API_KEYS:
+        raise RuntimeError(
+            "APP_ENV=production requires LAKEHOUSE_API_KEY; refusing to start"
+        )
     lakehouse = Lakehouse(DUCKDB_PATH)
     external_device_lakehouse = ExternalDeviceLakehouse(lakehouse.conn, os.path.dirname(DUCKDB_PATH) or "/data")
     log.info("lakehouse_started", path=DUCKDB_PATH)
@@ -405,18 +410,30 @@ async def lifespan(app: FastAPI):
     log.info("lakehouse_shutting_down")
 
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC Lakehouse Analytics",
     description="DuckDB-backed analytics and AI/ML pipeline for INEC 2027 elections",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 # SECURITY: /sync, /analytics/* and /ai/* were previously unauthenticated.
 # The service FAILS CLOSED when LAKEHOUSE_API_KEY is unset (503 on all
 # non-public routes). Public routes: /health and /dapr/subscribe only —
 # /dapr/events/* is additionally guarded by require_dapr_ingress.
-LAKEHOUSE_API_KEY = os.getenv("LAKEHOUSE_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+LAKEHOUSE_API_KEYS: list[str] = [
+    k.strip() for k in os.getenv("LAKEHOUSE_API_KEY", "").split(",") if k.strip()
+]
 _PUBLIC_PATHS = ("/health", "/dapr/subscribe")
 
 
@@ -428,7 +445,7 @@ async def api_key_auth_middleware(request: Request, call_next):
 
     if request.url.path in _PUBLIC_PATHS:
         return await call_next(request)
-    if not LAKEHOUSE_API_KEY:
+    if not LAKEHOUSE_API_KEYS:
         log.error("api_key_not_configured", detail="LAKEHOUSE_API_KEY unset")
         return JSONResponse(
             status_code=503,
@@ -437,15 +454,30 @@ async def api_key_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), LAKEHOUSE_API_KEY.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in LAKEHOUSE_API_KEYS
+    ):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
     return await call_next(request)
 
 
 async def sync_from_postgres():
     """Pull latest results from the Go backend into DuckDB."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{BACKEND_URL}/results", timeout=10)
+    import asyncio
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=3.0)
+    ) as client:
+        # Idempotent GET: bounded retry with backoff on transport errors.
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = await client.get(f"{BACKEND_URL}/results")
+                break
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.3 * (2 ** attempt))
         if resp.status_code == 200:
             data = resp.json()
             results = data if isinstance(data, list) else data.get("results", [])
@@ -468,10 +500,18 @@ async def sync_data():
 
 
 def require_dapr_ingress(request: Request) -> None:
-    token = os.getenv("DAPR_API_TOKEN", "").strip()
-    if not token:
+    import hmac
+
+    # KEY ROTATION: comma-separated tokens; any constant-time match passes.
+    tokens = [
+        t.strip() for t in os.getenv("DAPR_API_TOKEN", "").split(",") if t.strip()
+    ]
+    if not tokens:
         raise HTTPException(status_code=503, detail="Dapr ingestion token is not configured")
-    if request.headers.get("dapr-api-token", "") != token:
+    provided = request.headers.get("dapr-api-token", "")
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), token.encode()) for token in tokens
+    ):
         raise HTTPException(status_code=401, detail="invalid Dapr ingestion token")
 
 
