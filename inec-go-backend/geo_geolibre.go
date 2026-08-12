@@ -137,7 +137,6 @@ func handleGeoLibrePollingUnits(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(fc)
 }
 
@@ -212,7 +211,6 @@ func handleGeoLibreIncidents(w http.ResponseWriter, r *http.Request) {
 
 	fc.Metadata["feature_count"] = len(fc.Features)
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(fc)
 }
 
@@ -320,7 +318,6 @@ func handleGeoLibreStateChoropleth(w http.ResponseWriter, r *http.Request) {
 
 	fc.Metadata["feature_count"] = len(fc.Features)
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(fc)
 }
 
@@ -385,7 +382,6 @@ func handleGeoLibreBVAS(w http.ResponseWriter, r *http.Request) {
 
 	fc.Metadata["feature_count"] = len(fc.Features)
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(fc)
 }
 
@@ -449,7 +445,6 @@ func handleGeoLibreOfficials(w http.ResponseWriter, r *http.Request) {
 
 	fc.Metadata["feature_count"] = len(fc.Features)
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(fc)
 }
 
@@ -627,7 +622,6 @@ func handleGeoLibreSpatialQuery(w http.ResponseWriter, r *http.Request) {
 
 	fc.Metadata["feature_count"] = len(fc.Features)
 	w.Header().Set("Content-Type", "application/geo+json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(fc)
 }
 

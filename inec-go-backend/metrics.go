@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -87,11 +88,20 @@ func metricsHandler() http.Handler {
 }
 
 // metricsBearerGuard protects /metrics with a shared bearer token when
-// METRICS_BEARER_TOKEN is configured. When unset the endpoint remains open
-// for in-cluster scraping.
+// METRICS_BEARER_TOKEN is configured.
+//
+// SECURITY (fail closed): in production (APP_ENV=production) a missing
+// METRICS_BEARER_TOKEN is a fatal startup error — an unauthenticated
+// /metrics endpoint leaks internal label cardinality, request rates and
+// subsystem health. Outside production the endpoint stays open for local
+// scraping, with a loud warning.
 func metricsBearerGuard(next http.Handler) http.Handler {
 	token := os.Getenv("METRICS_BEARER_TOKEN")
 	if token == "" {
+		if os.Getenv("APP_ENV") == "production" {
+			log.Fatal().Msg("METRICS_BEARER_TOKEN must be set in production — refusing to expose unauthenticated /metrics")
+		}
+		log.Warn().Msg("METRICS_BEARER_TOKEN not set — /metrics is UNAUTHENTICATED (allowed outside production only)")
 		return next
 	}
 	expected := "Bearer " + token

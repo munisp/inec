@@ -69,11 +69,28 @@ var (
 
 // validateConfig fails fast in production when required environment variables
 // are missing, instead of booting into an insecure half-configured state.
+// The list is kept in sync with every variable labeled REQUIRED-IN-PROD in
+// .env.example (gotv-deployment-specific variables are enforced by gotv-svc's
+// own startup checks).
 func validateConfig() {
 	if os.Getenv("APP_ENV") != "production" {
 		return
 	}
-	required := []string{"JWT_SECRET", "DATABASE_URL", "CORS_ORIGINS"}
+	required := []string{
+		// Core runtime secrets
+		"JWT_SECRET",
+		"DATABASE_URL",
+		"CORS_ORIGINS",
+		// Inter-service trust: without these the gateway trust headers and
+		// X-Forwarded-For handling cannot be locked down.
+		"INTERNAL_SERVICE_SECRET",
+		"TRUSTED_PROXY_CIDRS",
+		// HTTPS serving material.
+		"TLS_CERT_FILE",
+		"TLS_KEY_FILE",
+		// /metrics must never fail open in production (see metricsBearerGuard).
+		"METRICS_BEARER_TOKEN",
+	}
 	var missing []string
 	for _, k := range required {
 		if strings.TrimSpace(os.Getenv(k)) == "" {
@@ -891,9 +908,10 @@ func main() {
 	// Static file serving for observer photo uploads
 	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
-	// Prometheus metrics endpoint. When METRICS_BEARER_TOKEN is set, requests
-	// must present it as a Bearer token; otherwise the endpoint stays open
-	// (e.g. in-cluster scraping) — see .env.example.
+	// Prometheus metrics endpoint. Requests must present METRICS_BEARER_TOKEN
+	// as a Bearer token. In production a missing token is a fatal startup
+	// error (fail closed); outside production the endpoint stays open for
+	// local scraping with a warning — see .env.example.
 	r.Handle("/metrics", metricsBearerGuard(metricsHandler())).Methods("GET")
 
 	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
@@ -1182,6 +1200,12 @@ func broadcastWS(msg M) {
 }
 
 func handleWSUpdates(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: require a valid JWT before upgrading — the origin check alone
+	// is not authentication. Accepts Bearer header or the HttpOnly inec_token
+	// cookie; ?token= query auth is honored only in dev mode.
+	if _, ok := authenticateStreamRequest(w, r); !ok {
+		return
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
