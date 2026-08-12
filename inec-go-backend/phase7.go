@@ -297,423 +297,9 @@ func initPhase7Tables(database *sql.DB) {
 	execMulti(database, schema)
 }
 
-func seedPhase7Data(database *sql.DB) {
-	var count int
-	database.QueryRow("SELECT COUNT(*) FROM biometric_profiles").Scan(&count)
-	if count > 0 {
-		return
-	}
-
-	rng := NewSecureRng()
-	tx, _ := database.Begin()
-
-	voterRows, err := database.Query("SELECT vin, biometric_hash FROM voters ORDER BY RANDOM() LIMIT 500")
-	var vins, bioHashes []string
-	if err == nil {
-		for voterRows.Next() {
-			var v, b string
-			voterRows.Scan(&v, &b)
-			vins = append(vins, v)
-			bioHashes = append(bioHashes, b)
-		}
-		voterRows.Close()
-	}
-	_ = bioHashes
-
-	for i, vin := range vins {
-		fpHash := fmt.Sprintf("%x", sha256.Sum256([]byte("fp-"+vin)))[:32]
-		faceHash := fmt.Sprintf("%x", sha256.Sum256([]byte("face-"+vin)))[:32]
-		irisHash := ""
-		modalities := "fingerprint,facial"
-		if rng.Float64() < 0.3 {
-			irisHash = fmt.Sprintf("%x", sha256.Sum256([]byte("iris-"+vin)))[:32]
-			modalities = "fingerprint,facial,iris"
-		}
-
-		// Compute quality from deterministic hash simulating Laplacian variance analysis.
-		// In production, this would be computed from the actual enrollment image.
-		qualityHash := sha256.Sum256([]byte(fmt.Sprintf("quality-%s-%d", vin, i)))
-		laplaceVar := float64(qualityHash[0])/256.0*500.0 + float64(qualityHash[1])/256.0*100.0
-		quality := float64(laplaceVar / 500.0)
-		if quality > 1.0 {
-			quality = 1.0
-		}
-
-		dupFlag := 0
-		dupVin := ""
-		if rng.Float64() < 0.02 && i > 0 {
-			dupFlag = 1
-			dupVin = vins[rng.Intn(i)]
-		}
-		tx.Exec(`INSERT INTO biometric_profiles (voter_vin, fingerprint_hash, facial_hash, iris_hash, modalities_enrolled, quality_score, enrollment_device, duplicate_flag, duplicate_matched_vin, status) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			vin, fpHash, faceHash, irisHash, modalities, quality,
-			fmt.Sprintf("BVAS-%03d", rng.Intn(500)+1), dupFlag, dupVin, "active")
-
-		for j := 0; j < 1+rng.Intn(3); j++ {
-			mods := []string{"fingerprint", "facial", "multi_modal"}
-			mod := mods[rng.Intn(len(mods))]
-
-			// Compute match score from deterministic hash simulating real biometric comparison.
-			// Genuine pairs (same VIN) produce high scores; impostor pairs produce lower scores.
-			matchHash := sha256.Sum256([]byte(fmt.Sprintf("match-%s-%s-%d", vin, mod, j)))
-			score := float64(matchHash[0])/256.0*0.4 + 0.55 // Range: 0.55 to 0.95 (mostly genuine matches in enrollment data)
-			if score > 1.0 {
-				score = 1.0
-			}
-
-			result := "match"
-			if score < 0.85 {
-				result = "no_match"
-			}
-			if rng.Float64() < 0.01 {
-				result = "spoof_detected"
-			}
-			tx.Exec(`INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms, verified_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
-				vin, fmt.Sprintf("BVAS-%03d", rng.Intn(500)+1), mod, score, result,
-				50+rng.Intn(200), fmt.Sprintf("-%d hours", rng.Intn(72)))
-		}
-	}
-
-	for i := 0; i < 15 && len(vins) > 0; i++ {
-		src := vins[rng.Intn(len(vins))]
-		cand := vins[rng.Intn(len(vins))]
-
-		// Compute similarity from deterministic hash simulating real ABIS comparison.
-		// In production this would use Jaccard similarity for set-based templates,
-		// cosine similarity for vector embeddings, or Hamming distance for binary codes.
-		simHash := sha256.Sum256([]byte(fmt.Sprintf("abis-%s-%s-%d", src, cand, i)))
-		// Use first 2 bytes to generate a score in [0.3, 0.95] range
-		// (most ABIS checks are low-similarity impostor comparisons, with occasional high-similarity true duplicates)
-		sim := float64(simHash[0])/256.0*0.65 + 0.3
-		if sim > 0.95 {
-			sim = 0.95
-		}
-
-		statuses := []string{"pending", "confirmed_duplicate", "false_positive", "resolved"}
-		tx.Exec(`INSERT INTO abis_duplicate_checks (source_vin, candidate_vin, similarity_score, modality, status) VALUES (?,?,?,?,?)`,
-			src, cand, sim, "fingerprint", statuses[rng.Intn(len(statuses))])
-	}
-
-	var electionID int
-	database.QueryRow("SELECT id FROM elections LIMIT 1").Scan(&electionID)
-
-	resultRows, err2 := database.Query("SELECT id FROM results ORDER BY id LIMIT 200")
-	var resultIDs []int
-	if err2 == nil {
-		for resultRows.Next() {
-			var rid int
-			resultRows.Scan(&rid)
-			resultIDs = append(resultIDs, rid)
-		}
-		resultRows.Close()
-	}
-
-	prevHash := "0000000000000000000000000000000000000000000000000000000000000000"
-	for i, rid := range resultIDs {
-		ec8aData := fmt.Sprintf("EC8A-RESULT-%d-ELECTION-%d-TIMESTAMP-%d", rid, electionID, time.Now().Unix())
-		ec8aHash := fmt.Sprintf("%x", sha256.Sum256([]byte(ec8aData)))
-		blockData := fmt.Sprintf("%d-%s-%s", i, prevHash, ec8aHash)
-		blockHash := fmt.Sprintf("%x", sha256.Sum256([]byte(blockData)))
-		merkle := fmt.Sprintf("%x", sha256.Sum256([]byte(ec8aHash+blockHash)))
-		levels := []string{"polling_unit", "polling_unit", "polling_unit", "ward", "lga"}
-		valStatus := []string{"validated", "validated", "validated", "pending"}
-		tx.Exec(`INSERT INTO blockchain_results (result_id, ec8a_hash, prev_hash, block_index, block_hash, merkle_root, level, validation_status, validator_count) VALUES (?,?,?,?,?,?,?,?,?)`,
-			rid, ec8aHash, prevHash, i, blockHash, merkle[:32], levels[rng.Intn(len(levels))],
-			valStatus[rng.Intn(len(valStatus))], rng.Intn(5)+1)
-		prevHash = blockHash
-	}
-
-	contracts := []struct{ ctype, level, area string }{
-		{"pu_validation", "polling_unit", "PU-001"},
-		{"ward_aggregation", "ward", "WARD-001"},
-		{"lga_aggregation", "lga", "LGA-001"},
-		{"state_aggregation", "state", "LA"},
-		{"national_declaration", "national", "NG"},
-	}
-	for i, c := range contracts {
-		cid := fmt.Sprintf("SC-%04d-%s", i+1, c.ctype)
-		status := "active"
-		if rng.Float64() < 0.3 {
-			status = "executed"
-		}
-		tx.Exec(`INSERT INTO smart_contracts (contract_id, contract_type, level, area_code, election_id, conditions, status) VALUES (?,?,?,?,?,?,?)`,
-			cid, c.ctype, c.level, c.area, electionID,
-			`{"min_validators":3,"threshold":0.95,"timeout_hours":24}`, status)
-	}
-
-	for i := 0; i < 50; i++ {
-		actions := []string{"result_uploaded", "result_validated", "hash_verified", "contract_executed", "dispute_raised"}
-		entities := []string{"result", "smart_contract", "voter", "election"}
-		txHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("tx-%d-%d", i, time.Now().UnixNano()))))
-		tx.Exec(`INSERT INTO blockchain_audit_trail (action, entity_type, entity_id, actor, tx_hash, timestamp) VALUES (?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
-			actions[rng.Intn(len(actions))], entities[rng.Intn(len(entities))],
-			fmt.Sprintf("%d", rng.Intn(200)+1), fmt.Sprintf("user_%d", rng.Intn(10)+1),
-			txHash, fmt.Sprintf("-%d hours", rng.Intn(168)))
-	}
-
-	courses := []struct {
-		title, ctype, role, diff string
-		dur, pass, mods          int
-		mandatory                bool
-	}{
-		{"Election Day Procedures", "vr_simulation", "presiding_officer", "intermediate", 120, 80, 6, true},
-		{"BVAS Operation & Troubleshooting", "interactive", "ad_hoc_staff", "beginner", 90, 70, 5, true},
-		{"Result Collation Process", "vr_simulation", "collation_officer", "advanced", 150, 85, 8, true},
-		{"Voter Accreditation Protocol", "gamified", "ad_hoc_staff", "beginner", 60, 65, 4, false},
-		{"Emergency Response Scenarios", "vr_simulation", "presiding_officer", "expert", 180, 90, 10, true},
-		{"Electoral Law Fundamentals", "video", "all", "beginner", 45, 60, 3, false},
-		{"Conflict De-escalation", "vr_simulation", "security", "intermediate", 90, 75, 5, false},
-		{"Accessibility & Inclusive Voting", "interactive", "presiding_officer", "beginner", 60, 70, 4, true},
-		{"Digital Literacy for BVAS", "gamified", "ad_hoc_staff", "beginner", 75, 65, 5, false},
-		{"Senior Returning Officer Training", "vr_simulation", "returning_officer", "expert", 240, 90, 12, true},
-	}
-	for _, c := range courses {
-		m := 0
-		if c.mandatory {
-			m = 1
-		}
-		tx.Exec(`INSERT INTO training_courses (title, course_type, target_role, difficulty, duration_minutes, passing_score, modules_count, is_mandatory) VALUES (?,?,?,?,?,?,?,?)`,
-			c.title, c.ctype, c.role, c.diff, c.dur, c.pass, c.mods, m)
-	}
-
-	for i := 0; i < 80; i++ {
-		uid := rng.Intn(50) + 1
-		cid := rng.Intn(10) + 1
-		progress := float64(rng.Intn(101))
-		score := rng.Intn(101)
-		status := "in_progress"
-		if progress >= 100 {
-			status = "completed"
-			if score < 70 {
-				status = "failed"
-			}
-		}
-		tx.Exec(`INSERT INTO training_enrollments (user_id, course_id, progress_percent, current_module, score, status, started_at, completed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL),CASE WHEN ?='completed' THEN NOW() + CAST(? AS INTERVAL) ELSE NULL END)`,
-			uid, cid, progress, 1+rng.Intn(5), score, status,
-			fmt.Sprintf("-%d days", rng.Intn(30)), status, fmt.Sprintf("-%d days", rng.Intn(10)))
-
-		if status == "completed" && score >= 70 {
-			certID := fmt.Sprintf("CERT-%04d-%04d-%s", uid, cid, time.Now().Format("20060102"))
-			certHash := fmt.Sprintf("%x", sha256.Sum256([]byte(certID)))
-			tx.Exec(`INSERT INTO training_certificates (enrollment_id, user_id, course_id, certificate_id, blockchain_hash, score) VALUES (?,?,?,?,?,?)`,
-				i+1, uid, cid, certID, certHash, score)
-		}
-	}
-
-	vrScenarios := []struct {
-		cid         int
-		name, stype string
-	}{
-		{1, "Standard Polling Day", "election_day"},
-		{1, "Equipment Malfunction", "equipment_setup"},
-		{3, "Multi-Level Collation", "result_collation"},
-		{5, "Security Breach Response", "emergency"},
-		{5, "Crowd Surge Management", "crowd_control"},
-		{7, "Agent Dispute Resolution", "conflict_resolution"},
-		{10, "Full Election Simulation", "election_day"},
-	}
-	for _, s := range vrScenarios {
-		tx.Exec(`INSERT INTO training_vr_scenarios (course_id, scenario_name, scenario_type, max_score, avg_completion_time) VALUES (?,?,?,100,?)`,
-			s.cid, s.name, s.stype, 30+rng.Intn(60))
-	}
-
-	stTypes := []string{"party_agent", "observer", "media", "cso", "diplomat", "security", "candidate", "legal"}
-	orgs := []string{"APC", "PDP", "LP", "NNPP", "EU-EOM", "Commonwealth", "TMG", "YIAGA", "Channels TV", "BBC Africa",
-		"NDI", "IRI", "INEC Legal", "Nigeria Police", "DSS", "Premium Times", "Punch News", "Guardian NG"}
-	for i := 0; i < 120; i++ {
-		sType := stTypes[rng.Intn(len(stTypes))]
-		org := orgs[rng.Intn(len(orgs))]
-		credID := fmt.Sprintf("CRED-%s-%04d", strings.ToUpper(sType[:3]), i+1)
-		qr := fmt.Sprintf("https://inec.ng/verify/%s", credID)
-		statuses := []string{"approved", "approved", "approved", "pending", "suspended"}
-		firstNames := []string{"Adebayo", "Chukwuma", "Fatima", "Ibrahim", "Ngozi", "Olumide", "Aisha", "Emeka", "Hauwa", "Tunde", "Chioma", "Musa", "Amina", "Chidi", "Binta", "Segun", "Halima", "Obiora", "Zainab", "Femi"}
-		lastNames := []string{"Okafor", "Mohammed", "Adeyemi", "Bello", "Nwosu", "Ibrahim", "Ogunleye", "Abubakar", "Eze", "Yusuf", "Adeniyi", "Suleiman", "Okoro", "Aliyu", "Bakare", "Danladi", "Onyeka", "Hassan", "Adeleke", "Usman"}
-		sName := fmt.Sprintf("%s %s", firstNames[rng.Intn(len(firstNames))], lastNames[rng.Intn(len(lastNames))])
-		tx.Exec(`INSERT INTO stakeholders (name, organization, stakeholder_type, credential_id, credential_qr, accreditation_status, election_id) VALUES (?,?,?,?,?,?,?)`,
-			sName, org, sType, credID, qr,
-			statuses[rng.Intn(len(statuses))], electionID)
-	}
-
-	incTypes := []string{"violence", "intimidation", "ballot_stuffing", "equipment_failure", "process_violation", "other"}
-	for i := 0; i < 35; i++ {
-		repID := rng.Intn(120) + 1
-		sev := []string{"low", "medium", "high", "critical"}
-		stat := []string{"reported", "acknowledged", "investigating", "resolved", "escalated"}
-		incDescs := []string{
-			"Thugs disrupted voting at polling unit and scattered ballot papers",
-			"Unknown persons attempted to intimidate voters outside polling station",
-			"BVAS device malfunctioned during accreditation process",
-			"Presiding officer refused to allow party agents into polling booth",
-			"Suspected ballot box snatching reported near market area",
-			"Voters turned away despite having valid PVCs",
-			"Collation officer observed altering figures on result sheet",
-			"Armed men blocked access road to polling unit",
-			"BVAS fingerprint reader not recognizing registered voters",
-			"Party agents distributing money to voters near polling station",
-			"Underage voters observed in queue at polling unit",
-			"Electoral materials arrived 3 hours late at polling station",
-			"Result sheet figures do not match BVAS accreditation count",
-			"Polling unit opened late due to missing INEC officials",
-			"Voters with disability denied assistance at polling booth",
-		}
-		tx.Exec(`INSERT INTO stakeholder_incidents (reporter_id, incident_type, description, severity, latitude, longitude, status, reported_at) VALUES (?,?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
-			repID, incTypes[rng.Intn(len(incTypes))],
-			incDescs[rng.Intn(len(incDescs))],
-			sev[rng.Intn(len(sev))],
-			6.0+rng.Float64()*7, 3.0+rng.Float64()*12,
-			stat[rng.Intn(len(stat))],
-			fmt.Sprintf("-%d hours", rng.Intn(48)))
-	}
-
-	gTypes := []string{"result_dispute", "process_complaint", "staff_misconduct", "access_denial", "equipment_issue", "other"}
-	for i := 0; i < 20; i++ {
-		sid := rng.Intn(120) + 1
-		pri := []string{"low", "normal", "high", "urgent"}
-		stat := []string{"filed", "under_review", "hearing_scheduled", "resolved", "dismissed"}
-		gSubjects := []string{
-			"Disputed result in Ward III collation centre",
-			"Complaint about staff misconduct during accreditation",
-			"Request for recount at polling unit level",
-			"Denial of observer access to collation centre",
-			"Allegation of result falsification at LGA level",
-			"BVAS malfunction affected voter turnout",
-			"Late opening of polls disenfranchised voters",
-			"Unauthorized persons present during vote counting",
-			"Missing result sheets from two polling units",
-			"Party agent removed from polling station without cause",
-		}
-		gDescriptions := []string{
-			"The announced figures differ from what was recorded on the EC8A form at the polling unit level. We request an immediate recount.",
-			"An INEC ad-hoc staff was observed directing voters to specific candidates. Multiple witnesses have provided statements.",
-			"The BVAS device rejected valid PVCs for over 50 registered voters. Technical support was not available on time.",
-			"Our accredited observers were prevented from entering the collation centre by security personnel without explanation.",
-			"The figures announced at the LGA collation centre do not match the sum of ward-level results.",
-			"Polling unit opened 4 hours late. Many registered voters left and could not return to vote.",
-			"Unauthorized individuals were seen handling ballot boxes during transportation to the collation centre.",
-			"Two result sheets from polling units in this ward are missing and unaccounted for in the collation.",
-			"Our party agent was forcibly removed from the polling station after raising objections about irregularities.",
-			"The presiding officer allowed voting to continue past the official closing time without authorization.",
-		}
-		tx.Exec(`INSERT INTO grievances (stakeholder_id, grievance_type, subject, description, priority, status, filed_at) VALUES (?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
-			sid, gTypes[rng.Intn(len(gTypes))],
-			gSubjects[rng.Intn(len(gSubjects))],
-			gDescriptions[rng.Intn(len(gDescriptions))],
-			pri[rng.Intn(len(pri))], stat[rng.Intn(len(stat))],
-			fmt.Sprintf("-%d hours", rng.Intn(72)))
-	}
-
-	notifs := []struct{ ttype, tval, title, body, ntype string }{
-		{"all", "", "Voting Commences", "Polls are now open nationwide", "alert"},
-		{"stakeholder_type", "observer", "Observer Briefing", "Pre-election briefing at 7:00 AM", "info"},
-		{"stakeholder_type", "party_agent", "Agent Credentials", "Collect your credentials at RAC offices", "update"},
-		{"all", "", "Security Advisory", "Report suspicious activities to security personnel", "emergency"},
-		{"stakeholder_type", "media", "Media Guidelines", "Updated media access guidelines published", "info"},
-	}
-	for _, n := range notifs {
-		tx.Exec(`INSERT INTO push_notifications (target_type, target_value, title, body, notification_type, total_recipients, read_count) VALUES (?,?,?,?,?,?,?)`,
-			n.ttype, n.tval, n.title, n.body, n.ntype, 50+rng.Intn(200), rng.Intn(100))
-	}
-
-	states := []string{"LA", "FC", "KN", "RI", "OY", "KD", "AB", "AN", "BO", "EN", "OG", "ED", "BA", "SO", "NI"}
-	predTypes := []string{"turnout", "resource", "security_threat", "sentiment"}
-	for _, st := range states {
-		for _, pt := range predTypes {
-			val := rng.Float64() * 100
-			conf := 0.6 + rng.Float64()*0.4
-			tx.Exec(`INSERT INTO ai_predictions (prediction_type, target_area, target_level, predicted_value, confidence, model_name, election_id) VALUES (?,?,?,?,?,?,?)`,
-				pt, st, "state", val, conf, "xgboost_v2", electionID)
-		}
-	}
-
-	sentiments := []string{"positive", "negative", "neutral", "mixed"}
-	sources := []string{"twitter", "facebook", "news", "whatsapp"}
-	topics := []string{"election security", "BVAS performance", "voter turnout", "result credibility", "INEC preparedness"}
-	for i := 0; i < 200; i++ {
-		sentimentSnippets := []string{
-			"BVAS working perfectly at my polling unit. Smooth process so far #NigeriaDecides",
-			"Why is INEC always late with materials? This is unacceptable! #ElectionDay",
-			"Kudos to INEC staff for maintaining order at our polling station",
-			"Voter turnout looking impressive in Lagos today. Democracy is alive!",
-			"Concerned about security situation in some northern states #NigeriaElection",
-			"The new electronic voting process is much better than before. Well done INEC",
-			"Still waiting in queue after 4 hours. When will they start accreditation?",
-			"Peaceful voting in my area. No incidents reported. #NigeriaDecides2027",
-			"BVAS rejected my fingerprint twice before it worked. Stressful experience",
-			"International observers impressed with the level of transparency this election",
-			"Why are party agents being denied access to the collation centre?",
-			"The result from my polling unit matches what I saw. Transparent process",
-			"Reports of thugs causing chaos at several polling units in Rivers State",
-			"Congratulations to all Nigerians who came out to vote. Democracy wins!",
-			"INEC should explain why results are delayed in these key states",
-		}
-		tx.Exec(`INSERT INTO sentiment_analysis (source, content_snippet, sentiment, score, topics, location, election_id, analyzed_at) VALUES (?,?,?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
-			sources[rng.Intn(len(sources))],
-			sentimentSnippets[rng.Intn(len(sentimentSnippets))],
-			sentiments[rng.Intn(len(sentiments))],
-			-1+rng.Float64()*2,
-			topics[rng.Intn(len(topics))],
-			states[rng.Intn(len(states))],
-			electionID,
-			fmt.Sprintf("-%d hours", rng.Intn(48)))
-	}
-
-	for i := 0; i < 12; i++ {
-		classif := []string{"fake_result", "false_claim", "manipulated_media", "impersonation", "incitement"}
-		sev := []string{"low", "medium", "high", "critical"}
-		stat := []string{"detected", "verified", "debunked", "monitoring"}
-		misinfoContent := []string{
-			"Viral post claims INEC server was hacked and results altered in favor of ruling party",
-			"Fabricated screenshot of INEC chairman endorsing a candidate shared on WhatsApp",
-			"False claim that election has been postponed in 5 northern states",
-			"Doctored video showing ballot stuffing claimed to be from Lagos polling unit",
-			"Fake news claiming BVAS machines have been programmed to reject opposition voters",
-			"Manipulated image showing military preventing voters in South East",
-			"False report claiming electoral commissioner fled the country",
-			"Fabricated result sheets circulating on social media claiming premature results",
-			"Deepfake video of candidate making inflammatory statement during voting",
-			"False claim that international observers declared the election invalid",
-			"Manipulated audio of INEC official discussing vote rigging plan",
-			"Fake social media account impersonating REC posting false state results",
-		}
-		tx.Exec(`INSERT INTO misinformation_alerts (content, source_platform, classification, confidence, severity, reach_estimate, status, fact_check) VALUES (?,?,?,?,?,?,?,?)`,
-			misinfoContent[rng.Intn(len(misinfoContent))],
-			sources[rng.Intn(len(sources))],
-			classif[rng.Intn(len(classif))],
-			0.6+rng.Float64()*0.4,
-			sev[rng.Intn(len(sev))],
-			rng.Intn(50000),
-			stat[rng.Intn(len(stat))],
-			fmt.Sprintf("Fact check: claim #%d is %s", i+1, []string{"false", "misleading", "out of context"}[rng.Intn(3)]))
-	}
-
-	threatTypes := []string{"violence", "protest", "road_blockage", "device_theft", "cyber_attack"}
-	for i := 0; i < 18; i++ {
-		sev := []string{"low", "medium", "high", "critical"}
-		stat := []string{"active", "monitoring", "mitigated", "resolved"}
-		tx.Exec(`INSERT INTO security_threats (threat_type, location, latitude, longitude, severity, confidence, affected_pus, status, description) VALUES (?,?,?,?,?,?,?,?,?)`,
-			threatTypes[rng.Intn(len(threatTypes))],
-			states[rng.Intn(len(states))],
-			6.0+rng.Float64()*7, 3.0+rng.Float64()*12,
-			sev[rng.Intn(len(sev))],
-			0.5+rng.Float64()*0.5,
-			rng.Intn(20),
-			stat[rng.Intn(len(stat))],
-			fmt.Sprintf("Security threat assessment #%d", i+1))
-	}
-
-	cvEvents := []string{"crowd_size", "queue_length", "suspicious_activity", "equipment_status"}
-	for i := 0; i < 30; i++ {
-		tx.Exec(`INSERT INTO cv_monitoring (camera_id, event_type, value, description, confidence, detected_at) VALUES (?,?,?,?,?,NOW() + CAST(? AS INTERVAL))`,
-			fmt.Sprintf("CAM-%03d", rng.Intn(100)+1),
-			cvEvents[rng.Intn(len(cvEvents))],
-			rng.Float64()*100,
-			fmt.Sprintf("CV detection event #%d", i+1),
-			0.7+rng.Float64()*0.3,
-			fmt.Sprintf("-%d minutes", rng.Intn(360)))
-	}
-
-	tx.Commit()
-}
+// seedPhase7Data was deleted: it fabricated biometric profiles, verification
+// results, ABIS duplicate checks, blockchain anchors, smart contracts and training
+// records. SECURITY: refuses to fabricate verification and audit data.
 
 // ══════════════════════════════════════════════════════════════
 // Module 1: Enhanced Biometric Verification System
@@ -772,6 +358,12 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "vin and modality required")
 		return
 	}
+	// SECURITY: refuses to fabricate a match decision. A live probe template
+	// captured at the device is mandatory; without it there is nothing to verify.
+	if strings.TrimSpace(req.Template) == "" {
+		writeError(w, 400, "template (probe biometric data) required")
+		return
+	}
 
 	var profile struct{ fpHash, faceHash, irisHash string }
 	err := db.QueryRow("SELECT fingerprint_hash, facial_hash, COALESCE(iris_hash,'') FROM biometric_profiles WHERE voter_vin=?", req.VIN).Scan(&profile.fpHash, &profile.faceHash, &profile.irisHash)
@@ -782,71 +374,36 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
-	// Try ML inference service first (InsightFace/ArcFace for facial, minutiae for fingerprint)
-	probeData, vaultErr := biometricVault.RetrieveTemplate(req.VIN, req.Modality)
-	var score float64
-	var result, algo string
-
+	// SECURITY: verification MUST come from the ML inference service
+	// (InsightFace/ArcFace for facial, minutiae for fingerprint). The previous
+	// fallbacks (ABIS self-match of the enrolled template, hashSimilarity of two
+	// unrelated hashes, auto-enrolling the probe with quality 0.8) fabricated
+	// match decisions and are removed. Fail closed with 503 instead.
 	mlCtx, mlCancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer mlCancel()
 	mlResult, mlErr := callMLInference(mlCtx, "python", "/biometric/verify", M{
 		"vin": req.VIN, "modality": req.Modality, "template": req.Template,
 	})
-	if mlErr == nil && mlResult != nil {
-		if s, ok := mlResult["score"].(float64); ok {
-			score = s
-			algo = "ml_inference"
-			if d, ok := mlResult["decision"].(string); ok {
-				result = d
-			} else if score >= 0.85 {
-				result = "match"
-			} else {
-				result = "no_match"
-			}
-		}
+	if mlErr != nil || mlResult == nil {
+		writeError(w, http.StatusServiceUnavailable, "biometric verification service unavailable; no match decision made")
+		return
 	}
-
-	// Fall back to ABIS engine for real template-based verification
-	if result == "" && vaultErr == nil && len(probeData) > 0 {
-		matchResult := abisEngine.Verify(req.VIN, req.Modality, probeData)
-		score = matchResult.Score
-		result = matchResult.Decision
-		algo = matchResult.Algorithm
-	} else if result == "" {
-		// Deterministic hash-based comparison from stored profile hashes
-		var storedHash string
-		switch req.Modality {
-		case "fingerprint":
-			storedHash = profile.fpHash
-		case "facial":
-			storedHash = profile.faceHash
-		case "iris":
-			storedHash = profile.irisHash
-		}
-		probeHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.VIN+req.Modality+req.Template)))
-		score = hashSimilarity(storedHash, probeHash)
-		algo = "hash_comparison"
-		if score >= 0.85 {
-			result = "match"
-		} else {
-			result = "no_match"
-		}
+	score, ok := mlResult["score"].(float64)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "biometric verification service returned no score; no match decision made")
+		return
+	}
+	algo := "ml_inference"
+	result := "no_match"
+	if d, ok := mlResult["decision"].(string); ok && d != "" {
+		result = d
+	} else if score >= 0.85 {
+		result = "match"
 	}
 
 	latency := int(time.Since(start).Milliseconds())
 	if latency < 1 {
 		latency = 1
-	}
-
-	// Fix #8: Store incoming probe template encrypted via vault if no template exists yet
-	if biometricVault != nil && vaultErr != nil && req.Template != "" {
-		go func() {
-			templateBytes := []byte(req.Template)
-			biometricVault.StoreTemplate(req.VIN, req.Modality, templateBytes, 0.8, M{
-				"device_id": req.DeviceID,
-				"source":    "verification_probe",
-			})
-		}()
 	}
 
 	dbExecLog("biometric_verificati", `INSERT INTO biometric_verifications (voter_vin, device_id, modality, match_score, result, latency_ms) VALUES (?,?,?,?,?,?)`,
@@ -860,26 +417,8 @@ func handleBiometricVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hashSimilarity computes deterministic similarity between two hex hash strings
-func hashSimilarity(a, b string) float64 {
-	if a == "" || b == "" {
-		return 0
-	}
-	if a == b {
-		return 1.0
-	}
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-	matching := 0
-	for i := 0; i < minLen; i++ {
-		if a[i] == b[i] {
-			matching++
-		}
-	}
-	return float64(matching) / float64(minLen)
-}
+// hashSimilarity was deleted: it fabricated biometric match decisions by
+// comparing two unrelated hex hashes. SECURITY: refuses to fabricate matches.
 
 func handleABISDuplicates(w http.ResponseWriter, r *http.Request) {
 	status := queryParam(r, "status", "")

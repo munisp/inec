@@ -517,6 +517,21 @@ func handleIntegrityHeatmap(w http.ResponseWriter, r *http.Request) {
 func calculateIntegrityScore(puCode string, electionID int) M {
 	scores := M{"polling_unit_code": puCode, "election_id": electionID}
 
+	// SECURITY: refuses to fabricate a composite integrity score for polling
+	// units with no submitted data. Previously a PU with zero submissions
+	// received benign defaults (Benford 0.85, geofence 1.0, timing 0.9,
+	// observer 0.7, anomaly 1.0) and a fake composite. PUs without submissions
+	// are now rated "insufficient_data" and excluded from the composite.
+	var submissionCount int
+	db.QueryRow("SELECT COUNT(*) FROM results WHERE polling_unit_code = ? AND election_id = ?",
+		puCode, electionID).Scan(&submissionCount)
+	if submissionCount == 0 {
+		scores["rating"] = "insufficient_data"
+		scores["composite_score"] = nil
+		scores["total_votes"] = 0
+		return scores
+	}
+
 	// 1. Benford's Law compliance
 	benfordScore := 0.85
 	var totalVotes int

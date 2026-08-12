@@ -316,6 +316,7 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		VoterPVCNumber  string   `json:"voter_pvc_number"`
 		BiometricMatch  bool     `json:"biometric_match"`
 		PVCVerified     bool     `json:"pvc_verified"`
+		VerificationID  int      `json:"verification_id"`
 		Method          string   `json:"method"`
 		DeviceLat       *float64 `json:"device_lat"`
 		DeviceLng       *float64 `json:"device_lng"`
@@ -327,6 +328,32 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 	if req.Method == "" {
 		req.Method = "biometric"
 	}
+
+	// SECURITY: refuses to store caller-asserted biometric_match/pvc_verified
+	// flags. Accreditation requires a server-side biometric verification record
+	// (biometric_verifications row produced by the verification pipeline with
+	// result='match'). Without it, no accreditation is recorded.
+	if req.VerificationID == 0 {
+		writeError(w, 400, "verification_id (server-side biometric verification record) required")
+		return
+	}
+	var verifyResult string
+	verifyErr := db.QueryRow("SELECT result FROM biometric_verifications WHERE id=?", req.VerificationID).Scan(&verifyResult)
+	if verifyErr == sql.ErrNoRows {
+		writeError(w, 403, "no server-side biometric verification on file; accreditation refused")
+		return
+	}
+	if verifyErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "biometric verification service unavailable; accreditation refused")
+		return
+	}
+	if verifyResult != "match" {
+		writeError(w, 403, "biometric verification did not result in a match; accreditation refused")
+		return
+	}
+	// Server-attested values; the client-supplied flags are ignored.
+	biometricMatch := true
+	pvcVerified := true
 
 	// Fix #4: Check device status is 'active'
 	var deviceStatus string
@@ -373,15 +400,15 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 	lid := insertReturningID(db, `INSERT INTO bvas_accreditations (device_id, election_id, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, synced_at)
 		VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		req.DeviceID, req.ElectionID, req.PollingUnitCode, pvcHash,
-		boolToInt(req.BiometricMatch), boolToInt(req.PVCVerified), req.Method)
+		boolToInt(biometricMatch), boolToInt(pvcVerified), req.Method)
 
 	dbExecLog("bvas_device", "UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
-	auditWrite("BVAS_ACCREDITATION", "bvas_accreditation", fmt.Sprintf("%d", lid), r, map[string]interface{}{"device_id": req.DeviceID, "pu_code": req.PollingUnitCode, "biometric_match": req.BiometricMatch})
+	auditWrite("BVAS_ACCREDITATION", "bvas_accreditation", fmt.Sprintf("%d", lid), r, map[string]interface{}{"device_id": req.DeviceID, "pu_code": req.PollingUnitCode, "biometric_match": biometricMatch, "verification_id": req.VerificationID})
 
 	go broadcastWS(M{"type": "bvas_accreditation", "pu_code": req.PollingUnitCode, "device_id": req.DeviceID, "election_id": req.ElectionID})
 
 	go publishResultEvent("inec.bvas.accreditation", lid, req.PollingUnitCode, req.ElectionID, 0,
-		map[string]interface{}{"device_id": req.DeviceID, "method": req.Method, "biometric_match": req.BiometricMatch})
+		map[string]interface{}{"device_id": req.DeviceID, "method": req.Method, "biometric_match": biometricMatch})
 
 	writeJSON(w, 200, M{"id": lid, "message": "Accreditation recorded", "pvc_hash": pvcHash[:16] + "..."})
 }
