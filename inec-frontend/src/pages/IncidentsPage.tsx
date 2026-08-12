@@ -93,6 +93,15 @@ export default function IncidentsPage() {
   const severityDist = incidents.reduce((acc, inc) => { acc[inc.severity] = (acc[inc.severity] || 0) + 1; return acc; }, {} as Record<string, number>);
   const statusDist = incidents.reduce((acc, inc) => { acc[inc.status] = (acc[inc.status] || 0) + 1; return acc; }, {} as Record<string, number>);
 
+  if (!electionId && !electionLoading) return (
+    <AuthoritativeDataUnavailable
+      title="No active election resolved"
+      description="Incidents are election-scoped and no active election could be resolved. No incident queue is shown."
+      error="no-active-election-resolved"
+      onRetry={loadIncidents}
+    />
+  );
+
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
 
   if (error) return (
