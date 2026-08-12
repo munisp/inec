@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyperledger/fabric-chaincode-go/pkg/cid"
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
@@ -70,6 +75,25 @@ type anchorIDInput struct {
 	PayloadSHA256   string `json:"payload_sha256"`
 	PriorEventHash  string `json:"prior_event_hash,omitempty"`
 	Signature       string `json:"signature"`
+	SignerKeyID     string `json:"signer_key_id"`
+	PolicyVersionID int64  `json:"policy_version_id,omitempty"`
+	CreatedAt       string `json:"created_at"`
+}
+
+// anchorSigningInput is the canonical, signature-free commitment payload that
+// the signer must sign. SECURITY: the signature is verified over the SHA-256
+// digest of this exact JSON encoding, which cryptographically binds the signer
+// to event_hash, payload_sha256, signer_key_id, and the anchor metadata. The
+// raw evidence payload intentionally stays off-chain, so payload_sha256 is the
+// on-chain commitment that the signature is verified against.
+type anchorSigningInput struct {
+	SchemaVersion   int    `json:"schema_version"`
+	AnchorType      string `json:"anchor_type"`
+	ElectionID      int64  `json:"election_id"`
+	ResultID        int64  `json:"result_id,omitempty"`
+	EventHash       string `json:"event_hash"`
+	PayloadSHA256   string `json:"payload_sha256"`
+	PriorEventHash  string `json:"prior_event_hash,omitempty"`
 	SignerKeyID     string `json:"signer_key_id"`
 	PolicyVersionID int64  `json:"policy_version_id,omitempty"`
 	CreatedAt       string `json:"created_at"`
@@ -170,6 +194,13 @@ func (c *EvidenceAnchorContract) CreateAnchor(ctx contractapi.TransactionContext
 	}
 	if anchor.AnchorID != computedID {
 		return nil, fmt.Errorf("anchor_id does not match canonical anchor commitment")
+	}
+	// SECURITY: cryptographically verify the commitment signature against the
+	// invoker's Fabric enrollment certificate. An anchor whose signature cannot
+	// be verified must be rejected; a base64 blob must never anchor as a
+	// "signed" commitment on format alone.
+	if err := verifyAnchorSignature(ctx, &anchor); err != nil {
+		return nil, err
 	}
 
 	key := anchorStatePrefix + anchor.AnchorID
@@ -323,6 +354,9 @@ func validateAnchor(anchor *EvidenceAnchorV1) error {
 	if strings.TrimSpace(anchor.Signature) == "" || strings.TrimSpace(anchor.SignerKeyID) == "" {
 		return fmt.Errorf("a signed anchor requires signature and signer_key_id")
 	}
+	// SECURITY: this is only a format pre-check. The signature is
+	// cryptographically verified against the invoker's certificate in
+	// verifyAnchorSignature before the anchor is persisted.
 	if _, err := base64.StdEncoding.DecodeString(anchor.Signature); err != nil {
 		return fmt.Errorf("signature must be standard base64: %w", err)
 	}
@@ -333,6 +367,107 @@ func validateAnchor(anchor *EvidenceAnchorV1) error {
 		return fmt.Errorf("created_at must be an RFC3339 timestamp: %w", err)
 	}
 	return nil
+}
+
+// verifyAnchorSignature cryptographically verifies that the anchor commitment
+// was signed by the private key belonging to the invoker's Fabric enrollment
+// certificate. SECURITY: this replaces the previous format-only check that
+// accepted any non-empty base64 blob as a "signed" commitment. The signer's
+// public key is taken from the invoker identity exposed by the Fabric CID
+// library, so a caller cannot anchor a commitment under an arbitrary or
+// unrelated key. Any anchor whose signature scheme cannot be determined or
+// verified is rejected.
+func verifyAnchorSignature(ctx contractapi.TransactionContextInterface, anchor *EvidenceAnchorV1) error {
+	cert, err := cid.GetX509Certificate(ctx.GetStub())
+	if err != nil {
+		return fmt.Errorf("resolve invoker signing certificate: %w", err)
+	}
+	invokerID, err := cid.GetID(ctx.GetStub())
+	if err != nil {
+		return fmt.Errorf("resolve invoker identity: %w", err)
+	}
+	// SECURITY: the declared signer_key_id must bind to the actual invoker so a
+	// caller cannot attribute an anchor to a key it does not control.
+	if !signerKeyIDMatches(cert, invokerID, anchor.SignerKeyID) {
+		return fmt.Errorf("signer_key_id does not match the invoker Fabric identity")
+	}
+	return verifySignatureOverAnchor(cert, anchor)
+}
+
+// canonicalSigningDigest returns the SHA-256 digest of the canonical,
+// signature-free anchor commitment payload that signers must sign.
+func canonicalSigningDigest(anchor *EvidenceAnchorV1) ([]byte, error) {
+	canonical, err := json.Marshal(anchorSigningInput{
+		SchemaVersion:   anchor.SchemaVersion,
+		AnchorType:      anchor.AnchorType,
+		ElectionID:      anchor.ElectionID,
+		ResultID:        anchor.ResultID,
+		EventHash:       anchor.EventHash,
+		PayloadSHA256:   anchor.PayloadSHA256,
+		PriorEventHash:  anchor.PriorEventHash,
+		SignerKeyID:     anchor.SignerKeyID,
+		PolicyVersionID: anchor.PolicyVersionID,
+		CreatedAt:       anchor.CreatedAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize anchor signing payload: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return digest[:], nil
+}
+
+// verifySignatureOverAnchor verifies the base64 signature against the public
+// key of the invoker's enrollment certificate. SECURITY: every failure path
+// rejects the anchor; there is deliberately no fallback that accepts a
+// signature on encoding format alone.
+func verifySignatureOverAnchor(cert *x509.Certificate, anchor *EvidenceAnchorV1) error {
+	signature, err := base64.StdEncoding.DecodeString(anchor.Signature)
+	if err != nil {
+		return fmt.Errorf("signature must be standard base64: %w", err)
+	}
+	if len(signature) == 0 {
+		return fmt.Errorf("signature cannot be empty")
+	}
+	digest, err := canonicalSigningDigest(anchor)
+	if err != nil {
+		return err
+	}
+	switch publicKey := cert.PublicKey.(type) {
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(publicKey, digest, signature) {
+			return fmt.Errorf("anchor ECDSA signature does not verify against the invoker certificate")
+		}
+		return nil
+	case *rsa.PublicKey:
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest, signature); err != nil {
+			return fmt.Errorf("anchor RSA signature does not verify against the invoker certificate: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported signer public key type %T", cert.PublicKey)
+	}
+}
+
+// signerKeyIDMatches binds the declared signer_key_id to the invoker identity.
+// Accepted forms are the enrollment certificate subject common name, the full
+// Fabric client ID returned by cid.GetID, or the lowercase hex SHA-256
+// fingerprint of the DER-encoded certificate.
+func signerKeyIDMatches(cert *x509.Certificate, invokerID, signerKeyID string) bool {
+	signerKeyID = strings.TrimSpace(signerKeyID)
+	if signerKeyID == "" {
+		return false
+	}
+	fingerprint := sha256.Sum256(cert.Raw)
+	for _, candidate := range []string{
+		cert.Subject.CommonName,
+		invokerID,
+		hex.EncodeToString(fingerprint[:]),
+	} {
+		if candidate != "" && signerKeyID == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func deterministicAnchorID(anchor EvidenceAnchorV1) (string, error) {
