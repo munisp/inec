@@ -14,7 +14,7 @@ scrape_configs:
   - job_name: "inec-backend"
     metrics_path: "/metrics"
     static_configs:
-      - targets: ["inec-backend:8088"]
+      - targets: ["go-backend:8088"]  # compose service name is go-backend
     # In Kubernetes, use service discovery:
     # kubernetes_sd_configs:
     #   - role: pod

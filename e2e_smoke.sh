@@ -2,7 +2,7 @@
 set -e
 
 echo "Running E2E Smoke Tests..."
-cd /home/ubuntu/inec/e2e
+cd "$(dirname "$0")/e2e"
 
 # Install dependencies if needed
 if [ ! -d "node_modules" ]; then

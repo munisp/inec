@@ -15,6 +15,9 @@ COPY model_serving.py model_versioning.py model_monitoring.py serve_http.py ./
 ENV MODEL_DIR=/models \
     MODEL_CACHE_SIZE=10000
 
+# Run as a non-root user.
+RUN useradd -u 10001 app
+USER app
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
