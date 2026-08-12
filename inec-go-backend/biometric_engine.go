@@ -257,11 +257,13 @@ type MatchResult struct {
 	Modality  string  `json:"modality"`
 	Algorithm string  `json:"algorithm"`
 	LatencyMs int     `json:"latency_ms"`
-	FAR       float64 `json:"far"`
-	FRR       float64 `json:"frr"`
-	Threshold float64 `json:"threshold"`
-	Decision  string  `json:"decision"`
-	Details   M       `json:"details"`
+	// INTEGRITY: FAR/FRR are omitted (nil) — biometric error rates must come
+	// from a real evaluation run, never estimated from a single match score.
+	FAR       *float64 `json:"far,omitempty"`
+	FRR       *float64 `json:"frr,omitempty"`
+	Threshold float64  `json:"threshold"`
+	Decision  string   `json:"decision"`
+	Details   M        `json:"details"`
 }
 
 type PADResult struct {
@@ -825,8 +827,6 @@ func (e *ABISEngine) Verify(vin string, modality string, probeData []byte) *Matc
 		Modality:  modality,
 		Algorithm: algo,
 		LatencyMs: latency,
-		FAR:       e.estimateFAR(score, modality),
-		FRR:       e.estimateFRR(score, modality),
 		Threshold: threshold,
 		Decision:  decision,
 		Details:   M{"template_format": "ISO_19794", "comparison_method": algo},
@@ -905,87 +905,11 @@ func (e *ABISEngine) Identify(probeVIN string, modality string, limit int) []M {
 	return results
 }
 
-func (e *ABISEngine) Enroll(vin, modality, deviceID string) M {
-	pipeline := M{"voter_vin": vin, "modality": modality, "stages": []M{}}
-	stages := []M{}
-
-	dbExecLog("abis_enroll", `INSERT INTO abis_enrollment_pipeline (voter_vin, stage, modality, device_id) VALUES (?,?,?,?)`,
-		vin, "capture", modality, deviceID)
-
-	rng := NewSecureRng()
-	inputHash := fmt.Sprintf("%s-%s-%d", vin, modality, time.Now().UnixNano())
-
-	var templateBytes []byte
-	var quality float64
-	meta := M{"device_id": deviceID}
-
-	switch modality {
-	case "fingerprint":
-		tmpl := extractFingerprintMinutiae(inputHash, rng)
-		templateBytes, _ = json.Marshal(tmpl) //nolint:errcheck — struct is always serializable
-		quality = float64(tmpl.NFIQ2Score) / 5.0
-		if quality < 0.4 {
-			quality = 0.4 + rng.Float64()*0.2
-		}
-		meta["nfiq_score"] = tmpl.NFIQ2Score
-		meta["minutiae_count"] = len(tmpl.Minutiae)
-		meta["iso_format"] = "ISO_19794_2"
-		stages = append(stages, M{"stage": "capture", "status": "complete", "minutiae_count": len(tmpl.Minutiae)})
-	case "facial":
-		emb := generateFacialEmbedding(inputHash, rng)
-		templateBytes, _ = json.Marshal(emb) //nolint:errcheck — struct is always serializable
-		quality = 0.7 + rng.Float64()*0.3
-		meta["embedding_dim"] = emb.Dimension
-		meta["iso_format"] = "ISO_19794_5"
-		stages = append(stages, M{"stage": "capture", "status": "complete", "embedding_dim": emb.Dimension})
-	case "iris":
-		code := generateIrisCode(inputHash, rng)
-		templateBytes, _ = json.Marshal(code) //nolint:errcheck — struct is always serializable
-		quality = code.Usability
-		meta["iris_bits"] = code.Bits
-		meta["iso_format"] = "ISO_19794_6"
-		stages = append(stages, M{"stage": "capture", "status": "complete", "iris_bits": code.Bits})
-	}
-
-	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='quality_check', quality_passed=1 WHERE voter_vin=? AND modality=? AND stage='capture'`, vin, modality)
-	qualityPassed := quality >= 0.4
-	stages = append(stages, M{"stage": "quality_check", "passed": qualityPassed, "score": quality})
-
-	if !qualityPassed {
-		dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='failed', error_detail='quality_check_failed' WHERE voter_vin=? AND modality=?`, vin, modality)
-		pipeline["status"] = "failed"
-		pipeline["error"] = "quality_check_failed"
-		pipeline["stages"] = stages
-		return pipeline
-	}
-
-	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='template_extract', template_extracted=1 WHERE voter_vin=? AND modality=?`, vin, modality)
-	stages = append(stages, M{"stage": "template_extract", "status": "complete", "template_size": len(templateBytes)})
-
-	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='dedup_check' WHERE voter_vin=? AND modality=?`, vin, modality)
-	dedupClear := rng.Float64() > 0.02
-	stages = append(stages, M{"stage": "dedup_check", "cleared": dedupClear})
-
-	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='vault_store', dedup_cleared=1 WHERE voter_vin=? AND modality=?`, vin, modality)
-	err := e.vault.StoreTemplate(vin, modality, templateBytes, quality, meta)
-	if err != nil {
-		stages = append(stages, M{"stage": "vault_store", "status": "failed", "error": err.Error()})
-		pipeline["status"] = "failed"
-		pipeline["stages"] = stages
-		return pipeline
-	}
-	stages = append(stages, M{"stage": "vault_store", "status": "complete", "encrypted": true})
-
-	dbExecLog("abis_pipeline", `UPDATE abis_enrollment_pipeline SET stage='complete', vault_stored=1, completed_at=CURRENT_TIMESTAMP WHERE voter_vin=? AND modality=?`, vin, modality)
-
-	pipeline["status"] = "complete"
-	pipeline["quality"] = quality
-	pipeline["template_size"] = len(templateBytes)
-	pipeline["stages"] = stages
-	pipeline["encrypted"] = true
-	pipeline["iso_compliant"] = true
-	return pipeline
-}
+// INTEGRITY: ABISEngine.Enroll was removed. It fabricated enrollments with
+// zero capture data (rng-generated templates, coin-flip dedup checks,
+// iso_compliant stamps). Real enrollment goes through handleABISEnroll, which
+// proxies to the biometric pipeline service (BIOMETRIC_PIPELINE_URL) and fails
+// loudly (503) when that service is not configured.
 
 func (e *ABISEngine) getThreshold(modality string) float64 {
 	switch modality {
@@ -1000,31 +924,9 @@ func (e *ABISEngine) getThreshold(modality string) float64 {
 	}
 }
 
-func (e *ABISEngine) estimateFAR(score float64, modality string) float64 {
-	base := 0.01
-	switch modality {
-	case "fingerprint":
-		base = 0.0001
-	case "iris":
-		base = 0.00001
-	case "facial":
-		base = 0.001
-	}
-	return base * math.Pow(score, 5)
-}
-
-func (e *ABISEngine) estimateFRR(score float64, modality string) float64 {
-	base := 0.01
-	switch modality {
-	case "fingerprint":
-		base = 0.01
-	case "iris":
-		base = 0.005
-	case "facial":
-		base = 0.02
-	}
-	return base * math.Pow(1-score, 3)
-}
+// INTEGRITY: estimateFAR/estimateFRR (invented heuristic error rates derived
+// from a single match score) were removed. Error rates must be measured by a
+// real evaluation harness over a labeled dataset, not fabricated per-request.
 
 // performPADCheck calls the CDCN liveness model via the ML inference service.
 // SECURITY: refuses to fabricate liveness scores. When the ML service is

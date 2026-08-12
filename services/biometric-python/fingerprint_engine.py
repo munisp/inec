@@ -587,15 +587,17 @@ class FingerprintMatcher:
         final_score = min(score + pattern_bonus, 1.0)
 
         decision = "match" if final_score >= self.MATCH_THRESHOLD else "no_match"
-        far = max(1e-6, 10 ** (-final_score * 10))
-        frr = max(1e-6, 1.0 - final_score)
+        # INTEGRITY: FAR/FRR are not estimated from a single match score.
+        # Error rates must come from a real evaluation over a labeled dataset.
+        far = None
+        frr = None
 
         return {
             "score": round(final_score, 6),
             "decision": decision,
             "algorithm": "bozorth3_enhanced",
-            "far": round(far, 8),
-            "frr": round(frr, 6),
+            "far": far,
+            "frr": frr,
             "threshold": self.MATCH_THRESHOLD,
             "latency_ms": round((time.monotonic() - start) * 1000, 2),
             "matched_minutiae": int(final_score * min(len(t1.minutiae), len(t2.minutiae))),
@@ -650,8 +652,9 @@ class FingerprintMatcher:
             "score": round(score, 6),
             "decision": decision,
             "algorithm": "bozorth3_enhanced",
-            "far": 1.0,
-            "frr": 1.0,
+            # INTEGRITY: no fabricated error rates (see match()).
+            "far": None,
+            "frr": None,
             "threshold": 0.40,
             "latency_ms": round(elapsed * 1000, 2),
             "matched_minutiae": 0,
