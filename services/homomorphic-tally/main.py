@@ -13,16 +13,24 @@ Properties:
   - Provides cryptographic proof of correct tallying
 
 This service is used as a second-layer verification of the physical count.
+
+NOTE: the Paillier implementation below is a REFERENCE IMPLEMENTATION for
+research and second-layer verification. It is pure-Python, not constant-time,
+and must not be the sole integrity control for a production count without an
+external cryptographic review.
 """
 
+import hmac
 import json
 import os
 import secrets
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
+import asyncpg
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -32,7 +40,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# SECURITY: CORS is deny-by-default; operators opt in via TALLY_CORS_ORIGINS
+# (comma-separated). Previously allow_origins=["*"].
+TALLY_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("TALLY_CORS_ORIGINS", "").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=TALLY_CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 
 
 # ── Paillier Cryptosystem Implementation ─────────────────────────────────────
@@ -203,6 +221,49 @@ private_key: Optional[PaillierPrivateKey] = None
 # Structure: {election_id: {party_code: encrypted_total}}
 encrypted_tallies: dict[str, dict[str, int]] = {}
 
+# PostgreSQL persistence (optional in development, mandatory in production).
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_pg_pool: Optional[asyncpg.Pool] = None
+
+
+async def _init_tally_store() -> None:
+    """Create the tally table and load any persisted ciphertexts into memory."""
+    global _pg_pool
+    _pg_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tally (
+                election_id TEXT NOT NULL,
+                party_code  TEXT NOT NULL,
+                ciphertext  TEXT NOT NULL,
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (election_id, party_code)
+            )
+        """)
+        rows = await conn.fetch("SELECT election_id, party_code, ciphertext FROM tally")
+    for row in rows:
+        encrypted_tallies.setdefault(row["election_id"], {})[row["party_code"]] = int(
+            row["ciphertext"]
+        )
+    print(f"[HomomorphicTally] Loaded {len(rows)} persisted tally ciphertexts from Postgres")
+
+
+async def _persist_tally(election_id: str, party_code: str, ciphertext: int) -> None:
+    """Upsert one party's running ciphertext (durable tally state)."""
+    if _pg_pool is None:
+        return
+    async with _pg_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO tally (election_id, party_code, ciphertext, updated_at)
+               VALUES ($1, $2, $3, NOW())
+               ON CONFLICT (election_id, party_code)
+               DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = NOW()""",
+            election_id,
+            party_code,
+            str(ciphertext),
+        )
+
 
 # ── API Models ────────────────────────────────────────────────────────────────
 
@@ -223,19 +284,49 @@ class DecryptRequest(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+# SECURITY: bearer token required on /api/v1/tally/submit (fail closed when
+# unset) — previously anyone could inject forged polling-unit results into the
+# running encrypted tally.
+TALLY_SUBMIT_TOKEN = os.getenv("TALLY_SUBMIT_TOKEN", "").strip()
+
+
+async def require_submit_token(request: Request) -> None:
+    if not TALLY_SUBMIT_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="TALLY_SUBMIT_TOKEN not configured; refusing unauthenticated tally submissions",
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    if not bearer or not hmac.compare_digest(bearer.encode(), TALLY_SUBMIT_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="authentication required")
+
+
 @app.on_event("startup")
 async def startup():
     global public_key, private_key
     key_bits = int(os.getenv("PAILLIER_KEY_BITS", "2048"))
-    if key_bits < 2048:
-        # SECURITY: prominent startup warning for insecure key parameters.
-        print(f"[HomomorphicTally] ⚠⚠ SECURITY WARNING: PAILLIER_KEY_BITS={key_bits} "
-              f"is below the 2048-bit production minimum — tally privacy is NOT "
-              f"cryptographically safe. ⚠⚠")
+    # SECURITY: fail at startup rather than generate factorable keys.
+    assert key_bits >= 2048, (
+        f"PAILLIER_KEY_BITS={key_bits} is below the 2048-bit production minimum; "
+        "refusing to start with factorable keys"
+    )
     print(f"[HomomorphicTally] Generating Paillier keypair ({key_bits}-bit, "
           f"Miller-Rabin + CSPRNG)...")
     public_key, private_key = generate_paillier_keypair(bits=key_bits)
     print(f"[HomomorphicTally] Keypair generated. n={str(public_key.n)[:20]}...")
+    if DATABASE_URL:
+        await _init_tally_store()
+        print("[HomomorphicTally] Tally persistence: PostgreSQL (durable)")
+    elif APP_ENV == "production":
+        raise RuntimeError(
+            "DATABASE_URL is required when APP_ENV=production; in-memory tallies "
+            "are not durable and are refused in production"
+        )
+    else:
+        print("[HomomorphicTally] ⚠⚠ SECURITY WARNING: DATABASE_URL unset — tallies "
+              "are IN-MEMORY ONLY and will be lost on restart. Acceptable only in "
+              "development; set DATABASE_URL for any real deployment. ⚠⚠")
     if not os.getenv("TALLY_DECRYPT_TOKEN"):
         # SECURITY: no hardcoded decryption token exists anymore; warn loudly
         # that the decrypt endpoint is disabled until one is configured.
@@ -253,7 +344,7 @@ async def get_public_key():
 
 
 @app.post("/api/v1/tally/submit")
-async def submit_encrypted_vote(vote: EncryptedVote):
+async def submit_encrypted_vote(vote: EncryptedVote, _auth=Depends(require_submit_token)):
     """
     Accept a polling unit result and homomorphically add it to the running tally.
     The individual result is encrypted and never stored in plaintext.
@@ -275,6 +366,7 @@ async def submit_encrypted_vote(vote: EncryptedVote):
             )
         else:
             encrypted_tallies[election_id][party] = encrypted_count
+        await _persist_tally(election_id, party, encrypted_tallies[election_id][party])
 
     return {
         "status": "accepted",
@@ -317,7 +409,7 @@ async def decrypt_final_tally(req: DecryptRequest):
         "election_id": election_id,
         "results": results,
         "total_votes": sum(results.values()),
-        "decrypted_at": __import__("datetime").datetime.utcnow().isoformat(),
+        "decrypted_at": datetime.now(timezone.utc).isoformat(),
         "note": "These results were computed via homomorphic aggregation — no individual ballot was decrypted",
     }
 
@@ -336,7 +428,26 @@ async def tally_status(election_id: str):
 
 @app.get("/api/v1/tally/health")
 async def health():
-    return {"status": "healthy", "key_ready": public_key is not None}
+    """Real health: key readiness plus a live Postgres SELECT 1 when configured."""
+    checks: dict[str, bool] = {"key_ready": public_key is not None}
+    if _pg_pool is not None:
+        try:
+            async with _pg_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            checks["postgres"] = True
+        except (asyncpg.PostgresError, OSError):
+            checks["postgres"] = False
+    degraded = not all(checks.values()) or (DATABASE_URL and "postgres" not in checks)
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=503 if degraded else 200,
+        content={
+            "status": "degraded" if degraded else "healthy",
+            "checks": checks,
+            "persistence": "postgresql" if _pg_pool is not None else "in_memory",
+        },
+    )
 
 
 if __name__ == "__main__":
