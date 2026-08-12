@@ -448,7 +448,7 @@ Every previously identified gap has been resolved:
 | `inec-go-backend/phase7.go` | Fixed quality/similarity scores |
 | `inec-go-backend/document_ai.go` | Fixed KYC/liveness fallbacks |
 | `services/lakehouse-analytics/main.py` | +267 lines — persisted models, async training, metadata |
-| `services/lakehouse-analytics/tests/test_anomaly_detection.py` | 11 tests — model persistence & detection |
+| `services/lakehouse-analytics/tests/test_anomaly_detection.py` | 8 tests — model persistence & detection |
 | `services/biometric-python/ml_inference.py` | Real ImageNet weights + training script |
 | `services/biometric-python/train_pad_model.py` | 235 lines — PAD model training |
 | `services/document-ai/main.py` | Real NIN API lookup, VLM completeness |

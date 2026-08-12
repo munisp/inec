@@ -243,7 +243,10 @@ async def ingest(batch: list[dict]):
     if pipeline_engine:
         await pipeline_engine._queue.put(batch)
         return {"status": "accepted", "count": len(batch)}
-    return {"error": "engine not ready"}, 503
+    # Fail closed: Flask-style tuple returns are not honored by FastAPI (they
+    # serialize as a 200 JSON array), so use an explicit JSONResponse.
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=503, content={"error": "engine not ready"})
 
 
 if __name__ == "__main__":
