@@ -20,18 +20,9 @@ services:
     volumes:
     - ./config/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     - ./config/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
-  etcd:
-    environment:
-    - ALLOW_NONE_AUTHENTICATION=yes
-    - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
-    - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
-    image: bitnami/etcd:3.5.11
-    networks:
-    - inec-network
-    ports:
-    - 2379:2379
-    volumes:
-    - etcd-data:/bitnami/etcd
+  # NOTE: the etcd service was removed (2026-08-12 hardening). APISIX runs in
+  # standalone data-plane mode (config/apisix), so etcd was an orphaned,
+  # unauthenticated service published on host port 2379.
   biometric-go:
     build:
       context: ./services/biometric-go
@@ -158,6 +149,10 @@ services:
     volumes:
     - fluvio-bridge-data:/data
   frontend:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
     build:
       context: ./inec-frontend
       dockerfile: Dockerfile
@@ -169,6 +164,10 @@ services:
     ports:
     - 3000:80
   go-backend:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 1.0
     build:
       context: ./inec-go-backend
       dockerfile: Dockerfile
@@ -296,6 +295,9 @@ services:
     - inec-network
     restart: unless-stopped
   inference-engine:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    mem_limit: 2G
+    cpus: 2.0
     build:
       context: ./services/inference-engine
       dockerfile: Dockerfile
@@ -324,6 +326,10 @@ services:
     - ./ml/models:/app/models:ro
     restart: unless-stopped
   kafka:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
@@ -345,6 +351,10 @@ services:
     volumes:
     - kafka-data:/var/lib/kafka/data
   kafka-rest:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
     depends_on:
     - kafka
     environment:
@@ -356,6 +366,10 @@ services:
     ports:
     - 8082:8082
   keycloak:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 1.0
     depends_on:
       pg-primary:
         condition: service_healthy
@@ -382,6 +396,10 @@ services:
     - ./config/keycloak/inec-realm.json:/opt/keycloak/data/import-template/inec-realm.json:ro
     - ./config/keycloak/import-realm.sh:/opt/keycloak/import-realm.sh:ro
   lakehouse:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
     build:
       context: ./services/lakehouse-analytics
       dockerfile: Dockerfile
@@ -403,7 +421,9 @@ services:
     networks:
     - inec-network
     ports:
-    - 8090:8090
+    # Host port moved off 8090 (conflicted with biometric-python) and bound to
+    # loopback only; lakehouse is consumed internally via the compose network.
+    - 127.0.0.1:8093:8090
     volumes:
     - lakehouse-data:/data
   sedona-spatial:
@@ -422,6 +442,10 @@ services:
     ports:
     - 8212:8212
   permify:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
     command: serve
     image: ghcr.io/permify/permify:latest
     networks:
@@ -432,6 +456,10 @@ services:
     volumes:
     - permify-data:/tmp/permify
   pg-primary:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
     command: postgres -c wal_level=replica -c max_wal_senders=5 -c max_replication_slots=5
       -c hot_standby=on -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=8MB
       -c log_min_duration_statement=100
@@ -446,7 +474,7 @@ services:
       start_period: 30s
       test:
       - CMD-SHELL
-      - pg_isready -U inec_admin -d inec_db
+      - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
       timeout: 5s
     image: postgres:16-alpine
     networks:
@@ -455,6 +483,10 @@ services:
     - pg-primary-data:/var/lib/postgresql/data
     - ./config/postgres/primary-init.sh:/docker-entrypoint-initdb.d/01-replication.sh
   pg-replica:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
     depends_on:
       pg-primary:
         condition: service_healthy
@@ -473,7 +505,7 @@ services:
       start_period: 60s
       test:
       - CMD-SHELL
-      - pg_isready -U inec_admin -d inec_db
+      - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
       timeout: 5s
     image: postgres:16-alpine
     networks:
@@ -482,6 +514,10 @@ services:
     - pg-replica-data:/var/lib/postgresql/data
     - ./config/postgres/replica-entrypoint.sh:/replica-entrypoint.sh
   pgpool:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
     depends_on:
       pg-primary:
         condition: service_healthy
@@ -507,7 +543,7 @@ services:
       start_period: 30s
       test:
       - CMD-SHELL
-      - pg_isready -h localhost -p 5432 -U inec_admin
+      - pg_isready -h localhost -p 5432 -U "$${PGPOOL_POSTGRES_USERNAME}"
       timeout: 5s
     image: pgpool/pgpool-ii:4.5
     networks:
@@ -517,6 +553,10 @@ services:
     - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
     - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
   redis:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
     image: redis:7-alpine
     networks:
@@ -524,6 +564,10 @@ services:
     volumes:
     - redis-data:/data
   temporal:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
     depends_on:
       pg-primary:
         condition: service_healthy
@@ -542,6 +586,10 @@ services:
     ports:
     - 7233:7233
   temporal-ui:
+    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
     depends_on:
     - temporal
     environment:
@@ -652,7 +700,8 @@ services:
       - keycloak
     restart: unless-stopped
     environment:
-      - CADDY_ADMIN=0.0.0.0:2019
+      # Admin API must never be reachable off-loopback.
+      - CADDY_ADMIN=127.0.0.1:2019
 
   geolibre-web:
     build:
@@ -811,7 +860,6 @@ volumes:
   redis-data: null
   temporal-data: null
   tigerbeetle-data: null
-  etcd-data: null
   openappsec-shared-storage: null
   openappsec-db-data: null
   resource-allocation-data: null
