@@ -428,10 +428,10 @@ func handleListAspirants(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var (
 			aspID, partyCode, name, position, screenStatus string
-			elecID, endorsements, votes                     int
-			gender, stateOrigin                             sql.NullString
-			depositPaid, isWinner                           bool
-			createdAt                                       time.Time
+			elecID, endorsements, votes                    int
+			gender, stateOrigin                            sql.NullString
+			depositPaid, isWinner                          bool
+			createdAt                                      time.Time
 		)
 		if err := rows.Scan(&aspID, &elecID, &partyCode, &name, &position,
 			&gender, &stateOrigin, &screenStatus, &depositPaid, &endorsements,
@@ -439,19 +439,19 @@ func handleListAspirants(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		aspirants = append(aspirants, map[string]interface{}{
-			"aspirant_id":      aspID,
-			"election_id":      elecID,
-			"party_code":       partyCode,
-			"full_name":        name,
-			"position_sought":  position,
-			"gender":           nullVal(gender),
-			"state_of_origin":  nullVal(stateOrigin),
-			"screening_status": screenStatus,
-			"deposit_paid":     depositPaid,
+			"aspirant_id":       aspID,
+			"election_id":       elecID,
+			"party_code":        partyCode,
+			"full_name":         name,
+			"position_sought":   position,
+			"gender":            nullVal(gender),
+			"state_of_origin":   nullVal(stateOrigin),
+			"screening_status":  screenStatus,
+			"deposit_paid":      depositPaid,
 			"endorsement_count": endorsements,
-			"delegate_votes":   votes,
-			"is_winner":        isWinner,
-			"created_at":       createdAt,
+			"delegate_votes":    votes,
+			"is_winner":         isWinner,
+			"created_at":        createdAt,
 		})
 	}
 	if aspirants == nil {
@@ -469,16 +469,16 @@ func handleListAspirants(w http.ResponseWriter, r *http.Request) {
 func handleCreateAspirant(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	var req struct {
-		ElectionID    int    `json:"election_id"`
-		FullName      string `json:"full_name"`
+		ElectionID     int    `json:"election_id"`
+		FullName       string `json:"full_name"`
 		PositionSought string `json:"position_sought"`
-		Gender        string `json:"gender"`
-		StateOfOrigin string `json:"state_of_origin"`
-		LGAOfOrigin   string `json:"lga_of_origin"`
-		NIN           string `json:"nin_number"`
-		DateOfBirth   string `json:"date_of_birth"`
-		PhotoURL      string `json:"photo_url"`
-		ManifestoURL  string `json:"manifesto_url"`
+		Gender         string `json:"gender"`
+		StateOfOrigin  string `json:"state_of_origin"`
+		LGAOfOrigin    string `json:"lga_of_origin"`
+		NIN            string `json:"nin_number"`
+		DateOfBirth    string `json:"date_of_birth"`
+		PhotoURL       string `json:"photo_url"`
+		ManifestoURL   string `json:"manifesto_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid json", 400)
@@ -542,8 +542,8 @@ func handleGetAspirant(w http.ResponseWriter, r *http.Request) {
 
 	var asp struct {
 		AspID, Name, Position, Status string
-		ElecID, Endorsements, Votes    int
-		DepositPaid, IsWinner          bool
+		ElecID, Endorsements, Votes   int
+		DepositPaid, IsWinner         bool
 	}
 	err := dbConn.QueryRowContext(r.Context(), `
 		SELECT aspirant_id, full_name, position_sought, screening_status,
@@ -809,11 +809,11 @@ func handleListDelegates(w http.ResponseWriter, r *http.Request) {
 	var delegates []map[string]interface{}
 	for rows.Next() {
 		var (
-			delID, name, dtype, accStatus         string
-			elecID, weight                         int
-			stCode, lgaCode, wCode, credNum        sql.NullString
-			credVerified, hasVoted                 bool
-			createdAt                              time.Time
+			delID, name, dtype, accStatus   string
+			elecID, weight                  int
+			stCode, lgaCode, wCode, credNum sql.NullString
+			credVerified, hasVoted          bool
+			createdAt                       time.Time
 		)
 		if err := rows.Scan(&delID, &elecID, &name, &dtype, &stCode, &lgaCode,
 			&wCode, &credNum, &credVerified, &accStatus, &hasVoted, &weight, &createdAt); err != nil {
@@ -970,8 +970,8 @@ func handleGetDelegate(w http.ResponseWriter, r *http.Request) {
 
 	var del struct {
 		DelID, Name, DType, AccStatus string
-		ElecID, Weight                 int
-		CredVerified, HasVoted         bool
+		ElecID, Weight                int
+		CredVerified, HasVoted        bool
 	}
 	err := dbConn.QueryRowContext(r.Context(), `
 		SELECT delegate_id, full_name, delegate_type, accreditation_status,
@@ -1336,19 +1336,19 @@ func handleConventionDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"election_id":        electionID,
-		"total_delegates":    totalDelegates,
-		"accredited":         accredited,
-		"has_voted":          hasVoted,
-		"turnout_pct":        math.Round(float64(hasVoted)/math.Max(float64(accredited), 1)*10000) / 100,
-		"total_aspirants":    totalAspirants,
-		"cleared_aspirants":  clearedAspirants,
-		"quorum_threshold":   quorumThreshold * 100,
-		"quorum_present_pct": math.Round(float64(accredited)/math.Max(float64(totalDelegates), 1)*10000) / 100,
-		"quorum_met":         quorumMet,
-		"active_round":       nullVal(activeRound),
+		"election_id":         electionID,
+		"total_delegates":     totalDelegates,
+		"accredited":          accredited,
+		"has_voted":           hasVoted,
+		"turnout_pct":         math.Round(float64(hasVoted)/math.Max(float64(accredited), 1)*10000) / 100,
+		"total_aspirants":     totalAspirants,
+		"cleared_aspirants":   clearedAspirants,
+		"quorum_threshold":    quorumThreshold * 100,
+		"quorum_present_pct":  math.Round(float64(accredited)/math.Max(float64(totalDelegates), 1)*10000) / 100,
+		"quorum_met":          quorumMet,
+		"active_round":        nullVal(activeRound),
 		"active_round_number": nullValInt64(activeRoundNum),
-		"state_breakdown":    stateBreakdown,
+		"state_breakdown":     stateBreakdown,
 	}
 
 	cacheSet(r.Context(), cacheKey, result, 10*time.Second)
@@ -2336,9 +2336,9 @@ func deliverVotingSessionOTP(ctx context.Context, partyID int, phoneHash sql.Nul
 
 func handleRemoteAuthenticate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID        string `json:"session_id"`
-		OTP              string `json:"otp"`
-		BiometricPayload string `json:"biometric_payload"`
+		SessionID         string `json:"session_id"`
+		OTP               string `json:"otp"`
+		BiometricPayload  string `json:"biometric_payload"`
 		DeviceFingerprint string `json:"device_fingerprint"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
@@ -2431,11 +2431,11 @@ func handleRemoteAuthenticate(w http.ResponseWriter, r *http.Request) {
 
 func handleRemoteVote(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID      string `json:"session_id"`
-		AspirantID     string `json:"aspirant_id"`
-		VoteType       string `json:"vote_type"`
+		SessionID       string `json:"session_id"`
+		AspirantID      string `json:"aspirant_id"`
+		VoteType        string `json:"vote_type"`
 		EncryptedBallot string `json:"encrypted_ballot"`
-		BallotProof    string `json:"ballot_proof"`
+		BallotProof     string `json:"ballot_proof"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.SessionID == "" {
@@ -2882,12 +2882,12 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 	_, user := getParty(r)
 	var req struct {
-		ElectionID  int      `json:"election_id"`
-		RoundID     string   `json:"round_id"`
-		FiledBy     string   `json:"filed_by"`
-		FiledByType string   `json:"filed_by_type"`
-		DisputeType string   `json:"dispute_type"`
-		Description string   `json:"description"`
+		ElectionID   int      `json:"election_id"`
+		RoundID      string   `json:"round_id"`
+		FiledBy      string   `json:"filed_by"`
+		FiledByType  string   `json:"filed_by_type"`
+		DisputeType  string   `json:"dispute_type"`
+		Description  string   `json:"description"`
 		EvidenceURLs []string `json:"evidence_urls"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)

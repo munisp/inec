@@ -732,6 +732,7 @@ var waKeywordActions = map[string]string{
 //  2. Shared verify token: when WHATSAPP_WEBHOOK_TOKEN is set, the
 //     X-Webhook-Token header or ?token= query param must match it
 //     (constant time).
+//
 // When neither is configured, verification fails CLOSED (503) — an
 // unauthenticated mutation webhook must never be live.
 func verifyWhatsAppWebhook(r *http.Request, rawBody []byte) (int, string) {
