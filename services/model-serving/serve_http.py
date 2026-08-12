@@ -41,19 +41,41 @@ server = ModelServer(models_dir=MODEL_DIR, cache_size=CACHE_SIZE)
 router = ModelRouter(server)
 
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: /v1/* was unauthenticated. The service FAILS CLOSED when
+# MODEL_SERVING_API_KEY is unset (503 on all non-health routes).
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+MODEL_SERVING_API_KEYS: List[str] = [
+    k.strip() for k in os.getenv("MODEL_SERVING_API_KEY", "").split(",") if k.strip()
+]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # SECURITY: fail fast in production when required secrets are missing.
+    if _PRODUCTION and not MODEL_SERVING_API_KEYS:
+        raise RuntimeError(
+            "APP_ENV=production requires MODEL_SERVING_API_KEY; refusing to start"
+        )
     _load_models()
     server.start()
     yield
     server.stop()
 
 
-app = FastAPI(title="INEC Model Serving", version="1.0.0", lifespan=lifespan)
-
-# SECURITY: /v1/* was unauthenticated. The service FAILS CLOSED when
-# MODEL_SERVING_API_KEY is unset (503 on all non-health routes).
-MODEL_SERVING_API_KEY = os.getenv("MODEL_SERVING_API_KEY", "").strip()
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+app = FastAPI(
+    title="INEC Model Serving",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
+)
 
 
 @app.middleware("http")
@@ -61,7 +83,7 @@ async def api_key_auth_middleware(request: Request, call_next):
     """Require the service API key on all non-health endpoints (fail closed)."""
     if request.url.path == "/healthz":
         return await call_next(request)
-    if not MODEL_SERVING_API_KEY:
+    if not MODEL_SERVING_API_KEYS:
         return JSONResponse(
             status_code=503,
             content={"error": "MODEL_SERVING_API_KEY not configured; refusing to serve unauthenticated requests"},
@@ -69,7 +91,9 @@ async def api_key_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), MODEL_SERVING_API_KEY.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in MODEL_SERVING_API_KEYS
+    ):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
     return await call_next(request)
 
@@ -103,8 +127,16 @@ def _load_models() -> None:
 
 
 @app.get("/healthz")
-def healthz() -> dict:
-    return server.get_health()
+def healthz():
+    """Real readiness probe: 503 when any registered model is not ready."""
+    health = server.get_health()
+    models = health.get("models", [])
+    not_ready = [m["model_id"] for m in models if not m.get("ready", False)]
+    if not_ready:
+        health["status"] = "degraded"
+        health["models_not_ready"] = not_ready
+        return JSONResponse(status_code=503, content=health)
+    return health
 
 
 @app.get("/v1/models")

@@ -7,6 +7,7 @@ never invents scene locations, image patches, flood scores, or crowd counts.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import math
 import os
@@ -26,17 +27,53 @@ APP_VERSION = "2.0.0"
 REQUEST_TIMEOUT_SECONDS = 30.0
 SCENE_WINDOW_DAYS = 14
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC Satellite Change Detection Service",
     description="Real STAC-backed polling-unit imagery analysis",
     version=APP_VERSION,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 # SECURITY: imagery-analysis endpoints were unauthenticated (each call triggers
 # paid STAC preview downloads). The service FAILS CLOSED when SATELLITE_API_KEY
 # is unset (503 on all non-health routes).
-SATELLITE_API_KEY = os.getenv("SATELLITE_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+SATELLITE_API_KEYS: list[str] = [
+    k.strip() for k in os.getenv("SATELLITE_API_KEY", "").split(",") if k.strip()
+]
 _PUBLIC_PATHS = ("/status", "/api/v1/satellite/health")
+
+
+def _key_valid(provided: str) -> bool:
+    """Constant-time match against ANY configured key (comma-separated rotation)."""
+    return bool(provided) and any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in SATELLITE_API_KEYS
+    )
+
+
+@app.on_event("startup")
+async def production_config_guard() -> None:
+    """Fail fast in production when any required secret/config is missing."""
+    if not _PRODUCTION:
+        return
+    missing = []
+    if not SATELLITE_API_KEYS:
+        missing.append("SATELLITE_API_KEY")
+    for name in ("STAC_API_URL", "STAC_COLLECTION", "STAC_PREVIEW_ASSET", "STAC_MAX_CLOUD_COVER"):
+        if not os.getenv(name, "").strip():
+            missing.append(name)
+    if missing:
+        raise RuntimeError(
+            f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+        )
 
 
 @app.middleware("http")
@@ -46,7 +83,7 @@ async def api_key_auth_middleware(request: Request, call_next):
 
     if request.url.path in _PUBLIC_PATHS:
         return await call_next(request)
-    if not SATELLITE_API_KEY:
+    if not SATELLITE_API_KEYS:
         return JSONResponse(
             status_code=503,
             content={"error": "SATELLITE_API_KEY not configured; refusing to serve unauthenticated requests"},
@@ -54,7 +91,7 @@ async def api_key_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), SATELLITE_API_KEY.encode()):
+    if not _key_valid(provided):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
     return await call_next(request)
 
@@ -175,10 +212,23 @@ async def search_scene(
     )
 
 
+async def _get_with_retry(client: httpx.AsyncClient, url: str, attempts: int = 3) -> httpx.Response:
+    """Idempotent GET with bounded exponential-backoff retry on transport errors."""
+    last_exc: httpx.TransportError | None = None
+    for attempt in range(attempts):
+        try:
+            return await client.get(url)
+        except httpx.TransportError as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                await asyncio.sleep(0.3 * (2 ** attempt))
+    raise last_exc  # type: ignore[misc]
+
+
 async def download_preview(client: httpx.AsyncClient, scene: dict[str, Any], asset_name: str) -> np.ndarray:
     href = scene["assets"][asset_name]["href"]
     try:
-        response = await client.get(href)
+        response = await _get_with_retry(client, href)
         response.raise_for_status()
         image = Image.open(io.BytesIO(response.content)).convert("RGB")
     except (httpx.HTTPError, OSError) as exc:
@@ -303,7 +353,7 @@ async def health():
     config = stac_config()
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
-            response = await client.get(config.api_url)
+            response = await _get_with_retry(client, config.api_url, attempts=2)
             response.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"STAC service unavailable: {exc}") from exc

@@ -46,10 +46,18 @@ FEATURE_NAMES = [
 ]
 MODEL_FILENAME = "turnout_history_model.joblib"
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC Predictive Resource Allocation AI",
     description="Resource planning using a persisted model trained from real historical election results",
     version="2.0.0",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -61,7 +69,11 @@ app.add_middleware(
 
 # SECURITY: allocation endpoints were unauthenticated. The service FAILS CLOSED
 # when PREDICTIVE_ALLOC_API_KEY is unset (503 on all non-health routes).
-PREDICTIVE_ALLOC_API_KEY = os.getenv("PREDICTIVE_ALLOC_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+PREDICTIVE_ALLOC_API_KEYS: list[str] = [
+    k.strip() for k in os.getenv("PREDICTIVE_ALLOC_API_KEY", "").split(",") if k.strip()
+]
 
 
 @app.middleware("http")
@@ -71,7 +83,7 @@ async def api_key_auth_middleware(request: Request, call_next):
 
     if request.url.path == "/api/v1/allocation/health":
         return await call_next(request)
-    if not PREDICTIVE_ALLOC_API_KEY:
+    if not PREDICTIVE_ALLOC_API_KEYS:
         return JSONResponse(
             status_code=503,
             content={"error": "PREDICTIVE_ALLOC_API_KEY not configured; refusing to serve unauthenticated requests"},
@@ -79,7 +91,9 @@ async def api_key_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), PREDICTIVE_ALLOC_API_KEY.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in PREDICTIVE_ALLOC_API_KEYS
+    ):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
     return await call_next(request)
 
@@ -90,14 +104,19 @@ def _verify_admin_key(request: Request) -> None:
     Mirrors gotv-analytics ml_serving._verify_admin_key: 503 when unconfigured
     (fail closed), 403 on an invalid key.
     """
-    admin_key = os.getenv("PREDICTIVE_ALLOC_ADMIN_KEY", "").strip()
-    if not admin_key:
+    # KEY ROTATION: comma-separated admin keys; any constant-time match passes.
+    admin_keys = [
+        k.strip() for k in os.getenv("PREDICTIVE_ALLOC_ADMIN_KEY", "").split(",") if k.strip()
+    ]
+    if not admin_keys:
         raise HTTPException(
             status_code=503,
             detail="PREDICTIVE_ALLOC_ADMIN_KEY not configured; admin operations are disabled",
         )
     provided = request.headers.get("x-admin-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), admin_key.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in admin_keys
+    ):
         raise HTTPException(status_code=403, detail="invalid admin key")
 
 
@@ -179,6 +198,10 @@ class TrainingResponse(BaseModel):
 def required_configuration() -> None:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL must be configured")
+    if _PRODUCTION and not PREDICTIVE_ALLOC_API_KEYS:
+        # SECURITY: fail fast — never run the production allocation API
+        # unauthenticated.
+        raise RuntimeError("PREDICTIVE_ALLOC_API_KEY must be configured when APP_ENV=production")
     if MODEL_DIR is None:
         raise RuntimeError("MODEL_DIR must be configured")
     if MIN_TRAINING_SAMPLES < 10:
