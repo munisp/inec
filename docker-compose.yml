@@ -6,6 +6,7 @@ services:
   # Caddy proxies /api traffic to this service, then the attachment invokes the
   # OpenAppSec agent before APISIX forwards the request to platform services.
   apisix:
+    # healthcheck: omitted — third-party openappsec apisix-attachment image ships no curl/wget for an HTTP probe.
     restart: unless-stopped
     depends_on:
       openappsec-agent:
@@ -130,6 +131,7 @@ services:
           cpus: "1.0"
 
   dapr-sidecar:
+    # healthcheck: omitted — shares go-backend's network namespace (network_mode: service:go-backend) and daprio/dapr is distroless (no shell/wget); go-backend's healthcheck covers pod liveness.
     restart: unless-stopped
     command:
     - ./daprd
@@ -153,6 +155,7 @@ services:
           cpus: "0.25"
 
   fluvio-sc:
+    # healthcheck: omitted — fluvio SC exposes no HTTP health endpoint; a CLI probe requires bootstrapped cluster metadata.
     command: run sc --local /fluvio/metadata
     image: infinyon/fluvio:latest
     networks:
@@ -243,6 +246,18 @@ services:
     depends_on:
       go-backend:
         condition: service_healthy
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 15s
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://localhost:80/health
+      timeout: 5s
     networks:
     - inec-network
     ports:
@@ -338,6 +353,16 @@ services:
     - MOJALOOP_TLS_CERT_FILE=${MOJALOOP_TLS_CERT_FILE:-}
     - MOJALOOP_TLS_KEY_FILE=${MOJALOOP_TLS_KEY_FILE:-}
     - MOJALOOP_CA_FILE=${MOJALOOP_CA_FILE:-}
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - http://localhost:8088/healthz
+      timeout: 5s
     networks:
     - inec-network
     expose:
@@ -423,6 +448,7 @@ services:
     restart: unless-stopped
 
   kafka:
+    # healthcheck: omitted — cp-kafka has no HTTP probe; a broker-api-versions check needs the full Kafka client classpath, too heavy for compose.
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 1G
@@ -449,6 +475,7 @@ services:
     - kafka-data:/var/lib/kafka/data
 
   kafka-rest:
+    # healthcheck: omitted — its /v3 probe only reflects the kafka broker it depends_on; adds no signal beyond that dependency.
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 512M
@@ -465,6 +492,7 @@ services:
     - 8082:8082
 
   keycloak:
+    # healthcheck: omitted — keycloak:23.0 ubi-minimal image ships no curl/wget; KC_HEALTH_ENABLED (:9000/health/ready) is unreachable without probe tools.
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 512M
@@ -529,6 +557,16 @@ services:
     - 127.0.0.1:8093:8090
     volumes:
     - lakehouse-data:/data
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8090/health')
+      timeout: 5s
 
   sedona-spatial:
     restart: unless-stopped
@@ -542,6 +580,16 @@ services:
     - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - SEDONA_SERVICE_TOKEN=${SEDONA_SERVICE_TOKEN:?SEDONA_SERVICE_TOKEN must be set}
     - DEVICE_GEOFENCE_METERS=${DEVICE_GEOFENCE_METERS:?DEVICE_GEOFENCE_METERS must be set}
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python3
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8212/health')
+      timeout: 5s
     networks:
     - inec-network
     ports:
@@ -553,6 +601,7 @@ services:
           cpus: "1.0"
 
   permify:
+    # healthcheck: omitted — permify image is distroless (no shell/wget) and probes would need external tooling.
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 512M
@@ -674,12 +723,22 @@ services:
     cpus: 0.5
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
     image: redis:7-alpine
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 10s
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      timeout: 5s
     networks:
     - inec-network
     volumes:
     - redis-data:/data
 
   temporal:
+    # healthcheck: omitted — temporalio/auto-setup ships no curl and no guaranteed tctl/temporal CLI for a cluster-health probe.
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 1G
@@ -703,6 +762,7 @@ services:
     - 7233:7233
 
   temporal-ui:
+    # healthcheck: omitted — temporalio/ui image is minimal (no curl/wget) for an HTTP probe; liveness follows the temporal dependency.
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 512M
@@ -718,6 +778,7 @@ services:
     - 8233:8080
 
   tigerbeetle:
+    # healthcheck: omitted — tigerbeetle speaks a binary protocol (no HTTP endpoint) and the image carries no probe client.
     cap_add:
     - IPC_LOCK
     entrypoint: ["/bin/sh", "-ec"]
@@ -744,6 +805,7 @@ services:
   # Official OpenAppSec standalone services. The agent is paired with the
   # APISIX attachment above; it is not an application-level inspection API.
   openappsec-agent:
+    # healthcheck: omitted — cp-nano-agent exposes no HTTP health endpoint and the image ships no probe tools.
     command: /cp-nano-agent
     environment:
     - SHARED_STORAGE_HOST=openappsec-shared-storage
@@ -768,6 +830,7 @@ services:
           cpus: "1.0"
 
   openappsec-smartsync:
+    # healthcheck: omitted — third-party smartsync image has no documented HTTP health endpoint or probe tools.
     environment:
     - SHARED_STORAGE_HOST=openappsec-shared-storage
     image: ghcr.io/openappsec/smartsync:${APPSEC_VERSION:?APPSEC_VERSION must be set}
@@ -781,6 +844,7 @@ services:
           cpus: "0.5"
 
   openappsec-shared-storage:
+    # healthcheck: omitted — auxiliary shared-file storage container with no documented health endpoint.
     image: ghcr.io/openappsec/smartsync-shared-files:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     ipc: host
     networks:
@@ -796,6 +860,7 @@ services:
           cpus: "0.25"
 
   openappsec-tuning:
+    # healthcheck: omitted — tuning agent container with no HTTP endpoint; readiness follows its openappsec-db/shared-storage dependencies.
     depends_on:
     - openappsec-db
     - openappsec-shared-storage
@@ -822,6 +887,14 @@ services:
     - POSTGRES_USER=appsec
     - POSTGRES_PASSWORD=${OPENAPPSEC_DB_PASSWORD:?set OPENAPPSEC_DB_PASSWORD}
     image: postgres:16-alpine
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 10s
+      test:
+      - CMD-SHELL
+      - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      timeout: 5s
     networks:
     - inec-network
     restart: unless-stopped
@@ -856,6 +929,19 @@ services:
     environment:
       # Admin API must never be reachable off-loopback.
       - CADDY_ADMIN=127.0.0.1:2019
+    healthcheck:
+      # Admin API is loopback-only; /config/ returns 200 whenever caddy is up.
+      interval: 10s
+      retries: 3
+      start_period: 15s
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:2019/config/
+      timeout: 5s
     deploy:
       resources:
         limits:
@@ -867,6 +953,19 @@ services:
       context: ./services/geolibre-web
       dockerfile: Dockerfile
     restart: always
+    healthcheck:
+      # nginx SPA: any path falls through try_files to index.html (200).
+      interval: 10s
+      retries: 3
+      start_period: 15s
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://localhost:80/
+      timeout: 5s
     networks:
       - inec-network
     deploy:
@@ -880,6 +979,18 @@ services:
       context: ./services/geolibre-collab
       dockerfile: Dockerfile
     restart: always
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 15s
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://localhost:8080/health
+      timeout: 5s
     networks:
       - inec-network
     deploy:
@@ -961,6 +1072,16 @@ services:
       # without DATABASE_URL, keeping in-memory tallies out of production.
       - APP_ENV=${APP_ENV:-production}
       - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8201/api/v1/tally/health')
+      timeout: 5s
     deploy:
       resources:
         limits:
@@ -975,6 +1096,18 @@ services:
       - inec-network
     environment:
       - FEDERATED_SUBMIT_KEY=${FEDERATED_SUBMIT_KEY:?FEDERATED_SUBMIT_KEY must be set}
+    healthcheck:
+      # No dedicated /health route; /api/v1/federated/status is unauthenticated
+      # and returns 200 with service state.
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8202/api/v1/federated/status')
+      timeout: 5s
     deploy:
       resources:
         limits:
@@ -989,6 +1122,16 @@ services:
       - inec-network
     environment:
       - DIGITAL_TWIN_API_KEY=${DIGITAL_TWIN_API_KEY:?DIGITAL_TWIN_API_KEY must be set}
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8203/api/v1/twin/health')
+      timeout: 5s
     deploy:
       resources:
         limits:
