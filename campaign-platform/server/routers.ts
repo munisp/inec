@@ -18,6 +18,15 @@ import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
 
 // ─── SECURITY helpers ────────────────────────────────────────────────────────
+// Mask an email for display: "j***@example.com". Used by team.acceptInvite so
+// the full invited address is not leaked to whoever holds the invite link.
+function maskEmail(email: string | null | undefined): string {
+  if (!email) return "";
+  const at = email.indexOf("@");
+  if (at <= 0) return "***";
+  return `${email[0]}***@${email.slice(at + 1)}`;
+}
+
 // Resolve the owning profileId for procedures whose input only carries a row
 // `id` (deletes, status flips). Returns null when the row does not exist.
 async function profileIdForRow(
@@ -1087,10 +1096,20 @@ The invitee can use this link to join the campaign team.`,
       }),
     acceptInvite: publicProcedure
       .input(z.object({ token: z.string() }))
-      .query(({ input }) => db.getMemberByInviteToken(input.token)),
+      .query(async ({ input }) => {
+        const member = await db.getMemberByInviteToken(input.token);
+        if (!member) return member;
+        // SECURITY: mask the invited email. confirmAccept requires the acceptor
+        // to type the full address, so it must not be fully revealed to anyone
+        // merely holding the link — otherwise the email check is no check at all.
+        return { ...member, email: maskEmail(member.email) };
+      }),
     confirmAccept: protectedProcedure
-      .input(z.object({ token: z.string() }))
-      .mutation(({ ctx, input }) => db.acceptCampaignInvite(input.token, ctx.user.id)),
+      // The local users table has no email column, so identity binding at
+      // acceptance is enforced by requiring the acceptor to assert the email
+      // the invite was issued to; acceptCampaignInvite rejects on mismatch.
+      .input(z.object({ token: z.string(), email: z.string().email().max(320) }))
+      .mutation(({ ctx, input }) => db.acceptCampaignInvite(input.token, ctx.user.id, input.email)),
     updateRole: protectedProcedure
       .input(z.object({
         memberId: z.number(),
@@ -1241,7 +1260,7 @@ Produce only the manifesto section text, no commentary.`;
         profileId: z.number(),
         title: z.string(),
         description: z.string().optional(),
-        taskType: z.enum(["canvassing", "polling_unit", "data_entry", "logistics", "social_media", "other"]).optional(),
+        taskType: z.enum(["canvassing", "polling_unit", "data_entry", "logistics", "social_media", "security", "other"]).optional(),
         status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
         volunteerId: z.number().optional(),
         dueDate: z.string().optional(),

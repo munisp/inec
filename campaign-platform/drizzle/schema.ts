@@ -166,6 +166,9 @@ export const socialMediaPosts = pgTable("social_media_posts", {
   profileId: integer("profile_id").references(() => candidateProfiles.id),
   platform: varchar("platform", { length: 50 }).notNull(),
   content: text("content").notNull(),
+  // Space-joined hashtag string submitted with the post (router input is a
+  // string array, stored joined). Nullable — hashtags are optional.
+  hashtags: text("hashtags"),
   scheduledAt: timestamp("scheduled_at"),
   publishedAt: timestamp("published_at"),
   status: statusEnum("status").default("pending"),
@@ -241,6 +244,8 @@ export const electionResults = pgTable("election_results", {
   id: serial("id").primaryKey(),
   profileId: integer("profile_id").references(() => candidateProfiles.id),
   lga: varchar("lga", { length: 100 }).notNull(),
+  // Ward-level result reporting; nullable — state/LGA rollups have no ward.
+  ward: varchar("ward", { length: 100 }),
   candidateName: varchar("candidate_name", { length: 200 }).notNull(),
   party: varchar("party", { length: 100 }),
   votes: integer("votes").default(0),

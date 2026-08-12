@@ -355,8 +355,7 @@ export default function VolunteerPortal() {
                   profileId,
                   title: tForm.title,
                   description: tForm.description || undefined,
-                  // Server enum is being widened to include "security"; cast until deployed
-                  taskType: tForm.taskType as "canvassing" | "polling_unit" | "data_entry" | "logistics" | "social_media" | "other",
+                  taskType: tForm.taskType,
                   status: tForm.status,
                   volunteerId: tForm.volunteerId ? parseInt(tForm.volunteerId) : undefined,
                   dueDate: tForm.dueDate || undefined,

@@ -27,9 +27,16 @@ export default function JoinCampaign() {
     onError: (e) => toast.error(e.message),
   });
 
+  const [confirmEmail, setConfirmEmail] = useState("");
+
   const handleAccept = () => {
     if (!token) return;
-    confirmMut.mutate({ token });
+    const email = confirmEmail.trim();
+    if (!email) {
+      toast.error("Enter the email address this invite was sent to.");
+      return;
+    }
+    confirmMut.mutate({ token, email });
   };
 
   if (!token) {
@@ -99,7 +106,7 @@ export default function JoinCampaign() {
         <div className="bg-[#F5F0EB] rounded-lg p-4 mb-6">
           <p className="text-sm text-gray-700 mb-1">You've been invited as:</p>
           <p className="font-bold text-[#4A1525] text-lg capitalize">{invite.role}</p>
-          <p className="text-xs text-gray-500 mt-1">Invited to: {invite.email}</p>
+          <p className="text-xs text-gray-500 mt-1">Invited to: {invite.email} (masked — you'll confirm the full address below)</p>
         </div>
 
         {!isAuthenticated ? (
@@ -115,6 +122,20 @@ export default function JoinCampaign() {
           </div>
         ) : (
           <div className="space-y-3">
+            <div>
+              <label htmlFor="confirm-email" className="block text-xs font-medium text-gray-600 mb-1">
+                Confirm the email this invite was sent to
+              </label>
+              <input
+                id="confirm-email"
+                type="email"
+                value={confirmEmail}
+                onChange={(e) => setConfirmEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#008751]"
+              />
+              <p className="text-xs text-gray-400 mt-1">This binds the invite to your account — it must match the address your campaign manager invited.</p>
+            </div>
             <Button
               className="w-full bg-[#008751] hover:bg-[#006B40] text-white"
               onClick={handleAccept}

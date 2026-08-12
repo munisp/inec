@@ -19,3 +19,8 @@ ALTER TABLE "budget_items" ALTER COLUMN "spent_amount" SET DATA TYPE numeric(15,
 ALTER TABLE "diaspora_contacts" ALTER COLUMN "pledged_amount" SET DATA TYPE numeric(15,2) USING COALESCE("pledged_amount", 0)::numeric(15,2);--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "candidate_profiles_user_id_unique" ON "candidate_profiles" USING btree ("user_id") WHERE "user_id" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "campaign_members_profile_user_idx" ON "campaign_members" USING btree ("profile_id", "user_id");
+--> statement-breakpoint
+-- 4. Columns the routers already write but the schema previously dropped
+--    silently (drizzle ignores unknown keys in .values()):
+ALTER TABLE "election_results" ADD COLUMN IF NOT EXISTS "ward" varchar(100);--> statement-breakpoint
+ALTER TABLE "social_media_posts" ADD COLUMN IF NOT EXISTS "hashtags" text;
