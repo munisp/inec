@@ -1,4 +1,4 @@
-import { AXIOS_TIMEOUT_MS, COOKIE_NAME, ONE_YEAR_MS, decodeOAuthState } from "@shared/const";
+import { AXIOS_TIMEOUT_MS, COOKIE_NAME, decodeOAuthState } from "@shared/const";
 import { ForbiddenError } from "@shared/_core/errors";
 import axios, { type AxiosInstance } from "axios";
 import { parse as parseCookieHeader } from "cookie";
@@ -23,6 +23,11 @@ export type SessionPayload = {
   appId: string;
   name: string;
 };
+
+// SECURITY: sessions expire after 30 days (previously 1 year). Login routes
+// re-issue a fresh token on each successful login (sliding across logins);
+// users simply re-authenticate after expiry.
+export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
 const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
@@ -182,7 +187,7 @@ class SDKServer {
     options: { expiresInMs?: number } = {}
   ): Promise<string> {
     const issuedAt = Date.now();
-    const expiresInMs = options.expiresInMs ?? ONE_YEAR_MS;
+    const expiresInMs = options.expiresInMs ?? SESSION_TTL_MS;
     const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
     const secretKey = this.getSessionSecret();
 
@@ -330,7 +335,13 @@ function buildCronUser(
     username: userInfo.openId,
     passwordHash: "cron:no-local-password",
     fullName: userInfo.name || "Scheduled Task",
-    role: "admin",
+    // SECURITY: cron callbacks are a dedicated principal, not an admin. Cron-only
+    // endpoints gate on `user.isCron` (see /api/scheduled/* in _core/index.ts);
+    // `role: "cron"` is not a users-table CHECK value, but this principal is
+    // in-memory only and never inserted into the users table. If an
+    // adminProcedure-gated tRPC endpoint ever needs cron access, accept
+    // `ctx.user.isCron` there explicitly rather than widening this role.
+    role: "cron",
     staffId: null,
     stateCode: null,
     lgaCode: null,

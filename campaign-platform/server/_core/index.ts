@@ -18,6 +18,15 @@ import * as db from "../db";
 
 // In-memory SSE client registry keyed by profileId
 const sseClients = new Map<number, Set<(data: string) => void>>();
+// SECURITY: bound total SSE connections so a client flood cannot exhaust
+// sockets/memory on the process.
+const SSE_MAX_CLIENTS = 500;
+
+function sseClientCount(): number {
+  let total = 0;
+  sseClients.forEach(set => { total += set.size; });
+  return total;
+}
 
 export function broadcastWarRoomUpdate(profileId: number) {
   const clients = sseClients.get(profileId);
@@ -111,10 +120,23 @@ async function startServer() {
     }
   });
 
-  // SSE endpoint for War Room real-time updates
-  app.get("/api/war-room/stream", (req, res) => {
+  // SSE endpoint for War Room real-time updates.
+  // SECURITY: requires a verified session (same SDK verification as the rest of
+  // the API — cookie, or Bearer for non-browser clients) and is capped at
+  // SSE_MAX_CLIENTS concurrent connections.
+  app.get("/api/war-room/stream", async (req, res) => {
+    try {
+      await sdk.authenticateRequest(req);
+    } catch {
+      res.status(401).json({ error: "authentication required" });
+      return;
+    }
     const profileId = parseInt(req.query.profileId as string);
     if (!profileId) { res.status(400).end(); return; }
+    if (sseClientCount() >= SSE_MAX_CLIENTS) {
+      res.status(503).json({ error: "too many open streams; try again later" });
+      return;
+    }
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -123,7 +145,9 @@ async function startServer() {
     if (!sseClients.has(profileId)) sseClients.set(profileId, new Set());
     sseClients.get(profileId)!.add(send);
     req.on("close", () => {
-      sseClients.get(profileId)?.delete(send);
+      const set = sseClients.get(profileId);
+      set?.delete(send);
+      if (set && set.size === 0) sseClients.delete(profileId);
     });
   });
   // tRPC API
