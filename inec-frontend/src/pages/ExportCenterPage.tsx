@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 
 type ExportType = 'results' | 'voters' | 'collation' | 'audit';
 
@@ -21,13 +22,30 @@ export default function ExportCenterPage() {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, unknown>>({});
   const [error, setError] = useState('');
-  const [electionId, setElectionId] = useState('1');
+  const { electionId: resolvedElectionId, selectElection } = useResolvedElection();
+  const [electionId, setElectionId] = useState('');
+
+  // Adopt the resolved election (explicit selection or latest active) once
+  // available — never a hardcoded default id.
+  useEffect(() => {
+    if (!electionId && resolvedElectionId) setElectionId(String(resolvedElectionId));
+  }, [resolvedElectionId, electionId]);
+
+  const handleElectionChange = (value: string) => {
+    setElectionId(value);
+    const id = Number(value);
+    if (Number.isFinite(id) && id > 0) selectElection(id);
+  };
   const [stateCode, setStateCode] = useState('');
   const [collationLevel, setCollationLevel] = useState('state');
   const [auditStart, setAuditStart] = useState('');
   const [auditEnd, setAuditEnd] = useState('');
 
   const handleExport = async (type: ExportType) => {
+    if ((type === 'results' || type === 'collation') && !electionId) {
+      setError('Select an election before exporting — no default election is assumed.');
+      return;
+    }
     setDownloading(type);
     try {
       let data: unknown;
@@ -73,7 +91,7 @@ export default function ExportCenterPage() {
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow flex flex-wrap gap-4 items-end">
         <div>
           <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Election ID</label>
-          <input className="border dark:border-gray-600 rounded px-3 py-1.5 text-sm dark:bg-gray-700 dark:text-white w-24" value={electionId} onChange={e => setElectionId(e.target.value)} />
+          <input className="border dark:border-gray-600 rounded px-3 py-1.5 text-sm dark:bg-gray-700 dark:text-white w-24" value={electionId} onChange={e => handleElectionChange(e.target.value)} placeholder="ID" />
         </div>
         <div>
           <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">State Code (voters)</label>

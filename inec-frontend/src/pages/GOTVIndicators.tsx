@@ -13,18 +13,18 @@ import {
   Target, Users, MapPin, MessageSquare,
   Award, FileText, BarChart3, Activity, AlertTriangle,
 } from 'lucide-react';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
 
 const BASE_URL = '';
 
 function getAuthHeaders() {
-  const token = localStorage.getItem('auth_token') || '';
-  const partyId = localStorage.getItem('gotv_party_id') || '1';
-  return {
-    'Authorization': `Bearer ${token}`,
-    'X-GOTV-Party-ID': partyId,
-    'X-GOTV-Party-Code': localStorage.getItem('gotv_party_code') || 'APC',
-    'Content-Type': 'application/json',
-  };
+  // Real session Bearer token when available; party headers only from an explicit
+  // user selection — never defaulted.
+  const headers = gotvAuthHeaders({ 'Content-Type': 'application/json' });
+  const partyId = localStorage.getItem('gotv_party_id');
+  if (partyId) headers['X-GOTV-Party-ID'] = partyId;
+  return headers;
 }
 
 async function apiFetch(path: string, opts?: RequestInit) {
@@ -704,6 +704,7 @@ function PlatformDashboard() {
 // ─── Main Component ─────────────────────────────────────────────────────────
 export default function GOTVIndicators() {
   const [activeTab, setActiveTab] = useState<SubTab>('cpi');
+  const [partyCode] = useGOTVParty();
 
   const tabs: { key: SubTab; label: string; icon: any }[] = [
     { key: 'cpi', label: 'CPI', icon: Target },
@@ -716,8 +717,26 @@ export default function GOTVIndicators() {
     { key: 'platform', label: 'Platform Analytics', icon: Activity },
   ];
 
+  if (!partyCode) {
+    // All indicator data is party-scoped — require an explicit party selection.
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <AuthoritativeDataUnavailable
+          title="Select a party to continue"
+          description="Campaign indicators are party-scoped. Choose a party above — no default party is assumed."
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <GOTVPartySelector />
+      </div>
       {/* Sub-tab Navigation */}
       <div className="flex flex-wrap gap-1 border-b pb-2">
         {tabs.map(tab => (
@@ -729,15 +748,17 @@ export default function GOTVIndicators() {
         ))}
       </div>
 
-      {/* Tab Content */}
-      {activeTab === 'cpi' && <CPIDashboard />}
-      {activeTab === 'demographics' && <DemographicsDashboard />}
-      {activeTab === 'surveys' && <SurveyDashboard />}
-      {activeTab === 'lga' && <LGADashboard />}
-      {activeTab === 'sentiment' && <SentimentDashboard />}
-      {activeTab === 'endorsements' && <EndorsementsDashboard />}
-      {activeTab === 'reports' && <ReportsDashboard />}
-      {activeTab === 'platform' && <PlatformDashboard />}
+      {/* Tab Content — remount on party change so dashboards refetch for the selected party */}
+      <div key={partyCode} className="contents">
+        {activeTab === 'cpi' && <CPIDashboard />}
+        {activeTab === 'demographics' && <DemographicsDashboard />}
+        {activeTab === 'surveys' && <SurveyDashboard />}
+        {activeTab === 'lga' && <LGADashboard />}
+        {activeTab === 'sentiment' && <SentimentDashboard />}
+        {activeTab === 'endorsements' && <EndorsementsDashboard />}
+        {activeTab === 'reports' && <ReportsDashboard />}
+        {activeTab === 'platform' && <PlatformDashboard />}
+      </div>
     </div>
   );
 }

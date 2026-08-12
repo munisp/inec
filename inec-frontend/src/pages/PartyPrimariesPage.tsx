@@ -11,6 +11,10 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, CartesianGrid, Legend,
 } from 'recharts';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
+import {
+  GOTVPartySelector, gotvAuthHeaders, useGOTVParty, useResolvedElection,
+} from '@/lib/gotv-session';
 
 const API = import.meta.env.VITE_API_URL || '';
 const COLORS = ['#2563eb', '#dc2626', '#16a34a', '#ca8a04', '#7c3aed', '#0891b2'];
@@ -94,13 +98,21 @@ export default function PartyPrimariesPage() {
   const [cryptoAudit, setCryptoAudit] = useState<CryptoAudit | null>(null);
   const [_loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [electionId, setElectionId] = useState<string>('1');
+  const [partyCode] = useGOTVParty();
+  const { electionId: resolvedElectionId } = useResolvedElection();
+  const [electionId, setElectionId] = useState<string>('');
 
-  const headers = { 'Content-Type': 'application/json', 'X-GOTV-Party-Code': 'APC' };
+  // Adopt the resolved election (explicit selection or latest active) once available.
+  useEffect(() => {
+    if (!electionId && resolvedElectionId) setElectionId(String(resolvedElectionId));
+  }, [resolvedElectionId, electionId]);
 
   const fetchData = useCallback(async (endpoint: string) => {
-    const res = await fetch(`${API}${endpoint}`, { headers });
-    if (!res.ok) throw new Error(`${res.status}`);
+    const res = await fetch(`${API}${endpoint}`, {
+      headers: gotvAuthHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   }, []);
 
@@ -111,7 +123,8 @@ export default function PartyPrimariesPage() {
       const data = await fetchData(`/gotv/primaries/elections/${electionId}/dashboard`);
       setDashboard(data);
     } catch (e) {
-      setError('Failed to load dashboard');
+      setDashboard(null);
+      setError(`Failed to load dashboard: ${(e as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -121,8 +134,8 @@ export default function PartyPrimariesPage() {
     try {
       const data = await fetchData(`/gotv/primaries/aspirants?election_id=${electionId}`);
       setAspirants(data.aspirants || []);
-    } catch {
-      setAspirants([]);
+    } catch (e) {
+      setError(`Failed to load aspirants: ${(e as Error).message}`);
     }
   }, [electionId, fetchData]);
 
@@ -130,8 +143,8 @@ export default function PartyPrimariesPage() {
     try {
       const data = await fetchData(`/gotv/primaries/delegates?election_id=${electionId}`);
       setDelegates(data.delegates || []);
-    } catch {
-      setDelegates([]);
+    } catch (e) {
+      setError(`Failed to load delegates: ${(e as Error).message}`);
     }
   }, [electionId, fetchData]);
 
@@ -139,8 +152,8 @@ export default function PartyPrimariesPage() {
     try {
       const data = await fetchData(`/gotv/primaries/elections/${electionId}/rounds`);
       setRounds(data.rounds || []);
-    } catch {
-      setRounds([]);
+    } catch (e) {
+      setError(`Failed to load voting rounds: ${(e as Error).message}`);
     }
   }, [electionId, fetchData]);
 
@@ -148,18 +161,22 @@ export default function PartyPrimariesPage() {
     try {
       const data = await fetchData(`/gotv/primaries/elections/${electionId}/crypto/audit`);
       setCryptoAudit(data);
-    } catch {
+    } catch (e) {
       setCryptoAudit(null);
+      setError(`Failed to load cryptographic audit: ${(e as Error).message}`);
     }
   }, [electionId, fetchData]);
 
   useEffect(() => {
+    // Party tenancy and election scope are required before any data is loaded —
+    // never fall back to a hardcoded party or election.
+    if (!partyCode || !electionId) return;
     loadDashboard();
     loadAspirants();
     loadDelegates();
     loadRounds();
     loadCryptoAudit();
-  }, [electionId]);
+  }, [partyCode, electionId, loadDashboard, loadAspirants, loadDelegates, loadRounds, loadCryptoAudit]);
 
   const tabs = [
     { id: 'dashboard', label: 'Convention Dashboard', icon: BarChart3 },
@@ -179,71 +196,97 @@ export default function PartyPrimariesPage() {
             Phase 1: Convention Management | Phase 2: Remote E2E Voting
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <GOTVPartySelector />
           <Input
             placeholder="Election ID"
             value={electionId}
             onChange={(e) => setElectionId(e.target.value)}
             className="w-32"
           />
-          <Button onClick={loadDashboard} variant="outline" size="sm">
+          <Button onClick={loadDashboard} variant="outline" size="sm" disabled={!partyCode || !electionId}>
             <RefreshCw className="w-4 h-4 mr-1" /> Refresh
           </Button>
         </div>
       </div>
 
-      {/* Tab Navigation */}
-      <div className="flex gap-2 border-b pb-2 overflow-x-auto">
-        {tabs.map((tab) => (
-          <Button
-            key={tab.id}
-            variant={activeTab === tab.id ? 'default' : 'ghost'}
-            size="sm"
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <tab.icon className="w-4 h-4 mr-1" />
-            {tab.label}
-          </Button>
-        ))}
-      </div>
-
-      {error && (
-        <Card className="border-red-200 bg-red-50">
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 text-red-600">
-              <AlertTriangle className="w-4 h-4" />
-              {error}
-            </div>
-          </CardContent>
-        </Card>
+      {!partyCode && (
+        <AuthoritativeDataUnavailable
+          title="Select a party to continue"
+          description="Party primaries data is party-scoped. Choose the party whose convention you are managing — no default party is assumed."
+        />
+      )}
+      {partyCode && !electionId && (
+        <AuthoritativeDataUnavailable
+          title="No election selected"
+          description="Enter an election ID above, or select an election, to load its convention data."
+        />
       )}
 
-      {/* DASHBOARD TAB */}
-      {activeTab === 'dashboard' && dashboard && (
-        <DashboardTab dashboard={dashboard} />
-      )}
+      {/* Tab Navigation — only once party + election scope is established */}
+      {partyCode && electionId && (
+        <>
+          <div className="flex gap-2 border-b pb-2 overflow-x-auto">
+            {tabs.map((tab) => (
+              <Button
+                key={tab.id}
+                variant={activeTab === tab.id ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <tab.icon className="w-4 h-4 mr-1" />
+                {tab.label}
+              </Button>
+            ))}
+          </div>
 
-      {/* ASPIRANTS TAB */}
-      {activeTab === 'aspirants' && (
-        <AspirantsTab aspirants={aspirants} onRefresh={loadAspirants} />
-      )}
+          {error && (
+            <Card className="border-red-200 bg-red-50">
+              <CardContent className="pt-4">
+                <div className="flex items-center gap-2 text-red-600">
+                  <AlertTriangle className="w-4 h-4" />
+                  {error}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-      {/* DELEGATES TAB */}
-      {activeTab === 'delegates' && (
-        <DelegatesTab delegates={delegates} onRefresh={loadDelegates} />
-      )}
+          {/* DASHBOARD TAB */}
+          {activeTab === 'dashboard' && dashboard && (
+            <DashboardTab dashboard={dashboard} />
+          )}
+          {activeTab === 'dashboard' && !dashboard && error && (
+            <AuthoritativeDataUnavailable
+              title="Convention dashboard unavailable"
+              description="The authoritative convention dashboard could not be retrieved. No cached or placeholder figures are shown."
+              error={error}
+              onRetry={loadDashboard}
+            />
+          )}
 
-      {/* VOTING TAB */}
-      {activeTab === 'voting' && (
-        <VotingTab rounds={rounds} tallyResults={tallyResults} onRefresh={loadRounds} />
-      )}
+          {/* ASPIRANTS TAB */}
+          {activeTab === 'aspirants' && (
+            <AspirantsTab aspirants={aspirants} onRefresh={loadAspirants} />
+          )}
 
-      {/* REMOTE VOTING TAB */}
-      {activeTab === 'remote' && <RemoteVotingTab />}
+          {/* DELEGATES TAB */}
+          {activeTab === 'delegates' && (
+            <DelegatesTab delegates={delegates} onRefresh={loadDelegates} />
+          )}
 
-      {/* CRYPTO AUDIT TAB */}
-      {activeTab === 'crypto' && (
-        <CryptoAuditTab cryptoAudit={cryptoAudit} onRefresh={loadCryptoAudit} />
+          {/* VOTING TAB */}
+          {activeTab === 'voting' && (
+            <VotingTab rounds={rounds} tallyResults={tallyResults} onRefresh={loadRounds} />
+          )}
+
+          {/* REMOTE VOTING TAB */}
+          {activeTab === 'remote' && <RemoteVotingTab />}
+
+          {/* CRYPTO AUDIT TAB */}
+          {activeTab === 'crypto' && (
+            <CryptoAuditTab cryptoAudit={cryptoAudit} onRefresh={loadCryptoAudit} />
+          )}
+        </>
       )}
     </div>
   );
@@ -534,6 +577,7 @@ function RemoteVotingTab() {
     try {
       const res = await fetch(
         `${API}/gotv/primaries/remote/verify?confirmation_code=${verifyCode}`,
+        { headers: gotvAuthHeaders(), credentials: 'include' },
       );
       const data = await res.json();
       setVerifyResult(data);

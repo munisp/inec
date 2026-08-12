@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '@/lib/auth';
+import { getSessionAuthHeaders } from '@/lib/gotv-session';
 
 interface KYCResult {
   user_id: number;
@@ -35,14 +37,24 @@ export default function KYCVerificationPage() {
   const [idType, setIdType] = useState('nin');
   const [idNumber, setIdNumber] = useState('');
   const [step, setStep] = useState<'status' | 'upload' | 'liveness' | 'result'>('status');
+  const [error, setError] = useState<string | null>(null);
+  const { user } = useAuth();
 
   useEffect(() => {
-    fetch(`${API}/status?user_id=1`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
+    // KYC status belongs to the signed-in session identity — never a fixed user id.
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    fetch(`${API}/status?user_id=${user.id}`, { credentials: 'include', headers: getSessionAuthHeaders() })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => { if (d && d.status !== 'not_started') setKycStatus(d); })
-      .catch(e => console.error('kyc status:', e))
+      .catch(e => setError(`Unable to load your KYC status: ${e.message}`))
       .finally(() => setLoading(false));
-  }, []);
+  }, [user]);
 
   const handleVerify = async () => {
     if (!idFile || !selfieFile || !idNumber) return;
@@ -56,13 +68,18 @@ export default function KYCVerificationPage() {
       const res = await fetch(`${API}/verify`, {
         method: 'POST', body: form,
         credentials: 'include',
+        headers: getSessionAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
         setKycStatus(data);
         setStep('result');
+      } else {
+        setError(`Verification request failed (HTTP ${res.status}). Please try again.`);
       }
-    } catch { /* */ }
+    } catch {
+      setError('Verification is unavailable right now — please try again.');
+    }
     setUploading(false);
   };
 
@@ -75,12 +92,17 @@ export default function KYCVerificationPage() {
       const res = await fetch(`${API}/liveness`, {
         method: 'POST', body: form,
         credentials: 'include',
+        headers: getSessionAuthHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
         setLivenessResult(data);
+      } else {
+        setError(`Liveness check failed (HTTP ${res.status}). Please try again.`);
       }
-    } catch { /* */ }
+    } catch {
+      setError('Liveness check is unavailable right now — please try again.');
+    }
     setUploading(false);
   };
 
@@ -91,6 +113,16 @@ export default function KYCVerificationPage() {
 
   return (
     <section aria-label="KYC Verification" className="space-y-6">
+      {!user && (
+        <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-100">
+          You must be signed in to view or start identity verification. KYC status is loaded for your own session identity only.
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-700 dark:bg-red-950/30 dark:text-red-100">
+          {error}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">KYC Verification</h1>
