@@ -1,3 +1,7 @@
+> **HISTORICAL — DO NOT WORK FROM THIS FILE.** This TODO tracks the original
+> build-out phases and is kept for archaeology only. Current state, setup, and
+> operational guidance live in `README.md`.
+
 # Project TODO
 
 ## Phase 11 — Auth Gate, Export, Notifications

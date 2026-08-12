@@ -1,39 +1,33 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "../../drizzle/schema";
 import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
 import { registerLocalAuthRoutes } from "./localAuth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { getAllProfiles } from "../db";
+import { closeDb, getAllProfiles } from "../db";
 import { sdk } from "./sdk";
 import { notifyOwner } from "./notification";
+import { assertProfileRole } from "./trpc";
+import {
+  SSE_MAX_CLIENTS,
+  SSE_MAX_STREAMS_PER_USER,
+  broadcastWarRoomUpdate,
+  destroyAllSseClients,
+  registerSseClient,
+  sseClientCount,
+  sseStreamCountForUser,
+} from "./sse";
 import * as db from "../db";
 
-// In-memory SSE client registry keyed by profileId
-const sseClients = new Map<number, Set<(data: string) => void>>();
-// SECURITY: bound total SSE connections so a client flood cannot exhaust
-// sockets/memory on the process.
-const SSE_MAX_CLIENTS = 500;
-
-function sseClientCount(): number {
-  let total = 0;
-  sseClients.forEach(set => { total += set.size; });
-  return total;
-}
-
-export function broadcastWarRoomUpdate(profileId: number) {
-  const clients = sseClients.get(profileId);
-  if (clients) {
-    clients.forEach(send => send(JSON.stringify({ type: "update", profileId })));
-  }
-}
+// Re-export so existing importers of "./_core/index" keep working while the
+// registry itself lives in ./sse (see sse.ts header for why it was extracted).
+export { broadcastWarRoomUpdate };
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -57,15 +51,36 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // SECURITY: trust the first reverse-proxy hop so req.ip reflects the real
+  // client IP (used by the login throttle and petition-sign rate limits).
+  app.set("trust proxy", 1);
+  // Body parser limit — 2mb is ample for all JSON API payloads; larger uploads
+  // go through the storage proxy, not the JSON body.
+  app.use(express.json({ limit: "2mb" }));
+  app.use(express.urlencoded({ limit: "2mb", extended: true }));
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
   registerLocalAuthRoutes(app);
 
-  app.get("/api/v1/campaign/health", (_req, res) => {
-    res.json({ status: "ok" });
+  // Liveness/readiness probe: actually verify the database instead of always
+  // returning ok. 503 when the DB is missing, unreachable, or slow (>2s).
+  app.get("/api/v1/campaign/health", async (_req, res) => {
+    const dbConn = db.getDb();
+    if (!dbConn) {
+      res.status(503).json({ status: "error", reason: "database not configured" });
+      return;
+    }
+    try {
+      await Promise.race([
+        dbConn.execute(sql`SELECT 1`),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("health check timed out")), 2000)
+        ),
+      ]);
+      res.json({ status: "ok" });
+    } catch (err) {
+      console.error("[health] database check failed:", err);
+      res.status(503).json({ status: "error", reason: "database unreachable" });
+    }
   });
 
   // ── Deadline notification heartbeat handler ─────────────────────────────────
@@ -122,33 +137,41 @@ async function startServer() {
 
   // SSE endpoint for War Room real-time updates.
   // SECURITY: requires a verified session (same SDK verification as the rest of
-  // the API — cookie, or Bearer for non-browser clients) and is capped at
-  // SSE_MAX_CLIENTS concurrent connections.
+  // the API — cookie, or Bearer for non-browser clients), enforces per-profile
+  // tenancy (viewer role on the requested profileId), and is capped both
+  // globally (SSE_MAX_CLIENTS) and per user (SSE_MAX_STREAMS_PER_USER).
   app.get("/api/war-room/stream", async (req, res) => {
+    let user;
     try {
-      await sdk.authenticateRequest(req);
+      user = await sdk.authenticateRequest(req);
     } catch {
       res.status(401).json({ error: "authentication required" });
       return;
     }
-    const profileId = parseInt(req.query.profileId as string);
-    if (!profileId) { res.status(400).end(); return; }
+    const profileId = Number(req.query.profileId);
+    if (!Number.isInteger(profileId) || profileId <= 0) { res.status(400).end(); return; }
+    // SECURITY: per-profile authorization — a valid session alone must not
+    // grant a stream of another campaign's war-room updates.
+    try {
+      await assertProfileRole(user, profileId, "viewer");
+    } catch {
+      res.status(403).json({ error: "no access to this campaign profile" });
+      return;
+    }
     if (sseClientCount() >= SSE_MAX_CLIENTS) {
       res.status(503).json({ error: "too many open streams; try again later" });
+      return;
+    }
+    if (sseStreamCountForUser(user.id) >= SSE_MAX_STREAMS_PER_USER) {
+      res.status(429).json({ error: "too many open streams for this account" });
       return;
     }
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
-    const send = (data: string) => res.write(`data: ${data}\n\n`);
-    if (!sseClients.has(profileId)) sseClients.set(profileId, new Set());
-    sseClients.get(profileId)!.add(send);
-    req.on("close", () => {
-      const set = sseClients.get(profileId);
-      set?.delete(send);
-      if (set && set.size === 0) sseClients.delete(profileId);
-    });
+    const unregister = registerSseClient(profileId, user.id, res);
+    req.on("close", unregister);
   });
   // tRPC API
   app.use(
@@ -179,6 +202,28 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  // ── Graceful shutdown ──────────────────────────────────────────────────────
+  // Stop accepting connections, end open SSE streams, drain the DB pool, then
+  // exit 0 so orchestrators see a clean stop instead of a SIGKILL timeout.
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[Server] ${signal} received — shutting down gracefully`);
+    server.close(() => console.log("[Server] HTTP listener closed"));
+    destroyAllSseClients();
+    void closeDb()
+      .catch(err => console.error("[Server] failed to close DB pool:", err))
+      .finally(() => process.exit(0));
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-startServer().catch(console.error);
+// A boot failure must exit non-zero — previously the rejection was only
+// logged, leaving the process alive with exit code 0 and no listener.
+startServer().catch(err => {
+  console.error("[Server] failed to start:", err);
+  process.exit(1);
+});

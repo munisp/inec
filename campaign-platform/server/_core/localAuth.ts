@@ -12,6 +12,11 @@ import { ENV } from "./env";
 // deployment should move this to a shared store (e.g. Redis).
 const LOGIN_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const LOGIN_MAX_ATTEMPTS = 5;
+// SECURITY: per-IP-only window against password spraying — an attacker
+// rotating through many usernames from one address never trips the
+// per-IP+username key above, so the whole source IP gets a wider cap.
+const LOGIN_IP_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const LOGIN_IP_MAX_ATTEMPTS = 30;
 const loginAttempts = new Map<string, number[]>();
 
 function loginAttemptKey(req: Request, username: string): string {
@@ -19,20 +24,30 @@ function loginAttemptKey(req: Request, username: string): string {
   return `${ip}:${username.toLowerCase()}`;
 }
 
-function isLoginThrottled(key: string): boolean {
+// req.ip respects `app.set("trust proxy", 1)` (set in _core/index.ts), so this
+// is the real client IP, not the load balancer's.
+function loginIpOnlyKey(req: Request): string {
+  return `ip-only:${req.ip || req.socket.remoteAddress || "unknown"}`;
+}
+
+function isLoginThrottled(
+  key: string,
+  windowMs: number = LOGIN_WINDOW_MS,
+  maxAttempts: number = LOGIN_MAX_ATTEMPTS,
+): boolean {
   const now = Date.now();
-  const attempts = (loginAttempts.get(key) ?? []).filter(t => now - t < LOGIN_WINDOW_MS);
+  const attempts = (loginAttempts.get(key) ?? []).filter(t => now - t < windowMs);
   if (attempts.length === 0) {
     loginAttempts.delete(key);
   } else {
     loginAttempts.set(key, attempts);
   }
-  return attempts.length >= LOGIN_MAX_ATTEMPTS;
+  return attempts.length >= maxAttempts;
 }
 
-function recordLoginAttempt(key: string) {
+function recordLoginAttempt(key: string, windowMs: number = LOGIN_WINDOW_MS) {
   const now = Date.now();
-  const attempts = (loginAttempts.get(key) ?? []).filter(t => now - t < LOGIN_WINDOW_MS);
+  const attempts = (loginAttempts.get(key) ?? []).filter(t => now - t < windowMs);
   attempts.push(now);
   loginAttempts.set(key, attempts);
   // Bound memory: occasionally drop fully-expired keys.
@@ -55,11 +70,16 @@ export function registerLocalAuthRoutes(app: Express) {
     }
 
     const throttleKey = loginAttemptKey(req, username);
-    if (isLoginThrottled(throttleKey)) {
+    const ipKey = loginIpOnlyKey(req);
+    if (
+      isLoginThrottled(throttleKey) ||
+      isLoginThrottled(ipKey, LOGIN_IP_WINDOW_MS, LOGIN_IP_MAX_ATTEMPTS)
+    ) {
       res.status(429).json({ error: "too many login attempts; try again in a few minutes" });
       return;
     }
     recordLoginAttempt(throttleKey);
+    recordLoginAttempt(ipKey, LOGIN_IP_WINDOW_MS);
 
     const user = await db.getUserByUsername(username);
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {

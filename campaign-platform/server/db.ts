@@ -1,11 +1,20 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import * as schema from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _pool: Pool | null = null;
 let _db: ReturnType<typeof drizzle> | null = null;
+
+/** Drain the connection pool (graceful shutdown). */
+export async function closeDb(): Promise<void> {
+  const pool = _pool;
+  _pool = null;
+  _db = null;
+  if (pool) await pool.end();
+}
 
 export function getDb() {
   if (!_db) {
@@ -19,6 +28,29 @@ export function getDb() {
     _db = drizzle(_pool, { schema });
   }
   return _db;
+}
+
+// ─── Cross-tenant upsert guard ───────────────────────────────────────────────
+// SECURITY: every `if (data.id)` update path below must match BOTH the row id
+// AND the caller's profileId — a bare `WHERE id = ?` lets any tenant rewrite
+// another campaign's rows by guessing ids (IDOR). profileId itself is never
+// overwritten by an update. Zero matched rows → NOT_FOUND (never a silent
+// no-op), so callers cannot distinguish "no such row" from "not your row".
+function assertUpdated<T>(rows: T[], label: string): T {
+  if (rows.length === 0) {
+    throw new TRPCError({ code: "NOT_FOUND", message: `${label} not found` });
+  }
+  return rows[0];
+}
+
+// The drizzle insert types mark profileId optional; a tenant-guarded UPDATE is
+// meaningless without it, so require it explicitly rather than letting a
+// null/undefined guard value silently match nothing (or worse, everything).
+function requireTenantId(profileId: number | null | undefined): number {
+  if (typeof profileId !== "number" || !Number.isInteger(profileId)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "profileId is required" });
+  }
+  return profileId;
 }
 
 // ─── Users ──────────────────────────────────────────────────────────────────
@@ -108,12 +140,14 @@ export async function upsertTimelineEvent(data: schema.InsertTimelineEvent) {
   const db = getDb();
   if (!db) return null;
   if (data.id) {
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
     const rows = await db
       .update(schema.timelineEvents)
-      .set(data)
-      .where(eq(schema.timelineEvents.id, data.id))
+      .set(rest)
+      .where(and(eq(schema.timelineEvents.id, id), eq(schema.timelineEvents.profileId, requireTenantId(data.profileId))))
       .returning();
-    return rows[0];
+    return assertUpdated(rows, "Timeline event");
   }
   const rows = await db.insert(schema.timelineEvents).values(data).returning();
   return rows[0];
@@ -296,7 +330,10 @@ export async function upsertPollingUnit(data: PollingUnitWriteInput) {
   return db.transaction(async (tx) => writePollingUnitAssignment(tx, data));
 }
 
-export async function bulkUpsertPollingUnits(profileId: number, rows: PollingUnitWriteInput[]) {
+export async function bulkUpsertPollingUnits(
+  profileId: number,
+  rows: Array<Omit<PollingUnitWriteInput, "id" | "profileId">>,
+) {
   const db = getDb();
   if (!db) return { upserted: 0 };
   assertBulkImportSize(rows, "polling-unit bulk import");
@@ -357,6 +394,17 @@ export async function getPressReleases(profileId: number) {
 export async function savePressRelease(data: typeof schema.pressReleases.$inferInsert) {
   const db = getDb();
   if (!db) return null;
+  if (data.id) {
+    // SECURITY: tenant-guarded update — the router accepts `id` for edits, so
+    // an id must UPDATE (previously it was silently ignored and a duplicate
+    // row was inserted). Never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.pressReleases)
+      .set(rest)
+      .where(and(eq(schema.pressReleases.id, id), eq(schema.pressReleases.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Press release");
+  }
   const rows = await db.insert(schema.pressReleases).values(data).returning();
   return rows[0];
 }
@@ -375,6 +423,16 @@ export async function getSocialPosts(profileId: number) {
 export async function saveSocialPost(data: typeof schema.socialMediaPosts.$inferInsert) {
   const db = getDb();
   if (!db) return null;
+  if (data.id) {
+    // SECURITY: tenant-guarded update — see savePressRelease. Never set
+    // profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.socialMediaPosts)
+      .set(rest)
+      .where(and(eq(schema.socialMediaPosts.id, id), eq(schema.socialMediaPosts.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Social media post");
+  }
   const rows = await db.insert(schema.socialMediaPosts).values(data).returning();
   return rows[0];
 }
@@ -394,8 +452,13 @@ export async function upsertComplianceItem(data: typeof schema.complianceItems.$
   const db = getDb();
   if (!db) return null;
   if (data.id) {
-    const rows = await db.update(schema.complianceItems).set({ ...data, updatedAt: new Date() }).where(eq(schema.complianceItems.id, data.id)).returning();
-    return rows[0];
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.complianceItems)
+      .set({ ...rest, updatedAt: new Date() })
+      .where(and(eq(schema.complianceItems.id, id), eq(schema.complianceItems.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Compliance item");
   }
   const rows = await db.insert(schema.complianceItems).values(data).returning();
   return rows[0];
@@ -416,8 +479,13 @@ export async function upsertOppositionEntry(data: typeof schema.oppositionResear
   const db = getDb();
   if (!db) return null;
   if (data.id) {
-    const rows = await db.update(schema.oppositionResearch).set({ ...data, updatedAt: new Date() }).where(eq(schema.oppositionResearch.id, data.id)).returning();
-    return rows[0];
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.oppositionResearch)
+      .set({ ...rest, updatedAt: new Date() })
+      .where(and(eq(schema.oppositionResearch.id, id), eq(schema.oppositionResearch.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Opposition entry");
   }
   const rows = await db.insert(schema.oppositionResearch).values(data).returning();
   return rows[0];
@@ -466,8 +534,13 @@ export async function upsertFieldAgent(data: typeof schema.fieldAgents.$inferIns
   const db = getDb();
   if (!db) return null;
   if (data.id) {
-    const rows = await db.update(schema.fieldAgents).set({ ...data, lastCheckin: new Date() }).where(eq(schema.fieldAgents.id, data.id)).returning();
-    return rows[0];
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.fieldAgents)
+      .set({ ...rest, lastCheckin: new Date() })
+      .where(and(eq(schema.fieldAgents.id, id), eq(schema.fieldAgents.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Field agent");
   }
   const rows = await db.insert(schema.fieldAgents).values(data).returning();
   return rows[0];
@@ -506,8 +579,13 @@ export async function upsertManifestoSection(data: typeof schema.manifestoSectio
   const db = getDb();
   if (!db) return null;
   if (data.id) {
-    const rows = await db.update(schema.manifestoSections).set({ ...data, updatedAt: new Date() }).where(eq(schema.manifestoSections.id, data.id)).returning();
-    return rows[0];
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.manifestoSections)
+      .set({ ...rest, updatedAt: new Date() })
+      .where(and(eq(schema.manifestoSections.id, id), eq(schema.manifestoSections.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Manifesto section");
   }
   const rows = await db.insert(schema.manifestoSections).values(data).returning();
   return rows[0];
@@ -633,8 +711,13 @@ export async function upsertBudgetItem(data: typeof schema.budgetItems.$inferIns
   const db = getDb();
   if (!db) return null;
   if (data.id) {
-    const rows = await db.update(schema.budgetItems).set(data).where(eq(schema.budgetItems.id, data.id)).returning();
-    return rows[0];
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.budgetItems)
+      .set(rest)
+      .where(and(eq(schema.budgetItems.id, id), eq(schema.budgetItems.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Budget item");
   }
   const rows = await db.insert(schema.budgetItems).values(data).returning();
   return rows[0];
@@ -679,8 +762,13 @@ export async function upsertDebatePrepNote(data: typeof schema.debatePrepNotes.$
   const db = getDb();
   if (!db) return null;
   if (data.id) {
-    const rows = await db.update(schema.debatePrepNotes).set({ ...data, updatedAt: new Date() }).where(eq(schema.debatePrepNotes.id, data.id)).returning();
-    return rows[0];
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(schema.debatePrepNotes)
+      .set({ ...rest, updatedAt: new Date() })
+      .where(and(eq(schema.debatePrepNotes.id, id), eq(schema.debatePrepNotes.profileId, requireTenantId(data.profileId))))
+      .returning();
+    return assertUpdated(rows, "Debate prep note");
   }
   const rows = await db.insert(schema.debatePrepNotes).values(data).returning();
   return rows[0];
@@ -1075,10 +1163,24 @@ export async function getUpcomingDeadlines(profileId: number, withinHours: numbe
 }
 
 // ─── Campaign Team Members ────────────────────────────────────────────────────
+// Explicit column list: invite_token is a bearer credential for joining the
+// campaign and must never leave the db layer via a list endpoint (viewers can
+// call team.list). Email masking for non-privileged viewers happens in the
+// router, which knows the caller's role.
 export async function getCampaignMembers(profileId: number) {
   const db = getDb();
   if (!db) return [];
-  return db.select().from(schema.campaignMembers)
+  return db.select({
+    id: schema.campaignMembers.id,
+    profileId: schema.campaignMembers.profileId,
+    userId: schema.campaignMembers.userId,
+    name: schema.campaignMembers.name,
+    email: schema.campaignMembers.email,
+    role: schema.campaignMembers.role,
+    invitedAt: schema.campaignMembers.invitedAt,
+    acceptedAt: schema.campaignMembers.acceptedAt,
+  })
+    .from(schema.campaignMembers)
     .where(eq(schema.campaignMembers.profileId, profileId))
     .orderBy(schema.campaignMembers.invitedAt);
 }
@@ -1101,13 +1203,30 @@ export async function inviteCampaignMember(input: {
   return { ...row, inviteToken, inviteUrl: input.origin ? `${input.origin}/join?token=${inviteToken}` : null };
 }
 
+// SECURITY: invites are bearer tokens — they must expire. 7 days is long
+// enough for a human to respond, short enough that a leaked old link is dead.
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isInviteExpired(invitedAt: Date | string | null | undefined): boolean {
+  if (!invitedAt) return false; // legacy rows without a timestamp stay usable
+  return Date.now() - new Date(invitedAt).getTime() > INVITE_TTL_MS;
+}
+
 export async function acceptCampaignInvite(token: string, userId: number, userEmail?: string | null) {
   const db = getDb();
   if (!db) throw new Error("DB not available");
   const [member] = await db.select().from(schema.campaignMembers)
     .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
-  if (!member) throw new Error("Invalid or expired invite token");
-  if (member.acceptedAt) throw new Error("Invite already accepted");
+  // SECURITY: typed TRPCErrors — bare Errors surface as HTTP 500s.
+  if (!member) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid invite token" });
+  }
+  if (isInviteExpired(member.invitedAt)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "This invite has expired" });
+  }
+  if (member.acceptedAt) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invite already accepted" });
+  }
 
   // SECURITY: bind acceptance to the invitee identity. If the invite carries an
   // email and we know the accepting user's email, they must match — otherwise
@@ -1117,7 +1236,10 @@ export async function acceptCampaignInvite(token: string, userId: number, userEm
   let emailToSet: string | undefined;
   if (normalize(member.email) && normalize(userEmail)) {
     if (normalize(member.email) !== normalize(userEmail)) {
-      throw new Error("This invite was issued to a different email address");
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "This invite was issued to a different email address",
+      });
     }
   } else if (!normalize(member.email) && normalize(userEmail)) {
     emailToSet = userEmail!.trim();
@@ -1137,7 +1259,9 @@ export async function acceptCampaignInvite(token: string, userId: number, userEm
       isNull(schema.campaignMembers.acceptedAt)
     ))
     .returning();
-  if (!updated) throw new Error("Invite already accepted");
+  if (!updated) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invite already accepted" });
+  }
   return updated;
 }
 
@@ -1146,7 +1270,10 @@ export async function getMemberByInviteToken(token: string) {
   if (!db) return null;
   const [member] = await db.select().from(schema.campaignMembers)
     .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
-  return member ?? null;
+  // SECURITY: expired invites resolve to null — same as an unknown token, so
+  // callers cannot probe token validity windows.
+  if (!member || isInviteExpired(member.invitedAt)) return null;
+  return member;
 }
 
 export async function updateMemberRole(memberId: number, role: "manager" | "viewer") {
@@ -1207,6 +1334,9 @@ export async function getDashboardKPIs(profileId: number) {
   const db = getDb();
   if (!db) return null;
 
+  // Aggregate in SQL — previously whole tables (donations, budget, timeline,
+  // incidents) were loaded into JS just to be counted/summed.
+  const today = new Date().toISOString().split("T")[0];
   const [
     volunteerRows,
     complianceRows,
@@ -1218,35 +1348,49 @@ export async function getDashboardKPIs(profileId: number) {
     incidentRows,
   ] = await Promise.all([
     db.select({ count: sql<number>`count(*)::int` }).from(schema.volunteers).where(eq(schema.volunteers.profileId, profileId)),
-    db.select({ status: schema.complianceItems.status }).from(schema.complianceItems).where(eq(schema.complianceItems.profileId, profileId)),
-    db.select({ amount: schema.fundraisingTransactions.amount }).from(schema.fundraisingTransactions).where(eq(schema.fundraisingTransactions.profileId, profileId)),
-    db.select({ budgetedAmount: schema.budgetItems.budgetedAmount }).from(schema.budgetItems).where(eq(schema.budgetItems.profileId, profileId)),
-    db.select({ eventDate: schema.timelineEvents.eventDate, status: schema.timelineEvents.status, priority: schema.timelineEvents.priority }).from(schema.timelineEvents).where(eq(schema.timelineEvents.profileId, profileId)).orderBy(schema.timelineEvents.eventDate),
+    db.select({
+      total: sql<number>`count(*)::int`,
+      compliant: sql<number>`count(*) filter (where ${schema.complianceItems.status} = 'compliant')::int`,
+    }).from(schema.complianceItems).where(eq(schema.complianceItems.profileId, profileId)),
+    db.select({
+      total: sql<number>`coalesce(sum(${schema.fundraisingTransactions.amount}), 0)::float`,
+    }).from(schema.fundraisingTransactions).where(eq(schema.fundraisingTransactions.profileId, profileId)),
+    db.select({
+      total: sql<number>`coalesce(sum(${schema.budgetItems.budgetedAmount}), 0)::float`,
+    }).from(schema.budgetItems).where(eq(schema.budgetItems.profileId, profileId)),
+    db.select({
+      total: sql<number>`count(*)::int`,
+      completed: sql<number>`count(*) filter (where ${schema.timelineEvents.status} = 'completed')::int`,
+      nextDeadline: sql<string | null>`min(${schema.timelineEvents.eventDate}) filter (where ${schema.timelineEvents.eventDate} > ${today} and ${schema.timelineEvents.status} <> 'completed')`,
+    }).from(schema.timelineEvents).where(eq(schema.timelineEvents.profileId, profileId)),
     db.select({ count: sql<number>`count(*)::int` }).from(schema.petitions).where(eq(schema.petitions.profileId, profileId)),
     db.select({ count: sql<number>`count(*)::int` }).from(schema.campaignMembers).where(eq(schema.campaignMembers.profileId, profileId)),
-    db.select({ severity: schema.warRoomIncidents.severity, status: schema.warRoomIncidents.status }).from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.profileId, profileId)),
+    db.select({
+      active: sql<number>`count(*) filter (where ${schema.warRoomIncidents.status} not in ('resolved', 'escalated'))::int`,
+      critical: sql<number>`count(*) filter (where ${schema.warRoomIncidents.severity} = 'critical' and ${schema.warRoomIncidents.status} not in ('resolved', 'escalated'))::int`,
+    }).from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.profileId, profileId)),
   ]);
 
   const totalVolunteers = volunteerRows[0]?.count ?? 0;
-  const complianceTotal = complianceRows.length;
-  const complianceCompliant = complianceRows.filter(r => r.status === 'compliant').length;
+  const complianceTotal = complianceRows[0]?.total ?? 0;
+  const complianceCompliant = complianceRows[0]?.compliant ?? 0;
   const complianceScore = complianceTotal > 0 ? Math.round((complianceCompliant / complianceTotal) * 100) : 0;
-  const totalFundraising = donationRows.reduce((s, r) => s + Number(r.amount ?? 0), 0);
-  const totalBudget = budgetRows.reduce((s, r) => s + Number(r.budgetedAmount ?? 0), 0);
+  const totalFundraising = donationRows[0]?.total ?? 0;
+  const totalBudget = budgetRows[0]?.total ?? 0;
   const totalPetitions = petitionRows[0]?.count ?? 0;
   const totalTeamMembers = memberRows[0]?.count ?? 0;
 
   const now = new Date();
-  const upcomingDeadline = timelineRows.find(r => r.eventDate && new Date(r.eventDate) > now && r.status !== 'completed');
-  const daysToNextDeadline = upcomingDeadline?.eventDate
-    ? Math.ceil((new Date(upcomingDeadline.eventDate).getTime() - now.getTime()) / 86400000)
+  const nextDeadlineDate = timelineRows[0]?.nextDeadline ?? null;
+  const daysToNextDeadline = nextDeadlineDate
+    ? Math.ceil((new Date(nextDeadlineDate).getTime() - now.getTime()) / 86400000)
     : null;
 
-  const completedMilestones = timelineRows.filter(r => r.status === 'completed').length;
-  const totalMilestones = timelineRows.length;
+  const completedMilestones = timelineRows[0]?.completed ?? 0;
+  const totalMilestones = timelineRows[0]?.total ?? 0;
 
-  const activeIncidents = incidentRows.filter(r => r.status !== 'resolved' && r.status !== 'escalated').length;
-  const criticalIncidents = incidentRows.filter(r => r.severity === 'critical' && (r.status !== 'resolved' && r.status !== 'escalated')).length;
+  const activeIncidents = incidentRows[0]?.active ?? 0;
+  const criticalIncidents = incidentRows[0]?.critical ?? 0;
 
   return {
     totalVolunteers,
@@ -1258,7 +1402,7 @@ export async function getDashboardKPIs(profileId: number) {
     totalPetitions,
     totalTeamMembers,
     daysToNextDeadline,
-    nextDeadlineDate: upcomingDeadline?.eventDate ?? null,
+    nextDeadlineDate,
     completedMilestones,
     totalMilestones,
     activeIncidents,
@@ -1348,11 +1492,15 @@ export async function upsertStakeholderContact(data: any) {
   const db = await getDb();
   if (!db) return null;
   const { stakeholderContacts } = await import("../drizzle/schema");
-  const { eq } = await import("drizzle-orm");
+  const { eq, and } = await import("drizzle-orm");
   if (data.id) {
-    const { id, ...rest } = data;
-    await db.update(stakeholderContacts).set(rest).where(eq(stakeholderContacts.id, id));
-    return { id };
+    // SECURITY: tenant-guarded update — never set profileId on update.
+    const { id, profileId, ...rest } = data;
+    const rows = await db.update(stakeholderContacts)
+      .set(rest)
+      .where(and(eq(stakeholderContacts.id, id), eq(stakeholderContacts.profileId, requireTenantId(data.profileId))))
+      .returning({ id: stakeholderContacts.id });
+    return assertUpdated(rows, "Stakeholder contact");
   }
   const result = await db.insert(stakeholderContacts).values(data).returning();
   return result[0] ?? null;

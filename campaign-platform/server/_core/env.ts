@@ -32,10 +32,24 @@ function resolveCookieSecret(): string {
   );
 }
 
+// SECURITY: without a database URL the app boots but every dashboard is
+// silently empty. In production that is a misconfiguration, not a runtime
+// state — fail fast at boot so deploys surface it immediately.
+function resolveDatabaseUrl(): string {
+  const url = process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
+  if (!url && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "[ENV] POSTGRES_URL or DATABASE_URL must be set when NODE_ENV=production. " +
+        "Refusing to boot: without a database the app would serve silently empty dashboards."
+    );
+  }
+  return url;
+}
+
 export const ENV = {
   appId: process.env.VITE_APP_ID ?? "",
   cookieSecret: resolveCookieSecret(),
-  databaseUrl: process.env.DATABASE_URL ?? "",
+  databaseUrl: resolveDatabaseUrl(),
   oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
   ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
   isProduction: process.env.NODE_ENV === "production",
