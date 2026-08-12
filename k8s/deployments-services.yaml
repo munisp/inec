@@ -126,6 +126,13 @@ spec:
                   key: database-url
             - name: PORT
               value: "8095"
+            # API key enforced by gotv-engine on inbound requests.
+            # Expected secret: Secret/inec-secrets, key "gotv-engine-api-key".
+            - name: GOTV_ENGINE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: inec-secrets
+                  key: gotv-engine-api-key
             - name: RUST_LOG
               value: "info"
           resources:

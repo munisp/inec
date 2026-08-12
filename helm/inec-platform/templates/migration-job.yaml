@@ -20,7 +20,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Values.global.tag }}"
           command: ["./inec-go-backend", "--migrate-only"]
           env:
             - name: DB_DRIVER

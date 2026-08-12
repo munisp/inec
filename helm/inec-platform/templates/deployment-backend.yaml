@@ -30,7 +30,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: backend
-          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Values.global.tag }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           ports:
             - containerPort: 8080
