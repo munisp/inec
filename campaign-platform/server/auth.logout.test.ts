@@ -54,7 +54,9 @@ describe("auth.logout", () => {
     expect(clearedCookies[0]?.options).toMatchObject({
       maxAge: -1,
       secure: true,
-      sameSite: "none",
+      // Session cookies default to SameSite=Lax (CSRF hardening); "none" is
+      // only used when explicitly enabled via COOKIE_SAMESITE for embeds.
+      sameSite: "lax",
       httpOnly: true,
       path: "/",
     });

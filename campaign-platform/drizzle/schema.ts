@@ -1,7 +1,8 @@
 import {
   pgTable, serial, text, varchar, integer, boolean,
-  timestamp, pgEnum, jsonb, real, date, unique
+  timestamp, pgEnum, jsonb, real, date, unique, numeric, uniqueIndex, index
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 export const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
@@ -55,7 +56,13 @@ export const candidateProfiles = pgTable("candidate_profiles", {
   isSeeded: boolean("is_seeded").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  // One profile per user; partial so Go-managed rows with NULL user_id are unaffected.
+  // Closes the getOrCreateUserProfile check-then-insert race.
+  uniqueIndex("candidate_profiles_user_id_unique")
+    .on(table.userId)
+    .where(sql`${table.userId} IS NOT NULL`),
+]);
 export type CandidateProfile = typeof candidateProfiles.$inferSelect;
 export type InsertCandidateProfile = typeof candidateProfiles.$inferInsert;
 
@@ -290,7 +297,9 @@ export const diasporaContacts = pgTable("diaspora_contacts", {
   phone: varchar("phone", { length: 30 }),
   organization: varchar("organization", { length: 200 }),
   status: statusEnum("status").default("active"),
-  pledgedAmount: real("pledged_amount").default(0),
+  // Money: exact decimal, never float. mode "number" keeps TS types compatible
+  // with existing Number() sums and numeric seed values.
+  pledgedAmount: numeric("pledged_amount", { precision: 15, scale: 2, mode: "number" }).default(0),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -315,7 +324,8 @@ export const fundraisingTransactions = pgTable("fundraising_transactions", {
   id: serial("id").primaryKey(),
   profileId: integer("profile_id").references(() => candidateProfiles.id),
   donorName: varchar("donor_name", { length: 200 }),
-  amount: real("amount").notNull(),
+  // Money: exact decimal, never float.
+  amount: numeric("amount", { precision: 15, scale: 2, mode: "number" }).notNull(),
   currency: varchar("currency", { length: 10 }).default("NGN"),
   source: varchar("source", { length: 100 }),
   category: varchar("category", { length: 100 }),
@@ -331,8 +341,9 @@ export const budgetItems = pgTable("budget_items", {
   profileId: integer("profile_id").references(() => candidateProfiles.id),
   category: varchar("category", { length: 100 }).notNull(),
   description: varchar("description", { length: 300 }).notNull(),
-  budgetedAmount: real("budgeted_amount").notNull(),
-  spentAmount: real("spent_amount").default(0),
+  // Money: exact decimal, never float.
+  budgetedAmount: numeric("budgeted_amount", { precision: 15, scale: 2, mode: "number" }).notNull(),
+  spentAmount: numeric("spent_amount", { precision: 15, scale: 2, mode: "number" }).default(0),
   priority: priorityEnum("priority").default("medium"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -410,7 +421,10 @@ export const campaignMembers = pgTable("campaign_members", {
   invitedAt: timestamp("invited_at").defaultNow().notNull(),
   acceptedAt: timestamp("accepted_at"),
   inviteToken: varchar("invite_token", { length: 64 }),
-});
+}, (table) => [
+  // Supports the per-request getMyRoleForProfile membership lookup.
+  index("campaign_members_profile_user_idx").on(table.profileId, table.userId),
+]);
 export type CampaignMember = typeof campaignMembers.$inferSelect;
 export type InsertCampaignMember = typeof campaignMembers.$inferInsert;
 

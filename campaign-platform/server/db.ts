@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { eq, desc, and, sql, gte, lte } from "drizzle-orm";
+import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
 import * as schema from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -136,11 +136,67 @@ export async function getVoterRegistrations(profileId: number) {
     .orderBy(desc(schema.voterRegistrations.registeredAt));
 }
 
-export async function addVoterRegistration(data: typeof schema.voterRegistrations.$inferInsert) {
+// ─── Bulk Import Guards ───────────────────────────────────────────────────────
+// SECURITY: bulk imports are capped at the db layer (in addition to any router-
+// level zod caps) so a single request can never force unbounded row writes,
+// and large imports are written in bounded chunks instead of one huge INSERT.
+export const MAX_BULK_IMPORT_ROWS = 500;
+export const BULK_INSERT_CHUNK_SIZE = 100;
+
+function assertBulkImportSize(rows: unknown, label: string): asserts rows is unknown[] {
+  if (!Array.isArray(rows)) {
+    throw new Error(`${label}: expected an array of rows`);
+  }
+  if (rows.length > MAX_BULK_IMPORT_ROWS) {
+    throw new Error(
+      `${label}: too many rows (${rows.length}); at most ${MAX_BULK_IMPORT_ROWS} rows are allowed per import`
+    );
+  }
+}
+
+/** drizzle transaction handles expose the same query-building API as the db object. */
+type QueryExecutor = Pick<NonNullable<ReturnType<typeof getDb>>, "insert" | "update" | "delete" | "select">;
+
+// Normalize a voter row: the column is `vin`, but legacy callers passed
+// `vinNumber`; accept either and always write to `vin`.
+function normalizeVoterRow(row: Record<string, unknown>) {
+  const { vinNumber, ...rest } = row;
+  return { ...rest, vin: (rest.vin as string | undefined) ?? (vinNumber as string | undefined) };
+}
+
+export async function addVoterRegistration(
+  data: typeof schema.voterRegistrations.$inferInsert & { vinNumber?: string }
+) {
   const db = getDb();
   if (!db) return null;
-  const rows = await db.insert(schema.voterRegistrations).values(data).returning();
+  const rows = await db
+    .insert(schema.voterRegistrations)
+    .values(normalizeVoterRow(data as Record<string, unknown>) as typeof schema.voterRegistrations.$inferInsert)
+    .returning();
   return rows[0];
+}
+
+export async function bulkAddVoterRegistrations(
+  profileId: number,
+  rows: Array<Record<string, unknown>>
+) {
+  const db = getDb();
+  if (!db) return { inserted: 0 };
+  assertBulkImportSize(rows, "voter bulk import");
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += BULK_INSERT_CHUNK_SIZE) {
+    const chunk = rows
+      .slice(i, i + BULK_INSERT_CHUNK_SIZE)
+      .filter(r => typeof r?.fullName === "string" && (r.fullName as string).trim().length > 0)
+      .map(r => ({ ...normalizeVoterRow(r), profileId }));
+    if (chunk.length === 0) continue;
+    const result = await db
+      .insert(schema.voterRegistrations)
+      .values(chunk as Array<typeof schema.voterRegistrations.$inferInsert>)
+      .returning({ id: schema.voterRegistrations.id });
+    inserted += result.length;
+  }
+  return { inserted };
 }
 
 // ─── Polling Units ──────────────────────────────────────────────────────────
@@ -173,7 +229,7 @@ export async function getPollingUnits(profileId: number) {
     .orderBy(schema.pollingUnits.name);
 }
 
-export async function upsertPollingUnit(data: {
+type PollingUnitWriteInput = {
   id?: number;
   profileId: number;
   puCode?: string;
@@ -185,13 +241,18 @@ export async function upsertPollingUnit(data: {
   agentName?: string;
   agentPhone?: string;
   status?: string;
-}) {
-  const db = getDb();
-  if (!db) return null;
+};
 
+// Shared by single-row upsert and bulk import. Runs inside whatever
+// transaction/connection the caller supplies.
+async function writePollingUnitAssignment(executor: QueryExecutor, data: PollingUnitWriteInput) {
   const code = data.puCode || data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 50);
 
-  await db
+  // SECURITY: `polling_units` is the SHARED, Go-owned national registry. A
+  // campaign write path must NEVER mutate existing registry rows (that would
+  // let any user overwrite the canonical name/voter-count/coordinates of any
+  // PU nationwide). We only insert when the PU code is genuinely absent.
+  await executor
     .insert(schema.pollingUnits)
     .values({
       code,
@@ -201,18 +262,9 @@ export async function upsertPollingUnit(data: {
       latitude: data.latitude,
       longitude: data.longitude,
     })
-    .onConflictDoUpdate({
-      target: schema.pollingUnits.code,
-      set: {
-        name: data.name,
-        ...(data.ward ? { wardCode: data.ward } : {}),
-        ...(data.registeredVoters != null ? { registeredVoters: data.registeredVoters } : {}),
-        ...(data.latitude != null ? { latitude: data.latitude } : {}),
-        ...(data.longitude != null ? { longitude: data.longitude } : {}),
-      },
-    });
+    .onConflictDoNothing({ target: schema.pollingUnits.code });
 
-  const rows = await db
+  const rows = await executor
     .insert(schema.campaignPuAssignments)
     .values({
       profileId: data.profileId,
@@ -232,6 +284,38 @@ export async function upsertPollingUnit(data: {
     .returning();
 
   return rows[0];
+}
+
+export async function upsertPollingUnit(data: PollingUnitWriteInput) {
+  const db = getDb();
+  if (!db) return null;
+
+  // The registry insert and the per-campaign assignment are one logical write:
+  // keep them atomic so a partial failure cannot leave an assignment pointing
+  // at a PU row that was never created.
+  return db.transaction(async (tx) => writePollingUnitAssignment(tx, data));
+}
+
+export async function bulkUpsertPollingUnits(profileId: number, rows: PollingUnitWriteInput[]) {
+  const db = getDb();
+  if (!db) return { upserted: 0 };
+  assertBulkImportSize(rows, "polling-unit bulk import");
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += BULK_INSERT_CHUNK_SIZE) {
+    const chunk = rows
+      .slice(i, i + BULK_INSERT_CHUNK_SIZE)
+      .filter(r => typeof r?.name === "string" && r.name.trim().length > 0)
+      .map(r => ({ ...r, profileId }));
+    if (chunk.length === 0) continue;
+    // Each chunk commits atomically; a failure rolls back only that chunk.
+    await db.transaction(async (tx) => {
+      for (const row of chunk) {
+        await writePollingUnitAssignment(tx, row);
+        upserted++;
+      }
+    });
+  }
+  return { upserted };
 }
 
 // ─── Volunteers ───────────────────────────────────────────────────────────────
@@ -653,6 +737,14 @@ export async function getOrCreateUserProfile(userId: number) {
       isSeeded: false,
       userId,
     })
+    // Closes the get-then-create race: candidate_profiles.user_id has a unique
+    // index, so a concurrent creator for the same user conflicts here and we
+    // just touch updated_at and return the existing row instead of crashing.
+    .onConflictDoUpdate({
+      target: schema.candidateProfiles.userId,
+      targetWhere: sql`${schema.candidateProfiles.userId} IS NOT NULL`,
+      set: { updatedAt: new Date() },
+    })
     .returning();
   return inserted[0];
 }
@@ -686,29 +778,32 @@ export async function seedProfileData(profileId: number): Promise<void> {
 
   const daysFromNow = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
 
-  // Clear existing data
-  await db.delete(timelineEvents).where(eq(timelineEvents.profileId, profileId));
-  await db.delete(voterRegistrations).where(eq(voterRegistrations.profileId, profileId));
-  await db.delete(volunteers).where(eq(volunteers.profileId, profileId));
-  await db.delete(volunteerTasks).where(eq(volunteerTasks.profileId, profileId));
-  await db.delete(pressReleases).where(eq(pressReleases.profileId, profileId));
-  await db.delete(socialMediaPosts).where(eq(socialMediaPosts.profileId, profileId));
-  await db.delete(complianceItems).where(eq(complianceItems.profileId, profileId));
-  await db.delete(oppositionResearch).where(eq(oppositionResearch.profileId, profileId));
-  await db.delete(warRoomIncidents).where(eq(warRoomIncidents.profileId, profileId));
-  await db.delete(electionResults).where(eq(electionResults.profileId, profileId));
-  await db.delete(manifestoSections).where(eq(manifestoSections.profileId, profileId));
-  await db.delete(diasporaContacts).where(eq(diasporaContacts.profileId, profileId));
-  await db.delete(endorsements).where(eq(endorsements.profileId, profileId));
-  await db.delete(fundraisingTransactions).where(eq(fundraisingTransactions.profileId, profileId));
-  await db.delete(budgetItems).where(eq(budgetItems.profileId, profileId));
-  await db.delete(mediaItems).where(eq(mediaItems.profileId, profileId));
-  await db.delete(debatePrepNotes).where(eq(debatePrepNotes.profileId, profileId));
-  await db.delete(debatePracticeScores).where(eq(debatePracticeScores.profileId, profileId));
-  await db.delete(stakeholderContacts).where(eq(stakeholderContacts.profileId, profileId));
-  await db.delete(fieldAgents).where(eq(fieldAgents.profileId, profileId));
-  // Don't touch `pollingUnits` — it's the shared, Go-owned national registry.
-  await db.delete(campaignPuAssignments).where(eq(campaignPuAssignments.profileId, profileId));
+  // Clear existing data. All deletes run in ONE transaction so a mid-seed
+  // failure cannot leave the profile with half its data wiped.
+  await db.transaction(async (tx) => {
+    await tx.delete(timelineEvents).where(eq(timelineEvents.profileId, profileId));
+    await tx.delete(voterRegistrations).where(eq(voterRegistrations.profileId, profileId));
+    await tx.delete(volunteers).where(eq(volunteers.profileId, profileId));
+    await tx.delete(volunteerTasks).where(eq(volunteerTasks.profileId, profileId));
+    await tx.delete(pressReleases).where(eq(pressReleases.profileId, profileId));
+    await tx.delete(socialMediaPosts).where(eq(socialMediaPosts.profileId, profileId));
+    await tx.delete(complianceItems).where(eq(complianceItems.profileId, profileId));
+    await tx.delete(oppositionResearch).where(eq(oppositionResearch.profileId, profileId));
+    await tx.delete(warRoomIncidents).where(eq(warRoomIncidents.profileId, profileId));
+    await tx.delete(electionResults).where(eq(electionResults.profileId, profileId));
+    await tx.delete(manifestoSections).where(eq(manifestoSections.profileId, profileId));
+    await tx.delete(diasporaContacts).where(eq(diasporaContacts.profileId, profileId));
+    await tx.delete(endorsements).where(eq(endorsements.profileId, profileId));
+    await tx.delete(fundraisingTransactions).where(eq(fundraisingTransactions.profileId, profileId));
+    await tx.delete(budgetItems).where(eq(budgetItems.profileId, profileId));
+    await tx.delete(mediaItems).where(eq(mediaItems.profileId, profileId));
+    await tx.delete(debatePrepNotes).where(eq(debatePrepNotes.profileId, profileId));
+    await tx.delete(debatePracticeScores).where(eq(debatePracticeScores.profileId, profileId));
+    await tx.delete(stakeholderContacts).where(eq(stakeholderContacts.profileId, profileId));
+    await tx.delete(fieldAgents).where(eq(fieldAgents.profileId, profileId));
+    // Don't touch `pollingUnits` — it's the shared, Go-owned national registry.
+    await tx.delete(campaignPuAssignments).where(eq(campaignPuAssignments.profileId, profileId));
+  });
 
   // ── Timeline Events ───────────────────────────────────────────────────────
   await db.insert(timelineEvents).values([
@@ -1006,17 +1101,43 @@ export async function inviteCampaignMember(input: {
   return { ...row, inviteToken, inviteUrl: input.origin ? `${input.origin}/join?token=${inviteToken}` : null };
 }
 
-export async function acceptCampaignInvite(token: string, userId: number) {
+export async function acceptCampaignInvite(token: string, userId: number, userEmail?: string | null) {
   const db = getDb();
   if (!db) throw new Error("DB not available");
   const [member] = await db.select().from(schema.campaignMembers)
     .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
   if (!member) throw new Error("Invalid or expired invite token");
   if (member.acceptedAt) throw new Error("Invite already accepted");
+
+  // SECURITY: bind acceptance to the invitee identity. If the invite carries an
+  // email and we know the accepting user's email, they must match — otherwise
+  // anyone holding the token could claim membership under the wrong account.
+  // If the member row has no email recorded, claim it for the accepting user.
+  const normalize = (e: string | null | undefined) => (e ?? "").trim().toLowerCase();
+  let emailToSet: string | undefined;
+  if (normalize(member.email) && normalize(userEmail)) {
+    if (normalize(member.email) !== normalize(userEmail)) {
+      throw new Error("This invite was issued to a different email address");
+    }
+  } else if (!normalize(member.email) && normalize(userEmail)) {
+    emailToSet = userEmail!.trim();
+  }
+
+  // Single conditional UPDATE closes the select-then-update race: only the
+  // first concurrent acceptance flips accepted_at from NULL and gets the row.
   const [updated] = await db.update(schema.campaignMembers)
-    .set({ userId, acceptedAt: new Date(), inviteToken: null })
-    .where(eq(schema.campaignMembers.id, member.id))
+    .set({
+      userId,
+      acceptedAt: new Date(),
+      inviteToken: null,
+      ...(emailToSet ? { email: emailToSet } : {}),
+    })
+    .where(and(
+      eq(schema.campaignMembers.inviteToken, token),
+      isNull(schema.campaignMembers.acceptedAt)
+    ))
     .returning();
+  if (!updated) throw new Error("Invite already accepted");
   return updated;
 }
 
@@ -1047,22 +1168,26 @@ export async function removeCampaignMember(memberId: number) {
 }
 
 // ─── Get current user's role for a profile ────────────────────────────────────
-export async function getMyRoleForProfile(profileId: number, userId: number): Promise<"owner" | "manager" | "viewer"> {
+// Read-only hot path: called by per-request middleware. One indexed round-trip
+// (candidate_profiles.id/user_id PK + campaign_members(profile_id, user_id)
+// index), returns null — never throws — when the user has no membership.
+export async function getMyRoleForProfile(profileId: number, userId: number): Promise<"owner" | "manager" | "viewer" | null> {
   const db = getDb();
-  if (!db) return "viewer";
-  // Check if user owns the profile
-  const profile = await db.select({ userId: schema.candidateProfiles.userId })
-    .from(schema.candidateProfiles)
-    .where(and(eq(schema.candidateProfiles.id, profileId), eq(schema.candidateProfiles.userId, userId)))
-    .limit(1);
-  if (profile.length > 0) return "owner";
-  // Check campaign_members table
-  const member = await db.select({ role: schema.campaignMembers.role })
-    .from(schema.campaignMembers)
-    .where(and(eq(schema.campaignMembers.profileId, profileId), eq(schema.campaignMembers.userId, userId)))
-    .limit(1);
-  if (member.length > 0) return member[0].role as "manager" | "viewer";
-  return "viewer";
+  if (!db) return null;
+  try {
+    const result = await db.execute(sql<{ role: string | null }>`
+      SELECT COALESCE(
+        (SELECT 'owner' FROM candidate_profiles WHERE id = ${profileId} AND user_id = ${userId} LIMIT 1),
+        (SELECT role::text FROM campaign_members WHERE profile_id = ${profileId} AND user_id = ${userId} LIMIT 1)
+      ) AS role
+    `);
+    const role = result.rows[0]?.role;
+    if (role === "owner" || role === "manager" || role === "viewer") return role;
+    return null;
+  } catch (err) {
+    console.error("[getMyRoleForProfile] lookup failed:", err);
+    return null;
+  }
 }
 
 // ─── Get single petition by ID (public) ──────────────────────────────────────

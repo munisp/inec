@@ -8,6 +8,13 @@
       "when": 1784797485060,
       "tag": "0000_married_next_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785000000000,
+      "tag": "0001_audit_money_numeric_and_indexes",
+      "breakpoints": true
     }
   ]
 }
