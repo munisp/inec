@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::env;
 
 /// PostgreSQL persistence client for volunteer/ride state.
+#[derive(Clone)]
 pub struct PersistenceLayer {
     pg_url: Option<String>,
     redis_url: Option<String>,

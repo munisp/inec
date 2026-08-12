@@ -40,6 +40,11 @@ pub struct Volunteer {
     pub vehicle_capacity: i32,
     pub is_available: bool,
     pub assigned_rides: i32,
+    // Real state code supplied at registration. INTEGRITY: coverage analysis
+    // must NOT derive "state" from ID/ward-code string prefixes — only this
+    // explicit field is used for per-state attribution.
+    #[serde(default)]
+    pub state_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +55,9 @@ pub struct PollingUnit {
     pub longitude: f64,
     pub ward_code: String,
     pub registered_voters: i32,
+    // Real state code (see Volunteer.state_code note).
+    #[serde(default)]
+    pub state_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +270,8 @@ struct CoverageAnalysis {
     total_volunteers: usize,
     total_drivers: usize,
     total_vehicle_capacity: i32,
+    // "ok" | "partial_state_codes" | "unavailable_no_state_codes"
+    coverage_status: String,
     coverage_by_state: HashMap<String, StateCoverage>,
     uncovered_pus: Vec<String>,
 }
@@ -338,6 +348,13 @@ async fn register_volunteers(
     Json(req): Json<RegisterVolunteersRequest>,
 ) -> impl IntoResponse {
     let count = req.volunteers.len();
+    // Collect positions to persist (id, lat, lng) before consuming req.
+    let positions: Vec<(String, f64, f64)> = req
+        .volunteers
+        .iter()
+        .filter(|v| v.latitude != 0.0 && v.longitude != 0.0)
+        .map(|v| (v.id.clone(), v.latitude, v.longitude))
+        .collect();
     {
         let mut vols = state.volunteers.write().unwrap();
         let entry = vols.entry(req.party_id).or_insert_with(Vec::new);
@@ -351,11 +368,23 @@ async fn register_volunteers(
         }
     }
     state.rebuild_rtree();
+
+    // Persist positions asynchronously (registration/upsert = position update).
+    let persistence = state.persistence.clone();
+    let party_id = req.party_id;
+    tokio::spawn(async move {
+        for (vol_id, lat, lng) in positions {
+            persistence.save_volunteer_position(&vol_id, party_id, lat, lng).await;
+            persistence.cache_volunteer_position(&vol_id, lat, lng).await;
+        }
+    });
     info!(party_id = req.party_id, count = count, "Registered volunteers");
 
     (StatusCode::OK, Json(serde_json::json!({
         "registered": count,
-        "party_id": req.party_id
+        "party_id": req.party_id,
+        // INTEGRITY: report honestly whether state survives a restart.
+        "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
     })))
 }
 
@@ -451,10 +480,21 @@ async fn match_ride(
     state.mw.publish_kafka("gotv.rides", req.ride_id.as_deref().unwrap_or("unknown"), &event).await;
     state.mw.stream_fluvio("gotv-ride-matches", &event).await;
 
+    // Persist the match (previously nothing was saved — match results were
+    // ephemeral despite reporting success).
+    if let (Some(ride_id), Some(best)) = (req.ride_id.clone(), results.first()) {
+        state
+            .persistence
+            .save_ride_match(&ride_id, &best.volunteer_id, best.distance_km)
+            .await;
+    }
+
     (StatusCode::OK, Json(serde_json::json!({
         "matches": results,
         "total_candidates": results.len(),
-        "polling_unit": req.polling_unit_code
+        "polling_unit": req.polling_unit_code,
+        // INTEGRITY: report honestly whether the match was persisted.
+        "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
     })))
 }
 
@@ -521,6 +561,8 @@ async fn bulk_match_rides(
         "total_requests": req.requests.len(),
         "matched": matched_count,
         "unmatched": req.requests.len() - matched_count,
+        // INTEGRITY: bulk matches are computed in memory; report persistence honestly.
+        "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
     }))
 }
 
@@ -620,66 +662,107 @@ async fn coverage_analysis(
     State(state): State<Arc<AppState>>,
     Path(party_id): Path<i64>,
 ) -> impl IntoResponse {
+    // PERFORMANCE/DoS: cap the number of polling units processed per call.
+    // Coverage check uses the R-tree spatial index: O(PU log V) instead of
+    // the previous O(PU x V) brute-force scan.
+    const MAX_COVERAGE_PUS: usize = 20_000;
+
     let vols = state.volunteers.read().unwrap();
     let pus = state.polling_units.read().unwrap();
+    let tree = state.rtree.read().unwrap();
 
     let party_vols = vols.get(&party_id).cloned().unwrap_or_default();
     let total_volunteers = party_vols.len();
     let total_drivers = party_vols.iter().filter(|v| v.has_vehicle).count();
     let total_capacity: i32 = party_vols.iter().map(|v| v.vehicle_capacity).sum();
 
-    // Coverage by state (check which PUs have a driver within 10km)
+    // INTEGRITY: per-state attribution uses ONLY explicit state_code fields on
+    // registered records. Previously the "state" was the first 5 chars of the
+    // PU ward_code / volunteer ID — garbage attribution presented as per-state
+    // coverage. When no records carry state codes, we say so honestly.
+    let pu_codes_present = pus.values().filter(|p| p.state_code.is_some()).count();
+    let vol_codes_present = party_vols.iter().filter(|v| v.state_code.is_some()).count();
+    let coverage_status = if pu_codes_present == 0 && vol_codes_present == 0 {
+        "unavailable_no_state_codes"
+    } else if pu_codes_present < pus.len() || vol_codes_present < party_vols.len() {
+        "partial_state_codes"
+    } else {
+        "ok"
+    };
+
     let mut coverage_by_state: HashMap<String, StateCoverage> = HashMap::new();
     let mut covered_pus: HashMap<String, bool> = HashMap::new();
 
-    for pu in pus.values() {
-        let pu_point = Point::new(pu.longitude, pu.latitude);
-        let state_key = pu.ward_code.get(..5).unwrap_or("UNK").to_string(); // approximate state from ward code prefix
+    if coverage_status != "unavailable_no_state_codes" {
+        for pu in pus.values().take(MAX_COVERAGE_PUS) {
+            let state_key = pu.state_code.clone().unwrap_or_else(|| "unknown".to_string());
+            let entry = coverage_by_state.entry(state_key).or_default();
+            entry.polling_units += 1;
 
-        let entry = coverage_by_state.entry(state_key).or_default();
-        entry.polling_units += 1;
-
-        for vol in &party_vols {
-            if vol.latitude == 0.0 || vol.longitude == 0.0 {
-                continue;
+            // R-tree nearest-volunteer lookup (O(log V)), then exact haversine.
+            let pickup = VolunteerPoint {
+                id: String::new(), party_id, lat: pu.latitude, lng: pu.longitude,
+                has_vehicle: false, capacity: 0, available: false,
+            };
+            let nearest = tree
+                .nearest_neighbor_iter(&pickup)
+                .find(|vp| vp.party_id == party_id && vp.available);
+            if let Some(vp) = nearest {
+                let pu_point = Point::new(pu.longitude, pu.latitude);
+                let vol_point = Point::new(vp.lng, vp.lat);
+                let dist = pu_point.haversine_distance(&vol_point) / 1000.0;
+                if dist <= 10.0 {
+                    covered_pus.insert(pu.code.clone(), true);
+                }
             }
-            let vol_point = Point::new(vol.longitude, vol.latitude);
-            let dist = pu_point.haversine_distance(&vol_point) / 1000.0;
-            if dist <= 10.0 {
-                covered_pus.insert(pu.code.clone(), true);
-                break;
+        }
+
+        // Count volunteers per real state code
+        for vol in &party_vols {
+            let state_key = vol.state_code.clone().unwrap_or_else(|| "unknown".to_string());
+            let entry = coverage_by_state.entry(state_key).or_default();
+            entry.volunteers += 1;
+            if vol.has_vehicle {
+                entry.drivers += 1;
+                entry.capacity += vol.vehicle_capacity;
+            }
+        }
+    } else {
+        // No state codes anywhere: still compute covered/uncovered PUs
+        // (geo-only, no state attribution).
+        for pu in pus.values().take(MAX_COVERAGE_PUS) {
+            let pickup = VolunteerPoint {
+                id: String::new(), party_id, lat: pu.latitude, lng: pu.longitude,
+                has_vehicle: false, capacity: 0, available: false,
+            };
+            let nearest = tree
+                .nearest_neighbor_iter(&pickup)
+                .find(|vp| vp.party_id == party_id && vp.available);
+            if let Some(vp) = nearest {
+                let pu_point = Point::new(pu.longitude, pu.latitude);
+                let vol_point = Point::new(vp.lng, vp.lat);
+                let dist = pu_point.haversine_distance(&vol_point) / 1000.0;
+                if dist <= 10.0 {
+                    covered_pus.insert(pu.code.clone(), true);
+                }
             }
         }
     }
 
     let uncovered: Vec<String> = pus
         .keys()
+        .take(MAX_COVERAGE_PUS)
         .filter(|code| !covered_pus.contains_key(*code))
         .take(100)
         .cloned()
         .collect();
-
-    // Count volunteers per approximate state
-    for vol in &party_vols {
-        // Use assigned state if available, otherwise approximate
-        let state_key = vol
-            .id
-            .get(..5)
-            .unwrap_or("UNK")
-            .to_string();
-        let entry = coverage_by_state.entry(state_key).or_default();
-        entry.volunteers += 1;
-        if vol.has_vehicle {
-            entry.drivers += 1;
-            entry.capacity += vol.vehicle_capacity;
-        }
-    }
 
     Json(CoverageAnalysis {
         party_id,
         total_volunteers,
         total_drivers,
         total_vehicle_capacity: total_capacity,
+        coverage_status: coverage_status.to_string(),
         coverage_by_state,
         uncovered_pus: uncovered,
     })
@@ -842,11 +925,17 @@ async fn check_geofence(
         .collect();
 
     if ward_pus.is_empty() {
+        // SECURITY: fail closed. A ward with no registered polling units is
+        // UNKNOWN territory — previously this returned in_zone: true, letting
+        // any volunteer claim presence in any unregistered ward.
         return Json(GeofenceResult {
-            in_zone: true,
+            in_zone: false,
             distance_to_center_km: 0.0,
             nearest_pu: String::new(),
-            alert: None,
+            alert: Some(format!(
+                "unknown_ward: no polling units registered for ward {}; cannot verify geofence",
+                req.assigned_ward
+            )),
         });
     }
 
@@ -933,6 +1022,7 @@ async fn main() {
                     vehicle_capacity: pv.vehicle_capacity,
                     is_available: pv.is_active,
                     assigned_rides: 0,
+                    state_code: None, // hydration source has no state code
                 });
             }
             info!(count = vols.len(), "Hydrated volunteers from PostgreSQL");
