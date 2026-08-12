@@ -16,11 +16,16 @@ RUN cargo build --release --locked
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 \
+    ca-certificates curl libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/services/biometric-rust/target/release/inec-biometric-vault /usr/local/bin/
 
 EXPOSE 8091
+
+# Run as an unprivileged user (hardening): the vault listens on 8091 (>1024)
+# and needs no root capabilities.
+RUN groupadd --system app && useradd --system --gid app --no-create-home app
+USER app
 
 CMD ["inec-biometric-vault"]
