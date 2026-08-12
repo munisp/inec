@@ -13,16 +13,21 @@ type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] } {
   const clearedCookies: CookieCall[] = [];
 
+  // Real `users` table shape (drizzle/schema.ts) minus passwordHash, which
+  // the request context strips (SessionUser in _core/context.ts).
   const user: AuthenticatedUser = {
     id: 1,
-    openId: "sample-user",
-    email: "sample@example.com",
-    name: "Sample User",
-    loginMethod: "manus",
+    username: "sample-user",
+    fullName: "Sample User",
     role: "user",
+    staffId: null,
+    stateCode: null,
+    lgaCode: null,
+    pollingUnitCode: null,
     createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSignedIn: new Date(),
+    isActive: 1,
+    partyId: null,
+    kycStatus: null,
   };
 
   const ctx: TrpcContext = {

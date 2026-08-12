@@ -1,1 +1,0 @@
-ALTER TABLE "simulation_runs" ADD COLUMN "label" varchar(120);
