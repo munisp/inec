@@ -125,15 +125,20 @@ function checkPublicSignAllowed(petitionId: number, ip: string, phone?: string) 
       else petitionSignLog.set(k, kept);
     });
   }
-  if (phone) {
-    const phoneKey = `p:${petitionId}:ph:${phone}`;
-    const phoneHits = pruneTimestamps(petitionSignLog.get(phoneKey) ?? [], PETITION_SIGN_PHONE_WINDOW_MS, now);
-    if (phoneHits.length > 0) {
-      throw new TRPCError({
-        code: "TOO_MANY_REQUESTS",
-        message: "This phone number has already signed this petition.",
-      });
-    }
+  // Dedup: identify the signer by phone when supplied; when it is omitted,
+  // fall back to an ip+petition key so anonymous signature stuffing is also
+  // blocked (previously the dedup was simply skipped without a phone).
+  const dedupKey = phone
+    ? `p:${petitionId}:ph:${phone}`
+    : `p:${petitionId}:ip-dedup:${ip}`;
+  const dedupHits = pruneTimestamps(petitionSignLog.get(dedupKey) ?? [], PETITION_SIGN_PHONE_WINDOW_MS, now);
+  if (dedupHits.length > 0) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: phone
+        ? "This phone number has already signed this petition."
+        : "A signature from this network was already recorded for this petition.",
+    });
   }
   const ipKey = `p:${petitionId}:ip:${ip}`;
   const ipHits = pruneTimestamps(petitionSignLog.get(ipKey) ?? [], PETITION_SIGN_IP_WINDOW_MS, now);
@@ -145,9 +150,38 @@ function checkPublicSignAllowed(petitionId: number, ip: string, phone?: string) 
   }
   ipHits.push(now);
   petitionSignLog.set(ipKey, ipHits);
-  if (phone) {
-    petitionSignLog.set(`p:${petitionId}:ph:${phone}`, [now]);
+  petitionSignLog.set(dedupKey, [now]);
+}
+
+// ─── LLM cost-abuse limiter ──────────────────────────────────────────────────
+// SECURITY: per-user sliding-window cap on AI endpoints (same in-memory
+// sliding-window pattern as the login throttle in _core/localAuth.ts). LLM
+// calls cost real money; without a per-user ceiling any authenticated account
+// could run up unbounded spend. Per-process state — a multi-replica
+// deployment should move this to a shared store (e.g. Redis).
+const LLM_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const LLM_MAX_CALLS_PER_USER = 20;
+const llmCallLog = new Map<number, number[]>();
+
+function assertLlmCallAllowed(userId: number) {
+  const now = Date.now();
+  // Opportunistic sweep so the map cannot grow unboundedly.
+  if (llmCallLog.size > 10_000) {
+    llmCallLog.forEach((v, k) => {
+      const kept = pruneTimestamps(v, LLM_WINDOW_MS, now);
+      if (kept.length === 0) llmCallLog.delete(k);
+      else llmCallLog.set(k, kept);
+    });
   }
+  const hits = pruneTimestamps(llmCallLog.get(userId) ?? [], LLM_WINDOW_MS, now);
+  if (hits.length >= LLM_MAX_CALLS_PER_USER) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: `AI usage limit reached (${LLM_MAX_CALLS_PER_USER} requests/hour). Please try again later.`,
+    });
+  }
+  hits.push(now);
+  llmCallLog.set(userId, hits);
 }
 
 export const appRouter = router({
@@ -244,6 +278,8 @@ export const appRouter = router({
     bulkImport: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
+        // SECURITY: bound the array (also enforced at the db layer) and write
+        // in bounded chunks via the db bulk path instead of per-row INSERTs.
         rows: z.array(z.object({
           fullName: z.string(),
           vin: z.string().optional(),
@@ -251,18 +287,9 @@ export const appRouter = router({
           ward: z.string().optional(),
           pollingUnit: z.string().optional(),
           phone: z.string().optional(),
-        })),
+        })).max(db.MAX_BULK_IMPORT_ROWS),
       }))
-      .mutation(async ({ input }) => {
-        let inserted = 0;
-        for (const row of input.rows) {
-          if (!row.fullName?.trim()) continue;
-          // FIX: pass `vin` (real column), not the non-existent `vinNumber`.
-          await db.addVoterRegistration({ profileId: input.profileId, fullName: row.fullName, vin: row.vin, lga: row.lga, ward: row.ward, pollingUnit: row.pollingUnit, phone: row.phone } as any);
-          inserted++;
-        }
-        return { inserted };
-      }),
+      .mutation(({ input }) => db.bulkAddVoterRegistrations(input.profileId, input.rows)),
   }),
   // ─── Polling Units ─────────────────────────────────────────────────────────
   pollingUnits: router({
@@ -289,6 +316,8 @@ export const appRouter = router({
     bulkImport: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
+        // SECURITY: bound the array (also enforced at the db layer) and write
+        // in bounded, transactional chunks via the db bulk path.
         rows: z.array(z.object({
           puCode: z.string().optional(),
           name: z.string(),
@@ -297,16 +326,12 @@ export const appRouter = router({
           latitude: z.number().optional(),
           longitude: z.number().optional(),
           registeredVoters: z.number().optional(),
-        })),
+        })).max(db.MAX_BULK_IMPORT_ROWS),
       }))
       .mutation(async ({ input }) => {
-        let inserted = 0;
-        for (const row of input.rows) {
-          if (!row.name?.trim()) continue;
-          await db.upsertPollingUnit({ profileId: input.profileId, ...row } as any);
-          inserted++;
-        }
-        return { inserted };
+        const { upserted } = await db.bulkUpsertPollingUnits(input.profileId, input.rows);
+        // Keep the historical response key (`inserted`) for the client.
+        return { inserted: upserted };
       }),
   }),
   // ─── Volunteers ────────────────────────────────────────────────────────────
@@ -376,6 +401,7 @@ export const appRouter = router({
         tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const name = profile?.candidateName ?? "The Candidate";
         const party = profile?.partyName ?? "The Party";
@@ -428,6 +454,7 @@ export const appRouter = router({
         tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const candidate = profile?.candidateName ?? "The Candidate";
         const party = profile?.partyName ?? "The Party";
@@ -497,6 +524,7 @@ export const appRouter = router({
         threatLevel: z.string().max(20).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const candidate = profile?.candidateName ?? "Our candidate";
         const response = await invokeLLM({
@@ -679,7 +707,9 @@ export const appRouter = router({
       .input(z.object({ petitionId: z.number() }))
       .query(async ({ input }) => {
         const petition = await db.getPetitionById(input.petitionId);
-        if (!petition) return null;
+        // SECURITY: drafts are not public — only active/closed petitions may
+        // be viewed through the unauthenticated endpoint.
+        if (!petition || petition.status === "draft") return null;
         const count = await db.getPetitionSignatureCount(input.petitionId);
         return { ...petition, signatureCount: count };
       }),
@@ -695,13 +725,25 @@ export const appRouter = router({
         // (it was silently discarded). Zod strips unknown keys, so older
         // clients sending it keep working.
       }))
-      .mutation(({ ctx, input }) => {
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: the petition must exist and be signable — previously a
+        // missing petition surfaced as an FK violation (HTTP 500) and drafts
+        // were silently signable.
+        const petition = await db.getPetitionById(input.petitionId);
+        if (!petition) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Petition not found" });
+        }
+        if (petition.status !== "active") {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "This petition is not open for signatures",
+          });
+        }
         // SECURITY: in-memory dedup + per-IP rate limit against signature
-        // stuffing (see note at petitionSignLog — per-process only).
-        const fwd = ctx.req.headers["x-forwarded-for"];
-        const ip = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim()
-          || ctx.req.socket?.remoteAddress
-          || "unknown";
+        // stuffing (see note at petitionSignLog — per-process only). req.ip is
+        // trustworthy because the app sets `trust proxy` (see _core/index.ts);
+        // never parse x-forwarded-for by hand.
+        const ip = ctx.req.ip || ctx.req.socket?.remoteAddress || "unknown";
         checkPublicSignAllowed(input.petitionId, ip, input.signerPhone);
         return db.addPetitionSignature({
           petitionId: input.petitionId,
@@ -750,7 +792,8 @@ export const appRouter = router({
         partyName: z.string().max(100).optional(),
         keyMessage: z.string().max(2000).optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
         const systemPrompt = `You are a Nigerian political campaign communications specialist. Write personalised outreach messages for diaspora Nigerians. Be warm, specific, and compelling. Keep WhatsApp messages under 300 words and emails under 400 words.`;
         const userPrompt = `Write a ${input.messageType === "whatsapp" ? "WhatsApp" : "professional email"} message to ${input.contactName} in ${input.city ? input.city + ", " : ""}${input.country}.
 Candidate: ${input.candidateName || "our candidate"}
@@ -893,8 +936,9 @@ Make it personal, specific to their location, and include a clear call to action
         candidateName: z.string().max(200).optional(),
         partyName: z.string().max(100).optional(),
       }))
-      .mutation(async ({ input }) => {
-        const systemPrompt = `You are an expert Nigerian political debate coach preparing a candidate for a gubernatorial/senatorial debate. 
+      .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
+        const systemPrompt = `You are an expert Nigerian political debate coach preparing a candidate for a gubernatorial/senatorial debate.
 Generate structured debate preparation material in a professional, confident tone appropriate for Nigerian political discourse.`;
         const userPrompt = `Prepare debate material for ${input.candidateName || "our candidate"} (${input.partyName || "our party"}) on the topic: "${input.topic}".
 ${input.opponentName ? `Opponent: ${input.opponentName}` : ""}
@@ -1020,7 +1064,8 @@ Format with clear headers. Be specific to Nigerian political context.`;
         modelConfidence: z.number(),
         disruptions: z.array(z.string().max(200)).max(20),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
         const promptLines = [
           "You are an election analyst for Nigeria. Summarise this Monte Carlo simulation result in 2-3 plain-English sentences for a campaign team briefing. Be specific about the numbers and actionable in your recommendation. Do not use bullet points.",
           "",
@@ -1066,7 +1111,15 @@ Format with clear headers. Be specific to Nigerian political context.`;
     // SECURITY: tenancy enforced — membership management is owner/manager only.
     list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
-      .query(({ input }) => db.getCampaignMembers(input.profileId)),
+      .query(async ({ ctx, input }) => {
+        // SECURITY: getCampaignMembers already omits invite_token. Emails are
+        // masked for viewers; only owner/manager see full addresses.
+        const members = await db.getCampaignMembers(input.profileId);
+        if (ctx.profileRole === "owner" || ctx.profileRole === "manager") {
+          return members;
+        }
+        return members.map(m => ({ ...m, email: maskEmail(m.email) }));
+      }),
     myRole: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       // The tenancy middleware already resolved (and verified) the caller's
@@ -1150,16 +1203,20 @@ The invitee can use this link to join the campaign team.`,
   }),
   notifications: router({
     // Get current heartbeat job status for deadline alerts
-    status: protectedProcedure.query(async ({ ctx }) => {
-      try {
-        const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
-        const jobs = await listHeartbeatJobs(sessionToken);
-        const alertJob = jobs.jobs.find(j => j.name.startsWith("deadline-alerts-"));
-        return { enabled: !!alertJob?.isEnable, job: alertJob ?? null };
-      } catch {
-        return { enabled: false, job: null };
-      }
-    }),
+    // SECURITY: profile-scoped — previously returned the FIRST
+    // deadline-alerts-* job regardless of which profile it belonged to.
+    status: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        try {
+          const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+          const jobs = await listHeartbeatJobs(sessionToken);
+          const alertJob = jobs.jobs.find(j => j.name.startsWith(`deadline-alerts-${input.profileId}-`));
+          return { enabled: !!alertJob?.isEnable, job: alertJob ?? null };
+        } catch {
+          return { enabled: false, job: null };
+        }
+      }),
     // Enable deadline alert notifications
     // SECURITY: tenancy enforced — only owner/manager may create cron jobs for
     // a profile (the job payload carries that profileId).
@@ -1224,6 +1281,7 @@ The invitee can use this link to join the campaign team.`,
         tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const name = profile?.candidateName ?? "The Candidate";
         const party = profile?.partyName ?? "The Party";
@@ -1262,7 +1320,13 @@ Produce only the manifesto section text, no commentary.`;
         profileId: z.number(),
         title: z.string(),
         description: z.string().optional(),
-        taskType: z.enum(["canvassing", "polling_unit", "data_entry", "logistics", "social_media", "security", "other"]).optional(),
+        // FIX: align with the PG enum volunteer_task_type (schema.ts) — it has
+        // "media", not "social_media". Older clients still send the legacy
+        // value, so accept it and map it to "media" server-side.
+        taskType: z.union([
+          z.enum(["canvassing", "polling_unit", "data_entry", "logistics", "security", "media", "other"]),
+          z.literal("social_media").transform(() => "media" as const),
+        ]).optional(),
         status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
         volunteerId: z.number().optional(),
         dueDate: z.string().optional(),

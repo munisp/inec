@@ -330,7 +330,10 @@ export async function upsertPollingUnit(data: PollingUnitWriteInput) {
   return db.transaction(async (tx) => writePollingUnitAssignment(tx, data));
 }
 
-export async function bulkUpsertPollingUnits(profileId: number, rows: PollingUnitWriteInput[]) {
+export async function bulkUpsertPollingUnits(
+  profileId: number,
+  rows: Array<Omit<PollingUnitWriteInput, "id" | "profileId">>,
+) {
   const db = getDb();
   if (!db) return { upserted: 0 };
   assertBulkImportSize(rows, "polling-unit bulk import");

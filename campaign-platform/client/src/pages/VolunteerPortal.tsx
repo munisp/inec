@@ -13,7 +13,9 @@ import { ArrowLeft, Users, Plus, Loader2, ClipboardList, CheckCircle2, Clock, XC
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts";
 
 type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
-type TaskType = "canvassing" | "polling_unit" | "data_entry" | "logistics" | "security" | "social_media" | "other";
+// Aligned with the PG enum volunteer_task_type (drizzle/schema.ts): the value
+// is "media" — the old "social_media" never matched a database enum value.
+type TaskType = "canvassing" | "polling_unit" | "data_entry" | "logistics" | "security" | "media" | "other";
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   pending: "#F59E0B", in_progress: "#1A3A5C", completed: "#008751", cancelled: "#9CA3AF",
@@ -333,7 +335,7 @@ export default function VolunteerPortal() {
                   <SelectItem value="data_entry">Data Entry</SelectItem>
                   <SelectItem value="logistics">Logistics</SelectItem>
                   <SelectItem value="security">Security</SelectItem>
-                  <SelectItem value="social_media">Media</SelectItem>
+                  <SelectItem value="media">Media</SelectItem>
                   <SelectItem value="other">Other</SelectItem>
                 </SelectContent>
               </Select>

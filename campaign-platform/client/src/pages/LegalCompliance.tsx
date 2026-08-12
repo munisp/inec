@@ -29,7 +29,10 @@ const CATEGORIES = ["Financial","Campaign Materials","Rallies & Events","Digital
 
 export default function LegalCompliance() {
   const { profileId , canEdit, canDelete } = useCandidateProfile();
-  const { data: notifStatus, refetch: refetchNotif } = trpc.notifications.status.useQuery(undefined, { refetchInterval: 30000 });
+  const { data: notifStatus, refetch: refetchNotif } = trpc.notifications.status.useQuery(
+    { profileId: profileId! },
+    { enabled: !!profileId, refetchInterval: 30000 },
+  );
   const enableNotifMut = trpc.notifications.enable.useMutation({ onSuccess: () => { refetchNotif(); toast.success("Deadline alerts enabled — daily at 08:00 UTC"); } });
   const disableNotifMut = trpc.notifications.disable.useMutation({ onSuccess: () => { refetchNotif(); toast.success("Deadline alerts disabled"); } });
   const testAlertMut = trpc.notifications.testAlert.useMutation({ onSuccess: (d) => toast.success(d.count > 0 ? `Test alert sent — ${d.count} upcoming deadline(s)` : "Test alert sent — no upcoming deadlines") });
