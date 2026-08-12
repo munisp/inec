@@ -92,3 +92,15 @@ fabric/identities/
 fabric/connection-profiles/*.json
 !fabric/connection-profiles/*.example.json
 fabric-client-identity/
+
+# --- Production hardening (2026-08-12) ---
+# Database dumps / backups (PII risk). Legitimate schema .sql files are unaffected.
+*.sql.gz
+# Compressed archives (backups, toolchain tarballs, etc.)
+*.tar.gz
+# Local environment files; examples remain tracked.
+.env.*
+!.env.example
+!.env.*.example
+# Accidental "copy" directory duplicates
+* copy/
