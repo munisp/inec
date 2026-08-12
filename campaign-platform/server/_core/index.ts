@@ -14,6 +14,13 @@ import { closeDb, getAllProfiles } from "../db";
 import { sdk } from "./sdk";
 import { notifyOwner } from "./notification";
 import { assertProfileRole } from "./trpc";
+import { logger } from "./logger";
+import {
+  metricsAuthGuard,
+  metricsMiddleware,
+  recordTrpcError,
+  renderMetrics,
+} from "./metrics";
 import {
   SSE_MAX_CLIENTS,
   SSE_MAX_STREAMS_PER_USER,
@@ -58,8 +65,18 @@ async function startServer() {
   // go through the storage proxy, not the JSON body.
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ limit: "2mb", extended: true }));
+  // Request metrics + structured access log (registered before the routes so
+  // every response is timed).
+  app.use(metricsMiddleware());
   registerStorageProxy(app);
   registerLocalAuthRoutes(app);
+
+  // Prometheus-style metrics. Guarded by METRICS_BEARER_TOKEN; fails closed
+  // in production when the token is unset (see _core/metrics.ts).
+  app.get("/metrics", metricsAuthGuard, (_req, res) => {
+    res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+    res.send(renderMetrics());
+  });
 
   // Liveness/readiness probe: actually verify the database instead of always
   // returning ok. 503 when the DB is missing, unreachable, or slow (>2s).
@@ -76,9 +93,12 @@ async function startServer() {
           setTimeout(() => reject(new Error("health check timed out")), 2000)
         ),
       ]);
-      res.json({ status: "ok" });
+      // Report the in-process SSE client count so operators can see the war
+      // room stream load (and the single-process SSE limitation) on the same
+      // probe they already scrape.
+      res.json({ status: "ok", sseClients: sseClientCount() });
     } catch (err) {
-      console.error("[health] database check failed:", err);
+      logger.error("health: database check failed", { err });
       res.status(503).json({ status: "error", reason: "database unreachable" });
     }
   });
@@ -127,7 +147,7 @@ async function startServer() {
 
       return res.json({ ok: true, notified });
     } catch (err) {
-      console.error("[deadline-check]", err);
+      logger.error("deadline-check failed", { err });
       return res.status(500).json({
         error: String(err),
         timestamp: new Date().toISOString(),
@@ -180,8 +200,13 @@ async function startServer() {
       router: appRouter,
       createContext,
       onError({ path, error }) {
-        console.error(`[tRPC] ${path ?? "<unknown>"} failed:`, error);
-        if (error.cause) console.error("[tRPC] cause:", error.cause);
+        recordTrpcError(path ?? "<unknown>", error.code);
+        logger.error("tRPC procedure failed", {
+          route: path ?? "<unknown>",
+          code: error.code,
+          err: error,
+          cause: error.cause ? String(error.cause) : undefined,
+        });
       },
     })
   );
@@ -196,11 +221,11 @@ async function startServer() {
   const port = await findAvailablePort(preferredPort);
 
   if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+    logger.info("preferred port busy, using fallback", { preferredPort, port });
   }
 
   server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+    logger.info("server running", { port, env: process.env.NODE_ENV ?? "development" });
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
@@ -210,11 +235,11 @@ async function startServer() {
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[Server] ${signal} received — shutting down gracefully`);
-    server.close(() => console.log("[Server] HTTP listener closed"));
+    logger.info("shutdown signal received — shutting down gracefully", { signal });
+    server.close(() => logger.info("HTTP listener closed"));
     destroyAllSseClients();
     void closeDb()
-      .catch(err => console.error("[Server] failed to close DB pool:", err))
+      .catch(err => logger.error("failed to close DB pool", { err }))
       .finally(() => process.exit(0));
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -224,6 +249,6 @@ async function startServer() {
 // A boot failure must exit non-zero — previously the rejection was only
 // logged, leaving the process alive with exit code 0 and no listener.
 startServer().catch(err => {
-  console.error("[Server] failed to start:", err);
+  logger.error("server failed to start", { err });
   process.exit(1);
 });

@@ -1,1 +1,0 @@
-ALTER TABLE "timeline_events" ADD COLUMN "last_alerted_at" timestamp;

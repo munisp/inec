@@ -1,6 +1,7 @@
 import {
   pgTable, serial, text, varchar, integer, boolean,
-  timestamp, pgEnum, jsonb, real, date, unique, numeric, uniqueIndex, index
+  timestamp, pgEnum, jsonb, real, date, unique, numeric, uniqueIndex, index,
+  primaryKey
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -485,3 +486,17 @@ export const stakeholderContacts = pgTable("stakeholder_contacts", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 export type StakeholderContact = typeof stakeholderContacts.$inferSelect;
+
+// ─── Rate Limits (shared, Postgres-backed) ───────────────────────────────────
+// Fixed-window counters backing server/_core/rateLimit.ts (login throttle,
+// LLM per-user cap, public petition-sign dedup). Postgres is the shared store
+// so limits hold across processes, replicas, and restarts — the in-memory
+// fallback is non-production only.
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").notNull(),
+  windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+  count: integer("count").notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.key, table.windowStart] }),
+]);
+export type RateLimit = typeof rateLimits.$inferSelect;
