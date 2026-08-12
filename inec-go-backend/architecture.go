@@ -18,8 +18,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"inec-go-backend/internal/circuit"
@@ -299,28 +301,72 @@ func publishEvent(eventType, source string, data map[string]interface{}) {
 
 // ── X-Forwarded-For aware IP extraction ──
 // Fixes the rate limiter IP extraction to work behind load balancers.
+//
+// SECURITY: XFF / X-Real-IP are client-spoofable. They are honored ONLY when
+// the immediate peer (r.RemoteAddr) is inside TRUSTED_PROXY_CIDRS
+// (comma-separated CIDRs, e.g. "10.0.0.0/8,172.16.0.0/12"). Otherwise the
+// real RemoteAddr is used, so a direct client cannot defeat rate limiting by
+// forging headers.
+
+var trustedProxyCIDRs = parseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+
+func parseTrustedProxyCIDRs(env string) []*net.IPNet {
+	var cidrs []*net.IPNet
+	for _, part := range strings.Split(env, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, cidr, err := net.ParseCIDR(part)
+		if err != nil {
+			log.Warn().Str("cidr", part).Msg("ignoring invalid TRUSTED_PROXY_CIDRS entry")
+			continue
+		}
+		cidrs = append(cidrs, cidr)
+	}
+	return cidrs
+}
+
+// remoteAddrIsTrustedProxy reports whether the immediate peer is a trusted proxy.
+func remoteAddrIsTrustedProxy(r *http.Request) bool {
+	if len(trustedProxyCIDRs) == 0 {
+		return false
+	}
+	ip := net.ParseIP(stripPort(r.RemoteAddr))
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range trustedProxyCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For (set by load balancers/CDNs)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (client's real IP before any proxies)
-		// X-Forwarded-For: client, proxy1, proxy2
-		parts := splitTrim(xff, ",")
-		if len(parts) > 0 {
-			ip := parts[0]
-			// Validate it looks like an IP (prevent header injection)
-			if isValidIP(ip) {
-				return ip
+	if remoteAddrIsTrustedProxy(r) {
+		// Check X-Forwarded-For (set by trusted load balancers/CDNs)
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Take the first IP (client's real IP before any proxies)
+			// X-Forwarded-For: client, proxy1, proxy2
+			parts := splitTrim(xff, ",")
+			if len(parts) > 0 {
+				ip := parts[0]
+				// Validate it looks like an IP (prevent header injection)
+				if isValidIP(ip) {
+					return ip
+				}
+			}
+		}
+		// Check X-Real-IP (set by trusted nginx)
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			if isValidIP(xri) {
+				return xri
 			}
 		}
 	}
-	// Check X-Real-IP (set by nginx)
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if isValidIP(xri) {
-			return xri
-		}
-	}
-	// Fall back to RemoteAddr
+	// Fall back to RemoteAddr (direct client or untrusted proxy)
 	return stripPort(r.RemoteAddr)
 }
 
