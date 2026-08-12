@@ -60,7 +60,8 @@ venv/
 
 # Rust
 target/
-Cargo.lock
+# Cargo.lock is intentionally tracked: these services are binaries and
+# CI runs cargo check --locked for reproducible builds.
 
 # Build artifacts
 *.o
