@@ -323,7 +323,9 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 		FROM results r JOIN polling_units pu ON r.polling_unit_code=pu.code
 		WHERE r.election_id=?`, electionID)
 	if err != nil {
-		writeJSON(w, 200, M{"anomalies": []M{}, "total_analyzed": 0, "error": "query failed"})
+		// INTEGRITY: a failed query is not "zero anomalies" — consumers must
+		// see an explicit server error, not an empty clean bill of health.
+		writeError(w, http.StatusInternalServerError, "anomaly query failed")
 		return
 	}
 	defer func() {
@@ -384,6 +386,21 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 		benfordChi2, _, _ := computeBenfordsLaw(allVotes)
 		benfordDeviation := math.Round(benfordChi2*1000) / 1000
 
+		// INTEGRITY: regional mean turnout is computed from the actual results
+		// in this election (mean of valid/registered across all PUs) instead of
+		// the previous hardcoded 0.55 constant presented as per-PU analysis.
+		regionalMeanTurnout := 0.0
+		turnoutSamples := 0
+		for _, rec := range records {
+			if rec.registered > 0 {
+				regionalMeanTurnout += float64(rec.valid) / float64(rec.registered)
+				turnoutSamples++
+			}
+		}
+		if turnoutSamples > 0 {
+			regionalMeanTurnout /= float64(turnoutSamples)
+		}
+
 		batchPayload := make([]M, 0, len(records))
 		for _, rec := range records {
 			// Pull actual party votes if available; otherwise flag as pending
@@ -413,16 +430,18 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 			}
 
 			batchPayload = append(batchPayload, M{
-				"registered_voters":      rec.registered,
-				"accredited_voters":      rec.accred,
-				"total_valid_votes":      rec.valid,
-				"rejected_votes":         rec.rejected,
-				"party_a_votes":          partyAVotes,
-				"party_b_votes":          partyBVotes,
-				"party_data_status":      map[bool]string{true: "available", false: "pending_data"}[len(pd) == 0],
-				"submission_delay_hours": 3.0,
-				"regional_mean_turnout":  0.55,
-				"benford_deviation":      benfordDeviation,
+				"registered_voters":     rec.registered,
+				"accredited_voters":     rec.accred,
+				"total_valid_votes":     rec.valid,
+				"rejected_votes":        rec.rejected,
+				"party_a_votes":         partyAVotes,
+				"party_b_votes":         partyBVotes,
+				"party_data_status":     map[bool]string{true: "available", false: "pending_data"}[len(pd) == 0],
+				"regional_mean_turnout": math.Round(regionalMeanTurnout*10000) / 10000,
+				"benford_deviation":     benfordDeviation,
+				// INTEGRITY: submission_delay_hours is omitted — the schema does
+				// not record a poll-close timestamp to compute a real delay, so
+				// no constant is fabricated. Response is marked features=partial.
 			})
 		}
 
@@ -485,11 +504,13 @@ func handleAIAnomalies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"anomalies":       anomalies,
-		"total_analyzed":  len(records),
-		"total_anomalies": len(anomalies),
-		"model_used":      "xgboost-onnx-v1.0",
-		"summary":         summary,
+		"anomalies":        anomalies,
+		"total_analyzed":   len(records),
+		"total_anomalies":  len(anomalies),
+		"model_used":       "xgboost-onnx-v1.0",
+		"summary":          summary,
+		"features":         "partial",
+		"features_omitted": []string{"submission_delay_hours"},
 	})
 }
 

@@ -20,6 +20,7 @@ package main
 //   - Supports USSD fallback for feature phones
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -97,6 +98,87 @@ var ivrPrompts = map[string]map[string]string{
 		"yo": "Ijabọ iṣẹlẹ rẹ ti gbasilẹ. Nọmba itọkasi: %s. E dupe fun iranlọwọ rẹ ni aabo ijọba tiwantiwa Nigeria.",
 		"ig": "Akọwapụtara akụkọ ihe mere gị. Nọmba ntụaka: %s. Daalụ maka inyere aka ichekwa ọchịchọ onye kwuo uche ya nke Naịjirịa.",
 	},
+}
+
+// serviceUnavailablePrompts is played when the voter registry cannot be queried.
+var serviceUnavailablePrompts = map[string]string{
+	"en": "This service is temporarily unavailable. Please try again later.",
+	"ha": "Wannan sabis na wucin gadi ba ya aiki yanzu. Da fatan za a sake gwadawa daga baya.",
+	"yo": "Iṣẹ yii ko wa fun igba diẹ. Jọwọ gbiyanju lẹẹkansi nigbamii.",
+	"ig": "Ọrụ a anaghị arụ ọrụ ugbu a. Biko nwaa ọzọ ma e mechaa.",
+}
+
+// lookupVoterPU queries the voter registry for a voter's polling unit by NIN
+// or by voter card number (PVC number / VIN). INTEGRITY: this is a real
+// registry lookup — found=false means no registration exists, and err!=nil
+// means the lookup itself failed and the caller must say so honestly.
+func lookupVoterPU(byNIN bool, value string) (puCode, puName, wardName string, found bool, err error) {
+	if db == nil {
+		return "", "", "", false, fmt.Errorf("voter registry unavailable")
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", "", false, nil
+	}
+	where := "v.nin = $1"
+	if !byNIN {
+		where = "(v.pvc_number = $1 OR v.vin = $1)"
+	}
+	row := db.QueryRow(`SELECT v.polling_unit_code, COALESCE(pu.name,''), COALESCE(w.name, v.ward_code)
+		FROM voters v
+		LEFT JOIN polling_units pu ON pu.code = v.polling_unit_code
+		LEFT JOIN wards w ON w.code = v.ward_code
+		WHERE `+where, value) // #nosec G201 -- 'where' is a hardcoded literal from the branch above, value is parameterized
+	err = row.Scan(&puCode, &puName, &wardName)
+	if err == sql.ErrNoRows {
+		return "", "", "", false, nil
+	}
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return puCode, puName, wardName, true, nil
+}
+
+// lookupVoterRegistration returns a voter's registration status and location
+// by voter card number (PVC / VIN). Never reports a confirmation without a row.
+func lookupVoterRegistration(value string) (status, wardName, lgaCode string, found bool, err error) {
+	if db == nil {
+		return "", "", "", false, fmt.Errorf("voter registry unavailable")
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", "", false, nil
+	}
+	err = db.QueryRow(`SELECT v.status, COALESCE(w.name, v.ward_code), v.lga_code
+		FROM voters v
+		LEFT JOIN wards w ON w.code = v.ward_code
+		WHERE v.pvc_number = $1 OR v.vin = $1`, value).Scan(&status, &wardName, &lgaCode)
+	if err == sql.ErrNoRows {
+		return "", "", "", false, nil
+	}
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return status, wardName, lgaCode, true, nil
+}
+
+// persistIVRIncident writes a voter-reported incident to the incidents table
+// and returns its reference ID. A non-nil error means the report was NOT
+// recorded — callers must not claim it was.
+func persistIVRIncident(incidentType, description, severity string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("database unavailable")
+	}
+	var electionID int
+	if err := db.QueryRow(`SELECT id FROM elections ORDER BY election_date DESC, id DESC LIMIT 1`).Scan(&electionID); err != nil {
+		return "", fmt.Errorf("no election context for incident report: %w", err)
+	}
+	var id int64
+	if err := db.QueryRow(`INSERT INTO incidents (election_id, incident_type, description, severity)
+		VALUES ($1, $2, $3, $4) RETURNING id`, electionID, incidentType, description, severity).Scan(&id); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("INC-%d", id), nil
 }
 
 // IVRStartHandler — initiates a new IVR session (called by telephony platform).
@@ -178,18 +260,29 @@ func IVRActionHandler(w http.ResponseWriter, r *http.Request) {
 		session.State = "lookup_vin"
 
 	case "3": // Report incident
-		incidentID := fmt.Sprintf("INC-%d", time.Now().UnixMilli())
-		ivrIncidents = append(ivrIncidents, IVRIncidentReport{
-			ID:          incidentID,
-			CallerPhone: session.CallerPhone,
-			Language:    lang,
-			Severity:    "medium",
-			ReportedAt:  time.Now(),
-		})
-		resp = IVRResponse{
-			Action:   "say",
-			Text:     fmt.Sprintf(ivrPrompts["incident_received"][lang], incidentID),
-			Language: lang,
+		// INTEGRITY: persist the report to the incidents table; only confirm
+		// receipt when the row actually exists.
+		incidentID, err := persistIVRIncident("ivr_report", "incident reported via IVR by "+session.CallerPhone, "medium")
+		if err != nil {
+			log.Error().Err(err).Msg("IVR incident persistence failed")
+			resp = IVRResponse{
+				Action:   "say",
+				Text:     serviceUnavailablePrompts[lang],
+				Language: lang,
+			}
+		} else {
+			ivrIncidents = append(ivrIncidents, IVRIncidentReport{
+				ID:          incidentID,
+				CallerPhone: session.CallerPhone,
+				Language:    lang,
+				Severity:    "medium",
+				ReportedAt:  time.Now(),
+			})
+			resp = IVRResponse{
+				Action:   "say",
+				Text:     fmt.Sprintf(ivrPrompts["incident_received"][lang], incidentID),
+				Language: lang,
+			}
 		}
 
 	case "4": // Election results
@@ -216,19 +309,33 @@ func IVRActionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
-		// Handle NIN/VIN lookup responses
+		// Handle NIN/VIN lookup responses against the real voter registry.
+		// INTEGRITY: never invent a polling unit — a lookup failure is stated
+		// honestly and a missing registration says "not found".
 		if session.State == "lookup_nin" || session.State == "lookup_vin" {
-			// Simulate voter lookup (production: query INEC voter registry)
-			if len(action.Input) >= 8 {
+			puCode, puName, wardName, found, err := lookupVoterPU(session.State == "lookup_nin", action.Input)
+			switch {
+			case err != nil:
+				log.Error().Err(err).Str("state", session.State).Msg("IVR voter lookup failed")
 				resp = IVRResponse{
 					Action:   "say",
-					Text:     fmt.Sprintf(ivrPrompts["polling_unit_found"][lang], "PU-001-Lagos-Island", "25 Broad Street, Lagos Island"),
+					Text:     serviceUnavailablePrompts[lang],
 					Language: lang,
 				}
-			} else {
+			case !found:
 				resp = IVRResponse{
 					Action:   "say",
 					Text:     ivrPrompts["not_registered"][lang],
+					Language: lang,
+				}
+			default:
+				label := puName
+				if label == "" {
+					label = puCode
+				}
+				resp = IVRResponse{
+					Action:   "say",
+					Text:     fmt.Sprintf(ivrPrompts["polling_unit_found"][lang], label, wardName),
 					Language: lang,
 				}
 			}
@@ -279,16 +386,47 @@ func USSDHandler(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "1" && level == 1:
 		response = "CON Enter your NIN (11 digits):"
 	case parts[0] == "1" && level == 2:
-		response = fmt.Sprintf("END Your polling unit: PU-001-Lagos-Island\nLocation: 25 Broad Street, Lagos Island\nVoting: 8am - 5pm")
+		// INTEGRITY: real registry lookup — no hardcoded polling unit.
+		puCode, puName, wardName, found, err := lookupVoterPU(true, parts[1])
+		switch {
+		case err != nil:
+			log.Error().Err(err).Msg("USSD NIN lookup failed")
+			response = "END Service unavailable, please try again later."
+		case !found:
+			response = "END No registration found for that NIN. Please visit your nearest INEC office with your National ID."
+		default:
+			label := puName
+			if label == "" {
+				label = puCode
+			}
+			response = fmt.Sprintf("END Your polling unit: %s\nWard: %s\nVoting: 8am - 5pm", label, wardName)
+		}
 	case parts[0] == "2" && level == 1:
 		response = "CON Enter your Voter Card Number:"
 	case parts[0] == "2" && level == 2:
-		response = "END Registration confirmed. You are registered at Ward 5, Lagos Island LGA."
+		// INTEGRITY: only confirm a registration when a real row exists.
+		status, wardName, lgaCode, found, err := lookupVoterRegistration(parts[1])
+		switch {
+		case err != nil:
+			log.Error().Err(err).Msg("USSD voter-card lookup failed")
+			response = "END Service unavailable, please try again later."
+		case !found:
+			response = "END No registration found for that voter card number."
+		default:
+			response = fmt.Sprintf("END Registration found (status: %s). Ward: %s, LGA: %s.", status, wardName, lgaCode)
+		}
 	case parts[0] == "3" && level == 1:
 		response = "CON Describe the incident briefly:"
 	case parts[0] == "3" && level == 2:
-		incidentID := fmt.Sprintf("INC-%d", time.Now().UnixMilli())
-		response = fmt.Sprintf("END Incident reported. Reference: %s\nThank you for protecting Nigeria's democracy.", incidentID)
+		// INTEGRITY: persist the incident; never issue a reference for a report
+		// that was not recorded.
+		incidentID, err := persistIVRIncident("ussd_report", parts[1], "medium")
+		if err != nil {
+			log.Error().Err(err).Msg("USSD incident persistence failed")
+			response = "END Service unavailable — your incident was NOT recorded. Please try again later."
+		} else {
+			response = fmt.Sprintf("END Incident reported. Reference: %s\nThank you for protecting Nigeria's democracy.", incidentID)
+		}
 	case parts[0] == "4":
 		response = "END Results are being collated. Visit inec.gov.ng for live updates."
 	default:

@@ -13,7 +13,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type BVASDeviceStatus string
@@ -95,7 +100,7 @@ func (r *BVASDeviceRegistry) RegisterDevice(device BVASDevice) error {
 	}
 
 	if !isValidFirmware(device.FirmwareVersion) {
-		return fmt.Errorf("unsupported firmware version: %s", device.FirmwareVersion)
+		return fmt.Errorf("firmware version %q rejected: not on BVAS_FIRMWARE_ALLOWLIST (or allowlist unconfigured)", device.FirmwareVersion)
 	}
 
 	// Set defaults
@@ -203,9 +208,29 @@ func (r *BVASDeviceRegistry) GetStats() map[string]interface{} {
 	return r.store.GetDeviceStats(context.Background())
 }
 
+var firmwareAllowlistWarnOnce sync.Once
+
+// isValidFirmware validates a device firmware version against the configured
+// allowlist (env BVAS_FIRMWARE_ALLOWLIST, comma-separated exact version
+// strings, e.g. "3.2.1,3.2.2,4.0.0"). SECURITY: fail closed — if no allowlist
+// is configured, every registration is rejected rather than accepting
+// arbitrary firmware on election-critical BVAS devices.
 func isValidFirmware(version string) bool {
-	if len(version) == 0 {
+	version = strings.TrimSpace(version)
+	if version == "" {
 		return false
 	}
-	return true
+	allowlist := strings.TrimSpace(os.Getenv("BVAS_FIRMWARE_ALLOWLIST"))
+	if allowlist == "" {
+		firmwareAllowlistWarnOnce.Do(func() {
+			log.Warn().Msg("BVAS_FIRMWARE_ALLOWLIST not set — all device registrations will be rejected (fail-closed)")
+		})
+		return false
+	}
+	for _, allowed := range strings.Split(allowlist, ",") {
+		if version == strings.TrimSpace(allowed) {
+			return true
+		}
+	}
+	return false
 }

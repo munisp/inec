@@ -22,9 +22,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -857,6 +860,50 @@ func defaultDashboardWidgets() []map[string]interface{} {
 // P3-3: Field Incident Photo Evidence
 // ═══════════════════════════════════════════════════════════════════════════
 
+// maxFieldReportMediaBytes caps uploaded incident media at 10MB.
+const maxFieldReportMediaBytes = 10 << 20
+
+// storeFieldReportMedia persists an uploaded incident photo/video to the
+// configured media directory (env GOTV_MEDIA_DIR, default /data/media) and
+// returns the media URL path to record in the database. A non-nil error means
+// the evidence was NOT stored — callers must fail the request rather than
+// record a dangling media_url.
+func storeFieldReportMedia(reportID, filename string, src io.Reader) (string, error) {
+	mediaDir := os.Getenv("GOTV_MEDIA_DIR")
+	if mediaDir == "" {
+		mediaDir = "/data/media"
+	}
+	dir := filepath.Join(mediaDir, "field-reports")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", fmt.Errorf("media dir not writable: %w", err)
+	}
+	// Safe filename: reportID is server-generated; keep only a whitelisted
+	// extension from the client-supplied name.
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mov":
+	default:
+		ext = ".bin"
+	}
+	name := reportID + ext
+	dst := filepath.Join(dir, name)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return "", fmt.Errorf("media file create failed: %w", err)
+	}
+	defer out.Close()
+	written, err := io.Copy(out, io.LimitReader(src, maxFieldReportMediaBytes+1))
+	if err != nil {
+		os.Remove(dst)
+		return "", fmt.Errorf("media write failed: %w", err)
+	}
+	if written > maxFieldReportMediaBytes {
+		os.Remove(dst)
+		return "", fmt.Errorf("media exceeds %d byte limit", maxFieldReportMediaBytes)
+	}
+	return "/uploads/field-reports/" + name, nil
+}
+
 func handleFieldReportWithMedia(w http.ResponseWriter, r *http.Request) {
 	if !requireDBConn(w) {
 		return
@@ -876,14 +923,19 @@ func handleFieldReportWithMedia(w http.ResponseWriter, r *http.Request) {
 
 	reportID := "fr-" + genPlatformID()[:12]
 
-	// Handle file upload
+	// Handle file upload. INTEGRITY: the photo is field evidence — it must be
+	// persisted to disk before we record a media_url or report success. If
+	// storage is unavailable the whole request fails with 503.
 	var mediaURL string
 	file, header, err := r.FormFile("photo")
 	if err == nil {
 		defer file.Close()
-		// Store locally (in production: S3/GCS)
-		mediaURL = fmt.Sprintf("/uploads/field-reports/%s-%s", reportID, header.Filename)
-		// For now, just record the URL — actual file storage would go to S3
+		mediaURL, err = storeFieldReportMedia(reportID, header.Filename, file)
+		if err != nil {
+			log.Error().Err(err).Str("report_id", reportID).Msg("field report media storage failed")
+			http.Error(w, jsonErrResp("media storage unavailable, report not accepted"), http.StatusServiceUnavailable)
+			return
+		}
 	}
 
 	_, err = dbConn.ExecContext(r.Context(), `
@@ -952,16 +1004,27 @@ func handlePredictiveTurnout(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Model: base turnout from pledges, adjusted for historical show-rate
+		// Model "pledge-based-v2": predicted turnout = pledgeRate x showRate.
+		// INTEGRITY: this model is fully deterministic — identical inputs always
+		// produce identical predictions. The previous version randomized both the
+		// show-rate and the confidence margin per request, fabricating precision.
 		pledgeRate := 0.0
 		if p.TotalContacts > 0 {
 			pledgeRate = float64(p.PledgedCount) / float64(p.TotalContacts)
 		}
-		showRate := 0.65 + rand.Float64()*0.15 // 65-80% of pledged actually show
+		// showRate is a fixed, documented planning assumption: 70% of pledged
+		// supporters actually vote. Replace with a calibrated historical
+		// redemption rate once redemption data is available.
+		const showRate = 0.70
 		p.PredictedTurnout = math.Round(pledgeRate*showRate*1000) / 10
 
-		// Confidence interval: ±8-12%
-		margin := 8.0 + rand.Float64()*4.0
+		// Confidence interval: 95% normal-approximation margin derived from the
+		// actual contact sample size (worst-case p=0.5), clamped to [2, 15] pts.
+		margin := 15.0
+		if p.TotalContacts > 0 {
+			margin = 196.0 * math.Sqrt(0.25/float64(p.TotalContacts))
+			margin = math.Max(2.0, math.Min(15.0, margin))
+		}
 		p.ConfidenceInterval = [2]float64{
 			math.Max(0, math.Round((p.PredictedTurnout-margin)*10)/10),
 			math.Min(100, math.Round((p.PredictedTurnout+margin)*10)/10),
@@ -983,7 +1046,8 @@ func handlePredictiveTurnout(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"predictions": predictions,
-		"model":       "pledge-based-v1",
+		"model":       "pledge-based-v2",
+		"model_notes": "deterministic: show_rate=0.70 fixed planning assumption, 95% CI from sample size; no random inputs",
 		"computed_at": time.Now(),
 	})
 }
