@@ -93,6 +93,73 @@ func getUserFromContext(r *http.Request) (jwt.MapClaims, bool) {
 	return claims, ok
 }
 
+// streamDevMode reports whether the dev-only ?token= query fallback for
+// WebSocket/SSE endpoints is enabled. Query-string tokens leak into access
+// logs, proxies and browser history, so they are honored ONLY under an
+// explicit GOTV_DEV_MODE=true (never acceptable in production — gotv-svc
+// refuses to boot with that combination, and authenticateStreamRequest
+// additionally refuses query tokens whenever APP_ENV=production).
+func streamDevMode() bool {
+	if os.Getenv("APP_ENV") == "production" || os.Getenv("INEC_ENV") == "production" {
+		return false
+	}
+	return os.Getenv("GOTV_DEV_MODE") == "true"
+}
+
+// authenticateStreamRequest authenticates WebSocket upgrade and SSE stream
+// requests with the same auth stack as the API middleware: HS256 JWT via
+// decodeToken, type=="access" claim required, jti blacklist enforced.
+//
+// Browsers cannot set headers on WebSocket/EventSource connections, so the
+// HttpOnly inec_token cookie is accepted as a first-class credential (this
+// replaces the old "edge proxy must translate cookie→Bearer" requirement).
+// The ?token= query fallback exists ONLY in dev mode (see streamDevMode).
+//
+// Fail closed: any failure writes a 401 and returns ok=false.
+func authenticateStreamRequest(w http.ResponseWriter, r *http.Request) (jwt.MapClaims, bool) {
+	// 1. Claims already validated by jwtAuthMiddleware (header or cookie).
+	if claims, ok := getUserFromContext(r); ok {
+		return claims, true
+	}
+
+	// 2. Authorization: Bearer header (non-browser clients).
+	var tokenStr string
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		tokenStr = strings.TrimPrefix(auth, "Bearer ")
+	} else if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+		// 3. HttpOnly cookie (browser WebSocket/EventSource clients).
+		tokenStr = cookie.Value
+	} else if q := r.URL.Query().Get("token"); q != "" {
+		// 4. Dev-only query fallback — log-leakable, never in production.
+		if !streamDevMode() {
+			writeJSON(w, 401, M{"error": "query-token authentication is disabled (set GOTV_DEV_MODE=true in non-production to enable)"})
+			return nil, false
+		}
+		tokenStr = q
+	}
+
+	if tokenStr == "" {
+		writeJSON(w, 401, M{"error": "authentication required"})
+		return nil, false
+	}
+	claims, err := decodeToken(tokenStr)
+	if err != nil {
+		writeJSON(w, 401, M{"error": "invalid or expired token"})
+		return nil, false
+	}
+	// Refresh tokens must never authenticate streams.
+	if tokenType, _ := claims["type"].(string); tokenType != "access" {
+		writeJSON(w, 401, M{"error": "access token required"})
+		return nil, false
+	}
+	// Reject revoked tokens (logout / session revocation by jti).
+	if jti, _ := claims["jti"].(string); jti != "" && blacklist.isBlacklisted(jti) {
+		writeJSON(w, 401, M{"error": "token has been revoked"})
+		return nil, false
+	}
+	return claims, true
+}
+
 // corsProductionMiddleware implements a strict origin allow-list driven by
 // CORS_ORIGINS (comma-separated). SECURITY:
 //   - unset CORS_ORIGINS => empty allow-list (all cross-origin requests denied);

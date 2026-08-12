@@ -170,27 +170,12 @@ type ObserverReport struct {
 // ── SSE Streaming Endpoint ──
 
 func handleSSEStream(w http.ResponseWriter, r *http.Request) {
-	// SSE auth chain: middleware context → Authorization: Bearer header → ?token= query param
-	// (EventSource cannot set headers, so the query-param fallback remains supported.)
-	var claims map[string]interface{}
-	if c, ok := getUserFromContext(r); ok {
-		claims = c
-	} else if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		c, err := decodeToken(strings.TrimPrefix(auth, "Bearer "))
-		if err != nil {
-			writeError(w, 401, "invalid token")
-			return
-		}
-		claims = c
-	} else if tokenStr := r.URL.Query().Get("token"); tokenStr != "" {
-		c, err := decodeToken(tokenStr)
-		if err != nil {
-			writeError(w, 401, "invalid token")
-			return
-		}
-		claims = c
-	} else {
-		writeError(w, 401, "authentication required (pass ?token= for SSE)")
+	// SSE auth chain: middleware context → Authorization: Bearer header →
+	// HttpOnly inec_token cookie (EventSource cannot set headers) → ?token=
+	// query param (DEV MODE ONLY — query tokens leak into logs). Enforces
+	// type=="access" and the jti blacklist, same as the API middleware.
+	claims, ok := authenticateStreamRequest(w, r)
+	if !ok {
 		return
 	}
 

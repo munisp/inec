@@ -271,6 +271,11 @@ func broadcastWSSharded(msg M, stateCode string) {
 
 // handleWSUpdatesSharded is the sharded WS endpoint.
 func handleWSUpdatesSharded(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: require a valid JWT before upgrading (same auth stack as
+	// handleWSUpdates: Bearer header or inec_token cookie; ?token= is dev-only).
+	if _, ok := authenticateStreamRequest(w, r); !ok {
+		return
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return

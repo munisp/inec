@@ -645,6 +645,12 @@ func (h *WebSocketHub) run() {
 
 // handleDashboardSSE serves real-time dashboard updates via Server-Sent Events.
 func handleDashboardSSE(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: require a valid JWT (middleware context, Bearer header, or
+	// inec_token cookie; ?token= is dev-only). EventSource cannot set
+	// headers, so the cookie is the browser path.
+	if _, authed := authenticateStreamRequest(w, r); !authed {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "streaming not supported")

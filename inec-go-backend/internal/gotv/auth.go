@@ -48,8 +48,23 @@ type rateEntry struct {
 	windowEnd time.Time
 }
 
+// IsProductionEnv reports whether the process is configured for production.
+// Both APP_ENV (deployment environment) and INEC_ENV (monolith environment)
+// are honored so neither naming convention can accidentally bypass a guard.
+func IsProductionEnv() bool {
+	return os.Getenv("APP_ENV") == "production" || os.Getenv("INEC_ENV") == "production"
+}
+
 // NewAuthMiddleware creates auth middleware with JWT + API key support.
+//
+// SECURITY (fail closed): DevMode skips JWT validation and authenticates any
+// Bearer token as party 1. If production is combined with DevMode the service
+// refuses to start — a misconfigured environment must never silently
+// authenticate everyone as an admin-equivalent party.
 func NewAuthMiddleware(db *sql.DB, config AuthConfig) *AuthMiddleware {
+	if config.DevMode && IsProductionEnv() {
+		log.Fatal().Msg("SECURITY: GOTV_DEV_MODE=true is forbidden in production (APP_ENV/INEC_ENV=production) — refusing to start with relaxed auth")
+	}
 	secret := os.Getenv("INTERNAL_SERVICE_SECRET")
 	if secret == "" {
 		// Legacy alias kept for existing deployments.
@@ -108,10 +123,20 @@ func (am *AuthMiddleware) authenticate(r *http.Request) (int, string, error) {
 		return am.validateAPIKey(apiKey)
 	}
 
-	// Method 2: Bearer JWT token (from header or query param for SSE/EventSource)
+	// Method 2: Bearer JWT token (from header, or the HttpOnly inec_token
+	// cookie for browser WebSocket/EventSource clients that cannot set
+	// headers). The ?token= query-param fallback is honored ONLY in dev mode:
+	// URLs leak into access logs, proxies and browser history, so accepting
+	// bearer tokens in the query string in production is a credential-leak
+	// vector.
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
-		if qToken := r.URL.Query().Get("token"); qToken != "" {
+		if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+			auth = "Bearer " + cookie.Value
+		} else if qToken := r.URL.Query().Get("token"); qToken != "" {
+			if !am.config.DevMode || IsProductionEnv() {
+				return 0, "", fmt.Errorf("unauthorized: query-token authentication is disabled (dev mode only)")
+			}
 			auth = "Bearer " + qToken
 		}
 	}

@@ -64,6 +64,37 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
+	// SECURITY (fail closed): dev mode relaxes authentication (any Bearer
+	// authenticates as party 1, dev-login vends admin tokens, query-string
+	// tokens are accepted). Combining it with a production environment is a
+	// critical misconfiguration — refuse to boot.
+	if *devMode && gotv.IsProductionEnv() {
+		log.Fatal().Msg("SECURITY: GOTV_DEV_MODE/--dev is forbidden in production (APP_ENV/INEC_ENV=production) — refusing to start with relaxed auth")
+	}
+
+	// Fail fast in production when gotv-deployment REQUIRED-IN-PROD variables
+	// (see .env.example) are missing, instead of booting half-configured.
+	if gotv.IsProductionEnv() {
+		var missing []string
+		if *encKey == "" {
+			missing = append(missing, "GOTV_ENCRYPTION_KEY")
+		}
+		if os.Getenv("INTERNAL_SERVICE_SECRET") == "" && os.Getenv("GOTV_GATEWAY_SECRET") == "" {
+			missing = append(missing, "INTERNAL_SERVICE_SECRET")
+		}
+		if os.Getenv("GOTV_MOBILE_JWT_SECRET") == "" {
+			missing = append(missing, "GOTV_MOBILE_JWT_SECRET")
+		}
+		// WhatsApp inbound webhooks fail closed without a verification token;
+		// when the integration is enabled the token is mandatory in prod.
+		if os.Getenv("WHATSAPP_TOKEN") != "" && os.Getenv("WHATSAPP_WEBHOOK_TOKEN") == "" {
+			missing = append(missing, "WHATSAPP_WEBHOOK_TOKEN (required when WHATSAPP_TOKEN is set)")
+		}
+		if len(missing) > 0 {
+			log.Fatal().Strs("missing", missing).Msg("required environment variables are missing in production (see .env.example)")
+		}
+	}
+
 	if *dbURL == "" {
 		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
@@ -651,11 +682,22 @@ func main() {
 // ─── WebSocket Handler ─────────────────────────────────────────────────────
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Validate auth via token query param (WS can't use headers)
-	// The auth middleware now accepts ?token= query param, so we inject it
-	// into the Authorization header for proper JWT validation.
-	if token := r.URL.Query().Get("token"); token != "" && r.Header.Get("Authorization") == "" {
-		r.Header.Set("Authorization", "Bearer "+token)
+	// Browsers cannot set headers on WebSocket connections, so the HttpOnly
+	// inec_token cookie is a first-class credential: surface it as a Bearer
+	// token for the shared auth stack (JWT via auth-svc, or API key). The
+	// ?token= query fallback is DEV MODE ONLY — URLs leak into access logs,
+	// proxies and browser history, so query-string bearer tokens are
+	// rejected outright in production (also enforced inside authMid).
+	if r.Header.Get("Authorization") == "" {
+		if cookie, err := r.Cookie("inec_token"); err == nil && cookie.Value != "" {
+			r.Header.Set("Authorization", "Bearer "+cookie.Value)
+		} else if token := r.URL.Query().Get("token"); token != "" {
+			if !devModeEnabled || gotv.IsProductionEnv() {
+				http.Error(w, `{"error":"query-token authentication is disabled (dev mode only)"}`, http.StatusUnauthorized)
+				return
+			}
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 	partyID, _, err := authMid.Authenticate(r)
 	if err != nil {
@@ -685,6 +727,14 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDevLogin(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: this endpoint vends admin-role tokens without checking
+	// credentials. It must not exist outside explicit dev mode — and dev
+	// mode itself is refused at startup when the environment is production.
+	// Return 404 (not 403) so its presence is not even discoverable.
+	if !devModeEnabled {
+		http.NotFound(w, r)
+		return
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -707,6 +757,12 @@ func handleDevLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDevMe(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: dev-only companion of handleDevLogin — hidden (404) unless
+	// GOTV_DEV_MODE=true (which is itself forbidden in production).
+	if !devModeEnabled {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":       1,
