@@ -116,6 +116,9 @@ func verifyBiometricPayload(r *http.Request, payload string) bool {
 // cbElectionCrypto protects calls to the election-cryptography backend.
 var cbElectionCrypto = NewGOTVCircuitBreaker("election-crypto", 3, 30*time.Second)
 
+// cbAnchorService protects calls to the external blockchain anchor service.
+var cbAnchorService = NewGOTVCircuitBreaker("anchor-service", 3, 30*time.Second)
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ELECTION CRYPTO BACKEND — MINIMAL CONTRACT (documented, shape-verified)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1296,8 +1299,9 @@ func handleConventionDashboard(w http.ResponseWriter, r *http.Request) {
 		dbConn.QueryRow("SELECT COUNT(*) FROM aspirants WHERE party_code=$1 AND election_id=$2 AND screening_status='cleared' AND deleted_at IS NULL", partyCode, electionID).Scan(&clearedAspirants)
 	}
 
-	// Quorum calculation
-	quorumThreshold := 0.6667 // 2/3
+	// Quorum calculation — single source of truth: quorumThresholdFraction
+	// (the constitutional value enforced at round-open).
+	quorumThreshold := quorumThresholdFraction
 	quorumMet := float64(accredited)/math.Max(float64(totalDelegates), 1) >= quorumThreshold
 
 	// Active round info
@@ -1361,7 +1365,7 @@ func handleQuorumCheck(w http.ResponseWriter, r *http.Request) {
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2 AND accreditation_status='accredited'", partyCode, electionID).Scan(&accredited)
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2 AND floor_access=TRUE", partyCode, electionID).Scan(&present)
 
-	threshold := 66.67
+	threshold := quorumThresholdFraction * 100
 	quorumMet := float64(accredited)/math.Max(float64(total), 1)*100 >= threshold
 
 	jsonResp(w, map[string]interface{}{
@@ -1478,27 +1482,38 @@ func handleCreateRound(w http.ResponseWriter, r *http.Request) {
 func handleOpenRound(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// SECURITY: cross-party scoping — the round's election must belong to the
+	// caller's party before any mutation.
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party round-open attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
 
 	// Verify quorum before opening
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
-
-	partyCode := fmt.Sprintf("party_%d", pid)
 	var total, accredited int
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2", partyCode, elecID).Scan(&total)
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2 AND accreditation_status='accredited'", partyCode, elecID).Scan(&accredited)
 
 	quorumPct := float64(accredited) / math.Max(float64(total), 1) * 100
-	if quorumPct < 50.0 {
-		jsonErr(w, fmt.Sprintf("quorum not met: %.1f%% (need 50%%)", quorumPct), 400)
+	if quorumPct < quorumThresholdFraction*100 {
+		jsonErr(w, fmt.Sprintf("quorum not met: %.1f%% (need %.0f%%)", quorumPct, quorumThresholdFraction*100), 400)
 		return
 	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='open', opened_at=NOW(),
 			quorum_required=$1, quorum_present=$2, quorum_met=TRUE
-		WHERE round_id=$3 AND status='pending'`,
-		total, accredited, id)
+		WHERE round_id=$3 AND status='pending'
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$4)`,
+		total, accredited, id, partyCode)
 	if err != nil {
 		jsonErr(w, "open round failed", 500)
 		return
@@ -1528,12 +1543,27 @@ func handleOpenRound(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCloseRound(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// SECURITY: cross-party scoping — the round's election must belong to the
+	// caller's party (enforced again inside the UPDATE for TOCTOU safety).
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party round-close attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='closed', closed_at=NOW()
-		WHERE round_id=$1 AND status IN ('open','voting')`, id)
+		WHERE round_id=$1 AND status IN ('open','voting')
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$2)`, id, partyCode)
 	if err != nil {
 		jsonErr(w, "close round failed", 500)
 		return
@@ -1544,9 +1574,6 @@ func handleCloseRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
-
 	publishKafkaEvent("primaries.round.closed", map[string]interface{}{"round_id": id})
 
 	logConventionEvent(r.Context(), elecID, "round_closed", user, "round", id, nil)
@@ -1555,43 +1582,116 @@ func handleCloseRound(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTallyRound(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
 
-	// Count ballots per aspirant
+	// SECURITY: cross-party scoping — tallying writes aspirants.delegate_votes
+	// and is_winner, so the round's election MUST belong to the caller's
+	// party; otherwise any party user could rewrite another party's results.
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party tally attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
+
+	// Count cleartext (legacy, in-person pre-custody-fix) ballots per aspirant.
+	// Backend-custodied ballots (aspirant_id IS NULL) never join here.
 	rows, err := dbConn.QueryContext(r.Context(), `
 		SELECT b.aspirant_id, a.full_name, COUNT(*) as votes
 		FROM ballots b
 		JOIN aspirants a ON a.aspirant_id = b.aspirant_id
 		WHERE b.round_id=$1 AND b.vote_type='for' AND b.is_decoy=FALSE AND b.tallied=FALSE
+		AND a.party_code=$2
 		GROUP BY b.aspirant_id, a.full_name
-		ORDER BY votes DESC`, id)
+		ORDER BY votes DESC`, id, partyCode)
 	if err != nil {
 		jsonErr(w, "tally query failed", 500)
 		return
 	}
-	defer rows.Close()
 
+	voteCounts := map[string]int{}
+	names := map[string]string{}
 	var totalVotes int
+	for rows.Next() {
+		var aspID, name string
+		var votes int
+		rows.Scan(&aspID, &name, &votes)
+		voteCounts[aspID] += votes
+		names[aspID] = name
+		totalVotes += votes
+	}
+	rows.Close()
+
+	// SECURITY: backend-custodied ballots (encrypted, aspirant linkage held
+	// by the crypto backend) can ONLY be tallied by that backend — this
+	// service must never see their cleartext choices. On backend failure →
+	// 503 and NO tally records are written.
+	var custodiedRefs []string
+	refRows, err := dbConn.QueryContext(r.Context(), `
+		SELECT ballot_ref FROM ballots
+		WHERE round_id=$1 AND is_decoy=FALSE AND tallied=FALSE AND ballot_ref IS NOT NULL`, id)
+	if err != nil {
+		jsonErr(w, "tally query failed", 500)
+		return
+	}
+	for refRows.Next() {
+		var ref string
+		refRows.Scan(&ref)
+		custodiedRefs = append(custodiedRefs, ref)
+	}
+	refRows.Close()
+	if len(custodiedRefs) > 0 {
+		backendCounts, err := tallyBallotsViaBackend(r.Context(), id, custodiedRefs)
+		if err != nil {
+			log.Error().Err(err).Str("round_id", id).Msg("crypto backend tally failed — no tally written")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":  "cryptographic tally service unavailable",
+				"detail": "backend-custodied ballots could not be tallied; refusing to publish a partial tally",
+			})
+			return
+		}
+		for aspID, votes := range backendCounts {
+			// Only count aspirants of the caller's party.
+			var name string
+			if err := dbConn.QueryRowContext(r.Context(),
+				"SELECT full_name FROM aspirants WHERE aspirant_id=$1 AND party_code=$2",
+				aspID, partyCode).Scan(&name); err != nil {
+				log.Warn().Str("aspirant_id", aspID).Msg("backend tally returned unknown/other-party aspirant — skipped")
+				continue
+			}
+			voteCounts[aspID] += votes
+			names[aspID] = name
+			totalVotes += votes
+		}
+	}
+
 	type tallyEntry struct {
 		AspirantID string
 		Name       string
 		Votes      int
 	}
 	var tallies []tallyEntry
-	for rows.Next() {
-		var t tallyEntry
-		rows.Scan(&t.AspirantID, &t.Name, &t.Votes)
-		totalVotes += t.Votes
-		tallies = append(tallies, t)
+	for aspID, votes := range voteCounts {
+		tallies = append(tallies, tallyEntry{AspirantID: aspID, Name: names[aspID], Votes: votes})
 	}
+	sort.Slice(tallies, func(i, j int) bool { return tallies[i].Votes > tallies[j].Votes })
 
-	// Also count abstentions and spoiled
+	// Also count abstentions and spoiled — INTEGRITY: filtered to
+	// tallied=FALSE just like the 'for' count, otherwise a re-tally
+	// double-counts them.
 	var abstentions, spoiled int
-	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='abstain' AND is_decoy=FALSE", id).Scan(&abstentions)
-	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='spoiled' AND is_decoy=FALSE", id).Scan(&spoiled)
+	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='abstain' AND is_decoy=FALSE AND tallied=FALSE", id).Scan(&abstentions)
+	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='spoiled' AND is_decoy=FALSE AND tallied=FALSE", id).Scan(&spoiled)
 
-	// Insert/update tally records
+	// Insert/update tally records (party-scoped aspirant updates only)
 	for rank, t := range tallies {
 		pct := 0.0
 		if totalVotes > 0 {
@@ -1605,27 +1705,27 @@ func handleTallyRound(w http.ResponseWriter, r *http.Request) {
 				votes_received=$3, vote_percentage=$4, rank_position=$5, is_winner=$6`,
 			id, t.AspirantID, t.Votes, pct, rank+1, isWinner)
 
-		// Update aspirant's total delegate votes
-		dbConn.ExecContext(r.Context(), "UPDATE aspirants SET delegate_votes=$1, is_winner=$2 WHERE aspirant_id=$3",
-			t.Votes, isWinner, t.AspirantID)
+		// Update aspirant's total delegate votes — SECURITY: party-scoped so a
+		// tally can never rewrite another party's aspirant rows.
+		dbConn.ExecContext(r.Context(), "UPDATE aspirants SET delegate_votes=$1, is_winner=$2 WHERE aspirant_id=$3 AND party_code=$4",
+			t.Votes, isWinner, t.AspirantID, partyCode)
 	}
 
 	// Mark ballots as tallied
 	dbConn.ExecContext(r.Context(), "UPDATE ballots SET tallied=TRUE, tallied_at=NOW() WHERE round_id=$1", id)
 
-	// Update round stats
+	// Update round stats (party-ownership re-enforced in the WHERE clause)
 	totalCast := totalVotes + abstentions + spoiled
 	dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='tallying',
 			total_votes_cast=$1, total_valid_votes=$2, total_invalid_votes=$3
-		WHERE round_id=$4`, totalCast, totalVotes, spoiled, id)
+		WHERE round_id=$4
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$5)`,
+		totalCast, totalVotes, spoiled, id, partyCode)
 
 	// Build Merkle root of all ballot hashes
 	merkleRoot := buildBallotMerkleRoot(r.Context(), id)
 	dbConn.ExecContext(r.Context(), "UPDATE voting_rounds SET merkle_root=$1 WHERE round_id=$2", merkleRoot, id)
-
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
 
 	// Build result
 	var results []map[string]interface{}
@@ -1661,23 +1761,57 @@ func handleTallyRound(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCertifyRound(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// SECURITY: cross-party scoping — certification is final and must never
+	// be applied to another party's round.
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party certify attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
+
+	// INTEGRITY: certification requires a REAL chain anchor for the tallied
+	// results. The previous implementation stored hashStringSHA(id+timestamp)
+	// as "blockchain_hash" — a locally minted hash masquerading as a chain
+	// attestation. Never mint local hashes labeled blockchain: either an
+	// external anchor service (GOTV_ANCHOR_SERVICE_URL) or the in-binary
+	// hash-chained Merkle anchor client (gotvBlockchain) must produce the
+	// attestation, otherwise certification fails loudly (503) and the round
+	// is NOT certified.
+	var merkleRoot string
+	dbConn.QueryRowContext(r.Context(),
+		"SELECT COALESCE(merkle_root,'') FROM voting_rounds WHERE round_id=$1", id).Scan(&merkleRoot)
+	blockchainHash, anchorErr := anchorCertifiedResults(r.Context(), pid, id, elecID, merkleRoot)
+	if anchorErr != nil {
+		log.Error().Err(anchorErr).Str("round_id", id).Msg("blockchain anchoring failed — round NOT certified")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "blockchain anchoring not configured",
+			"detail": anchorErr.Error(),
+		})
+		return
+	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='certified', certified_at=NOW()
-		WHERE round_id=$1 AND status='tallying'`, id)
+		WHERE round_id=$1 AND status='tallying'
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$2)`, id, partyCode)
 	if err != nil || func() int64 { n, _ := res.RowsAffected(); return n }() == 0 {
 		jsonErr(w, "certify failed or round not in tallying state", 400)
 		return
 	}
 
-	// Record blockchain hash for certified results
-	blockchainHash := hashStringSHA(id + time.Now().String())
+	// Store the real anchor reference (block hash / anchor tx id).
 	dbConn.ExecContext(r.Context(), "UPDATE voting_rounds SET blockchain_hash=$1 WHERE round_id=$2", blockchainHash, id)
-
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
 
 	publishKafkaEvent("primaries.round.certified", map[string]interface{}{
 		"round_id": id, "blockchain_hash": blockchainHash,
@@ -1688,6 +1822,63 @@ func handleCertifyRound(w http.ResponseWriter, r *http.Request) {
 	})
 
 	jsonResp(w, map[string]interface{}{"certified": true, "blockchain_hash": blockchainHash})
+}
+
+// anchorCertifiedResults produces a real chain attestation for a certified
+// round. Order of preference:
+//  1. External anchor service (GOTV_ANCHOR_SERVICE_URL) — POST /anchor with
+//     the round's Merkle root; expects {"anchor_tx_id"|"tx_id"|"hash"}.
+//  2. The in-binary hash-chained Merkle anchor client (gotvBlockchain) —
+//     each anchor is a block linked to the previous block's hash, with
+//     inclusion proofs; NOT a bare local hash.
+//
+// INTEGRITY: returns an error when neither path is available — callers must
+// fail loudly instead of minting a local hash labeled "blockchain".
+func anchorCertifiedResults(ctx context.Context, partyID int, roundID string, electionID int, merkleRoot string) (string, error) {
+	if anchorURL := os.Getenv("GOTV_ANCHOR_SERVICE_URL"); anchorURL != "" {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"round_id": roundID, "election_id": electionID,
+			"party_id": partyID, "merkle_root": merkleRoot,
+		})
+		respBody, code, err := resilientCall(ctx, cbAnchorService, "POST", anchorURL+"/anchor", payload)
+		if err != nil || code != http.StatusOK {
+			return "", fmt.Errorf("anchor service call failed (code=%d): %v", code, err)
+		}
+		var result struct {
+			AnchorTxID string `json:"anchor_tx_id"`
+			TxID       string `json:"tx_id"`
+			Hash       string `json:"hash"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return "", fmt.Errorf("anchor service returned malformed response: %w", err)
+		}
+		ref := result.AnchorTxID
+		if ref == "" {
+			ref = result.TxID
+		}
+		if ref == "" {
+			ref = result.Hash
+		}
+		if ref == "" {
+			return "", fmt.Errorf("anchor service returned no transaction reference")
+		}
+		return ref, nil
+	}
+	if gotvBlockchain != nil {
+		leaves := []string{merkleRoot}
+		if merkleRoot == "" {
+			leaves = []string{roundID}
+		}
+		res, err := gotvBlockchain.AnchorMerkleRoot(ctx, partyID, "primary_certification", leaves)
+		if err != nil {
+			return "", fmt.Errorf("local Merkle anchor failed: %w", err)
+		}
+		if res.BlockHash == "" {
+			return "", fmt.Errorf("local Merkle anchor returned empty block hash")
+		}
+		return res.BlockHash, nil
+	}
+	return "", fmt.Errorf("no blockchain anchor path available (GOTV_ANCHOR_SERVICE_URL unset and local anchor client not initialized)")
 }
 
 func handleRoundResults(w http.ResponseWriter, r *http.Request) {
@@ -2744,8 +2935,9 @@ func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
 
 	var req struct {
 		Status     string `json:"status"` // upheld, dismissed
@@ -2753,10 +2945,25 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// SECURITY: cross-party scoping — the dispute's election must belong to
+	// the caller's party (re-enforced inside the UPDATE for TOCTOU safety).
+	var elecID int
+	if err := dbConn.QueryRowContext(r.Context(),
+		"SELECT election_id FROM primary_disputes WHERE dispute_id=$1", id).Scan(&elecID); err != nil {
+		jsonErr(w, "dispute not found", 404)
+		return
+	}
+	if !partyOwnsElection(r.Context(), elecID, partyCode) {
+		log.Warn().Str("dispute_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party dispute-resolution attempt rejected")
+		jsonErr(w, "dispute does not belong to your party", 403)
+		return
+	}
+
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE primary_disputes SET status=$1, resolution=$2, resolved_at=NOW()
-		WHERE dispute_id=$3 AND status IN ('filed','under_review','hearing_scheduled')`,
-		req.Status, req.Resolution, id)
+		WHERE dispute_id=$3 AND status IN ('filed','under_review','hearing_scheduled')
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=primary_disputes.election_id AND d.party_code=$4)`,
+		req.Status, req.Resolution, id, partyCode)
 	if err != nil {
 		jsonErr(w, "resolve failed", 500)
 		return
@@ -2766,9 +2973,6 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "dispute not found or already resolved", 404)
 		return
 	}
-
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM primary_disputes WHERE dispute_id=$1", id).Scan(&elecID)
 	logConventionEvent(r.Context(), elecID, "dispute_resolved", user, "dispute", id, map[string]interface{}{
 		"status": req.Status, "resolution": req.Resolution,
 	})
@@ -2909,7 +3113,7 @@ func updateQuorumSnapshot(ctx context.Context, electionID int) {
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE election_id=$1 AND accreditation_status='accredited'", electionID).Scan(&accredited)
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE election_id=$1 AND floor_access=TRUE", electionID).Scan(&present)
 
-	quorumMet := float64(accredited)/math.Max(float64(total), 1) >= 0.6667
+	quorumMet := float64(accredited)/math.Max(float64(total), 1) >= quorumThresholdFraction
 	dbConn.ExecContext(ctx, `
 		INSERT INTO quorum_snapshots (election_id, total_registered, total_accredited, total_present, quorum_met)
 		VALUES ($1,$2,$3,$4,$5)`, electionID, total, accredited, present, quorumMet)

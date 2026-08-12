@@ -16,7 +16,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
@@ -719,8 +721,61 @@ var waKeywordActions = map[string]string{
 	"vote":        "confirm_vote",
 }
 
+// verifyWhatsAppWebhook authenticates an inbound WhatsApp provider webhook.
+// SECURITY: this endpoint is registered WITHOUT party auth (the provider
+// calls it directly), so the provider's own credential is the ONLY thing
+// standing between the internet and pledge/opt-out/ride mutations for
+// arbitrary phone numbers. Verification, in order of preference:
+//  1. Meta-style app-secret signature: when WHATSAPP_APP_SECRET is set, the
+//     X-Hub-Signature-256 header must be "sha256="+HMAC-SHA256(appSecret,
+//     rawBody), compared in constant time.
+//  2. Shared verify token: when WHATSAPP_WEBHOOK_TOKEN is set, the
+//     X-Webhook-Token header or ?token= query param must match it
+//     (constant time).
+// When neither is configured, verification fails CLOSED (503) — an
+// unauthenticated mutation webhook must never be live.
+func verifyWhatsAppWebhook(r *http.Request, rawBody []byte) (int, string) {
+	if appSecret := os.Getenv("WHATSAPP_APP_SECRET"); appSecret != "" {
+		sig := r.Header.Get("X-Hub-Signature-256")
+		if !strings.HasPrefix(sig, "sha256=") {
+			return http.StatusUnauthorized, "missing webhook signature"
+		}
+		expected := hmac.New(sha256.New, []byte(appSecret))
+		expected.Write(rawBody)
+		provided, err := hex.DecodeString(strings.TrimPrefix(sig, "sha256="))
+		if err != nil || subtle.ConstantTimeCompare(provided, expected.Sum(nil)) != 1 {
+			return http.StatusUnauthorized, "invalid webhook signature"
+		}
+		return 0, ""
+	}
+	if token := os.Getenv("WHATSAPP_WEBHOOK_TOKEN"); token != "" {
+		provided := r.Header.Get("X-Webhook-Token")
+		if provided == "" {
+			provided = r.URL.Query().Get("token")
+		}
+		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			return http.StatusUnauthorized, "invalid webhook token"
+		}
+		return 0, ""
+	}
+	log.Error().Msg("SECURITY: WhatsApp inbound webhook called but no WHATSAPP_APP_SECRET or WHATSAPP_WEBHOOK_TOKEN is configured — rejecting (fail closed)")
+	return http.StatusServiceUnavailable, "webhook verification not configured"
+}
+
 func handleWhatsAppInbound(w http.ResponseWriter, r *http.Request) {
 	if !requireDBConn(w) {
+		return
+	}
+	// SECURITY: verify the provider signature/token BEFORE any mutation.
+	// Read the raw body first — the HMAC is computed over exactly these bytes.
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, jsonErrResp("invalid"), 400)
+		return
+	}
+	if code, msg := verifyWhatsAppWebhook(r, rawBody); code != 0 {
+		log.Warn().Int("status", code).Str("reason", msg).Msg("WhatsApp inbound webhook rejected")
+		http.Error(w, jsonErrResp(msg), code)
 		return
 	}
 	var msg struct {
@@ -728,7 +783,7 @@ func handleWhatsAppInbound(w http.ResponseWriter, r *http.Request) {
 		Body    string `json:"body"`
 		MediaID string `json:"media_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+	if err := json.Unmarshal(rawBody, &msg); err != nil {
 		http.Error(w, jsonErrResp("invalid"), 400)
 		return
 	}
