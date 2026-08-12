@@ -1,5 +1,8 @@
 # INEC Election Platform — Comprehensive Audit Report
 
+> **SUPERSEDED — 2026-08-12.** This report is retained for historical context only. Its scores and claims predate the current hardening audit; see `INEC_MOCKWARE_AUDIT_REPORT.md` for the authoritative, current assessment and remediation status.
+
+
 ## 1. MIDDLEWARE ROBUSTNESS ASSESSMENT (12 Components)
 
 ### 1. PostgreSQL — ⚠️ PARTIALLY INTEGRATED
@@ -7,7 +10,7 @@
 - **Gaps**:
   - **Default is SQLite fallback** — without `DATABASE_URL` env, everything runs on SQLite in-memory
   - No connection retry/reconnect logic
-  - No migrations system — all DDL is `CREATE TABLE IF NOT EXISTS` inlined in Go
+  - ~~No migrations system~~ **Correction (2026-08-12):** a migrations system now exists — `inec-go-backend/migrations.go` embeds `migrations/*.sql` via `go:embed`. The inline `CREATE TABLE IF NOT EXISTS` DDL noted here was the historical state.
   - No transaction isolation level management
   - Pgpool monitoring loop runs but never triggers actual failover logic
   - No connection health checking beyond initial `Ping()`
@@ -187,7 +190,7 @@
 - **No circuit breakers** — middleware HTTP clients have no retry/backoff/circuit breaker
 - **No distributed tracing** — no OpenTelemetry, no trace IDs
 - **No structured logging** — uses `log.Printf` (no JSON logging, no log levels)
-- **No database migrations** — DDL is inline `CREATE TABLE IF NOT EXISTS`
+- ~~**No database migrations**~~ **Correction (2026-08-12):** migrations exist (`migrations.go` embeds the `migrations/` SQL files). This claim described the historical inline-DDL state.
 
 ---
 

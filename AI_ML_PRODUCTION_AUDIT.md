@@ -1,5 +1,8 @@
 # INEC Platform — AI/ML/DL Production Readiness Audit
 
+> **SUPERSEDED — 2026-08-12.** This report is retained for historical context only. Its scores and claims predate the current hardening audit; see `INEC_MOCKWARE_AUDIT_REPORT.md` for the authoritative, current assessment and remediation status.
+
+
 > **Last Updated:** 2026-07-04  
 > **Previous Score:** 18/100 → **Current Score:** 100/100 (PRODUCTION READY — all gaps closed)
 
