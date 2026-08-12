@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Plus, Filter, Users, Trash2, Play } from 'lucide-react';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
 
 interface Segment {
   segment_id: string;
@@ -42,32 +43,36 @@ export default function GOTVSegments() {
   const [newName, setNewName] = useState('');
   const [newFilters, setNewFilters] = useState<SegmentFilter[]>([{ field: 'state_code', operator: 'eq', value: '' }]);
   const [evaluateResult, setEvaluateResult] = useState<Record<string, number>>({});
+  const [partyCode] = useGOTVParty();
 
-  const headers = { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1', 'Content-Type': 'application/json' };
+  // Party-scoped headers: real session token + explicit party selection only.
+  const headers = () => gotvAuthHeaders({ 'Content-Type': 'application/json' });
 
   useEffect(() => {
-    fetch('/gotv/segments', { headers })
+    // Segments are party-scoped — never fetch without an explicit selection.
+    if (!partyCode) return;
+    fetch('/gotv/segments', { headers: headers() })
       .then(r => r.json())
       .then(data => setSegments(data.segments || []))
       .catch(() => setSegments([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [partyCode]);
 
   const createSegment = async () => {
     await fetch('/gotv/segments', {
-      method: 'POST', headers,
+      method: 'POST', headers: headers(),
       body: JSON.stringify({ name: newName, filters: newFilters }),
     });
     setShowCreate(false);
     setNewName('');
     setNewFilters([{ field: 'state_code', operator: 'eq', value: '' }]);
     // Reload
-    const data = await (await fetch('/gotv/segments', { headers })).json();
+    const data = await (await fetch('/gotv/segments', { headers: headers() })).json();
     setSegments(data.segments || []);
   };
 
   const evaluateSegment = async (segmentId: string) => {
-    const res = await fetch(`/gotv/segments/${segmentId}/evaluate`, { headers });
+    const res = await fetch(`/gotv/segments/${segmentId}/evaluate`, { headers: headers() });
     const data = await res.json();
     setEvaluateResult(prev => ({ ...prev, [segmentId]: data.count || data.contact_ids?.length || 0 }));
   };
@@ -77,15 +82,31 @@ export default function GOTVSegments() {
   const updateFilter = (idx: number, key: keyof SegmentFilter, val: string) =>
     setNewFilters(newFilters.map((f, i) => i === idx ? { ...f, [key]: val } : f));
 
+  if (!partyCode) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <div className="text-center py-12 text-muted-foreground">
+          Select a party to manage contact segments.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Filter className="h-5 w-5" /> Contact Segments
         </h2>
-        <Button size="sm" onClick={() => setShowCreate(!showCreate)}>
-          <Plus className="h-4 w-4 mr-1" /> New Segment
-        </Button>
+        <div className="flex items-center gap-2">
+          <GOTVPartySelector />
+          <Button size="sm" onClick={() => setShowCreate(!showCreate)}>
+            <Plus className="h-4 w-4 mr-1" /> New Segment
+          </Button>
+        </div>
       </div>
 
       {showCreate && (

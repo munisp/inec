@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Activit
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface CollationSummary {
   election_id: number;
@@ -21,13 +22,15 @@ export default function CollationScreen() {
   const [summary, setSummary] = useState<CollationSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const loadCollation = async () => {
+    if (!electionId) return;
     setLoading(true);
     setError(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const data = await api<CollationSummary>('/collation/summary?election_id=1');
+      const data = await api<CollationSummary>(`/collation/summary?election_id=${electionId}`);
       setSummary(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
@@ -36,7 +39,20 @@ export default function CollationScreen() {
     }
   };
 
-  useEffect(() => { loadCollation(); }, []);
+  useEffect(() => { loadCollation(); }, [electionId]);
+
+  // Gate rendering until the election scope is resolved — never fetch with a hardcoded id.
+  if (electionLoading || !electionId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        {electionLoading ? (
+          <ActivityIndicator size="large" color="#166534" />
+        ) : (
+          <Text style={{ color: '#6b7280', textAlign: 'center' }}>No active election is available.</Text>
+        )}
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 100 : 80 }}>

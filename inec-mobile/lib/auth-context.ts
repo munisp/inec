@@ -17,9 +17,11 @@ export const GOTV_ROUTES = new Set([
   'gotv-leaderboard',
 ]);
 
-// Screens that are always accessible (entry points, shared)
+// Screens that are always accessible (entry points, shared). Login screens
+// must stay public so unauthenticated users can reach them.
 export const PUBLIC_ROUTES = new Set([
   'index',
+  'gotv-login',
 ]);
 
 export async function getAuthMode(): Promise<AuthMode> {

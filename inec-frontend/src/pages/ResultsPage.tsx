@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Activity, Plus, Eye, CheckCircle, Shield, AlertTriangle, Fingerprint } from 'lucide-react';
+import { useResolvedElection } from '@/lib/gotv-session';
 
 interface Party { code: string; name: string; abbreviation: string; color: string; }
 interface State { code: string; name: string; }
@@ -43,6 +44,9 @@ export default function ResultsPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const canUpload = user?.role === 'admin' || user?.role === 'presiding_officer';
   const canManage = user?.role === 'admin' || user?.role === 'collation_officer';
+  // Election scope is resolved (explicit selection → latest ACTIVE) — never hardcoded.
+  const { electionId, elections, loading: electionLoading } = useResolvedElection();
+  const electionName = elections.find(e => e.id === electionId)?.title ?? null;
 
   useEffect(() => {
     setMetadataError(null);
@@ -55,16 +59,20 @@ export default function ResultsPage() {
       });
   }, [refreshKey]);
 
-  useEffect(() => { loadResults(); }, [filterState, filterStatus, refreshKey]);
+  useEffect(() => {
+    if (electionId) loadResults();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterState, filterStatus, refreshKey, electionId]);
 
   async function loadResults() {
+    if (!electionId) return;
     setLoading(true);
     try {
       const params: Record<string, string> = {};
       if (filterState !== 'all') params.state_code = filterState;
       if (filterStatus !== 'all') params.status = filterStatus;
       setResultsError(null);
-      const res = await api.getResults(1, params);
+      const res = await api.getResults(electionId, params);
       setResults(res.results);
       setTotal(res.total);
     } catch (e) {
@@ -77,10 +85,12 @@ export default function ResultsPage() {
   }
 
   async function handleSubmit() {
+    // Write path: never submit against a hardcoded election id.
+    if (!electionId) { setSubmitMsg('Election is still resolving — please wait.'); return; }
     try {
       const party_scores = Object.entries(uploadData.scores).filter(([, v]) => v).map(([code, votes]) => ({ party_code: code, votes: parseInt(votes) }));
       await api.submitResult({
-        election_id: 1, polling_unit_code: uploadData.polling_unit_code,
+        election_id: electionId, polling_unit_code: uploadData.polling_unit_code,
         party_scores, accredited_voters: parseInt(uploadData.accredited_voters),
         rejected_votes: parseInt(uploadData.rejected_votes || '0')
       });
@@ -139,6 +149,9 @@ export default function ResultsPage() {
             <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Submit Polling Unit Result</DialogTitle></DialogHeader>
               <div className="space-y-4">
+                <div className="text-xs text-muted-foreground">
+                  Election: {electionName ?? (electionLoading ? 'Resolving…' : 'Unavailable — submission disabled')}
+                </div>
                 {submitMsg && <div className="p-2 text-sm rounded bg-blue-50 text-blue-800">{submitMsg}</div>}
                 <div className="space-y-2">
                   <Label>Polling Unit Code</Label>
@@ -169,7 +182,7 @@ export default function ResultsPage() {
                     </div>
                   ))}
                 </div>
-                <Button onClick={handleSubmit} className="w-full bg-green-700 hover:bg-green-800">Submit Result</Button>
+                <Button onClick={handleSubmit} disabled={!electionId} className="w-full bg-green-700 hover:bg-green-800">Submit Result</Button>
               </div>
             </DialogContent>
           </Dialog>

@@ -59,6 +59,7 @@ import { NIGERIA_CENTER } from '@/lib/geolibre/types';
 type TabId = 'live-map' | 'spatial' | 'geolibre' | 'field-kit';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const GEOLIBRE_BASE_URL = import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090';
 
 const LAYER_CONFIG: { id: INECLayerType; label: string; icon: typeof MapPin; color: string }[] = [
   { id: 'polling-units', label: 'Polling Units', icon: MapPin, color: 'text-blue-500' },
@@ -91,6 +92,18 @@ const ROLE_ICONS: Record<string, string> = {
   security: '🛡️', supervisor: '⭐', tech_support: '🔧',
   returning_officer: '🏛️', field_officer: '👤',
 };
+
+/**
+ * Build a DOM element with text content only. All server-supplied strings
+ * MUST reach the map through textContent/createTextNode — never innerHTML or
+ * Popup.setHTML — so API data can never inject markup (XSS).
+ */
+function popupEl(tag: string, text: string, cssText?: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  if (cssText) node.style.cssText = cssText;
+  return node;
+}
 
 const STATUS_COLORS: Record<string, string> = {
   finalized: '#16a34a', validated: '#2563eb', pending: '#f59e0b',
@@ -374,8 +387,12 @@ function LiveMapTab() {
     if (showTracking) {
       loadOfficials();
       try {
-        const token = localStorage.getItem('token') || '';
-        const es = new EventSource(`${API_BASE}/geo/tracking/stream?token=${token}`);
+        // SECURITY: no ?token= in the URL (JWTs in URLs leak into logs,
+        // history and referrers) and the 'token' localStorage key was never
+        // written by any auth flow. The backend accepts the inec_token
+        // httpOnly cookie (getCurrentUser), so authenticate via cookies —
+        // withCredentials carries them on cross-origin dev setups.
+        const es = new EventSource(`${API_BASE}/geo/tracking/stream`, { withCredentials: true });
         sseRef.current = es;
         es.addEventListener('tracking_snapshot', (e) => {
           try {
@@ -505,7 +522,7 @@ function LiveMapTab() {
 
       const el = document.createElement('div');
       el.style.cssText = `width:40px;height:40px;border-radius:50%;background:${color};border:3px solid white;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 2px 10px rgba(0,0,0,0.5);z-index:10;position:relative;`;
-      el.innerHTML = icon;
+      el.textContent = icon;
       el.title = `${off.staff_id} (${off.role}) - ${off.activity}\nBattery: ${off.battery_pct}%\nPU: ${off.pu_code}`;
 
       const label = document.createElement('div');
@@ -521,19 +538,20 @@ function LiveMapTab() {
       bounds.extend(lngLat);
       hasValidCoords = true;
 
+      const popup = popupEl('div', '', 'font-size:12px;min-width:200px');
+      popup.appendChild(popupEl('div', off.staff_id, `font-weight:700;margin-bottom:6px;font-size:14px;color:${color}`));
+      const roleRow = popupEl('div', 'Role: ');
+      roleRow.appendChild(popupEl('b', off.role.replace(/_/g, ' ')));
+      popup.appendChild(roleRow);
+      popup.appendChild(popupEl('div', `Activity: ${off.activity}`));
+      popup.appendChild(popupEl('div', `Battery: ${off.battery_pct}%`));
+      popup.appendChild(popupEl('div', `PU: ${off.pu_code}`));
+      popup.appendChild(popupEl('div', `Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}`));
+      popup.appendChild(popupEl('div', off.updated_at, 'color:#888;font-size:10px;margin-top:4px'));
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat(lngLat)
-        .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
-          <div style="font-size:12px;min-width:200px">
-            <div style="font-weight:700;margin-bottom:6px;font-size:14px;color:${color}">${off.staff_id}</div>
-            <div>Role: <b>${off.role.replace(/_/g, ' ')}</b></div>
-            <div>Activity: ${off.activity}</div>
-            <div>Battery: ${off.battery_pct}%</div>
-            <div>PU: ${off.pu_code}</div>
-            <div>Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}</div>
-            <div style="color:#888;font-size:10px;margin-top:4px">${off.updated_at}</div>
-          </div>
-        `))
+        .setPopup(new maplibregl.Popup({ offset: 25 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       officialMarkers.current.push(marker);
     });
@@ -566,17 +584,20 @@ function LiveMapTab() {
       el.textContent = String(cr.head_count);
       el.title = `${cr.pu_name || cr.pu_code}: ${cr.head_count} people (${cr.density_level})\nQueue: ${cr.queue_length} | Wait: ${cr.wait_time_min}min`;
 
+      const popup = popupEl('div', '', 'font-size:12px;min-width:200px');
+      popup.appendChild(popupEl('div', cr.pu_name || cr.pu_code, 'font-weight:600;margin-bottom:4px'));
+      const headRow = popupEl('div', 'Head Count: ');
+      headRow.appendChild(popupEl('b', String(cr.head_count)));
+      popup.appendChild(headRow);
+      const densityRow = popupEl('div', 'Density: ');
+      densityRow.appendChild(popupEl('b', cr.density_level.toUpperCase(), `color:${color}`));
+      popup.appendChild(densityRow);
+      popup.appendChild(popupEl('div', `Queue Length: ${cr.queue_length} people`));
+      popup.appendChild(popupEl('div', `Wait Time: ${cr.wait_time_min} min`));
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([cr.longitude, cr.latitude])
-        .setPopup(new maplibregl.Popup({ offset: 20 }).setHTML(`
-          <div style="font-size:12px;min-width:200px">
-            <div style="font-weight:600;margin-bottom:4px">${cr.pu_name || cr.pu_code}</div>
-            <div>Head Count: <b>${cr.head_count}</b></div>
-            <div>Density: <b style="color:${color}">${cr.density_level.toUpperCase()}</b></div>
-            <div>Queue Length: ${cr.queue_length} people</div>
-            <div>Wait Time: ${cr.wait_time_min} min</div>
-          </div>
-        `))
+        .setPopup(new maplibregl.Popup({ offset: 20 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       crowdMarkers.current.push(marker);
     });
@@ -604,11 +625,18 @@ function LiveMapTab() {
       el.style.cssText = `width:24px;height:24px;border-radius:50%;background:${categoryColors[lm.category] || '#6b7280'};border:2px solid white;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:white;box-shadow:0 2px 4px rgba(0,0,0,0.3);`;
       el.title = `${lm.name} (${lm.category})`;
 
+      const popup = popupEl('div', '', 'font-size:12px');
+      popup.appendChild(popupEl('strong', lm.name));
+      popup.appendChild(document.createElement('br'));
+      popup.appendChild(popupEl('span', lm.category.replace(/_/g, ' '), 'color:#6b7280'));
+      if (lm.address) {
+        popup.appendChild(document.createElement('br'));
+        popup.appendChild(popupEl('span', lm.address, 'font-size:10px'));
+      }
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([lm.longitude, lm.latitude])
-        .setPopup(new maplibregl.Popup({ offset: 15 }).setHTML(
-          `<div style="font-size:12px"><strong>${lm.name}</strong><br/><span style="color:#6b7280">${lm.category.replace(/_/g, ' ')}</span>${lm.address ? `<br/><span style="font-size:10px">${lm.address}</span>` : ''}</div>`
-        ))
+        .setPopup(new maplibregl.Popup({ offset: 15 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       landmarkMarkers.current.push(marker);
     });
@@ -673,7 +701,10 @@ function LiveMapTab() {
       el.style.cssText = 'background:rgba(255,255,255,0.9);border-radius:6px;padding:2px 6px;font-size:10px;box-shadow:0 1px 3px rgba(0,0,0,0.2);pointer-events:auto;white-space:nowrap;';
       const temp = w.weather?.temp_c ?? '--';
       const desc = w.weather?.description || '';
-      el.innerHTML = `<b>${temp}°C</b> ${desc}`;
+      // DOM-built, textContent only — API-supplied description must never be
+      // interpreted as HTML (XSS).
+      el.appendChild(popupEl('b', `${temp}°C`));
+      el.appendChild(document.createTextNode(` ${desc}`));
       el.title = `${w.name}: ${temp}°C, ${w.weather?.humidity || '--'}% humidity`;
       const marker = new maplibregl.Marker({ element: el }).setLngLat([w.lng, w.lat]).addTo(mapRef.current!);
       weatherMarkers.current.push(marker);
@@ -1371,12 +1402,12 @@ function SpatialAnalysisTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function GeoLibreViewerTab() {
-  const [viewerUrl, setViewerUrl] = useState(import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090');
+  const [viewerUrl, setViewerUrl] = useState(GEOLIBRE_BASE_URL);
   const [urlInput, setUrlInput] = useState('');
   const store = useGeoLibreStore();
 
   const loadProject = useCallback((url: string) => {
-    if (url) setViewerUrl(`import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090'/?url=${encodeURIComponent(url)}`);
+    if (url) setViewerUrl(`${GEOLIBRE_BASE_URL}/?url=${encodeURIComponent(url)}`);
   }, []);
 
   const exportToGeoLibre = useCallback(async () => {
@@ -1407,10 +1438,10 @@ function GeoLibreViewerTab() {
         <Button variant="outline" size="sm" onClick={exportToGeoLibre}>
           <Download className="w-3.5 h-3.5 mr-1" /> Export to GeoLibre
         </Button>
-        <Button variant="outline" size="sm" onClick={() => setViewerUrl(import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090')}>
+        <Button variant="outline" size="sm" onClick={() => setViewerUrl(GEOLIBRE_BASE_URL)}>
           <RefreshCw className="w-3.5 h-3.5 mr-1" /> Reset
         </Button>
-        <a href="import.meta.env.VITE_GEOLIBRE_URL || 'http://localhost:8090'" target="_blank" rel="noopener noreferrer">
+        <a href={GEOLIBRE_BASE_URL} target="_blank" rel="noopener noreferrer">
           <Button variant="ghost" size="sm" className="text-xs">
             <Satellite className="w-3.5 h-3.5 mr-1" /> Open Full
           </Button>

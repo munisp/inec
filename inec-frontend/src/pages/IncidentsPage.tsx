@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertTriangle, Plus, Activity, Search, CheckCircle, XCircle } from 'lucide-react';
+import { useResolvedElection } from '@/lib/gotv-session';
 
 interface Incident {
   id: number; election_id: number; polling_unit_code: string; incident_type: string;
@@ -35,14 +36,21 @@ export default function IncidentsPage() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterSeverity, setFilterSeverity] = useState('all');
   const [error, setError] = useState<string | null>(null);
+  // Election scope is resolved (explicit selection → latest ACTIVE) — never hardcoded.
+  const { electionId, elections, loading: electionLoading } = useResolvedElection();
+  const electionName = elections.find(e => e.id === electionId)?.title ?? null;
 
-  useEffect(() => { loadIncidents(); }, []);
+  useEffect(() => {
+    if (electionId) loadIncidents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [electionId]);
 
   async function loadIncidents() {
+    if (!electionId) return;
     setLoading(true);
     try {
       setError(null);
-      setIncidents(await api.getIncidents(1));
+      setIncidents(await api.getIncidents(electionId));
     } catch (e) {
       logger.error(e);
       setIncidents([]);
@@ -52,8 +60,10 @@ export default function IncidentsPage() {
   }
 
   async function handleCreate() {
+    // Write path: never submit against a hardcoded election id.
+    if (!electionId) return;
     try {
-      await api.createIncident({ election_id: 1, ...form });
+      await api.createIncident({ election_id: electionId, ...form });
       setShowCreate(false);
       setForm({ polling_unit_code: '', incident_type: 'equipment_malfunction', description: '', severity: 'medium' });
       loadIncidents();
@@ -82,6 +92,15 @@ export default function IncidentsPage() {
 
   const severityDist = incidents.reduce((acc, inc) => { acc[inc.severity] = (acc[inc.severity] || 0) + 1; return acc; }, {} as Record<string, number>);
   const statusDist = incidents.reduce((acc, inc) => { acc[inc.status] = (acc[inc.status] || 0) + 1; return acc; }, {} as Record<string, number>);
+
+  if (!electionId && !electionLoading) return (
+    <AuthoritativeDataUnavailable
+      title="No active election resolved"
+      description="Incidents are election-scoped and no active election could be resolved. No incident queue is shown."
+      error="no-active-election-resolved"
+      onRetry={loadIncidents}
+    />
+  );
 
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
 
@@ -141,6 +160,9 @@ export default function IncidentsPage() {
           <DialogContent>
             <DialogHeader><DialogTitle>Report Incident</DialogTitle></DialogHeader>
             <div className="space-y-4">
+              <div className="text-xs text-muted-foreground">
+                Election: {electionName ?? (electionLoading ? 'Resolving…' : 'Unavailable — submission disabled')}
+              </div>
               <div className="space-y-2">
                 <Label>Polling Unit Code (optional)</Label>
                 <Input placeholder="e.g. LA-001-W001-PU001" value={form.polling_unit_code}
@@ -177,7 +199,7 @@ export default function IncidentsPage() {
                 <Input placeholder="Describe the incident" value={form.description}
                   onChange={e => setForm(p => ({ ...p, description: e.target.value }))} />
               </div>
-              <Button onClick={handleCreate} className="w-full bg-red-600 hover:bg-red-700">Submit Report</Button>
+              <Button onClick={handleCreate} disabled={!electionId} className="w-full bg-red-600 hover:bg-red-700">Submit Report</Button>
             </div>
           </DialogContent>
         </Dialog>

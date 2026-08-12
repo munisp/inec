@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
+import { logger } from '@/lib/utils';
 
 interface IntegrityResult {
   polling_unit_code: string;
@@ -23,14 +25,17 @@ export default function IntegrityScorePage() {
   const [stateFilter, setStateFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Election scope is resolved, never hardcoded.
+  const { electionId } = useResolvedElection();
 
   useEffect(() => {
+    if (!electionId) { setLoading(false); return; }
     setLoading(true);
-    api.getIntegrityHeatmap(1, stateFilter || undefined)
+    api.getIntegrityHeatmap(electionId, stateFilter || undefined)
       .then(setData)
-      .catch(e => console.error('integrity heatmap:', e))
+      .catch(e => logger.error('integrity heatmap:', e))
       .finally(() => setLoading(false));
-  }, [stateFilter]);
+  }, [stateFilter, electionId]);
 
   const ratingColor = (rating: string) => {
     switch (rating) {

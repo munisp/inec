@@ -3,6 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, RefreshCon
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 const { width } = Dimensions.get('window');
 
@@ -23,18 +24,22 @@ export default function TVDashboardScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedState, setSelectedState] = useState('');
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const load = useCallback(async () => {
+    if (!electionId) return;
     try {
-      const res = await api<TVData>('/public/tv-dashboard?election_id=1');
+      const res = await api<TVData>(`/public/tv-dashboard?election_id=${electionId}`);
       setData(res);
     } catch { setData(null); }
-  }, []);
+  }, [electionId]);
 
   useEffect(() => { setLoading(true); load().finally(() => setLoading(false)); }, [load]);
   useEffect(() => { const i = setInterval(load, 15000); return () => clearInterval(i); }, [load]);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); };
+
+  if (electionLoading || !electionId) return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a' }}><ActivityIndicator size="large" color="#3b82f6" /></View>;
 
   if (loading && !data) return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a' }}><ActivityIndicator size="large" color="#3b82f6" /></View>;
 

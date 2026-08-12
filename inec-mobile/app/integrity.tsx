@@ -3,6 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, TextInput, ActivityIndicator,
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface IntegrityResult {
   polling_unit_code: string;
@@ -21,13 +22,15 @@ export default function IntegrityScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const load = useCallback(async () => {
+    if (!electionId) return;
     try {
-      const res = await api<{ heatmap: IntegrityResult[]; total: number }>('/ai/integrity-heatmap?election_id=1');
+      const res = await api<{ heatmap: IntegrityResult[]; total: number }>(`/ai/integrity-heatmap?election_id=${electionId}`);
       setData(res.heatmap || []);
     } catch { setData([]); }
-  }, []);
+  }, [electionId]);
 
   useEffect(() => { setLoading(true); load().finally(() => setLoading(false)); }, [load]);
 
@@ -42,6 +45,19 @@ export default function IntegrityScreen() {
 
   const filtered = data.filter(d => !search || d.polling_unit_code.toLowerCase().includes(search.toLowerCase()));
   const avgScore = filtered.length > 0 ? filtered.reduce((s, r) => s + r.composite_score, 0) / filtered.length : 0;
+
+  // Gate rendering until the election scope is resolved — never fetch with a hardcoded id.
+  if (electionLoading || !electionId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        {electionLoading ? (
+          <ActivityIndicator size="large" color="#166534" />
+        ) : (
+          <Text style={{ color: '#6b7280', textAlign: 'center' }}>No active election is available.</Text>
+        )}
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: '#f8fafc' }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>

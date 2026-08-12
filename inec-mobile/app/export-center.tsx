@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface ExportJob {
   job_id: string;
@@ -15,15 +16,18 @@ interface ExportJob {
 export default function ExportCenterScreen() {
   const [jobs, setJobs] = useState<ExportJob[]>([]);
   const [loading, setLoading] = useState(false);
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const triggerExport = async (format: string) => {
+    // Write path: never export a hardcoded election id.
+    if (!electionId) { Alert.alert('Please wait', 'Election is still resolving.'); return; }
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       const res = await apiCall<ExportJob>('/export/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ format, election_id: 1 }),
+        body: JSON.stringify({ format, election_id: electionId }),
       });
       setJobs(prev => [res, ...prev]);
       Alert.alert('Export Started', `${format.toUpperCase()} export job created.`);
@@ -49,7 +53,7 @@ export default function ExportCenterScreen() {
             { format: 'parquet', label: 'Parquet (Analytics)', icon: 'analytics-outline' as const, color: '#7c3aed' },
             { format: 'json', label: 'JSON API Dump', icon: 'code-slash-outline' as const, color: '#2563eb' },
           ].map((exp) => (
-            <TouchableOpacity key={exp.format} style={[styles.exportButton, { borderColor: exp.color }]} onPress={() => triggerExport(exp.format)} disabled={loading} activeOpacity={0.8}>
+            <TouchableOpacity key={exp.format} style={[styles.exportButton, { borderColor: exp.color }]} onPress={() => triggerExport(exp.format)} disabled={loading || electionLoading || !electionId} activeOpacity={0.8}>
               <Ionicons name={exp.icon} size={20} color={exp.color} />
               <Text style={[styles.exportText, { color: exp.color }]}>{exp.label}</Text>
             </TouchableOpacity>

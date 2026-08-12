@@ -12,33 +12,29 @@ export class ApiError extends Error {
 
 // Token is in httpOnly cookie — no localStorage access needed for auth
 
-function xhrFallback(path: string, method: string, headers: Record<string, string>, body?: string): unknown {
-  const xhr = new XMLHttpRequest();
-  const base = path.startsWith('/gotv') ? GOTV_API_URL : API_URL;
-  xhr.open(method, `${base}${path}`, false);
-  xhr.withCredentials = true;
-  Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
-  xhr.send(body || null);
-  if (xhr.status === 0) throw new Error('XHR failed: network error');
-  if (xhr.status >= 400) {
-    const err = (() => { try { return JSON.parse(xhr.responseText); } catch { return { detail: xhr.statusText }; } })();
-    throw new ApiError(xhr.status, err.detail || err.error || 'Request failed');
-  }
-  try { return JSON.parse(xhr.responseText); } catch { return xhr.responseText; }
-}
+/** Dispatched on an unrecoverable 401 so the auth layer can end the session
+ * and route to /login (with a return path) — never a blunt location.reload(). */
+export const SESSION_EXPIRED_EVENT = 'inec-session-expired';
 
 function handleAuthFailure() {
   localStorage.removeItem('user');
-  window.location.reload();
+  localStorage.removeItem('auth_token');
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
 async function request(path: string, options: RequestInit = {}, retries = 2) {
   const storedToken = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(storedToken ? { 'Authorization': `Bearer ${storedToken}` } : {}),
     ...(options.headers as Record<string, string> || {}),
   };
+  if (isFormData) {
+    // Multipart bodies must NOT carry a JSON content-type; the browser sets
+    // the multipart boundary itself.
+    delete headers['Content-Type'];
+  }
   // GOTV routes are served by a separate microservice and proxied via Vite/gateway.
   // Use relative URLs so requests go through the proxy instead of directly to API_URL.
   const baseUrl = path.startsWith('/gotv') ? GOTV_API_URL : API_URL;
@@ -69,24 +65,9 @@ async function request(path: string, options: RequestInit = {}, retries = 2) {
         throw new ApiError(502, 'The service returned an invalid response. Please retry or check its operational status.');
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.status === 401) throw err;
-        throw err;
-      }
-      // Fallback to synchronous XHR when fetch() fails (e.g. in automation environments)
-      if (err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.')) {
-        try {
-          return xhrFallback(path, options.method || 'GET', headers, options.body as string | undefined);
-        } catch (xhrErr) {
-          if (xhrErr instanceof ApiError) {
-            if (xhrErr.status === 401 && path !== '/auth/login' && path !== '/auth/refresh') {
-              handleAuthFailure();
-            }
-            throw xhrErr;
-          }
-          if (attempt === retries) throw xhrErr;
-        }
-      }
+      if (err instanceof ApiError) throw err;
+      // Network failure — retry with backoff; no synchronous XHR fallback
+      // (sync XHR blocks the main thread and is deprecated).
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
     }
@@ -759,19 +740,19 @@ export const api = {
     request('/admin/batch/users', { method: 'POST', body: JSON.stringify({ users }) }),
   batchStatusUpdate: (entity: string, ids: number[], status: string) =>
     request('/admin/batch/status', { method: 'POST', body: JSON.stringify({ entity, ids, status }) }),
-  getIntegrityScore: (puCode: string, electionId?: number) =>
-    request(`/ai/integrity-score?pu_code=${puCode}&election_id=${electionId || 1}`),
-  getIntegrityHeatmap: (electionId?: number, stateCode?: string) => {
-    const params = new URLSearchParams({ election_id: String(electionId || 1) });
+  getIntegrityScore: (puCode: string, electionId: number) =>
+    request(`/ai/integrity-score?pu_code=${puCode}&election_id=${electionId}`),
+  getIntegrityHeatmap: (electionId: number, stateCode?: string) => {
+    const params = new URLSearchParams({ election_id: String(electionId) });
     if (stateCode) params.set('state_code', stateCode);
     return request(`/ai/integrity-heatmap?${params}`);
   },
-  getResultCertificate: (puCode: string, electionId?: number) =>
-    request(`/public/result-certificate?pu_code=${puCode}&election_id=${electionId || 1}`),
-  getTVDashboard: (electionId?: number) =>
-    request(`/public/tv-dashboard?election_id=${electionId || 1}`),
-  getComplianceReport: (standard: string, electionId?: number) =>
-    request(`/reports/compliance?standard=${standard}&election_id=${electionId || 1}`),
+  getResultCertificate: (puCode: string, electionId: number) =>
+    request(`/public/result-certificate?pu_code=${puCode}&election_id=${electionId}`),
+  getTVDashboard: (electionId: number) =>
+    request(`/public/tv-dashboard?election_id=${electionId}`),
+  getComplianceReport: (standard: string, electionId: number) =>
+    request(`/reports/compliance?standard=${standard}&election_id=${electionId}`),
   getAuditTimeline: (params?: { user_id?: string; pu_code?: string; limit?: number }) => {
     const p = new URLSearchParams();
     if (params?.user_id) p.set('user_id', params.user_id);
@@ -819,8 +800,8 @@ export const api = {
     if (lgaCode) p.set('lga_code', lgaCode);
     return request(`/geo/boundary?${p}`);
   },
-  getGeoSpatialStats: (electionId?: number, stateCode?: string) => {
-    const p = new URLSearchParams({ election_id: String(electionId || 1) });
+  getGeoSpatialStats: (electionId: number, stateCode?: string) => {
+    const p = new URLSearchParams({ election_id: String(electionId) });
     if (stateCode) p.set('state_code', stateCode);
     return request(`/geo/spatial-stats?${p}`);
   },
@@ -860,8 +841,8 @@ export const api = {
     request(`/geo/geofence/zones${stateCode ? `?state_code=${stateCode}` : ''}`),
   getGeofenceViolations: () => request('/geo/geofence/violations'),
   seedGeofenceZones: () => request('/geo/geofence/zones/seed', { method: 'POST' }),
-  getSpatialClusters: (electionId?: number, epsKm?: number) => {
-    const p = new URLSearchParams({ election_id: String(electionId || 1) });
+  getSpatialClusters: (electionId: number, epsKm?: number) => {
+    const p = new URLSearchParams({ election_id: String(electionId) });
     if (epsKm) p.set('eps_km', String(epsKm));
     return request(`/geo/spatial/clusters?${p}`);
   },

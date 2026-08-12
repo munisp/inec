@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
+import { useResolvedElection } from '@/lib/gotv-session';
 
 interface ComplianceData {
   standard: string;
@@ -31,18 +32,21 @@ export default function ComplianceReportPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Election scope is resolved, never hardcoded.
+  const { electionId } = useResolvedElection();
 
   useEffect(() => {
+    if (!electionId) { setLoading(false); return; }
     setLoading(true);
     setError(null);
-    api.getComplianceReport(standard, 1)
+    api.getComplianceReport(standard, electionId)
       .then(setData)
       .catch(() => {
         setData(null);
         setError('compliance-report-source-unavailable');
       })
       .finally(() => setLoading(false));
-  }, [standard, refreshKey]);
+  }, [standard, refreshKey, electionId]);
 
   const secLevelColor: Record<string, string> = {
     excellent: 'text-green-600 dark:text-green-400', good: 'text-blue-600 dark:text-blue-400',

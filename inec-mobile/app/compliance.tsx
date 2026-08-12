@@ -3,6 +3,7 @@ import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, RefreshCon
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface ComplianceData {
   standard: string;
@@ -19,13 +20,15 @@ export default function ComplianceScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [standard, setStandard] = useState('ecowas');
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const load = useCallback(async () => {
+    if (!electionId) return;
     try {
-      const res = await api<ComplianceData>(`/reports/compliance?standard=${standard}&election_id=1`);
+      const res = await api<ComplianceData>(`/reports/compliance?standard=${standard}&election_id=${electionId}`);
       setData(res);
     } catch { setData(null); }
-  }, [standard]);
+  }, [standard, electionId]);
 
   useEffect(() => { setLoading(true); load().finally(() => setLoading(false)); }, [load]);
 
@@ -37,6 +40,19 @@ export default function ComplianceScreen() {
     if (level === 'fair') return '#d97706';
     return '#dc2626';
   };
+
+  // Gate rendering until the election scope is resolved — never fetch with a hardcoded id.
+  if (electionLoading || !electionId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        {electionLoading ? (
+          <ActivityIndicator size="large" color="#166534" />
+        ) : (
+          <Text style={{ color: '#6b7280', textAlign: 'center' }}>No active election is available.</Text>
+        )}
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: '#f8fafc' }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>

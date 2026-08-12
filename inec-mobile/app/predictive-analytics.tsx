@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'rea
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface PredictionResult {
   state: string;
@@ -23,6 +24,7 @@ export default function PredictiveAnalyticsScreen() {
   const [predictions, setPredictions] = useState<PredictionResult[]>([]);
   const [benford, setBenford] = useState<BenfordResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const runPrediction = async () => {
     setLoading(true);
@@ -37,10 +39,11 @@ export default function PredictiveAnalyticsScreen() {
   };
 
   const runBenford = async () => {
+    if (!electionId) { Alert.alert('Please wait', 'Election is still resolving.'); return; }
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const res = await apiCall<BenfordResult>('/ai/benford?election_id=1');
+      const res = await apiCall<BenfordResult>(`/ai/benford?election_id=${electionId}`);
       setBenford(res);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Benford analysis failed');
@@ -84,7 +87,7 @@ export default function PredictiveAnalyticsScreen() {
           <Text style={styles.cardTitle}>Benford's Law Analysis</Text>
         </View>
         <Text style={styles.muted}>Statistical fraud detection by analyzing first-digit distribution of vote counts.</Text>
-        <TouchableOpacity style={styles.button} onPress={runBenford} disabled={loading} activeOpacity={0.8}>
+        <TouchableOpacity style={styles.button} onPress={runBenford} disabled={loading || electionLoading || !electionId} activeOpacity={0.8}>
           <Text style={styles.buttonText}>{loading ? 'Analyzing...' : 'Run Benford Analysis'}</Text>
         </TouchableOpacity>
         {benford && (

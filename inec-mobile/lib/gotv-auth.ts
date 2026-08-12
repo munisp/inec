@@ -4,7 +4,17 @@
 
 import * as SecureStore from 'expo-secure-store';
 
-const GOTV_API = process.env.EXPO_PUBLIC_GOTV_API_URL ?? 'http://localhost:8103';
+// Fail fast: a production build must never silently fall back to localhost.
+// The URL is provided via eas.json build profiles (EXPO_PUBLIC_GOTV_API_URL).
+const GOTV_API = process.env.EXPO_PUBLIC_GOTV_API_URL ?? (__DEV__ ? 'http://localhost:8103' : undefined);
+if (!GOTV_API) {
+  throw new Error(
+    'EXPO_PUBLIC_GOTV_API_URL is not set. Configure it in eas.json for this build profile; ' +
+    'a production build must never default to a localhost backend.'
+  );
+}
+
+export { GOTV_API };
 
 const TOKEN_KEY = 'gotv_mobile_token';
 const REFRESH_KEY = 'gotv_mobile_refresh';

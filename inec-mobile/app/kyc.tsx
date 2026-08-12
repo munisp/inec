@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert,
+  View, Text, TextInput, StyleSheet, ScrollView, TouchableOpacity, Image, Alert,
   Platform, Animated, ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -28,6 +28,20 @@ export default function KYCScreen() {
   const [livenessResult, setLivenessResult] = useState<LivenessResult | null>(null);
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  // NIN is user-supplied and validated — never hardcoded.
+  const [nin, setNin] = useState('');
+  const [ninError, setNinError] = useState<string | null>(null);
+
+  const validateNin = (value: string): boolean => {
+    const digits = value.replace(/\D/g, '');
+    if (digits.length !== 11) {
+      setNinError('NIN must be exactly 11 digits');
+      return false;
+    }
+    setNinError(null);
+    return true;
+  };
+  const ninValid = /^\d{11}$/.test(nin);
   const cameraRef = useRef<CameraView>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
 
@@ -65,6 +79,11 @@ export default function KYCScreen() {
 
   const runLiveness = async () => {
     if (!selfiePhoto) return;
+    // Identity verification requires a validated user-supplied NIN.
+    if (!validateNin(nin)) {
+      goToStep('start');
+      return;
+    }
     goToStep('processing');
     setProcessing(true);
     setVerificationError(null);
@@ -88,7 +107,7 @@ export default function KYCScreen() {
         form.append('id_document', { uri: idPhoto, type: 'image/jpeg', name: 'id.jpg' } as unknown as Blob);
         form.append('selfie', { uri: selfiePhoto, type: 'image/jpeg', name: 'selfie.jpg' } as unknown as Blob);
         form.append('id_type', 'nin');
-        form.append('id_number', '12345678901');
+        form.append('id_number', nin);
         const result = await kycApi.verify(form);
         setKycResult(result);
       } catch {
@@ -185,7 +204,24 @@ export default function KYCScreen() {
               </View>
             ))}
           </View>
-          <TouchableOpacity style={styles.primaryButton} onPress={() => goToStep('id_capture')}>
+          <View style={styles.ninInputWrap}>
+            <Text style={styles.ninLabel}>National Identification Number (NIN)</Text>
+            <TextInput
+              style={[styles.ninInput, ninError ? styles.ninInputError : null]}
+              value={nin}
+              onChangeText={(v) => { setNin(v.replace(/\D/g, '').slice(0, 11)); if (ninError) validateNin(v.replace(/\D/g, '')); }}
+              placeholder="Enter your 11-digit NIN"
+              keyboardType="number-pad"
+              maxLength={11}
+              autoComplete="off"
+            />
+            {ninError ? <Text style={styles.ninErrorText}>{ninError}</Text> : null}
+          </View>
+          <TouchableOpacity
+            style={[styles.primaryButton, !ninValid && styles.primaryButtonDisabled]}
+            disabled={!ninValid}
+            onPress={() => { if (validateNin(nin)) goToStep('id_capture'); }}
+          >
             <Ionicons name="arrow-forward" size={18} color="#fff" />
             <Text style={styles.primaryButtonText}>Start Verification</Text>
           </TouchableOpacity>
@@ -320,6 +356,12 @@ const styles = StyleSheet.create({
   requirementItem: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   requirementText: { fontSize: 14, color: '#374151', flex: 1 },
   primaryButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#166534', paddingVertical: 14, paddingHorizontal: 28, borderRadius: 14, width: '100%' },
+  primaryButtonDisabled: { opacity: 0.5 },
+  ninInputWrap: { width: '100%', marginBottom: 20 },
+  ninLabel: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6 },
+  ninInput: { width: '100%', borderWidth: 1.5, borderColor: '#d1d5db', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14, fontSize: 16, color: '#111827', backgroundColor: '#fff', letterSpacing: 2 },
+  ninInputError: { borderColor: '#ef4444' },
+  ninErrorText: { fontSize: 12, color: '#ef4444', marginTop: 4 },
   primaryButtonText: { fontSize: 16, fontWeight: '700', color: '#fff' },
   permissionCard: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 16 },
   permissionTitle: { fontSize: 20, fontWeight: '700', color: '#111827' },

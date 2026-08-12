@@ -4,6 +4,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Target, Users, Trophy, Brain, MapPin, Zap, BarChart3 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
+import { logger } from '@/lib/utils';
 
 interface VoterScore {
   contact_id: string;
@@ -81,21 +83,19 @@ export default function GOTVScoring() {
   const [banditData, setBanditData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  const token = localStorage.getItem('auth_token');
-  const partyId = localStorage.getItem('gotv_party_id') || '1';
-  const headers: HeadersInit = {
-    'Authorization': `Bearer ${token}`,
-    'X-GOTV-Party-ID': partyId,
-    'Content-Type': 'application/json',
-  };
+  const [partyCode] = useGOTVParty();
   const BASE = '';
 
   useEffect(() => {
+    // Scoring data is party-scoped — never fetch without an explicit selection.
+    if (!partyCode) return;
     loadData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partyCode]);
 
   async function loadData() {
     setLoading(true);
+    const headers = gotvAuthHeaders({ 'Content-Type': 'application/json' });
     try {
       const [sumRes, voterRes, winRes, allocRes, banditRes] = await Promise.allSettled([
         fetch(`${BASE}/gotv/scoring/summary`, { headers }),
@@ -114,7 +114,7 @@ export default function GOTVScoring() {
       if (allocRes.status === 'fulfilled' && allocRes.value.ok) setAllocations(await allocRes.value.json());
       if (banditRes.status === 'fulfilled' && banditRes.value.ok) setBanditData(await banditRes.value.json());
     } catch (e) {
-      console.error('Scoring data load error:', e);
+      logger.error('Scoring data load error:', e);
     }
     setLoading(false);
   }
@@ -131,6 +131,19 @@ export default function GOTVScoring() {
     { id: 'bandit', label: 'Message Optimizer', icon: Brain },
   ] as const;
 
+  if (!partyCode) {
+    return (
+      <div className="p-6 space-y-6">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <div className="text-center py-12 text-muted-foreground">
+          Select a party to view the scoring engine.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -143,9 +156,12 @@ export default function GOTVScoring() {
             Cambridge Analytica-grade analytics — individual voter scoring, win probability, resource optimization
           </p>
         </div>
-        <Button onClick={loadData} disabled={loading} variant="outline" size="sm">
-          {loading ? 'Loading...' : 'Refresh'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <GOTVPartySelector />
+          <Button onClick={loadData} disabled={loading} variant="outline" size="sm">
+            {loading ? 'Loading...' : 'Refresh'}
+          </Button>
+        </div>
       </div>
 
       {/* Tab Navigation */}
