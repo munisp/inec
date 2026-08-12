@@ -41,6 +41,39 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+# SECURITY: anomaly scoring endpoints were unauthenticated. The service FAILS
+# CLOSED when AI_ANOMALY_API_KEY is unset (503 on all non-health routes).
+AI_ANOMALY_API_KEY = os.getenv("AI_ANOMALY_API_KEY", "").strip()
+
+
+def _key_valid(provided: str) -> bool:
+    import hmac
+
+    return bool(provided) and hmac.compare_digest(
+        provided.encode(), AI_ANOMALY_API_KEY.encode()
+    )
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    from fastapi.responses import JSONResponse
+
+    if request.url.path == "/api/v1/anomaly/health":
+        return await call_next(request)
+    if not AI_ANOMALY_API_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "AI_ANOMALY_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not _key_valid(provided):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
+
+
 connected_clients: list[WebSocket] = []
 
 
@@ -270,6 +303,11 @@ async def health():
 
 @app.websocket("/ws/anomalies")
 async def websocket_anomalies(websocket: WebSocket):
+    # SECURITY: HTTP middleware does not cover WebSocket upgrades — require the
+    # API key as a query token, failing closed when unconfigured.
+    if not AI_ANOMALY_API_KEY or not _key_valid(websocket.query_params.get("token", "")):
+        await websocket.close(code=4401)
+        return
     await websocket.accept()
     connected_clients.append(websocket)
     try:

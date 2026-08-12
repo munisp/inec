@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
+import hmac
 import joblib
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -54,9 +55,50 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-Admin-Key"],
     allow_credentials=True,
 )
+
+# SECURITY: allocation endpoints were unauthenticated. The service FAILS CLOSED
+# when PREDICTIVE_ALLOC_API_KEY is unset (503 on all non-health routes).
+PREDICTIVE_ALLOC_API_KEY = os.getenv("PREDICTIVE_ALLOC_API_KEY", "").strip()
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    from fastapi.responses import JSONResponse
+
+    if request.url.path == "/api/v1/allocation/health":
+        return await call_next(request)
+    if not PREDICTIVE_ALLOC_API_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "PREDICTIVE_ALLOC_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), PREDICTIVE_ALLOC_API_KEY.encode()):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
+
+
+def _verify_admin_key(request: Request) -> None:
+    """Require the admin key for privileged operations (model retraining).
+
+    Mirrors gotv-analytics ml_serving._verify_admin_key: 503 when unconfigured
+    (fail closed), 403 on an invalid key.
+    """
+    admin_key = os.getenv("PREDICTIVE_ALLOC_ADMIN_KEY", "").strip()
+    if not admin_key:
+        raise HTTPException(
+            status_code=503,
+            detail="PREDICTIVE_ALLOC_ADMIN_KEY not configured; admin operations are disabled",
+        )
+    provided = request.headers.get("x-admin-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), admin_key.encode()):
+        raise HTTPException(status_code=403, detail="invalid admin key")
 
 
 @dataclass
@@ -293,7 +335,9 @@ async def startup() -> None:
 
 
 @app.post("/api/v1/allocation/train", response_model=TrainingResponse)
-async def train_from_historical_results() -> TrainingResponse:
+async def train_from_historical_results(request: Request) -> TrainingResponse:
+    # SECURITY: retraining swaps the production model — admin-key only.
+    _verify_admin_key(request)
     return await refresh_model()
 
 

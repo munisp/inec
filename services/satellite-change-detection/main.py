@@ -13,10 +13,12 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+import hmac
+
 import httpx
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -29,6 +31,32 @@ app = FastAPI(
     description="Real STAC-backed polling-unit imagery analysis",
     version=APP_VERSION,
 )
+
+# SECURITY: imagery-analysis endpoints were unauthenticated (each call triggers
+# paid STAC preview downloads). The service FAILS CLOSED when SATELLITE_API_KEY
+# is unset (503 on all non-health routes).
+SATELLITE_API_KEY = os.getenv("SATELLITE_API_KEY", "").strip()
+_PUBLIC_PATHS = ("/status", "/api/v1/satellite/health")
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    from fastapi.responses import JSONResponse
+
+    if request.url.path in _PUBLIC_PATHS:
+        return await call_next(request)
+    if not SATELLITE_API_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "SATELLITE_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), SATELLITE_API_KEY.encode()):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
 
 
 class PollingUnitValidationRequest(BaseModel):
