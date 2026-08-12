@@ -67,12 +67,19 @@ export default function ElectionDayWarRoom() {
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [incidents.length]);
 
-  // SSE for real-time updates
+  // SSE for real-time updates — degrade honestly when the stream drops.
+  // The 10s react-query refetch above is the polling fallback.
+  const [sseState, setSseState] = useState<"connecting" | "live" | "polling">("connecting");
   useEffect(() => {
-    if (!profileId) return;
+    if (!profileId) { setSseState("polling"); return; }
+    setSseState("connecting");
     const es = new EventSource(`/api/war-room/stream?profileId=${profileId}`);
-    es.onmessage = () => utils.warRoom.incidents.invalidate();
-    es.onerror = () => es.close();
+    es.onopen = () => setSseState("live");
+    es.onmessage = () => { setSseState("live"); utils.warRoom.incidents.invalidate(); };
+    es.onerror = () => {
+      setSseState("polling");
+      es.close(); // stop browser auto-retry loop; polling fallback covers updates
+    };
     return () => es.close();
   }, [profileId, utils.warRoom.incidents]);
 
@@ -102,9 +109,16 @@ export default function ElectionDayWarRoom() {
       <header style={{ background: "#4A1525" }} className="px-6 py-4 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3">
           <Link href="/"><Button variant="ghost" size="sm" className="text-white gap-1 hover:bg-white/10"><ArrowLeft size={14} /> Home</Button></Link>
-          <Radio size={18} className="text-white animate-pulse" />
+          <Radio size={18} className={`text-white ${sseState === "live" ? "animate-pulse" : "opacity-50"}`} />
           <h1 className="text-white font-bold text-lg" style={{ fontFamily: "'Playfair Display', serif" }}>Election Day War Room</h1>
-          <Badge style={{ background: "#008751", color: "white" }} className="ml-2">LIVE</Badge>
+          {sseState === "live" ? (
+            <Badge style={{ background: "#008751", color: "white" }} className="ml-2">LIVE</Badge>
+          ) : (
+            <Badge style={{ background: "#B45309", color: "white" }} className="ml-2"
+              title="Live event stream is not connected — updates arrive via 10s polling">
+              {sseState === "connecting" ? "Connecting…" : "Polling only"}
+            </Badge>
+          )}
         </div>
         <div className="flex items-center gap-6">
           <div className="text-right">

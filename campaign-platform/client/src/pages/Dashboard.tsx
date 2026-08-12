@@ -46,6 +46,11 @@ export default function Dashboard() {
     { profileId: profileId! },
     { enabled: !!profileId, refetchInterval: 30000 }
   );
+  const { data: electionDateData, isLoading: electionDateLoading } = trpc.dashboard.electionDate.useQuery(
+    { profileId: profileId! },
+    { enabled: !!profileId, staleTime: 60_000 }
+  );
+  const electionDate = electionDateData?.electionDate ?? null;
 
   const complianceData = kpis ? [
     { name: "Compliant", value: kpis.complianceCompliant, color: "#008751" },
@@ -94,18 +99,26 @@ export default function Dashboard() {
             <p className="text-xs" style={{ color: "#C9B8BE" }}>PARTY · STATE</p>
             <p className="text-sm font-bold text-white">{partyName ?? "—"} · {stateName ?? "—"}</p>
           </div>
-          {/* Election countdown */}
-          <div className="border-l border-white/20 pl-4">
-            <p className="text-xs" style={{ color: "#C9B8BE" }}>ELECTION COUNTDOWN</p>
-            {(() => {
-              const electionDay = new Date("2027-02-20T08:00:00");
-              const diff = electionDay.getTime() - Date.now();
-              if (diff <= 0) return <p className="text-sm font-bold text-red-300">Election Day!</p>;
-              const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-              const hrs = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-              return <p className="text-sm font-mono font-bold" style={{ color: days < 30 ? "#FCA5A5" : "#86EFAC" }}>{days}d {hrs}h</p>;
-            })()}
-          </div>
+          {/* Election countdown — driven by the Election Day event on the campaign timeline */}
+          {electionDateLoading && profileId ? (
+            <div className="border-l border-white/20 pl-4">
+              <p className="text-xs" style={{ color: "#C9B8BE" }}>ELECTION COUNTDOWN</p>
+              <p className="text-sm text-white/50">…</p>
+            </div>
+          ) : electionDate ? (
+            <div className="border-l border-white/20 pl-4">
+              <p className="text-xs" style={{ color: "#C9B8BE" }}>ELECTION COUNTDOWN</p>
+              {(() => {
+                const electionDay = new Date(electionDate);
+                const diff = electionDay.getTime() - Date.now();
+                if (isNaN(electionDay.getTime())) return null;
+                if (diff <= 0) return <p className="text-sm font-bold text-red-300">Election Day!</p>;
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hrs = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                return <p className="text-sm font-mono font-bold" style={{ color: days < 30 ? "#FCA5A5" : "#86EFAC" }}>{days}d {hrs}h</p>;
+              })()}
+            </div>
+          ) : null}
         </div>
       </header>
 

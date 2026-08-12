@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -18,14 +18,9 @@ export default function PetitionDrive() {
     { profileId: profileId! }, { enabled: !!profileId }
   );
   const createPetitionMut = trpc.petitions.create.useMutation({
-    onSuccess: () => utils.petitions.list.invalidate(),
+    onSuccess: () => { utils.petitions.list.invalidate(); toast.success("Petition created"); },
+    onError: (e) => toast.error(e.message),
   });
-
-  // Auto-create petition if none exists
-  useEffect(() => {
-    if (!profileId || loadingPetitions || petitions.length > 0) return;
-    createPetitionMut.mutate({ profileId, title: "Campaign Support Petition", description: "Show your support for this campaign.", targetSignatures: 10000 });
-  }, [profileId, loadingPetitions, petitions.length]);
 
   const petition = petitions[0];
 
@@ -38,6 +33,7 @@ export default function PetitionDrive() {
   });
 
   const [form, setForm] = useState({ name: "", phone: "", lga: "" });
+  const [createForm, setCreateForm] = useState({ title: "Campaign Support Petition", description: "", target: "10000" });
   const goal = petition?.targetSignatures ?? 10000;
   const pct = goal > 0 ? Math.min(100, (signatures.length / goal) * 100) : 0;
   const progressLabel = pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
@@ -115,7 +111,38 @@ export default function PetitionDrive() {
             )}
           </div>
         )}
+        {/* Explicit create — visiting this page must NOT silently create a petition */}
+        {!loadingPetitions && !petition && (
+          <div className="bg-white border border-gray-200 rounded p-6 mb-6 text-center" style={{ borderTop: "3px solid #4A1525" }}>
+            <FileSignature size={36} className="mx-auto mb-3 text-gray-300" />
+            <p className="font-semibold text-gray-800 mb-1">No petition yet</p>
+            <p className="text-sm text-gray-500 mb-4">Create a petition to start collecting signatures and get a shareable public signing link.</p>
+            <div className="max-w-md mx-auto grid gap-2 mb-3 text-left">
+              <Input placeholder="Petition title *" value={createForm.title} onChange={e => setCreateForm(f => ({ ...f, title: e.target.value }))}/>
+              <Input placeholder="Description (optional)" value={createForm.description} onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))}/>
+              <Input type="number" min={1} placeholder="Target signatures" value={createForm.target} onChange={e => setCreateForm(f => ({ ...f, target: e.target.value }))}/>
+            </div>
+            <Button
+              className="gap-1.5"
+              style={{ background: "#4A1525", color: "white" }}
+              disabled={createPetitionMut.isPending || !profileId}
+              onClick={() => {
+                if (!profileId) return toast.error("Profile required");
+                if (!createForm.title.trim()) return toast.error("Petition title required");
+                createPetitionMut.mutate({
+                  profileId,
+                  title: createForm.title.trim(),
+                  description: createForm.description.trim() || undefined,
+                  targetSignatures: Math.max(1, Number(createForm.target) || 10000),
+                });
+              }}
+            >
+              {createPetitionMut.isPending ? <Loader2 size={14} className="animate-spin"/> : <><Plus size={14}/> Create Petition</>}
+            </Button>
+          </div>
+        )}
         {/* Add signature form */}
+        {petition && (
         <div className="bg-white border border-gray-200 rounded p-5 mb-6" style={{ borderTop: "3px solid #008751" }}>
           <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Add Signature</p>
           <div className="grid grid-cols-3 gap-3">
@@ -130,6 +157,7 @@ export default function PetitionDrive() {
             {signMut.isPending ? <Loader2 size={14} className="animate-spin"/> : <><Plus size={14}/> Add Signature</>}
           </Button>
         </div>
+        )}
         {/* Table */}
         {(loadingSigs || loadingPetitions) ? <div className="flex justify-center py-10"><Loader2 size={32} className="animate-spin text-gray-400"/></div>
         : signatures.length > 0 && (

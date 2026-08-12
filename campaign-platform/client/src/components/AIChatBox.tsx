@@ -71,12 +71,16 @@ export type AIChatBoxProps = {
  *
  * @example
  * ```tsx
+ * // NOTE: there is no built-in trpc.ai.chat endpoint in this codebase —
+ * // wire onSendMessage to whatever LLM-backed mutation your feature defines
+ * // (e.g. trpc.manifestoAI.draft, trpc.debate.aiPrep), or add a chat
+ * // procedure to the server router first.
  * const ChatPage = () => {
  *   const [messages, setMessages] = useState<Message[]>([
  *     { role: "system", content: "You are a helpful assistant." }
  *   ]);
  *
- *   const chatMutation = trpc.ai.chat.useMutation({
+ *   const chatMutation = trpc.yourRouter.yourChatProcedure.useMutation({
  *     onSuccess: (response) => {
  *       // Assuming your tRPC endpoint returns the AI response as a string
  *       setMessages(prev => [...prev, {

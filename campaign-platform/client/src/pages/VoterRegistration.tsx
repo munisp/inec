@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { exportToCSV, exportToPDF } from "@/hooks/useExport";
+import { exportToPDF } from "@/hooks/useExport";
 import { ArrowLeft, Plus, UserCheck, Loader2, Search, Upload, Download, FileText } from "lucide-react";
 
 function parseVoterCSV(text: string): Array<{ fullName: string; vin?: string; lga?: string; ward?: string; pollingUnit?: string; phone?: string }> {
@@ -114,7 +114,6 @@ export default function VoterRegistration() {
             disabled={voters.length === 0} onClick={handleExportCSV}>
             <Download size={13}/> Export CSV
           </Button>
-          <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToCSV("voters", EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><Download size={13}/> CSV</Button>
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10" onClick={() => exportToPDF("voters", "Voter Registration Report", `Total: ${(voters ?? []).length} voters`, EXPORT_COLS_V, (voters ?? []) as Record<string, unknown>[])}><FileText size={13}/> PDF</Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>

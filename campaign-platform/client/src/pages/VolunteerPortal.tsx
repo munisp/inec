@@ -13,7 +13,7 @@ import { ArrowLeft, Users, Plus, Loader2, ClipboardList, CheckCircle2, Clock, XC
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts";
 
 type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
-type TaskType = "canvassing" | "polling_unit" | "data_entry" | "logistics" | "other" | "social_media" | "other";
+type TaskType = "canvassing" | "polling_unit" | "data_entry" | "logistics" | "security" | "social_media" | "other";
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   pending: "#F59E0B", in_progress: "#1A3A5C", completed: "#008751", cancelled: "#9CA3AF",
@@ -332,7 +332,7 @@ export default function VolunteerPortal() {
                   <SelectItem value="polling_unit">Polling Unit</SelectItem>
                   <SelectItem value="data_entry">Data Entry</SelectItem>
                   <SelectItem value="logistics">Logistics</SelectItem>
-                  <SelectItem value="other">Security</SelectItem>
+                  <SelectItem value="security">Security</SelectItem>
                   <SelectItem value="social_media">Media</SelectItem>
                   <SelectItem value="other">Other</SelectItem>
                 </SelectContent>
@@ -355,7 +355,8 @@ export default function VolunteerPortal() {
                   profileId,
                   title: tForm.title,
                   description: tForm.description || undefined,
-                  taskType: tForm.taskType,
+                  // Server enum is being widened to include "security"; cast until deployed
+                  taskType: tForm.taskType as "canvassing" | "polling_unit" | "data_entry" | "logistics" | "social_media" | "other",
                   status: tForm.status,
                   volunteerId: tForm.volunteerId ? parseInt(tForm.volunteerId) : undefined,
                   dueDate: tForm.dueDate || undefined,

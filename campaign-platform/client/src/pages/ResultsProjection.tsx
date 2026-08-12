@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, BarChart2, Plus, Loader2, RefreshCw, Radio, FileText, Download} from "lucide-react";
+import { ArrowLeft, BarChart2, Plus, Loader2, RefreshCw, FileText, Download} from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend } from "recharts";
 
 const COLORS = ["#4A1525","#008751","#1A3A5C","#C0392B","#F59E0B","#6366F1","#EC4899","#14B8A6"];
@@ -57,9 +57,10 @@ export default function ResultsProjection() {
           <Link href="/"><Button variant="ghost" size="sm" className="text-white gap-1 hover:bg-white/10"><ArrowLeft size={14}/> Home</Button></Link>
           <BarChart2 size={18} className="text-white"/>
           <h1 className="text-white font-bold text-lg" style={{ fontFamily: "'Playfair Display', serif" }}>Results Projection</h1>
-          {/* LIVE badge */}
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold" style={{ background: "#C0392B", color: "white" }}>
-            <Radio size={10} className="animate-pulse"/> LIVE
+          {/* Manual collation badge — data is hand-entered, not a live feed */}
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold" style={{ background: "#1A3A5C", color: "white" }}
+            title="Results are manually collated and entered by campaign agents">
+            Manual collation{lastRefresh ? ` — last updated ${lastRefresh.toLocaleTimeString("en-NG")}` : ""}
           </span>
         </div>
         <div className="flex items-center gap-3 flex-wrap">

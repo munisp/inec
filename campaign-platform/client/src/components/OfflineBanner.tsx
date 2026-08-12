@@ -5,7 +5,7 @@
  * Automatically dismisses when connectivity is restored.
  */
 import { useEffect, useState } from "react";
-import { WifiOff, Wifi, X, Database } from "lucide-react";
+import { WifiOff, Wifi, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useOfflineStatus } from "../hooks/useOfflineStatus";
 
@@ -49,15 +49,11 @@ export default function OfflineBanner() {
           <WifiOff className="w-4 h-4 flex-shrink-0" style={{ color: "oklch(0.92 0.08 50)" }} />
           <div className="flex-1 min-w-0">
             <span className="text-xs font-bold" style={{ color: "oklch(0.97 0.02 50)" }}>
-              Offline — Cached Data Active
+              You appear to be offline
             </span>
             <span className="text-xs ml-2" style={{ color: "oklch(0.80 0.06 50)" }}>
-              {offlineDuration > 0 ? `${offlineDuration}m ago` : "Just now"} · All stakeholder data is still available
+              {offlineDuration > 0 ? `${offlineDuration}m ago` : "Just now"} · data may be unavailable until you reconnect
             </span>
-          </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <Database className="w-3.5 h-3.5" style={{ color: "oklch(0.80 0.06 50)" }} />
-            <span className="text-xs" style={{ color: "oklch(0.80 0.06 50)" }}>Local cache</span>
           </div>
           <button
             onClick={() => setDismissed(true)}
