@@ -23,7 +23,7 @@ var publicPaths = map[string]bool{
 	"/ws":              true,
 	"/metrics":         true,
 	"/auth/refresh":    true,
-	"/observer/stream": true, // SSE uses query param auth (EventSource can't set headers)
+	"/observer/stream": true, // SSE authenticates in-handler via authenticateStreamRequest (HttpOnly cookie; EventSource can't set headers)
 	"/.well-known/openid-configuration": true,
 }
 
