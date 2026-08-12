@@ -5,13 +5,15 @@
  *  - The GOTV party code is NEVER defaulted. It comes from an explicit user
  *    selection persisted to localStorage ('gotv_party_code'). Pages must require
  *    a selection before loading party-scoped data.
- *  - A real Bearer token (stored by the auth flow as 'auth_token') is attached
- *    whenever available; X-GOTV-Party-Code is supplementary tenancy info only.
+ *  - A real Bearer token (held in memory by the auth flow — see api.ts) is
+ *    attached whenever available; X-GOTV-Party-Code is supplementary tenancy
+ *    info only.
  *  - Election scoping resolves through the elections store: an explicit user
  *    selection (persisted to 'inec_selected_election_id'), otherwise the latest
  *    ACTIVE election from the API — never a silent hardcoded id.
  */
 import { useEffect, useState } from 'react';
+import { getAuthToken as getSessionToken } from '@/lib/api';
 import { useElectionsStore } from '@/store/elections';
 
 export const GOTV_PARTY_CODE_KEY = 'gotv_party_code';
@@ -29,11 +31,11 @@ export const GOTV_PARTY_OPTIONS: { code: string; name: string }[] = [
   { code: 'ADC', name: 'African Democratic Congress' },
 ];
 
-/** Real session token, or null when the session is cookie-only / absent. */
+/** Real session token, or null when the session is cookie-only / absent.
+ * Delegates to the in-memory token store in api.ts — JWTs are never read
+ * from localStorage in production. */
 export function getAuthToken(): string | null {
-  const token = localStorage.getItem('auth_token');
-  // auth.tsx stores the literal marker 'httponly-cookie' for cookie-only sessions.
-  return token && token !== 'httponly-cookie' ? token : null;
+  return getSessionToken();
 }
 
 /** Authorization header for the current session, when a real token exists. */

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { SESSION_EXPIRED_EVENT } from '@/lib/api';
+import { SESSION_EXPIRED_EVENT, getAuthToken, setAuthToken } from '@/lib/api';
 import { logger } from '@/lib/utils';
 
 interface User {
@@ -33,25 +33,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem('user');
     return stored ? JSON.parse(stored) : null;
   });
-  // Token storage note: the primary session is the httpOnly cookie set by the
-  // backend (marker 'httponly-cookie'). The localStorage 'auth_token' JWT is
-  // kept ONLY as a documented fallback for non-browser clients and for Bearer
-  // headers on cross-origin dev setups — it is never written to IndexedDB or
-  // the service-worker offline queue.
+  // Token storage note: the JWT lives in memory only (see api.ts). The
+  // cross-reload session is the backend-set `inec_token` httpOnly cookie
+  // (marker 'httponly-cookie'). A localStorage fallback exists ONLY in
+  // `vite dev` for cross-origin setups without cookie config — see
+  // setAuthToken/getAuthToken in api.ts and the README security note.
   const [token, setToken] = useState<string | null>(() => {
-    return localStorage.getItem('auth_token') || (localStorage.getItem('user') ? 'httponly-cookie' : null);
+    return getAuthToken() || (localStorage.getItem('user') ? 'httponly-cookie' : null);
   });
 
   const login = (newToken: string, newUser: User) => {
     localStorage.setItem('user', JSON.stringify(newUser));
-    localStorage.setItem('auth_token', newToken);
+    setAuthToken(newToken);
     setToken(newToken);
     setUser(newUser);
   };
 
   const logout = () => {
     localStorage.removeItem('user');
-    localStorage.removeItem('auth_token');
+    setAuthToken(null);
     const apiUrl = import.meta.env.VITE_API_URL ?? '';
     fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(err => logger.error("logout request failed:", err));
     setToken(null);
