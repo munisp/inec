@@ -14,11 +14,12 @@ mod matching;
 mod vault;
 
 use axum::{
-    extract::Json,
-    http::StatusCode,
-    response::IntoResponse,
+    extract::{Json, Request},
+    http::{header, Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Extension, Router,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -45,9 +46,10 @@ async fn main() {
         .json()
         .init();
 
-    // Connect to PostgreSQL — required, no fallback to in-memory
+    // Connect to PostgreSQL — required, no fallback to in-memory and no
+    // fallback credentials: a missing DATABASE_URL is a fatal misconfiguration.
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://ngapp:ngapp123@localhost:5432/ngapp".to_string());
+        .expect("DATABASE_URL is required — refusing to start with fallback credentials");
 
     let pool = db::init_pool(&database_url)
         .await
@@ -62,7 +64,10 @@ async fn main() {
     let state = Arc::new(AppState { vault, cancelable });
 
     let app = Router::new()
-        .route("/health", get(health))
+        .route("/health", get({
+            let s = state.clone();
+            move || health(s)
+        }))
         // Vault endpoints
         .route("/vault/stats", get({
             let s = state.clone();
@@ -70,15 +75,15 @@ async fn main() {
         }))
         .route("/vault/encrypt", post({
             let s = state.clone();
-            move |body| vault_encrypt(s, body)
+            move |actor, body| vault_encrypt(s, actor, body)
         }))
         .route("/vault/decrypt", post({
             let s = state.clone();
-            move |body| vault_decrypt(s, body)
+            move |actor, body| vault_decrypt(s, actor, body)
         }))
         .route("/vault/rotate-key", post({
             let s = state.clone();
-            move |body| vault_rotate_key(s, body)
+            move |actor, body| vault_rotate_key(s, actor, body)
         }))
         .route("/vault/audit", get({
             let s = state.clone();
@@ -103,44 +108,162 @@ async fn main() {
         .route("/match/face", post(match_face))
         .route("/match/iris", post(match_iris))
         .route("/match/fuse", post(match_fuse))
-        .layer(CorsLayer::permissive());
+        .layer(middleware::from_fn(vault_api_key_auth))
+        .layer(cors_layer());
 
-    let addr = "0.0.0.0:8091";
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8091".to_string());
+    let addr = format!("0.0.0.0:{}", port);
     tracing::info!("biometric vault service listening on {} (PostgreSQL persistence)", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+
+    // Graceful shutdown on SIGTERM/SIGINT — Kubernetes sends SIGTERM first and
+    // expects in-flight vault operations to drain before SIGKILL.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let ctrl_c = tokio::signal::ctrl_c();
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = ctrl_c => tracing::info!("received SIGINT, starting graceful shutdown"),
+                _ = sigterm.recv() => tracing::info!("received SIGTERM, starting graceful shutdown"),
+            }
+        })
+        .await
+        .unwrap();
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "healthy",
-        "service": "inec-biometric-vault",
-        "persistence": "postgresql",
-        "capabilities": ["vault", "cancelable", "matching", "fusion"],
-    }))
+// ─── Internal API Key Auth ───────────────────────────────────────
+
+/// Authenticated caller identity attached as a request extension. The audit
+/// actor is derived from the API key identity — never from the request body.
+#[derive(Clone)]
+struct VaultActor(String);
+
+/// Derive a stable, non-secret identity for the configured API key:
+/// BIOMETRIC_VAULT_KEY_LABEL when set, otherwise a SHA-256 hash prefix so the
+/// raw key never appears in the audit log.
+fn vault_actor_identity(key: &str) -> String {
+    if let Ok(label) = std::env::var("BIOMETRIC_VAULT_KEY_LABEL") {
+        if !label.trim().is_empty() {
+            return format!("vault-key:{}", label.trim());
+        }
+    }
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(key.as_bytes());
+    format!("vault-key:{}", hex::encode(&hash[..4]))
+}
+
+/// API-key authentication for all vault/matching endpoints. /health stays
+/// public for orchestrator probes. Fail-closed: when BIOMETRIC_VAULT_API_KEY
+/// is unset the service returns 503 rather than serving unauthenticated
+/// biometric plaintext.
+async fn vault_api_key_auth(req: Request, next: Next) -> Response {
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
+    let expected_key = std::env::var("BIOMETRIC_VAULT_API_KEY").unwrap_or_default();
+    if expected_key.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "BIOMETRIC_VAULT_API_KEY not configured; refusing to serve unauthenticated requests"
+            })),
+        )
+            .into_response();
+    }
+
+    let provided = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == expected_key)
+        .unwrap_or(false);
+
+    if !provided {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "missing or invalid x-api-key" })),
+        )
+            .into_response();
+    }
+
+    let actor = vault_actor_identity(&expected_key);
+    let mut req = req;
+    req.extensions_mut().insert(VaultActor(actor));
+    next.run(req).await
+}
+
+/// CORS policy driven by CORS_ORIGINS (comma-separated). Default deny: when
+/// unset, no cross-origin requests are permitted.
+fn cors_layer() -> CorsLayer {
+    let origins_str = std::env::var("CORS_ORIGINS").unwrap_or_default();
+    let origins: Vec<header::HeaderValue> = origins_str
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    if origins.is_empty() {
+        CorsLayer::new()
+    } else {
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                header::HeaderName::from_static("x-api-key"),
+            ])
+    }
+}
+
+async fn health(state: Arc<AppState>) -> impl IntoResponse {
+    // Readiness-style health: verify PostgreSQL is actually reachable instead
+    // of reporting a static OK while the vault cannot serve requests.
+    match state.vault.health_check().await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "healthy",
+                "service": "inec-biometric-vault",
+                "persistence": "postgresql",
+                "database": "up",
+                "capabilities": ["vault", "cancelable", "matching", "fusion"],
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "unhealthy",
+                "service": "inec-biometric-vault",
+                "database": "down",
+                "error": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 // ─── Vault ──────────────────────────────────────────────────────
 
+// NOTE: no `actor` fields — the audit actor is derived from the authenticated
+// API key identity (see VaultActor), never from caller-supplied request data.
 #[derive(Deserialize)]
 struct EncryptRequest {
     voter_vin: String,
     modality: String,
     template_data: String, // base64
-    actor: String,
 }
 
 #[derive(Deserialize)]
 struct DecryptRequest {
     template_id: String,
-    actor: String,
 }
 
 #[derive(Deserialize)]
 struct RotateKeyRequest {
     key_id: String,
-    actor: String,
 }
 
 async fn vault_stats(state: Arc<AppState>) -> impl IntoResponse {
@@ -152,6 +275,7 @@ async fn vault_stats(state: Arc<AppState>) -> impl IntoResponse {
 
 async fn vault_encrypt(
     state: Arc<AppState>,
+    Extension(actor): Extension<VaultActor>,
     Json(req): Json<EncryptRequest>,
 ) -> impl IntoResponse {
     let data = match base64::engine::general_purpose::STANDARD.decode(&req.template_data) {
@@ -159,7 +283,7 @@ async fn vault_encrypt(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
-    match state.vault.encrypt_template(&req.voter_vin, &req.modality, &data, &req.actor).await {
+    match state.vault.encrypt_template(&req.voter_vin, &req.modality, &data, &actor.0).await {
         Ok(encrypted) => Json(serde_json::json!({
             "template_id": encrypted.template_id,
             "voter_vin": encrypted.voter_vin,
@@ -174,9 +298,10 @@ async fn vault_encrypt(
 
 async fn vault_decrypt(
     state: Arc<AppState>,
+    Extension(actor): Extension<VaultActor>,
     Json(req): Json<DecryptRequest>,
 ) -> impl IntoResponse {
-    match state.vault.decrypt_template(&req.template_id, &req.actor).await {
+    match state.vault.decrypt_template(&req.template_id, &actor.0).await {
         Ok(plaintext) => Json(serde_json::json!({
             "template_data": base64::engine::general_purpose::STANDARD.encode(&plaintext),
             "size_bytes": plaintext.len(),
@@ -187,9 +312,10 @@ async fn vault_decrypt(
 
 async fn vault_rotate_key(
     state: Arc<AppState>,
+    Extension(actor): Extension<VaultActor>,
     Json(req): Json<RotateKeyRequest>,
 ) -> impl IntoResponse {
-    match state.vault.rotate_key(&req.key_id, &req.actor).await {
+    match state.vault.rotate_key(&req.key_id, &actor.0).await {
         Ok(new_id) => Json(serde_json::json!({
             "old_key_id": req.key_id,
             "new_key_id": new_id,
