@@ -87,12 +87,70 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# SECURITY: match/PAD endpoints process voter biometrics. The service FAILS
+# CLOSED when BIOMETRIC_API_KEY is unset (503 on all non-health routes).
+# /metrics exposes operational internals, so it also requires the key.
+BIOMETRIC_API_KEY = os.getenv("BIOMETRIC_API_KEY", "").strip()
+# SECURITY: CORS is deny-by-default; operators opt in via BIOMETRIC_CORS_ORIGINS
+# (comma-separated). Previously allow_origins=["*"].
+BIOMETRIC_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("BIOMETRIC_CORS_ORIGINS", "").split(",") if o.strip()
+]
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    import hmac
+
+    from starlette.responses import JSONResponse
+
+    if request.url.path == "/health":
+        return await call_next(request)
+    if not BIOMETRIC_API_KEY:
+        log.error("api_key_not_configured", detail="BIOMETRIC_API_KEY unset")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "BIOMETRIC_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), BIOMETRIC_API_KEY.encode()):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=BIOMETRIC_CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
+
+
+# SECURITY: bound base64 payloads so a request cannot exhaust memory.
+# Default allows ~10 MiB of decoded image data (base64 inflates by 4/3).
+MAX_IMAGE_B64_CHARS = int(os.getenv("MAX_IMAGE_B64_CHARS", str(14_000_000)))
+MAX_IMAGE_BYTES = MAX_IMAGE_B64_CHARS * 3 // 4
+
+
+async def _read_upload_capped(file: UploadFile, limit: int) -> bytes:
+    """Read an upload enforcing a hard byte cap (413 on breach)."""
+    declared = getattr(file, "size", None)
+    if declared is not None and declared > limit:
+        raise HTTPException(status_code=413, detail=f"image exceeds {limit} byte limit")
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(min(1024 * 1024, limit + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail=f"image exceeds {limit} byte limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def decode_image(data: bytes) -> np.ndarray:
@@ -107,31 +165,31 @@ def decode_image(data: bytes) -> np.ndarray:
 
 
 class MatchRequest(BaseModel):
-    probe_image: str = Field(..., description="Base64-encoded probe image")
-    gallery_image: str = Field(..., description="Base64-encoded gallery image")
+    probe_image: str = Field(..., max_length=MAX_IMAGE_B64_CHARS, description="Base64-encoded probe image")
+    gallery_image: str = Field(..., max_length=MAX_IMAGE_B64_CHARS, description="Base64-encoded gallery image")
 
 
 class MultiModalMatchRequest(BaseModel):
-    probe_fingerprint: str | None = Field(None, description="Base64 fingerprint image")
-    probe_face: str | None = Field(None, description="Base64 face image")
-    probe_iris: str | None = Field(None, description="Base64 iris image")
-    gallery_fingerprint: str | None = Field(None, description="Base64 fingerprint image")
-    gallery_face: str | None = Field(None, description="Base64 face image")
-    gallery_iris: str | None = Field(None, description="Base64 iris image")
+    probe_fingerprint: str | None = Field(None, max_length=MAX_IMAGE_B64_CHARS, description="Base64 fingerprint image")
+    probe_face: str | None = Field(None, max_length=MAX_IMAGE_B64_CHARS, description="Base64 face image")
+    probe_iris: str | None = Field(None, max_length=MAX_IMAGE_B64_CHARS, description="Base64 iris image")
+    gallery_fingerprint: str | None = Field(None, max_length=MAX_IMAGE_B64_CHARS, description="Base64 fingerprint image")
+    gallery_face: str | None = Field(None, max_length=MAX_IMAGE_B64_CHARS, description="Base64 face image")
+    gallery_iris: str | None = Field(None, max_length=MAX_IMAGE_B64_CHARS, description="Base64 iris image")
     fusion_weights: dict[str, float] | None = Field(
         None, description="Weights per modality, e.g. {'fingerprint': 0.4, 'face': 0.35, 'iris': 0.25}"
     )
 
 
 class PADRequest(BaseModel):
-    image: str = Field(..., description="Base64-encoded image")
+    image: str = Field(..., max_length=MAX_IMAGE_B64_CHARS, description="Base64-encoded image")
     modality: str = Field("face", description="face or fingerprint")
     pad_level: str = Field("level2", description="level1, level2, or level3")
     face_bbox: list[int] | None = Field(None, description="[x1, y1, x2, y2]")
 
 
 class QualityRequest(BaseModel):
-    image: str = Field(..., description="Base64-encoded image")
+    image: str = Field(..., max_length=MAX_IMAGE_B64_CHARS, description="Base64-encoded image")
     modality: str = Field("fingerprint", description="fingerprint, face, or iris")
     face_bbox: list[int] | None = Field(None, description="[x1, y1, x2, y2] for face")
 
@@ -168,7 +226,7 @@ async def metrics():
 async def fingerprint_extract(file: UploadFile = File(...)):
     start = time.monotonic()
     try:
-        data = await file.read()
+        data = await _read_upload_capped(file, MAX_IMAGE_BYTES)
         img = decode_image(data)
         template = fingerprint_engine.extract_template(img)
         REQUESTS.labels(endpoint="fingerprint_extract", status="success").inc()
@@ -221,7 +279,7 @@ async def fingerprint_match(req: MatchRequest):
 async def face_extract(file: UploadFile = File(...)):
     start = time.monotonic()
     try:
-        data = await file.read()
+        data = await _read_upload_capped(file, MAX_IMAGE_BYTES)
         img = decode_image(data)
         template = facial_engine.extract_template(img)
         REQUESTS.labels(endpoint="face_extract", status="success").inc()
@@ -283,7 +341,7 @@ async def face_match(req: MatchRequest):
 async def iris_extract(file: UploadFile = File(...)):
     start = time.monotonic()
     try:
-        data = await file.read()
+        data = await _read_upload_capped(file, MAX_IMAGE_BYTES)
         img = decode_image(data)
         template = iris_engine.extract_template(img)
         REQUESTS.labels(endpoint="iris_extract", status="success").inc()

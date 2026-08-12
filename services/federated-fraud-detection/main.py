@@ -17,14 +17,16 @@ Architecture:
   - Aggregator applies FedAvg and returns the updated global model
 """
 
+import hmac
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -34,7 +36,37 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# SECURITY: CORS is deny-by-default; operators opt in via FEDERATED_CORS_ORIGINS
+# (comma-separated). Previously allow_origins=["*"].
+FEDERATED_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("FEDERATED_CORS_ORIGINS", "").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=FEDERATED_CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+)
+
+# SECURITY: /api/v1/federated/submit-update was unauthenticated — anyone could
+# poison the global fraud model. A shared submit key is now mandatory and the
+# endpoint FAILS CLOSED when it is unset.
+FEDERATED_SUBMIT_KEY = os.getenv("FEDERATED_SUBMIT_KEY", "").strip()
+# Reject model-poisoning updates whose weight norm is implausibly large.
+FEDERATED_MAX_UPDATE_NORM = float(os.getenv("FEDERATED_MAX_UPDATE_NORM", "100.0"))
+
+
+async def require_submit_key(request: Request) -> None:
+    if not FEDERATED_SUBMIT_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="FEDERATED_SUBMIT_KEY not configured; refusing unauthenticated model updates",
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), FEDERATED_SUBMIT_KEY.encode()):
+        raise HTTPException(status_code=401, detail="authentication required")
 
 # ── Global Model State ────────────────────────────────────────────────────────
 
@@ -127,7 +159,7 @@ class GlobalModelResponse(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/federated/submit-update")
-async def submit_model_update(update: ModelUpdate):
+async def submit_model_update(update: ModelUpdate, _auth=Depends(require_submit_key)):
     """State INEC office submits its local model update."""
     global round_number, global_weights, global_bias
 
@@ -135,6 +167,23 @@ async def submit_model_update(update: ModelUpdate):
         raise HTTPException(
             status_code=400,
             detail=f"Expected {FEATURE_DIM} weights, got {len(update.weights)}"
+        )
+
+    # SECURITY: reject oversized updates — a classic model-poisoning signal.
+    update_norm = float(np.linalg.norm(np.asarray(update.weights, dtype=float)))
+    if update_norm > FEDERATED_MAX_UPDATE_NORM:
+        raise HTTPException(
+            status_code=400,
+            detail=f"update norm {update_norm:.4f} exceeds FEDERATED_MAX_UPDATE_NORM "
+                   f"({FEDERATED_MAX_UPDATE_NORM}); rejected as potential poisoning",
+        )
+
+    # One update per state per round — a state cannot dominate FedAvg by
+    # submitting repeatedly within the same aggregation round.
+    if update.state_code in {u["state_code"] for u in client_updates}:
+        raise HTTPException(
+            status_code=429,
+            detail=f"state {update.state_code} already submitted an update this round",
         )
 
     client_updates.append(update.dict())

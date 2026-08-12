@@ -26,9 +26,13 @@ from typing import Dict, List, Optional
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 import structlog
 
 structlog.configure(
@@ -47,6 +51,20 @@ CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split
 CAMPAIGN_API_KEY = os.getenv("CAMPAIGN_PLANNING_API_KEY", "").strip()
 
 app = FastAPI(title="INEC Campaign Planning Service", version="2.1.0")
+
+# Rate limiting (429 + Retry-After on breach). /speech hits a paid LLM, so it
+# is capped hardest.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "rate limit exceeded", "detail": str(exc.detail)},
+        headers={"Retry-After": "60"},
+    )
 
 
 def _key_valid(provided: str) -> bool:
@@ -566,7 +584,8 @@ async def media_buy_optimizer(req: MediaBuyReq):
 
 
 @app.post("/api/v1/campaign/speech", tags=["AI Speech Writer"])
-async def generate_speech(req: SpeechReq):
+@limiter.limit("10/minute")
+async def generate_speech(request: Request, req: SpeechReq):
     """Innovation 1: AI speech writer — rally, manifesto, press release, debate, victory, concession."""
     text = await engine_speech(req.speech_type, req.candidate_name, req.office_type,
                                 req.state_code, req.key_policies, req.language)
@@ -650,13 +669,30 @@ async def campaign_ws(ws: WebSocket):
 
 @app.get("/api/v1/campaign/health", tags=["Health"])
 async def health():
-    return {
-        "status": "healthy",
+    """Liveness + real dependency probe.
+
+    When INEC_API_URL is configured we actually ping it; an unreachable
+    upstream degrades the service to 503 instead of a static "healthy".
+    """
+    checks: Dict[str, bool] = {}
+    degraded = False
+    if INEC_API:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{INEC_API}/health")
+            checks["inec_api"] = resp.status_code < 500
+        except httpx.HTTPError:
+            checks["inec_api"] = False
+        degraded = not checks["inec_api"]
+    body = {
+        "status": "degraded" if degraded else "healthy",
+        "checks": checks,
         "active_plans": len(_plans),
         "version": "2.1.0",
         "disabled_features": sorted(DISABLED_DATA_FEATURES),
         "enabled_features": ["eligibility", "speech", "states", "offices"],
     }
+    return JSONResponse(status_code=503 if degraded else 200, content=body)
 
 
 # ─── Stakeholder Recommendation Engine ───────────────────────────────────────

@@ -14,12 +14,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from main import AnomalyDetector, detector
 
 
+def _pu_codes(values):
+    return [f"PU-{i:05d}" for i in range(len(values))]
+
+
 class TestAnomalyDetection:
     """Exercise conservative, deterministic anomaly candidate selection."""
 
     def test_detects_clear_material_outlier(self):
         values = [500, 510, 490, 505, 495, 500, 500, 500, 500, 500, 5000]
-        findings = AnomalyDetector().detect_anomalies(values)
+        findings = AnomalyDetector().detect_anomalies(values, _pu_codes(values))
 
         assert len(findings) == 1
         finding = findings[0]
@@ -30,24 +34,23 @@ class TestAnomalyDetection:
 
     def test_normal_variation_does_not_create_forced_contamination_findings(self):
         values = [490, 500, 510, 495, 505, 500, 498, 502, 501, 499]
-        assert AnomalyDetector().detect_anomalies(values) == []
+        assert AnomalyDetector().detect_anomalies(values, _pu_codes(values)) == []
 
     def test_findings_are_deterministic_for_identical_input(self):
         values = [500, 510, 490, 505, 495, 500, 500, 500, 500, 500, 5000]
-        first = AnomalyDetector().detect_anomalies(values)
-        second = AnomalyDetector().detect_anomalies(values)
+        first = AnomalyDetector().detect_anomalies(values, _pu_codes(values))
+        second = AnomalyDetector().detect_anomalies(values, _pu_codes(values))
 
         assert [(item.polling_unit_code, item.confidence, item.severity) for item in first] == [
             (item.polling_unit_code, item.confidence, item.severity) for item in second
         ]
 
     def test_short_batch_returns_no_finding(self):
-        assert AnomalyDetector().detect_anomalies([100, 200, 300]) == []
+        assert AnomalyDetector().detect_anomalies([100, 200, 300], _pu_codes([100, 200, 300])) == []
 
     def test_confidence_is_bounded(self):
-        findings = AnomalyDetector().detect_anomalies(
-            [500, 510, 490, 505, 495, 500, 500, 500, 500, 500, 5000]
-        )
+        values = [500, 510, 490, 505, 495, 500, 500, 500, 500, 500, 5000]
+        findings = AnomalyDetector().detect_anomalies(values, _pu_codes(values))
         assert findings
         assert all(0.0 <= item.confidence <= 1.0 for item in findings)
 
@@ -90,7 +93,7 @@ class TestIntegrityScore:
         votes = list(range(100, 10100, 100))
         local_detector = AnomalyDetector()
         benford = local_detector.benford_analysis(votes)
-        anomalies = local_detector.detect_anomalies(votes)
+        anomalies = local_detector.detect_anomalies(votes, _pu_codes(votes))
         result = local_detector.integrity_score(votes, benford, len(anomalies))
 
         assert 0 <= result.overall_score <= 100

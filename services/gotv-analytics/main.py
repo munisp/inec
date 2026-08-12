@@ -8,6 +8,7 @@ Provides:
 - Pledge fulfillment prediction
 """
 
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -322,19 +323,28 @@ async def lifespan(app: FastAPI):
     logger.info("GOTV Analytics shutting down — cleanup complete")
 
 
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+_PRODUCTION = os.getenv("APP_ENV", "development").strip().lower() == "production"
+
 app = FastAPI(
     title="INEC GOTV Analytics",
     description="Campaign analytics, ML targeting & turnout intelligence",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
-# CORS for cross-origin requests from frontend
+# SECURITY: CORS is deny-by-default; operators opt in via GOTV_CORS_ORIGINS
+# (comma-separated). Previously the default was "*" (any origin).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("GOTV_CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        o.strip() for o in os.getenv("GOTV_CORS_ORIGINS", "").split(",") if o.strip()
+    ],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Key"],
 )
 
 
@@ -370,6 +380,42 @@ def get_configured_api_key() -> str:
     return os.getenv("GOTV_ANALYTICS_API_KEY", "").strip()
 
 
+def _load_party_keys() -> dict[str, int]:
+    """Multi-tenant key map from GOTV_ANALYTICS_PARTY_KEYS JSON.
+
+    Format: {"<api-key>": <party_id>, ...}. When configured, each key is bound
+    to exactly one party and the caller's party_id must match the key's party
+    (403 on mismatch). When UNSET the service runs in documented single-tenant
+    mode: one shared GOTV_ANALYTICS_API_KEY and the caller-supplied party_id is
+    trusted (acceptable only for single-party deployments).
+    """
+    import json
+
+    raw = os.getenv("GOTV_ANALYTICS_PARTY_KEYS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return {str(k): int(v) for k, v in dict(data).items()}
+    except (ValueError, TypeError) as exc:
+        # Fail fast: a malformed tenancy map must never degrade to single-tenant.
+        raise RuntimeError(
+            "GOTV_ANALYTICS_PARTY_KEYS is set but is not valid JSON of "
+            '{"<key>": <party_id>}; refusing to start with ambiguous tenancy'
+        ) from exc
+
+
+_PARTY_KEYS: dict[str, int] = _load_party_keys()
+
+
+def _party_for_key(provided: str) -> Optional[int]:
+    """Return the party bound to an API key, or None if it matches none."""
+    for key, party_id in _PARTY_KEYS.items():
+        if provided and _constant_time_equal(provided, key):
+            return party_id
+    return None
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Validate the service API key on non-health endpoints.
@@ -395,7 +441,19 @@ async def auth_middleware(request: Request, call_next):
 
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
-    has_key = bool(bearer) and _constant_time_equal(bearer, expected_key)
+
+    # TENANCY: when GOTV_ANALYTICS_PARTY_KEYS is configured, authenticate
+    # against the per-party key map and derive the party from the key — the
+    # caller's party_id can never cross tenants. Otherwise (single-tenant
+    # mode) fall back to the shared service key.
+    key_party: Optional[int] = None
+    if _PARTY_KEYS:
+        key_party = _party_for_key(bearer)
+        has_key = key_party is not None or (
+            bool(bearer) and _constant_time_equal(bearer, expected_key)
+        )
+    else:
+        has_key = bool(bearer) and _constant_time_equal(bearer, expected_key)
 
     dapr_expected = os.getenv("DAPR_API_TOKEN", "").strip() or expected_key
     dapr_token = request.headers.get("dapr-api-token", "")
@@ -412,21 +470,66 @@ async def auth_middleware(request: Request, call_next):
             if part.isdigit():
                 party_id = part
                 break
+
+    # TENANCY: reject a caller whose requested party differs from the party
+    # bound to their key (cross-tenant access attempt).
+    if key_party is not None and party_id is not None:
+        try:
+            if int(party_id) != key_party:
+                logger.warning("cross_tenant_access_denied",
+                               path=request.url.path,
+                               key_party=key_party,
+                               requested_party=party_id)
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "party_id does not match the authenticated key's party"},
+                )
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={"error": "invalid party_id"})
+
     logger.info("authenticated_access",
                 path=request.url.path,
                 method=request.method,
-                party_id=party_id,
+                party_id=party_id if key_party is None else key_party,
                 auth_method="dapr" if has_dapr else "api_key")
     return await call_next(request)
 
 
+def _db_healthy() -> bool:
+    """Real PostgreSQL probe (SELECT 1 against the pooled connection)."""
+    if not DB_URL:
+        return False
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        return True
+    except Exception:
+        return False
+    finally:
+        if conn is not None:
+            release_db_connection(conn)
+
+
 @app.get("/health")
 async def health():
-    return {
+    """Liveness + real dependency probe; 503 when the database is down."""
+    db_ok = await asyncio.to_thread(_db_healthy)
+    # A missing DATABASE_URL is a config-state the service tolerates (data
+    # endpoints individually fail closed); an unreachable configured DB is
+    # degraded health.
+    degraded = DB_URL and not db_ok
+    body = {
         "service": "gotv-analytics",
-        "status": "healthy",
+        "status": "degraded" if degraded else "healthy",
         "version": "1.0.0",
         "language": "python",
+        "checks": {
+            "postgresql": db_ok if DB_URL else "unconfigured",
+        },
         "capabilities": [
             "campaign_analytics",
             "ml_targeting",
@@ -435,19 +538,24 @@ async def health():
             "volunteer_metrics",
         ],
     }
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=503 if degraded else 200, content=body)
 
 
 @app.get("/gotv-analytics/middleware/status")
 async def mw_status():
     from middleware import middleware_status
-    return middleware_status()
+    return await asyncio.to_thread(middleware_status)
 
 
 @app.get("/gotv-analytics/search")
 async def opensearch_search(q: str, party_id: int = Query(...), index: str = "gotv-contacts"):
     """Full-text search across GOTV data via OpenSearch."""
-    from middleware import search_opensearch
-    results = search_opensearch(index, q, party_id)
+    from middleware import IndexNotAllowedError, search_opensearch
+    try:
+        results = await asyncio.to_thread(search_opensearch, index, q, party_id)
+    except IndexNotAllowedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"results": results, "count": len(results), "source": "opensearch" if results else "unavailable"}
 
 
@@ -564,7 +672,9 @@ async def ml_targeting(party_id: int, limit: int = Query(100, le=500)):
 
     # Middleware: publish scoring event to Kafka, cache results in Redis
     from middleware import publish_kafka, cache_set
-    publish_kafka("gotv.analytics", f"targeting-{party_id}", {
+    # publish_kafka uses blocking sync httpx — offload so the event loop is
+    # never stalled by the Kafka REST proxy.
+    await asyncio.to_thread(publish_kafka, "gotv.analytics", f"targeting-{party_id}", {
         "event": "ml_targeting_run", "party_id": party_id,
         "total_scored": len(scores), "model_fitted": model.is_fitted,
     })
@@ -590,11 +700,12 @@ async def anomaly_detection(party_id: int):
     # Middleware: publish anomaly events to Kafka + Fluvio for real-time alerting
     if anomalies:
         from middleware import publish_kafka, stream_fluvio
-        publish_kafka("gotv.analytics", f"anomalies-{party_id}", {
+        # Blocking sync httpx calls — offload to a thread (event-loop safety).
+        await asyncio.to_thread(publish_kafka, "gotv.analytics", f"anomalies-{party_id}", {
             "event": "anomalies_detected", "party_id": party_id,
             "count": len(anomalies),
         })
-        stream_fluvio("gotv-anomalies", {
+        await asyncio.to_thread(stream_fluvio, "gotv-anomalies", {
             "party_id": party_id, "anomalies": anomalies[:5],
         })
 

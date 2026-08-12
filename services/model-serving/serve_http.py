@@ -15,13 +15,16 @@ Run:
 from __future__ import annotations
 
 import glob
+import hmac
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from model_serving import ModelServer, ModelRouter
@@ -31,10 +34,44 @@ MODEL_DIR = os.getenv(
     str(Path(__file__).resolve().parent.parent / "biometric-python" / "models"),
 )
 CACHE_SIZE = int(os.getenv("MODEL_CACHE_SIZE", "10000"))
+# SECURITY: bound inference payloads (413 beyond) — previously unbounded.
+MAX_PREDICT_VALUES = int(os.getenv("MAX_PREDICT_VALUES", "1000000"))
 
-app = FastAPI(title="INEC Model Serving", version="1.0.0")
 server = ModelServer(models_dir=MODEL_DIR, cache_size=CACHE_SIZE)
 router = ModelRouter(server)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _load_models()
+    server.start()
+    yield
+    server.stop()
+
+
+app = FastAPI(title="INEC Model Serving", version="1.0.0", lifespan=lifespan)
+
+# SECURITY: /v1/* was unauthenticated. The service FAILS CLOSED when
+# MODEL_SERVING_API_KEY is unset (503 on all non-health routes).
+MODEL_SERVING_API_KEY = os.getenv("MODEL_SERVING_API_KEY", "").strip()
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    if request.url.path == "/healthz":
+        return await call_next(request)
+    if not MODEL_SERVING_API_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "MODEL_SERVING_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), MODEL_SERVING_API_KEY.encode()):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
 
 
 class PredictRequest(BaseModel):
@@ -65,17 +102,6 @@ def _load_models() -> None:
             print(f"WARN: could not load {path}: {exc}")
 
 
-@app.on_event("startup")
-def startup() -> None:
-    _load_models()
-    server.start()
-
-
-@app.on_event("shutdown")
-def shutdown() -> None:
-    server.stop()
-
-
 @app.get("/healthz")
 def healthz() -> dict:
     return server.get_health()
@@ -94,6 +120,11 @@ def list_models() -> dict:
 
 @app.post("/v1/predict/{model_id}")
 def predict(model_id: str, req: PredictRequest) -> dict:
+    if len(req.data) > MAX_PREDICT_VALUES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"data has {len(req.data)} values; limit is {MAX_PREDICT_VALUES}",
+        )
     try:
         arr = np.asarray(req.data, dtype=np.float32).reshape(req.shape)
     except ValueError as exc:

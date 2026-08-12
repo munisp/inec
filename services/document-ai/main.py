@@ -19,9 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
+import hmac
+
 import structlog
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 log = structlog.get_logger()
@@ -31,11 +34,41 @@ app = FastAPI(
     version="1.0.0",
     description="AI-powered document analysis for election result verification",
 )
+
+# SECURITY: KYC/OCR endpoints handle sensitive identity documents. The service
+# FAILS CLOSED when DOCUMENT_AI_API_KEY is unset (503 on all non-health routes).
+DOCUMENT_AI_API_KEY = os.getenv("DOCUMENT_AI_API_KEY", "").strip()
+# SECURITY: CORS is deny-by-default; operators opt in via DOCUMENT_AI_CORS_ORIGINS
+# (comma-separated). Previously allow_origins=["*"] exposed KYC/OCR to any origin.
+DOCUMENT_AI_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("DOCUMENT_AI_CORS_ORIGINS", "").split(",") if o.strip()
+]
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    if request.url.path == "/health":
+        return await call_next(request)
+    if not DOCUMENT_AI_API_KEY:
+        log.error("api_key_not_configured", detail="DOCUMENT_AI_API_KEY unset")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "DOCUMENT_AI_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), DOCUMENT_AI_API_KEY.encode()):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=DOCUMENT_AI_CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/document-ai-uploads")
@@ -1629,6 +1662,37 @@ kyc_engine = KYCEngine()
 
 # ─── API Endpoints ────────────────────────────────────────────────────────────
 
+_UPLOAD_CHUNK = 1024 * 1024  # 1 MiB
+
+
+async def _read_upload_capped(file: UploadFile, limit: int, label: str = "document") -> bytes:
+    """Read an upload enforcing a hard byte cap.
+
+    Pre-checks the declared size (Content-Length via UploadFile.size) and then
+    streams in chunks counting actual bytes, so an understated Content-Length
+    cannot bypass the cap. Raises 413 when the limit is exceeded.
+    """
+    declared = getattr(file, "size", None)
+    if declared is not None and declared > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{label} exceeds {limit} byte limit",
+        )
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(min(_UPLOAD_CHUNK, limit + 1 - total))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{label} exceeds {limit} byte limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @app.get("/health")
 async def health():
@@ -1677,7 +1741,7 @@ async def health():
 @app.post("/ocr/extract")
 async def ocr_extract(file: Annotated[UploadFile, File(...)]):
     """Extract raw text from an image using PaddleOCR."""
-    content = await file.read()
+    content = await _read_upload_capped(file, MAX_DOCUMENT_BYTES, "image")
     results = ocr_engine.extract_text(content)
     return {
         "filename": file.filename,
@@ -1689,7 +1753,7 @@ async def ocr_extract(file: Annotated[UploadFile, File(...)]):
 @app.post("/ocr/ec8a")
 async def ocr_ec8a(file: Annotated[UploadFile, File(...)]):
     """Extract structured EC8A form data from an image."""
-    content = await file.read()
+    content = await _read_upload_capped(file, MAX_DOCUMENT_BYTES, "EC8A image")
     extraction = ocr_engine.extract_ec8a(content)
     return extraction.model_dump()
 
@@ -1700,7 +1764,7 @@ async def vlm_analyze(
     document_type: Annotated[str, Form()] = "ec8a",
 ):
     """Analyze document for authenticity and tampering using VLM."""
-    content = await file.read()
+    content = await _read_upload_capped(file, MAX_DOCUMENT_BYTES, "document")
     result = vlm_engine.analyze_document(content, document_type)
     return result.model_dump()
 
@@ -1708,7 +1772,7 @@ async def vlm_analyze(
 @app.post("/docling/tables")
 async def docling_extract_tables(file: Annotated[UploadFile, File(...)]):
     """Extract structured tables from a document using DocLing."""
-    content = await file.read()
+    content = await _read_upload_capped(file, MAX_DOCUMENT_BYTES, "document")
     result = docling_engine.extract_tables(content, file.filename or "document.pdf")
     return result.model_dump()
 
@@ -1716,9 +1780,7 @@ async def docling_extract_tables(file: Annotated[UploadFile, File(...)]):
 @app.post("/video/analyze")
 async def video_analyze(file: Annotated[UploadFile, File(...)]):
     """Analyze video for ballot counting events and anomalies."""
-    content = await file.read()
-    if len(content) > 500_000_000:  # 500MB limit
-        raise HTTPException(status_code=413, detail="Video exceeds 500MB limit")
+    content = await _read_upload_capped(file, 500_000_000, "Video")
     result = video_analyzer.analyze_video(content, file.filename or "video.mp4")
     return result.model_dump()
 
@@ -1744,8 +1806,14 @@ async def kyc_verify(
         phone_number=phone_number,
     )
 
-    id_doc_bytes = await id_document.read() if id_document else None
-    selfie_bytes = await selfie.read() if selfie else None
+    id_doc_bytes = (
+        await _read_upload_capped(id_document, MAX_DOCUMENT_BYTES, "ID document")
+        if id_document else None
+    )
+    selfie_bytes = (
+        await _read_upload_capped(selfie, MAX_DOCUMENT_BYTES, "selfie")
+        if selfie else None
+    )
 
     result = kyc_engine.verify_identity(request, id_doc_bytes, selfie_bytes)
     return result.model_dump()
@@ -1758,9 +1826,7 @@ async def kyc_liveness(
     method: Annotated[str, Form()] = "passive",
 ):
     """Perform liveness detection from video."""
-    video_bytes = await video.read()
-    if len(video_bytes) > 50_000_000:  # 50MB limit for liveness video
-        raise HTTPException(status_code=413, detail="Liveness video exceeds 50MB limit")
+    video_bytes = await _read_upload_capped(video, 50_000_000, "Liveness video")
     result = kyc_engine.liveness_check(video_bytes, user_id, method)
     return result.model_dump()
 
@@ -1771,7 +1837,7 @@ async def analyze_integrity_photo_report(
     report_id: Annotated[Optional[int], Form()] = None,
 ):
     """Explicit integrity endpoint for content-addressed photo evidence bundles."""
-    content = await file.read()
+    content = await _read_upload_capped(file, MAX_DOCUMENT_BYTES, "photo evidence")
     return analyze_evidence_bundle(content, file.filename or "photo.jpg", report_id)
 
 
@@ -1786,7 +1852,7 @@ async def analyze_photo_report(
     integrity manifest, engine version evidence, findings, and an explicit
     manual-review decision. It does not approve or finalise an election result.
     """
-    content = await file.read()
+    content = await _read_upload_capped(file, MAX_DOCUMENT_BYTES, "photo evidence")
     return analyze_evidence_bundle(content, file.filename or "photo.jpg", report_id)
 
 

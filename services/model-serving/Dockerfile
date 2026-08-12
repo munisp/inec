@@ -5,10 +5,10 @@ WORKDIR /app
 # Runtime deps for ONNX serving.
 RUN pip install --no-cache-dir \
     onnxruntime==1.19.2 \
-    numpy \
-    fastapi \
-    uvicorn[standard] \
-    pydantic
+    numpy==2.2.5 \
+    fastapi==0.115.6 \
+    uvicorn[standard]==0.32.1 \
+    pydantic==2.10.4
 
 COPY model_serving.py model_versioning.py model_monitoring.py serve_http.py ./
 
