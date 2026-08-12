@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MapPin, Navigation, Car, Eye, EyeOff, Radio } from 'lucide-react';
 import { latLngToCell } from 'h3-js';
+import { GOTVPartySelector, useGOTVParty } from '@/lib/gotv-session';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -109,10 +110,13 @@ export default function GOTVMapPage() {
   const [wsConnected, setWsConnected] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [partyCode] = useGOTVParty();
 
   // ─── Data Loading ───────────────────────────────────────────────────────
 
   const loadGeoData = useCallback(async () => {
+    // Geo data is party-scoped — never fetch without an explicit selection.
+    if (!partyCode) return;
     try {
       const [volData, rideData, covData, trailData] = await Promise.all([
         api.getGOTVGeoVolunteers() as Promise<{ volunteers: GeoVolunteer[] }>,
@@ -128,16 +132,24 @@ export default function GOTVMapPage() {
     } catch {
       // API not available — use empty state
     }
-  }, []);
+  }, [partyCode]);
 
   // ─── WebSocket Connection ───────────────────────────────────────────────
 
   useEffect(() => {
+    // Map telemetry is party-scoped — never connect without an explicit selection.
+    if (!partyCode) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsToken = localStorage.getItem('auth_token') || '';
-    const wsPartyId = localStorage.getItem('gotv_party_id') || '1';
     const wsHost = import.meta.env.VITE_GOTV_WS_HOST || window.location.host;
-    const wsUrl = `${protocol}//${wsHost}/gotv/ws?party_id=${wsPartyId}&token=${wsToken}`;
+    // SECURITY: the JWT is deliberately NOT passed as a ?token= query param —
+    // tokens in URLs leak into server logs, browser history and referrers.
+    // The socket is same-origin through the proxy, so the httpOnly session
+    // cookie flows automatically with the upgrade request. Backend note:
+    // gotv-svc's /gotv/ws currently authenticates Bearer tokens (header or
+    // query) — the edge proxy must translate the inec_token cookie into a
+    // Bearer header, matching how the main backend's getCurrentUser already
+    // accepts the inec_token cookie.
+    const wsUrl = `${protocol}//${wsHost}/gotv/ws`;
     let ws: WebSocket | null = null;
 
     try {
@@ -172,7 +184,7 @@ export default function GOTVMapPage() {
     } catch { /* WebSocket not available */ }
 
     return () => { ws?.close(); };
-  }, []);
+  }, [partyCode]);
 
   // ─── Map Initialization ─────────────────────────────────────────────────
 
@@ -375,6 +387,19 @@ export default function GOTVMapPage() {
 
   // ─── Render ─────────────────────────────────────────────────────────────
 
+  if (!partyCode) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <div className="text-center py-12 text-muted-foreground">
+          Select a party to view the live operations map.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-full" style={{ height: 'calc(100vh - 200px)', minHeight: '500px' }}>
       {/* Map container */}
@@ -389,6 +414,11 @@ export default function GOTVMapPage() {
             {wsConnected ? 'Live' : volunteers.length > 0 ? `Live (polling)` : 'Offline'}
           </span>
           {lastRefresh && <span className="text-xs text-muted-foreground ml-1">{lastRefresh.toLocaleTimeString()}</span>}
+        </div>
+
+        {/* Party tenancy selector */}
+        <div className="bg-background/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-sm">
+          <GOTVPartySelector />
         </div>
 
         {/* Stats cards */}

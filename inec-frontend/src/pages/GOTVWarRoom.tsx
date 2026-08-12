@@ -7,6 +7,7 @@ import {
   RefreshCw, Wifi, WifiOff,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
 
 interface WarRoomData {
   timestamp: string;
@@ -37,27 +38,34 @@ interface CoverageRegion {
 }
 
 export default function GOTVWarRoom() {
+  const [partyCode] = useGOTVParty();
   const [data, setData] = useState<WarRoomData | null>(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
-  const headers = { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1' };
 
   const loadData = () => {
     setLoading(true);
-    fetch('/gotv/warroom/summary', { headers })
+    fetch('/gotv/warroom/summary', { headers: gotvAuthHeaders() })
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   };
 
   useEffect(() => {
+    // War room data is party-scoped — never fetch without an explicit selection.
+    if (!partyCode) return;
     loadData();
-    // SSE connection for real-time updates
+    // SSE connection for real-time updates. EventSource cannot set headers, so
+    // the JWT is deliberately NOT passed as a ?token= query param (it would leak
+    // into logs, browser history and referrers). The stream endpoint is
+    // same-origin through the proxy, so the httpOnly session cookie flows
+    // automatically. Backend note: gotv-svc currently authenticates Bearer
+    // tokens (header or query) — the edge proxy must translate the inec_token
+    // cookie into a Bearer header for SSE/WS, matching how the main backend's
+    // getCurrentUser already accepts the inec_token cookie.
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      const partyId = localStorage.getItem('gotv_party_id') || '1';
-      const es = new EventSource(`/gotv/warroom/stream?party_id=${partyId}&token=${token}`);
+      const es = new EventSource('/gotv/warroom/stream');
       es.onopen = () => setConnected(true);
       es.onmessage = (e) => {
         try {
@@ -70,7 +78,21 @@ export default function GOTVWarRoom() {
     } catch { /* SSE not supported */ }
 
     return () => { eventSourceRef.current?.close(); };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partyCode]);
+
+  if (!partyCode) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <div className="text-center py-12 text-muted-foreground">
+          Select a party to open the Election Day War Room.
+        </div>
+      </div>
+    );
+  }
 
   if (loading) return <div className="text-center py-12 text-muted-foreground">Loading War Room...</div>;
 
@@ -85,6 +107,7 @@ export default function GOTVWarRoom() {
           <Activity className="h-5 w-5 text-red-500" /> Election Day War Room
         </h2>
         <div className="flex items-center gap-2">
+          <GOTVPartySelector />
           <Badge className={connected ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}>
             {connected ? <><Wifi className="h-3 w-3 mr-1" /> Live</> : <><WifiOff className="h-3 w-3 mr-1" /> Offline</>}
           </Badge>

@@ -3,6 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Trophy, Medal, Star } from 'lucide-react';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
 
 interface LeaderboardEntry {
   volunteer_id: string;
@@ -26,17 +27,33 @@ export default function GOTVLeaderboard() {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'all'>('weekly');
   const [loading, setLoading] = useState(true);
+  const [partyCode] = useGOTVParty();
 
   useEffect(() => {
+    // Leaderboard is party-scoped — never fetch without an explicit selection.
+    if (!partyCode) return;
     setLoading(true);
     fetch(`/gotv/leaderboard?period=${period}&limit=50`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1' },
+      headers: gotvAuthHeaders(),
     })
       .then(r => r.json())
       .then(data => setEntries(data.entries || []))
       .catch(() => setEntries([]))
       .finally(() => setLoading(false));
-  }, [period]);
+  }, [period, partyCode]);
+
+  if (!partyCode) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <div className="text-center py-12 text-muted-foreground">
+          Select a party to view the volunteer leaderboard.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -44,7 +61,9 @@ export default function GOTVLeaderboard() {
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <Trophy className="h-5 w-5 text-yellow-500" /> Volunteer Leaderboard
         </h2>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-2">
+          <GOTVPartySelector />
+          <div className="flex gap-1">
           {(['daily', 'weekly', 'monthly', 'all'] as const).map(p => (
             <Button
               key={p}
@@ -55,6 +74,7 @@ export default function GOTVLeaderboard() {
               {p.charAt(0).toUpperCase() + p.slice(1)}
             </Button>
           ))}
+          </div>
         </div>
       </div>
 

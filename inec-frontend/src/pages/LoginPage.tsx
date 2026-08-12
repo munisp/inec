@@ -77,8 +77,11 @@ export default function LoginPage() {
               </Button>
             </form>
 
+            {/* Demo quick-login accounts are a DEV-only convenience; they must
+                never render in production builds. */}
+            {import.meta.env.DEV && (
             <div className="mt-6 pt-4 border-t border-zinc-200">
-              <p className="text-xs text-zinc-500 mb-3">Quick access (demo accounts):</p>
+              <p className="text-xs text-zinc-500 mb-3">Quick access (demo accounts, dev only):</p>
               <div className="space-y-2">
                 <button onClick={() => quickLogin('admin', 'admin123')}
                   className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-zinc-200 hover:bg-zinc-50 transition-colors text-left">
@@ -112,6 +115,7 @@ export default function LoginPage() {
                 </button>
               </div>
             </div>
+            )}
           </CardContent>
         </Card>
 

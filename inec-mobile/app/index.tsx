@@ -95,11 +95,14 @@ export default function LoginScreen() {
     router.push('/gotv-login');
   };
 
-  const quickFill = (user: string, pass: string) => {
-    Haptics.selectionAsync();
-    setUsername(user);
-    setPassword(pass);
-  };
+  // DEV-only demo credential fill — never shipped in production builds.
+  const quickFill = __DEV__
+    ? (user: string, pass: string) => {
+        Haptics.selectionAsync();
+        setUsername(user);
+        setPassword(pass);
+      }
+    : null;
 
   if (loading && !username) {
     return (
@@ -197,6 +200,9 @@ export default function LoginScreen() {
             )}
           </TouchableOpacity>
 
+          {/* Demo quick-access accounts are a DEV-only convenience; they must
+              never render in production builds. */}
+          {__DEV__ && quickFill && (
           <View style={styles.quickAccess}>
             <TouchableOpacity style={styles.quickButton} onPress={() => quickFill('observer', 'observer123')}>
               <View style={[styles.quickIcon, { backgroundColor: '#dbeafe' }]}>
@@ -217,6 +223,7 @@ export default function LoginScreen() {
               <Text style={styles.quickText}>Officer</Text>
             </TouchableOpacity>
           </View>
+          )}
 
           {/* GOTV Separator */}
           <View style={styles.divider}>

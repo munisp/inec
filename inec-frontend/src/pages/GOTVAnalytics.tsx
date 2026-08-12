@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { BarChart3, Brain, DollarSign, TrendingUp, AlertTriangle } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty, useResolvedElection } from '@/lib/gotv-session';
 
 interface ChannelROI {
   channel: string;
@@ -53,9 +54,14 @@ export default function GOTVAnalytics() {
   const [predictions, setPredictions] = useState<TurnoutPrediction[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'roi' | 'ai' | 'turnout'>('roi');
-  const headers = { Authorization: `Bearer ${localStorage.getItem('auth_token')}`, 'X-Party-ID': localStorage.getItem('gotv_party_id') || '1' };
+  const [partyCode] = useGOTVParty();
+  const { electionId, elections } = useResolvedElection();
+  const electionName = elections.find(e => e.id === electionId)?.title ?? null;
 
   useEffect(() => {
+    // Analytics are party-scoped — never fetch without an explicit selection.
+    if (!partyCode) return;
+    const headers = gotvAuthHeaders();
     Promise.all([
       fetch('/gotv/roi/channels', { headers }).then(r => r.json()).catch(() => ({ channels: [] })),
       fetch('/gotv/ai/variants', { headers }).then(r => r.json()).catch(() => ({ variants: [] })),
@@ -63,17 +69,32 @@ export default function GOTVAnalytics() {
       setRoi(roiData.channels || []);
       setVariants(aiData.variants || []);
     }).finally(() => setLoading(false));
-  }, []);
+  }, [partyCode]);
 
   const loadTurnout = () => {
+    // Write path: election scope must be explicitly resolved — never hardcoded.
+    if (!electionId) return;
     fetch('/gotv/turnout/predict', {
-      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ward_codes: [], election_id: 1 }),
+      method: 'POST', headers: gotvAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ward_codes: [], election_id: electionId }),
     })
       .then(r => r.json())
       .then(d => setPredictions(d.predictions || []))
       .catch(() => setPredictions([]));
   };
+
+  if (!partyCode) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <div className="text-center py-12 text-muted-foreground">
+          Select a party to view GOTV analytics.
+        </div>
+      </div>
+    );
+  }
 
   if (loading) return <div className="text-center py-12 text-muted-foreground">Loading analytics...</div>;
 
@@ -83,7 +104,12 @@ export default function GOTVAnalytics() {
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <BarChart3 className="h-5 w-5" /> GOTV Analytics
         </h2>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-2">
+          <GOTVPartySelector />
+          {electionName && (
+            <Badge variant="secondary" className="text-xs">Election: {electionName}</Badge>
+          )}
+          <div className="flex gap-1">
           {([
             { key: 'roi', label: 'Channel ROI', icon: DollarSign },
             { key: 'ai', label: 'AI Variants', icon: Brain },
@@ -94,6 +120,7 @@ export default function GOTVAnalytics() {
               <t.icon className="h-4 w-4 mr-1" /> {t.label}
             </Button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -186,7 +213,10 @@ export default function GOTVAnalytics() {
             <Card>
               <CardContent className="py-8 text-center">
                 <p className="text-muted-foreground mb-3">Run turnout prediction for all wards</p>
-                <Button onClick={loadTurnout}><TrendingUp className="h-4 w-4 mr-1" /> Predict Turnout</Button>
+                <Button onClick={loadTurnout} disabled={!electionId}>
+                  <TrendingUp className="h-4 w-4 mr-1" />
+                  {electionId ? `Predict Turnout${electionName ? ` — ${electionName}` : ''}` : 'Resolving election…'}
+                </Button>
               </CardContent>
             </Card>
           ) : (
