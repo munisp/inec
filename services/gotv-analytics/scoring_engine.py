@@ -29,7 +29,9 @@ from pydantic import BaseModel, Field
 
 logger = structlog.get_logger()
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
+# SECURITY: no credential defaults — DATABASE_URL must come from the
+# environment (previously shipped postgresql://ngapp:ngapp123@localhost).
+DB_URL = os.getenv("DATABASE_URL", "").strip()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/2")
 
 router = APIRouter(prefix="/gotv-analytics/scoring", tags=["scoring_engine"])
@@ -42,6 +44,9 @@ _scoring_pool = None
 
 def _get_pool():
     global _scoring_pool
+    if not DB_URL:
+        # Fail closed: data endpoints return 503 when the DB is not configured.
+        raise HTTPException(status_code=503, detail="DATABASE_URL is not configured")
     if _scoring_pool is None:
         import psycopg2.pool
         _scoring_pool = psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=DB_URL)
@@ -172,8 +177,8 @@ async def batch_score_voters(
     """, tuple(params + [limit * 3]))  # Over-fetch then filter by score
 
     scores = []
-    for c in contacts:
-        score = _compute_voter_score(c["contact_id"], party_id)
+    # PERFORMANCE: batched scoring — 4 queries total instead of 4 per contact.
+    for score in _compute_voter_scores_batch([c["contact_id"] for c in contacts], party_id):
         if score and score.overall_score >= min_score:
             if segment is None or score.segment == segment:
                 scores.append(score.model_dump())
@@ -238,6 +243,13 @@ def _compute_voter_score(contact_id: str, party_id: int) -> Optional[VoterScore]
         ORDER BY knocked_at DESC LIMIT 10
     """, (contact_id, party_id))
 
+    return _score_from_records(contact, outreach, pledges, knocks)
+
+
+def _score_from_records(contact: Dict, outreach: List, pledges: List, knocks: List) -> VoterScore:
+    """Core scoring algorithm over already-fetched records (shared by the
+    single-contact path and the batched path)."""
+    contact_id = contact["contact_id"]
     factors = []
 
     # ─── DIMENSION 1: Engagement Score (0-100) ───────────────────────────
@@ -296,6 +308,70 @@ def _compute_voter_score(contact_id: str, party_id: int) -> Optional[VoterScore]
         recommended_action=action,
         factors=factors[:8],  # Top 8 factors
     )
+
+
+def _compute_voter_scores_batch(contact_ids: List[str], party_id: int) -> List[VoterScore]:
+    """Batch voter scoring — 4 queries TOTAL instead of 4 per contact.
+
+    PERFORMANCE: replaces the per-contact N+1 pattern (~800 queries for a
+    200-contact /summary call) with one query per table using ANY(%s),
+    then computes scores in memory via the shared _score_from_records core.
+    """
+    if not contact_ids:
+        return []
+
+    contacts = query_rows("""
+        SELECT c.contact_id, c.voter_status, c.contact_count, c.tags,
+               c.consent_id, c.created_at, c.state_code, c.ward_code
+        FROM gotv_contacts c
+        WHERE c.party_id=%s AND c.contact_id = ANY(%s)
+    """, (party_id, list(contact_ids)))
+    if not contacts:
+        return []
+
+    outreach_rows = query_rows("""
+        SELECT contact_id, channel, status, sent_at, direction FROM (
+            SELECT contact_id, channel, status, sent_at, direction,
+                   ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY sent_at DESC) AS rn
+            FROM gotv_outreach_log
+            WHERE party_id=%s AND contact_id = ANY(%s)
+        ) t WHERE rn <= 50
+    """, (party_id, list(contact_ids)))
+
+    pledge_rows = query_rows("""
+        SELECT contact_id, pledge_type, status, created_at
+        FROM gotv_pledges
+        WHERE party_id=%s AND contact_id = ANY(%s)
+    """, (party_id, list(contact_ids)))
+
+    knock_rows = query_rows("""
+        SELECT contact_id, outcome, knocked_at FROM (
+            SELECT contact_id, outcome, knocked_at,
+                   ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY knocked_at DESC) AS rn
+            FROM gotv_door_knocks
+            WHERE party_id=%s AND contact_id = ANY(%s)
+        ) t WHERE rn <= 10
+    """, (party_id, list(contact_ids)))
+
+    outreach_by: Dict[str, List] = {}
+    for r in outreach_rows:
+        outreach_by.setdefault(r["contact_id"], []).append(r)
+    pledges_by: Dict[str, List] = {}
+    for r in pledge_rows:
+        pledges_by.setdefault(r["contact_id"], []).append(r)
+    knocks_by: Dict[str, List] = {}
+    for r in knock_rows:
+        knocks_by.setdefault(r["contact_id"], []).append(r)
+
+    return [
+        _score_from_records(
+            c,
+            outreach_by.get(c["contact_id"], []),
+            pledges_by.get(c["contact_id"], []),
+            knocks_by.get(c["contact_id"], []),
+        )
+        for c in contacts
+    ]
 
 
 def _calc_engagement(contact: Dict, outreach: List, pledges: List, knocks: List, factors: List) -> float:
@@ -563,9 +639,24 @@ async def classify_persuadability(
     # Learn conversion patterns from historical data
     conversion_signals = _learn_conversion_patterns(party_id)
 
+    # PERFORMANCE: fetch per-state conversion rates ONCE (was one SQL query
+    # per classified contact — the N+1 pattern).
+    state_rows = query_rows("""
+        SELECT state_code,
+               COUNT(*) FILTER(WHERE voter_status IN ('pledged','confirmed')) AS converted,
+               COUNT(*) AS total
+        FROM gotv_contacts
+        WHERE party_id=%s AND opted_out=FALSE AND state_code IS NOT NULL
+        GROUP BY state_code
+    """, (party_id,))
+    state_rates = {
+        r["state_code"]: (r["converted"] or 0) / r["total"]
+        for r in state_rows if r.get("total")
+    }
+
     results = []
     for c in contacts[:limit]:
-        result = _classify_single_contact(c, party_id, conversion_signals)
+        result = _classify_single_contact(c, party_id, conversion_signals, state_rates)
         results.append(result.model_dump())
 
     # Sort by persuadability (highest first = best targets)
@@ -634,8 +725,13 @@ def _learn_conversion_patterns(party_id: int) -> Dict:
     }
 
 
-def _classify_single_contact(contact: Dict, party_id: int, patterns: Dict) -> PersuadabilityResult:
-    """Score a single contact's persuadability using learned patterns."""
+def _classify_single_contact(contact: Dict, party_id: int, patterns: Dict,
+                             state_rates: Optional[Dict[str, float]] = None) -> PersuadabilityResult:
+    """Score a single contact's persuadability using learned patterns.
+
+    `state_rates` must be pre-fetched by the caller (one GROUP BY query for
+    all states) — this function issues NO SQL of its own.
+    """
     contact_id = contact["contact_id"]
     factors = []
     score = 50.0  # Start neutral
@@ -666,16 +762,10 @@ def _classify_single_contact(contact: Dict, party_id: int, patterns: Dict) -> Pe
         score += 5
         factors.append("expressed_need")
 
-    # Signal 4: State-specific conversion rates
+    # Signal 4: State-specific conversion rates (pre-fetched, no per-contact SQL)
     state = contact.get("state_code", "")
-    state_conv = query_rows("""
-        SELECT COUNT(*) FILTER(WHERE voter_status IN ('pledged','confirmed')) AS converted,
-               COUNT(*) AS total
-        FROM gotv_contacts
-        WHERE party_id=%s AND state_code=%s AND opted_out=FALSE
-    """, (party_id, state))
-    if state_conv and state_conv[0].get("total", 0) > 0:
-        state_rate = (state_conv[0].get("converted", 0) or 0) / state_conv[0]["total"]
+    state_rate = (state_rates or {}).get(state)
+    if state_rate is not None:
         if state_rate > 0.4:
             score += 8
             factors.append(f"high_conversion_state ({state_rate:.0%})")
@@ -1231,8 +1321,12 @@ async def scoring_summary(party_id: int) -> Dict[str, Any]:
     total_score = 0.0
     scored = 0
 
-    for c in sample[:200]:  # Score 200 for speed
-        score = _compute_voter_score(c["contact_id"], party_id)
+    # PERFORMANCE: batched scoring — 4 queries total (was 4 per contact,
+    # ~800 queries per /summary call).
+    batch_scores = _compute_voter_scores_batch(
+        [c["contact_id"] for c in sample[:200]], party_id
+    )
+    for score in batch_scores:
         if score:
             segments[score.segment] += 1
             total_score += score.overall_score

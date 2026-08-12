@@ -41,8 +41,38 @@ OPENAI_BASE = os.getenv("OPENAI_API_BASE", "").strip().rstrip("/")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
 INEC_API = os.getenv("INEC_API_URL", "").strip().rstrip("/")
 CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
+# SECURITY: service API key. When unset, the service FAILS CLOSED (503 on all
+# non-health routes) — previously every route was unauthenticated, including
+# the paid-LLM /speech endpoint (cost-abuse vector).
+CAMPAIGN_API_KEY = os.getenv("CAMPAIGN_PLANNING_API_KEY", "").strip()
 
 app = FastAPI(title="INEC Campaign Planning Service", version="2.1.0")
+
+
+def _key_valid(provided: str) -> bool:
+    import hmac
+    return bool(provided) and hmac.compare_digest(provided.encode(), CAMPAIGN_API_KEY.encode())
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    from fastapi.responses import JSONResponse
+    public = ("/api/v1/campaign/health", "/docs", "/openapi.json", "/redoc")
+    if request.url.path in public:
+        return await call_next(request)
+    if not CAMPAIGN_API_KEY:
+        log.error("api_key_not_configured", detail="CAMPAIGN_PLANNING_API_KEY unset")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "CAMPAIGN_PLANNING_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not _key_valid(provided):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -179,45 +209,61 @@ async def _broadcast(data: Dict) -> None:
 # ── Computation Engines ───────────────────────────────────────────────────────
 
 def engine_eligibility(candidate_id: int, office_type: str, state_code: str, party_code: str,
-                        age: int, has_cert: bool, is_nigerian: bool,
-                        criminal: bool, dual: bool, party_years: int) -> Dict:
-    req = ELIGIBILITY.get(office_type, ELIGIBILITY["house"])
-    passed, issues = [], []
+                        age: int, has_cert: Optional[bool], is_nigerian: Optional[bool],
+                        criminal: Optional[bool], dual: Optional[bool],
+                        party_years: Optional[int]) -> Dict:
+    # INTEGRITY: unknown office types are rejected by the endpoint (400), never
+    # silently remapped to "house" requirements.
+    req = ELIGIBILITY[office_type]
+    passed, issues, unassessed = [], [], []
 
     if age >= req["min_age"]:
         passed.append(f"Age {age} meets minimum of {req['min_age']}")
     else:
         issues.append(f"Age {age} below minimum {req['min_age']} for {office_type}")
 
-    if is_nigerian:
+    # INTEGRITY: caller-asserted facts are never defaulted to the favourable
+    # answer. Unknown facts are reported as "not_assessed" and prevent a
+    # positive eligibility verdict.
+    if is_nigerian is None:
+        unassessed.append("nigerian_citizenship")
+    elif is_nigerian:
         passed.append("Nigerian citizenship confirmed")
     else:
         issues.append("Must be a Nigerian citizen")
 
-    if office_type == "presidential" and not is_nigerian:
+    if office_type == "presidential" and is_nigerian is False:
         issues.append("Presidential candidates must be Nigerian by birth (Section 131(a))")
 
-    if has_cert:
+    if has_cert is None:
+        unassessed.append("school_certificate")
+    elif has_cert:
         passed.append("School Certificate requirement satisfied")
     else:
         issues.append("WAEC/NECO/GCE School Certificate required")
 
-    if criminal:
+    if criminal is None:
+        unassessed.append("criminal_record")
+    elif criminal:
         issues.append("Criminal conviction disqualifies under Section 66(1)(d)")
     else:
         passed.append("No criminal conviction on record")
 
-    if dual:
+    if dual is None:
+        unassessed.append("dual_citizenship")
+    elif dual:
         issues.append("Dual citizenship disqualifies under Section 66(1)(a)")
     else:
         passed.append("No dual-citizenship conflict")
 
-    if party_years >= 1:
+    if party_years is None:
+        unassessed.append("party_membership")
+    elif party_years >= 1:
         passed.append(f"{party_years} year(s) party membership confirmed")
     else:
         issues.append("Must be a registered member of a political party")
 
-    eligible = len(issues) == 0
+    eligible = len(issues) == 0 and len(unassessed) == 0
     score = round(len(passed) / max(len(passed) + len(issues), 1) * 100, 1)
 
     now = time.time()
@@ -231,6 +277,8 @@ def engine_eligibility(candidate_id: int, office_type: str, state_code: str, par
         "state_code": state_code,
         "party_code": party_code,
         "eligible": eligible,
+        "assessment": "complete" if not unassessed else "partial",
+        "unassessed_facts": unassessed,
         "compliance_score_pct": score,
         "requirements_met": passed,
         "disqualifying_issues": issues,
@@ -243,6 +291,10 @@ def engine_eligibility(candidate_id: int, office_type: str, state_code: str, par
             "filing_deadline_est": time.strftime("%Y-%m-%d", time.localtime(filing_dl)),
             "election_date_est": time.strftime("%Y-%m-%d", time.localtime(election_est)),
             "days_to_election": 365,
+            # INTEGRITY: dates are placeholders (now+365d), not INEC-published
+            # dates. Labeled so callers never treat them as authoritative.
+            "illustrative_only": True,
+            "note": "Illustrative timeline computed as now+365d; confirm actual dates with INEC",
         },
         "next_steps": (
             [
@@ -375,11 +427,14 @@ async def engine_speech(speech_type: str, name: str, office: str,
 # ── Request Models ────────────────────────────────────────────────────────────
 
 class EligibilityReq(BaseModel):
+    # INTEGRITY: facts must be explicitly provided. Previously has_school_cert
+    # and is_nigerian defaulted to True, turning missing data into a favourable
+    # compliance verdict. None means "not_assessed".
     candidate_id: int; office_type: str; state_code: str; party_code: str
-    age: int = Field(default=35, ge=18, le=100)
-    has_school_cert: bool = True; is_nigerian: bool = True
-    criminal_record: bool = False; dual_citizen: bool = False
-    years_in_party: int = Field(default=3, ge=0)
+    age: int = Field(..., ge=18, le=100)
+    has_school_cert: Optional[bool] = None; is_nigerian: Optional[bool] = None
+    criminal_record: Optional[bool] = None; dual_citizen: Optional[bool] = None
+    years_in_party: Optional[int] = Field(default=None, ge=0)
 
 class PlanCreateReq(BaseModel):
     candidate_id: int; election_id: int; office_type: str
@@ -434,6 +489,13 @@ class VolunteerGraphReq(BaseModel):
 @app.post("/api/v1/campaign/eligibility", tags=["Eligibility"])
 async def check_eligibility(req: EligibilityReq):
     """Full INEC eligibility check against the 1999 Constitution (as amended)."""
+    # INTEGRITY: unknown office types are rejected — never silently remapped
+    # to "house" requirements.
+    if req.office_type not in ELIGIBILITY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown office_type '{req.office_type}'; valid: {sorted(ELIGIBILITY)}",
+        )
     return engine_eligibility(req.candidate_id, req.office_type, req.state_code, req.party_code,
                                req.age, req.has_school_cert, req.is_nigerian,
                                req.criminal_record, req.dual_citizen, req.years_in_party)
@@ -545,7 +607,17 @@ async def volunteer_network(req: VolunteerGraphReq):
 
 @app.get("/api/v1/campaign/states", tags=["Reference Data"])
 async def list_states():
-    return {"states": STATES, "zones": ZONES}
+    # INTEGRITY: the voter counts and swing values in STATES/ZONES are
+    # editorial estimates, NOT official INEC register figures. Labeled so
+    # callers never treat them as authoritative reference data.
+    return {
+        "states": STATES,
+        "zones": ZONES,
+        "data_quality": "reference_estimates_unverified",
+        "source": "editorial",
+        "note": "Voter counts and swing values are unverified editorial estimates, "
+                "not official INEC figures. Do not use for planning decisions.",
+    }
 
 
 @app.get("/api/v1/campaign/offices", tags=["Reference Data"])
@@ -555,6 +627,12 @@ async def list_offices():
 
 @app.websocket("/ws/campaign")
 async def campaign_ws(ws: WebSocket):
+    # SECURITY: HTTP middleware does not cover WebSocket upgrades — enforce
+    # the same API key here (query token), failing closed when unconfigured.
+    token = ws.query_params.get("token", "")
+    if not CAMPAIGN_API_KEY or not _key_valid(token):
+        await ws.close(code=4401)
+        return
     await ws.accept()
     _ws_clients.append(ws)
     try:

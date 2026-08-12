@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 
 logger = structlog.get_logger()
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
+# SECURITY: no credential defaults — DATABASE_URL must come from the
+# environment (previously shipped postgresql://ngapp:ngapp123@localhost).
+DB_URL = os.getenv("DATABASE_URL", "").strip()
 
 router = APIRouter(prefix="/gotv-analytics/v2", tags=["analytics_v2"])
 
@@ -33,6 +35,9 @@ _v2_pool = None
 
 def _get_pool():
     global _v2_pool
+    if not DB_URL:
+        # Fail closed: data endpoints return 503 when the DB is not configured.
+        raise HTTPException(status_code=503, detail="DATABASE_URL is not configured")
     if _v2_pool is None:
         import psycopg2.pool
         _v2_pool = psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=DB_URL)

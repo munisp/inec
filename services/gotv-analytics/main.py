@@ -26,7 +26,14 @@ from sklearn.preprocessing import StandardScaler
 
 logger = structlog.get_logger()
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
+# SECURITY: no credential defaults. DATABASE_URL must be provided by the
+# environment — previously a hardcoded postgresql://ngapp:ngapp123@localhost
+# fallback silently shipped DB credentials in source.
+DB_URL = os.getenv("DATABASE_URL", "").strip()
+
+
+class DatabaseNotConfiguredError(RuntimeError):
+    """Raised when a data endpoint is hit but DATABASE_URL is not configured."""
 
 
 # ─── DB helpers (connection pooling) ────────────────────────────────────────
@@ -37,6 +44,10 @@ _db_pool = None
 def get_db_pool():
     """Get or create a connection pool (min=2, max=10)."""
     global _db_pool
+    if not DB_URL:
+        raise DatabaseNotConfiguredError(
+            "DATABASE_URL is not configured; data endpoints are unavailable"
+        )
     if _db_pool is None:
         import psycopg2.pool
         _db_pool = psycopg2.pool.ThreadedConnectionPool(
@@ -297,6 +308,16 @@ async def lifespan(app: FastAPI):
 
     from middleware import middleware_status
     logger.info("GOTV Analytics starting", middleware=middleware_status())
+    # SECURITY/CONFIG: fail-closed services must be loud at startup.
+    if not DB_URL:
+        logger.critical("database_not_configured",
+                        detail="DATABASE_URL unset — all data endpoints will return 503")
+    if not get_configured_api_key():
+        logger.critical("api_key_not_configured",
+                        detail="GOTV_ANALYTICS_API_KEY unset — all non-health endpoints will return 503")
+    if not os.getenv("GOTV_ANALYTICS_ADMIN_KEY", "").strip():
+        logger.warning("admin_key_not_configured",
+                       detail="GOTV_ANALYTICS_ADMIN_KEY unset — /ml/train will return 503")
     yield
     logger.info("GOTV Analytics shutting down — cleanup complete")
 
@@ -322,6 +343,10 @@ async def exception_recovery_middleware(request: Request, call_next):
     """Catch unhandled exceptions in handlers — return 500 instead of crashing the worker."""
     try:
         return await call_next(request)
+    except DatabaseNotConfiguredError as exc:
+        # Fail closed: data endpoints return 503 when no database is configured.
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content={"error": str(exc)})
     except Exception as exc:
         import traceback
         logger.error("unhandled_exception",
@@ -333,16 +358,65 @@ async def exception_recovery_middleware(request: Request, call_next):
         return JSONResponse(status_code=500, content={"error": "internal server error"})
 
 
+# ─── API-key authentication (fail closed) ───────────────────────────────────
+
+def _constant_time_equal(provided: str, expected: str) -> bool:
+    import hmac
+    return hmac.compare_digest(provided.encode(), expected.encode())
+
+
+def get_configured_api_key() -> str:
+    """The service API key. Empty string means unconfigured (fail closed)."""
+    return os.getenv("GOTV_ANALYTICS_API_KEY", "").strip()
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Validate auth header on non-health endpoints (service-to-service via Dapr or Bearer token)."""
+    """Validate the service API key on non-health endpoints.
+
+    SECURITY: previously ANY non-empty Authorization or dapr-api-token header
+    passed authentication. Now the credential must match GOTV_ANALYTICS_API_KEY
+    (or DAPR_API_TOKEN for the sidecar) under constant-time comparison, and
+    the service refuses to serve (503) when no key is configured — matching
+    the gotv-engine fail-closed policy.
+    """
+    from fastapi.responses import JSONResponse
+
     if request.url.path in ("/health", "/docs", "/openapi.json"):
         return await call_next(request)
+
+    expected_key = get_configured_api_key()
+    if not expected_key:
+        logger.error("auth_misconfigured", detail="GOTV_ANALYTICS_API_KEY not set")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "GOTV_ANALYTICS_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+
     auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    has_key = bool(bearer) and _constant_time_equal(bearer, expected_key)
+
+    dapr_expected = os.getenv("DAPR_API_TOKEN", "").strip() or expected_key
     dapr_token = request.headers.get("dapr-api-token", "")
-    if not auth and not dapr_token:
-        from fastapi.responses import JSONResponse
+    has_dapr = bool(dapr_token) and _constant_time_equal(dapr_token, dapr_expected)
+
+    if not (has_key or has_dapr):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
+
+    # AUDIT: log which party's data is being accessed (cross-tenant visibility).
+    party_id = request.query_params.get("party_id")
+    if party_id is None:
+        # party_id may also be a path parameter
+        for part in request.url.path.split("/"):
+            if part.isdigit():
+                party_id = part
+                break
+    logger.info("authenticated_access",
+                path=request.url.path,
+                method=request.method,
+                party_id=party_id,
+                auth_method="dapr" if has_dapr else "api_key")
     return await call_next(request)
 
 
@@ -378,11 +452,30 @@ async def opensearch_search(q: str, party_id: int = Query(...), index: str = "go
 
 
 @app.get("/gotv-analytics/lakehouse")
-async def lakehouse_query(sql: str = Query(...)):
-    """Run analytical query against Lakehouse/Trino."""
-    from middleware import query_lakehouse
-    results = query_lakehouse(sql)
-    return {"data": results, "count": len(results), "source": "lakehouse"}
+async def lakehouse_query(
+    view: str = Query(..., description="Allowlisted analytics view name"),
+    party_id: int = Query(..., description="Party scope — enforced server-side"),
+    limit: int = Query(500, le=1000),
+):
+    """Run a canned analytical query against the Lakehouse/Trino cluster.
+
+    SECURITY: caller-supplied raw SQL is no longer accepted (it was arbitrary
+    cross-tenant SQL with only a keyword blacklist). Only SELECTs against an
+    explicit allowlist of analytics views are served, with the party filter
+    injected server-side. Unknown views are rejected (fail closed).
+    """
+    from middleware import query_lakehouse_view, LakehouseQueryRejected
+    try:
+        results = query_lakehouse_view(view, party_id=party_id, limit=limit)
+    except LakehouseQueryRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "data": results,
+        "count": len(results),
+        "source": "lakehouse" if results else "unavailable",
+        "view": view,
+        "party_id": party_id,
+    }
 
 
 @app.get("/gotv-analytics/campaign/{campaign_id}")

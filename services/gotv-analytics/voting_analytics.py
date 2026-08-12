@@ -83,19 +83,47 @@ class TurnoutPrediction:
 
 
 class VoteAnomalyDetector:
-    """Detects voting irregularities and potential fraud in real-time."""
+    """Detects voting irregularities and potential fraud in real-time.
+
+    MEMORY: all state is process-local and BOUNDED (ring buffers with the
+    documented caps below). State is lost on restart — endpoints label their
+    responses with persistence="ephemeral_in_memory".
+    """
+
+    # Documented ring-buffer caps (bound memory growth under attack/load).
+    MAX_VOTE_EVENTS = 20_000
+    MAX_ALERTS = 5_000
+    MAX_TRACKED_KEYS = 50_000  # ip/device/delegate keys
 
     def __init__(self):
-        self.vote_events: List[VoteEvent] = []
-        self.alerts: List[AnomalyAlert] = []
+        from collections import deque
+        self.vote_events: deque = deque(maxlen=self.MAX_VOTE_EVENTS)
+        self.alerts: deque = deque(maxlen=self.MAX_ALERTS)
         self.ip_vote_counts: Dict[str, int] = defaultdict(int)
         self.device_vote_counts: Dict[str, int] = defaultdict(int)
         self.delegate_vote_times: Dict[str, List[float]] = defaultdict(list)
-        self.state_vote_rates: Dict[str, List[float]] = defaultdict(list)
+        # (delegate_id, round_id) -> vote count, for O(1) duplicate detection
+        self._delegate_round_votes: Dict[str, int] = defaultdict(int)
+        # ballot_ids already ingested (idempotent retries are not duplicates)
+        self._seen_ballots: set = set()
+
+    def _bound_key_maps(self) -> None:
+        """Evict key-tracking maps when they exceed the documented cap.
+
+        Trade-off: when the cap is hit, counters reset (alert thresholds may
+        re-fire) rather than growing memory without bound.
+        """
+        for m in (self.ip_vote_counts, self.device_vote_counts,
+                  self._delegate_round_votes, self.delegate_vote_times):
+            if len(m) > self.MAX_TRACKED_KEYS:
+                m.clear()
+        if len(self._seen_ballots) > self.MAX_TRACKED_KEYS:
+            self._seen_ballots.clear()
 
     def ingest_vote(self, event: VoteEvent) -> List[AnomalyAlert]:
         """Process a vote event and return any anomalies detected."""
         self.vote_events.append(event)
+        self._bound_key_maps()
         alerts = []
 
         # Check 1: Duplicate vote detection
@@ -128,29 +156,35 @@ class VoteAnomalyDetector:
                 ))
 
         # Check 4: Voting speed anomaly (too fast)
-        self.delegate_vote_times[event.delegate_id].append(event.timestamp)
+        times = self.delegate_vote_times[event.delegate_id]
+        times.append(event.timestamp)
+        del times[:-10]  # keep only the last 10 timestamps per delegate
         speed_alert = self._check_voting_speed(event)
         if speed_alert:
             alerts.append(speed_alert)
 
-        # Check 5: Geographic impossibility (remote voting from unexpected location)
-        geo_alert = self._check_geographic_anomaly(event)
-        if geo_alert:
-            alerts.append(geo_alert)
+        # Check 5: Geographic impossibility — NOT IMPLEMENTED (see method).
+        # INTEGRITY: we never fabricate a geo verdict; the gap is surfaced in
+        # get_anomaly_summary() as geographic_check="not_implemented".
 
         self.alerts.extend(alerts)
         return alerts
 
     def _check_duplicate_vote(self, event: VoteEvent) -> Optional[AnomalyAlert]:
-        delegate_votes = [v for v in self.vote_events if v.delegate_id == event.delegate_id
-                          and v.round_id == event.round_id and v.ballot_id != event.ballot_id]
-        if delegate_votes:
+        if event.ballot_id:
+            if event.ballot_id in self._seen_ballots:
+                return None  # idempotent retry of the same ballot, not a new vote
+            self._seen_ballots.add(event.ballot_id)
+        key = f"{event.delegate_id}:{event.round_id}"
+        prior = self._delegate_round_votes[key]
+        self._delegate_round_votes[key] = prior + 1
+        if prior > 0:
             return AnomalyAlert(
                 alert_id=f"dup-{event.delegate_id}-{event.round_id}",
                 alert_type="duplicate_vote",
                 severity="critical",
                 description=f"Delegate {event.delegate_id} voted multiple times in round {event.round_id}",
-                evidence={"delegate_id": event.delegate_id, "vote_count": len(delegate_votes) + 1},
+                evidence={"delegate_id": event.delegate_id, "vote_count": prior + 1},
             )
         return None
 
@@ -168,12 +202,6 @@ class VoteAnomalyDetector:
                 )
         return None
 
-    def _check_geographic_anomaly(self, event: VoteEvent) -> Optional[AnomalyAlert]:
-        if not event.is_remote:
-            return None
-        # In production, compare IP geolocation with delegate's registered state
-        return None
-
     def get_anomaly_summary(self) -> Dict[str, Any]:
         """Return summary of all detected anomalies."""
         severity_counts = Counter(a.severity for a in self.alerts)
@@ -183,6 +211,15 @@ class VoteAnomalyDetector:
             "by_severity": dict(severity_counts),
             "by_type": dict(type_counts),
             "critical_alerts": [asdict(a) for a in self.alerts if a.severity == "critical"],
+            # INTEGRITY: the geographic-impossibility check is not implemented
+            # (no IP geolocation source is configured). It is reported honestly
+            # instead of silently returning "no anomaly".
+            "geographic_check": "not_implemented",
+            "persistence": "ephemeral_in_memory",
+            "state_caps": {
+                "max_vote_events": self.MAX_VOTE_EVENTS,
+                "max_alerts": self.MAX_ALERTS,
+            },
         }
 
 
@@ -194,8 +231,12 @@ class VoteAnomalyDetector:
 class TurnoutPredictor:
     """Predicts final turnout based on early voting patterns."""
 
+    # Documented cap on in-memory vote timestamps (ring buffer).
+    MAX_TIMESTAMPS = 50_000
+
     def __init__(self):
-        self.vote_timestamps: List[float] = []
+        from collections import deque
+        self.vote_timestamps: deque = deque(maxlen=self.MAX_TIMESTAMPS)
         self.eligible_voters: int = 0
         self.historical_turnouts: List[float] = []
 
@@ -232,14 +273,30 @@ class TurnoutPredictor:
         if self.historical_turnouts:
             avg_hist = np.mean(self.historical_turnouts)
         else:
-            avg_hist = 70.0  # Default Nigerian primary turnout
+            # INTEGRITY: no historical baseline. Previously a fabricated
+            # "Nigerian primary turnout = 70%" constant was used as the
+            # carrying capacity. Now: too-early predictions with no baseline
+            # are reported as insufficient_data; otherwise extrapolate from
+            # observed votes only and label the model accordingly.
+            if time_fraction < 0.25:
+                return TurnoutPrediction(
+                    round_id=round_id,
+                    predicted_turnout_pct=0.0,
+                    confidence_interval=(0.0, 100.0),
+                    model_type="insufficient_data_no_historical_baseline",
+                    features_used=["elapsed_time", "current_turnout"],
+                )
+            avg_hist = None
 
         # Estimate final turnout
         if time_fraction > 0.1:
             growth_rate = current_turnout / time_fraction
-            predicted = min(growth_rate * 0.85, avg_hist * 1.2)  # Decay factor
+            if avg_hist is not None:
+                predicted = min(growth_rate * 0.85, avg_hist * 1.2)  # Decay factor
+            else:
+                predicted = growth_rate * 0.85  # observed-trajectory-only estimate
         else:
-            predicted = avg_hist
+            predicted = avg_hist  # only reachable when avg_hist is not None
 
         predicted = max(min(predicted, 100.0), current_turnout)
 
@@ -252,8 +309,12 @@ class TurnoutPredictor:
             round_id=round_id,
             predicted_turnout_pct=round(predicted, 2),
             confidence_interval=(round(ci_low, 2), round(ci_high, 2)),
-            model_type="logistic_growth",
-            features_used=["elapsed_time", "current_turnout", "historical_avg", "growth_rate"],
+            model_type="logistic_growth" if avg_hist is not None else "observed_growth_no_history",
+            features_used=(
+                ["elapsed_time", "current_turnout", "historical_avg", "growth_rate"]
+                if avg_hist is not None
+                else ["elapsed_time", "current_turnout", "growth_rate"]
+            ),
         )
 
 
@@ -344,10 +405,17 @@ class DelegateBehaviorAnalyzer:
 
 
 class RemoteVotingFraudDetector:
-    """ML-based fraud detection for remote electronic voting."""
+    """ML-based fraud detection for remote electronic voting.
+
+    MEMORY: process-local, bounded state (see documented caps).
+    """
+
+    MAX_SESSIONS = 10_000
+    MAX_RISK_SCORES = 50_000
 
     def __init__(self):
-        self.sessions: List[Dict[str, Any]] = []
+        from collections import deque
+        self.sessions: deque = deque(maxlen=self.MAX_SESSIONS)
         self.risk_scores: Dict[str, float] = {}
 
     def score_session(self, session: Dict[str, Any]) -> float:
@@ -399,6 +467,8 @@ class RemoteVotingFraudDetector:
             factors.append("vpn_detected")
 
         risk = min(risk, 100.0)
+        if len(self.risk_scores) > self.MAX_RISK_SCORES:
+            self.risk_scores.clear()  # documented cap: reset rather than grow unbounded
         self.risk_scores[session.get("session_id", "")] = risk
         session["risk_score"] = risk
         session["risk_factors"] = factors
@@ -550,29 +620,72 @@ behavior_analyzer = DelegateBehaviorAnalyzer()
 fraud_detector = RemoteVotingFraudDetector()
 
 
+# ─── Request validation schemas (pydantic) ──────────────────────────────────
+
+from pydantic import BaseModel, Field
+
+
+class VoteEventPayload(BaseModel):
+    ballot_id: str = Field(..., min_length=1, max_length=128)
+    round_id: str = Field(..., min_length=1, max_length=128)
+    delegate_id: str = Field(..., min_length=1, max_length=128)
+    aspirant_id: str = Field(..., min_length=1, max_length=128)
+    vote_type: str = Field("for", pattern="^(for|against|abstain|spoiled)$")
+    is_remote: bool = False
+    is_decoy: bool = False
+    ip_hash: str = Field("", max_length=128)
+    device_fingerprint: str = Field("", max_length=128)
+
+
+class PredictTurnoutPayload(BaseModel):
+    round_id: str = Field(..., min_length=1, max_length=128)
+    eligible_voters: int = Field(..., ge=1, le=100_000_000)
+    duration_hours: float = Field(6.0, gt=0, le=72)
+    historical_turnouts: Optional[List[float]] = None
+
+
+class ScoreSessionPayload(BaseModel):
+    session_id: str = Field("", max_length=128)
+    device_age_hours: float = Field(0, ge=0)
+    auth_to_vote_seconds: float = Field(0, ge=0)
+    ip_total_votes: int = Field(0, ge=0)
+    biometric_verified: bool = False
+    otp_failures: int = Field(0, ge=0, le=100)
+    is_vpn: bool = False
+
+
+class RoundResultsPayload(BaseModel):
+    results: List[Dict[str, Any]] = Field(..., max_length=500)
+    total_eligible: int = Field(0, ge=0)
+
+
+class BenfordsPayload(BaseModel):
+    vote_counts: List[int] = Field(..., max_length=100_000)
+
+
 def create_voting_analytics_routes(app):
     """Register FastAPI routes for voting analytics."""
-    from fastapi import Request
     from fastapi.responses import JSONResponse
 
     @app.post("/analytics/vote-event")
-    async def ingest_vote_event(request: Request):
-        data = await request.json()
+    async def ingest_vote_event(payload: VoteEventPayload):
         event = VoteEvent(
-            ballot_id=data.get("ballot_id", ""),
-            round_id=data.get("round_id", ""),
-            delegate_id=data.get("delegate_id", ""),
-            aspirant_id=data.get("aspirant_id", ""),
-            vote_type=data.get("vote_type", "for"),
-            is_remote=data.get("is_remote", False),
-            ip_hash=data.get("ip_hash", ""),
-            device_fingerprint=data.get("device_fingerprint", ""),
+            ballot_id=payload.ballot_id,
+            round_id=payload.round_id,
+            delegate_id=payload.delegate_id,
+            aspirant_id=payload.aspirant_id,
+            vote_type=payload.vote_type,
+            is_remote=payload.is_remote,
+            is_decoy=payload.is_decoy,
+            ip_hash=payload.ip_hash,
+            device_fingerprint=payload.device_fingerprint,
         )
         alerts = anomaly_detector.ingest_vote(event)
         turnout_predictor.record_vote(event.timestamp)
         return JSONResponse({
             "processed": True,
             "alerts": [asdict(a) for a in alerts],
+            "persistence": "ephemeral_in_memory",
         })
 
     @app.get("/analytics/anomalies")
@@ -580,22 +693,24 @@ def create_voting_analytics_routes(app):
         return JSONResponse(anomaly_detector.get_anomaly_summary())
 
     @app.post("/analytics/predict-turnout")
-    async def predict_turnout(request: Request):
-        data = await request.json()
-        turnout_predictor.set_eligible_voters(data.get("eligible_voters", 1000))
+    async def predict_turnout(payload: PredictTurnoutPayload):
+        turnout_predictor.set_eligible_voters(payload.eligible_voters)
+        if payload.historical_turnouts:
+            for pct in payload.historical_turnouts[:20]:
+                turnout_predictor.add_historical_turnout(pct)
         prediction = turnout_predictor.predict_turnout(
-            round_id=data.get("round_id", ""),
-            voting_duration_hours=data.get("duration_hours", 6.0),
+            round_id=payload.round_id,
+            voting_duration_hours=payload.duration_hours,
         )
-        return JSONResponse(asdict(prediction))
+        return JSONResponse({**asdict(prediction), "persistence": "ephemeral_in_memory"})
 
     @app.post("/analytics/score-session")
-    async def score_remote_session(request: Request):
-        data = await request.json()
-        risk = fraud_detector.score_session(data)
+    async def score_remote_session(payload: ScoreSessionPayload):
+        risk = fraud_detector.score_session(payload.model_dump())
         return JSONResponse({
             "risk_score": risk,
             "risk_level": "low" if risk < 25 else "medium" if risk < 50 else "high" if risk < 75 else "critical",
+            "persistence": "ephemeral_in_memory",
         })
 
     @app.get("/analytics/risk-distribution")
@@ -603,18 +718,16 @@ def create_voting_analytics_routes(app):
         return JSONResponse(fraud_detector.get_risk_distribution())
 
     @app.post("/analytics/round-results")
-    async def analyze_results(request: Request):
-        data = await request.json()
+    async def analyze_results(payload: RoundResultsPayload):
         analysis = analyze_round_results(
-            results=data.get("results", []),
-            total_eligible=data.get("total_eligible", 0),
+            results=payload.results,
+            total_eligible=payload.total_eligible,
         )
         return JSONResponse(analysis)
 
     @app.post("/analytics/benfords-test")
-    async def benfords_test(request: Request):
-        data = await request.json()
-        result = benfords_law_test(data.get("vote_counts", []))
+    async def benfords_test(payload: BenfordsPayload):
+        result = benfords_law_test(payload.vote_counts)
         return JSONResponse(result)
 
     @app.get("/analytics/delegate-behavior")
