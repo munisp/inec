@@ -29,15 +29,36 @@ from pydantic import BaseModel
 
 log = structlog.get_logger()
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC Document AI",
     version="1.0.0",
     description="AI-powered document analysis for election result verification",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 # SECURITY: KYC/OCR endpoints handle sensitive identity documents. The service
 # FAILS CLOSED when DOCUMENT_AI_API_KEY is unset (503 on all non-health routes).
-DOCUMENT_AI_API_KEY = os.getenv("DOCUMENT_AI_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+DOCUMENT_AI_API_KEYS: list[str] = [
+    k.strip() for k in os.getenv("DOCUMENT_AI_API_KEY", "").split(",") if k.strip()
+]
+
+
+@app.on_event("startup")
+async def production_config_guard() -> None:
+    """Fail fast in production when any required secret/config is missing."""
+    if _PRODUCTION and not DOCUMENT_AI_API_KEYS:
+        raise RuntimeError(
+            "APP_ENV=production requires DOCUMENT_AI_API_KEY; refusing to start"
+        )
 # SECURITY: CORS is deny-by-default; operators opt in via DOCUMENT_AI_CORS_ORIGINS
 # (comma-separated). Previously allow_origins=["*"] exposed KYC/OCR to any origin.
 DOCUMENT_AI_CORS_ORIGINS = [
@@ -50,7 +71,7 @@ async def api_key_auth_middleware(request: Request, call_next):
     """Require the service API key on all non-health endpoints (fail closed)."""
     if request.url.path == "/health":
         return await call_next(request)
-    if not DOCUMENT_AI_API_KEY:
+    if not DOCUMENT_AI_API_KEYS:
         log.error("api_key_not_configured", detail="DOCUMENT_AI_API_KEY unset")
         return JSONResponse(
             status_code=503,
@@ -59,7 +80,9 @@ async def api_key_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), DOCUMENT_AI_API_KEY.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in DOCUMENT_AI_API_KEYS
+    ):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
     return await call_next(request)
 
@@ -1726,16 +1749,18 @@ async def health():
             else "unavailable"
         ),
     }
-    return {
-        "status": "healthy"
-        if all(
-            value in {"available", "configured", "optional"}
-            for value in services.values()
-        )
-        else "degraded",
-        "services": services,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    degraded = any(
+        value not in {"available", "configured", "optional"}
+        for value in services.values()
+    )
+    return JSONResponse(
+        status_code=503 if degraded else 200,
+        content={
+            "status": "degraded" if degraded else "healthy",
+            "services": services,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 @app.post("/ocr/extract")
