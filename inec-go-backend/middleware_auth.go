@@ -20,7 +20,6 @@ var publicPaths = map[string]bool{
 	"/readiness":       true,
 	"/auth/login":      true,
 	"/auth/register":   true,
-	"/ws":              true,
 	"/metrics":         true,
 	"/auth/refresh":    true,
 	"/observer/stream": true, // SSE authenticates in-handler via authenticateStreamRequest (HttpOnly cookie; EventSource can't set headers)

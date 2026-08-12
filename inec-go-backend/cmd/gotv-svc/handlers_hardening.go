@@ -263,78 +263,14 @@ func stopGRPCServer() {
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// JWT Validation Middleware — real Keycloak OIDC token validation
-// ═══════════════════════════════════════════════════════════════════════════
-
-// jwtValidationMiddleware validates Bearer tokens against Keycloak.
-// SECURITY: the X-GOTV-Party-Code header fallback is a DEV-ONLY escape hatch
-// (devModeEnabled, i.e. --dev / GOTV_DEV_MODE=true). It exists solely for
-// local development when no Keycloak is running; in production a bare header
-// authenticates NOBODY, and a failed Keycloak token validation is a hard 401.
-func jwtValidationMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip for public endpoints
-		publicPaths := []string{"/health", "/ready", "/metrics", "/openapi.json",
-			"/robots.txt", "/version", "/auth/", "/ws"}
-		for _, p := range publicPaths {
-			if len(r.URL.Path) >= len(p) && r.URL.Path[:len(p)] == p {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		// Try Bearer token first (production)
-		authHeader := r.Header.Get("Authorization")
-		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-			token := authHeader[7:]
-			claims, err := validateKeycloakToken(token)
-			if err == nil && claims != nil {
-				// Inject claims into request context
-				ctx := context.WithValue(r.Context(), ctxKeyClaims, claims)
-				if sub, ok := claims["sub"].(string); ok {
-					ctx = context.WithValue(ctx, ctxKeyUserID, sub)
-				}
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-			// SECURITY: when Keycloak is configured, a failed token validation
-			// is TERMINAL (401) — we must never fall through to any header-based
-			// fallback, or any request bearing a garbage token plus a party-code
-			// header would authenticate (full auth bypass + party impersonation).
-			if keycloakURL != "" {
-				log.Warn().Err(err).Msg("JWT validation failed — rejecting (no fallback when Keycloak is configured)")
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
-				return
-			}
-			log.Warn().Err(err).Msg("JWT validation failed (Keycloak not configured)")
-		}
-
-		// SECURITY: the X-GOTV-Party-Code header fallback is a DEV-ONLY escape
-		// hatch (devModeEnabled). A bare header is proof of nothing — in
-		// production it MUST NOT authenticate anyone, otherwise any client can
-		// impersonate any party by setting one header.
-		if devModeEnabled && r.Header.Get("X-GOTV-Party-Code") != "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// No auth at all — if dev mode, allow through
-		if devModeEnabled {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
-	})
-}
-
-type ctxKey string
-
-const (
-	ctxKeyClaims ctxKey = "jwt_claims"
-	ctxKeyUserID ctxKey = "user_id"
-)
+// NOTE: authentication for gotv-svc routes is enforced PER ROUTE by
+// gotv.AuthMiddleware (the `auth(...)` wrapper in main.go), by
+// mobileAuth.MobileAuthWrap (`mauth(...)`) for mobile endpoints, and
+// in-handler for /gotv/ws — not by a global middleware. A previous global
+// Keycloak middleware here was never wired into the router and duplicated
+// that per-route model with a stale public-path list; it was removed as
+// dead code. Keycloak token validation that IS wired lives in
+// handlers_primaries.go (validateKeycloakDelegateSession).
 
 var devModeEnabled bool
 

@@ -358,26 +358,6 @@ func initKeycloak() {
 	log.Info().Str("url", keycloakURL).Str("realm", keycloakRealm).Msg("GOTV Keycloak configured")
 }
 
-func validateKeycloakToken(token string) (map[string]interface{}, error) {
-	if keycloakURL == "" {
-		return nil, fmt.Errorf("keycloak not configured")
-	}
-	req, _ := http.NewRequest("GET",
-		fmt.Sprintf("%s/realms/%s/protocol/openid-connect/userinfo", keycloakURL, keycloakRealm), nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := mwHTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("keycloak: status %d", resp.StatusCode)
-	}
-	var claims map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&claims)
-	return claims, nil
-}
-
 // ─── Permify Integration ───────────────────────────────────────────────────
 // Fine-grained ReBAC permissions: party_admin > coordinator > canvasser.
 
