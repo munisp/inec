@@ -24,9 +24,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 import structlog
 
 structlog.configure(processors=[structlog.processors.TimeStamper(fmt="iso"), structlog.processors.JSONRenderer()])
@@ -40,8 +44,61 @@ OPENAI_KEY     = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_BASE    = os.getenv("OPENAI_API_BASE", "").strip().rstrip("/")
 OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "").strip()
 
+# SECURITY: every simulation endpoint was unauthenticated. The service FAILS
+# CLOSED when DIGITAL_TWIN_API_KEY is unset (503 on all non-health routes).
+DIGITAL_TWIN_API_KEY = os.getenv("DIGITAL_TWIN_API_KEY", "").strip()
+# SECURITY: CORS is deny-by-default; operators opt in via DIGITAL_TWIN_CORS_ORIGINS
+# (comma-separated). Previously allow_origins=["*"].
+DIGITAL_TWIN_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("DIGITAL_TWIN_CORS_ORIGINS", "").split(",") if o.strip()
+]
+
 app = FastAPI(title="INEC Digital Twin v2", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Rate limiting (429 + Retry-After on breach). /what-if invokes a paid LLM.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "rate limit exceeded", "detail": str(exc.detail)},
+        headers={"Retry-After": "60"},
+    )
+
+
+def _key_valid(provided: str) -> bool:
+    import hmac
+    return bool(provided) and hmac.compare_digest(provided.encode(), DIGITAL_TWIN_API_KEY.encode())
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """Require the service API key on all non-health endpoints (fail closed)."""
+    if request.url.path == "/api/v1/twin/health":
+        return await call_next(request)
+    if not DIGITAL_TWIN_API_KEY:
+        log.error("api_key_not_configured", detail="DIGITAL_TWIN_API_KEY unset")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "DIGITAL_TWIN_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not _key_valid(provided):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=DIGITAL_TWIN_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+)
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 class PUStatus(str, Enum):
@@ -553,7 +610,8 @@ async def adversarial_sim(cfg: SimConfig):
     return s
 
 @app.post("/api/v1/twin/what-if", tags=["AI Scenario Generator"])
-async def what_if(req: WhatIfReq):
+@limiter.limit("10/minute")
+async def what_if(request: Request, req: WhatIfReq):
     """Innovation 4: AI-driven what-if scenario generator."""
     sc_cfg = await ai_scenario(req.prompt, {"election_id":req.base_election_id})
     sc_type = ScenarioType(sc_cfg.get("scenario_type","baseline"))
@@ -648,6 +706,11 @@ async def delete_sim(election_id: str):
 @app.websocket("/ws/twin")
 async def twin_ws(ws: WebSocket):
     """Innovation 10: WebSocket streaming simulation API."""
+    # SECURITY: HTTP middleware does not cover WebSocket upgrades — enforce the
+    # same API key here (query token), failing closed when unconfigured.
+    if not DIGITAL_TWIN_API_KEY or not _key_valid(ws.query_params.get("token", "")):
+        await ws.close(code=4401)
+        return
     await ws.accept(); _ws_clients.append(ws)
     try:
         while True:
