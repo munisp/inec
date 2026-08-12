@@ -76,7 +76,7 @@ Final per-category detail (verifier-awarded, main @ `1f20102` + delivery commit)
 | Rust: `cargo check --locked` × 7 crates | **PASS** (biometric-rust, fluvio-stream, gotv-engine, rust-hot-path, geolibre-spatial, inference-engine-v2, inference-engine) |
 | Compose: all 42 services have restart policy + resource limits; YAML valid | **PASS** (9 compose files parse; `:?`-guard vs `.env.example` diff EMPTY) |
 | CI: campaign-platform job added, node 22 aligned, rust+Docker matrices match reality | **PASS** (YAML valid; matrix entries exist on disk) |
-| Cumulative patch `git apply --check` onto pristine `1d80c54` | **PASS** |
+| Cumulative patch `git apply --check` onto pristine `1d80c54` | **PASS** (420 files, +52,508/−50,196; excludes 4 binary blobs — `git rm` one-liner in §6 row 4) |
 
 ## 6. Remaining ops actions before go-live (not code defects)
 
