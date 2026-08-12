@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { useResolvedElection } from '@/lib/gotv-session';
+import { logger } from '@/lib/utils';
 
 interface IntegrityResult {
   polling_unit_code: string;
@@ -32,7 +33,7 @@ export default function IntegrityScorePage() {
     setLoading(true);
     api.getIntegrityHeatmap(electionId, stateFilter || undefined)
       .then(setData)
-      .catch(e => console.error('integrity heatmap:', e))
+      .catch(e => logger.error('integrity heatmap:', e))
       .finally(() => setLoading(false));
   }, [stateFilter, electionId]);
 

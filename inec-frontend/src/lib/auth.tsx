@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { SESSION_EXPIRED_EVENT } from '@/lib/api';
+import { logger } from '@/lib/utils';
 
 interface User {
   id: number;
@@ -52,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('user');
     localStorage.removeItem('auth_token');
     const apiUrl = import.meta.env.VITE_API_URL ?? '';
-    fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(err => console.error("API error:", err));
+    fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(err => logger.error("logout request failed:", err));
     setToken(null);
     setUser(null);
   };

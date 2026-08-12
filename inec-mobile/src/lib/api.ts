@@ -14,6 +14,26 @@ export async function clearToken(): Promise<void> {
   await SecureStore.deleteItemAsync('auth_token');
 }
 
+/**
+ * Best-effort error telemetry: report failing API calls (path + status only —
+ * no tokens, bodies, or other PII) to the frontend error inbox. Never throws.
+ */
+function reportApiError(path: string, status: number): void {
+  try {
+    fetch(`${API_URL}/api/v1/errors/frontend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'inec-mobile',
+        errors: [{
+          message: `api ${status} ${path.replace(/\d+/g, ':id')}`,
+          timestamp: new Date().toISOString(),
+        }],
+      }),
+    }).catch(() => { /* best-effort */ });
+  } catch { /* best-effort */ }
+}
+
 export async function api<T = unknown>(
   path: string,
   options: RequestInit = {}
@@ -35,6 +55,7 @@ export async function api<T = unknown>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    reportApiError(path, res.status);
     throw new Error(`${res.status}: ${text}`);
   }
 

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Target, Users, Trophy, Brain, MapPin, Zap, BarChart3 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
+import { logger } from '@/lib/utils';
 
 interface VoterScore {
   contact_id: string;
@@ -113,7 +114,7 @@ export default function GOTVScoring() {
       if (allocRes.status === 'fulfilled' && allocRes.value.ok) setAllocations(await allocRes.value.json());
       if (banditRes.status === 'fulfilled' && banditRes.value.ok) setBanditData(await banditRes.value.json());
     } catch (e) {
-      console.error('Scoring data load error:', e);
+      logger.error('Scoring data load error:', e);
     }
     setLoading(false);
   }
