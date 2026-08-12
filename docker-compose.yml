@@ -151,6 +151,31 @@ services:
     restart: on-failure
     volumes:
     - fluvio-bridge-data:/data
+  rust-hot-path:
+    build:
+      context: ./services/rust-hot-path
+      dockerfile: Dockerfile
+    environment:
+    - RUST_LOG=info
+    - PORT=9091
+    - KAFKA_BROKERS=kafka:29092
+    - REDIS_NODES=redis://redis:6379
+    - FLUVIO_ENDPOINT=fluvio-sc:9003
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 20s
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - http://localhost:9091/health
+      timeout: 5s
+    networks:
+    - inec-network
+    ports:
+    - 9091:9091
+    restart: on-failure
   frontend:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -728,6 +753,29 @@ services:
     restart: always
     networks:
       - inec-network
+
+  geolibre-spatial:
+    build:
+      context: ./services/geolibre-spatial
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - GEOLIBRE_API_KEY=${GEOLIBRE_API_KEY:?GEOLIBRE_API_KEY must be set}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    healthcheck:
+      interval: 10s
+      retries: 5
+      start_period: 15s
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://localhost:8770/health
+      timeout: 5s
+    networks:
+      - inec-network
+    ports:
+      - 8770:8770
 
   # ── Next-Generation Innovation Services ─────────────────────────────────────
 
