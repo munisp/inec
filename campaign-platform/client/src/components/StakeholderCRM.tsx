@@ -2,14 +2,18 @@
  * Stakeholder Contact CRM
  * Log contacts, track meeting outcomes, and manage engagement status
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   UserCheck, Plus, Phone, Mail, Edit3, Trash2, CheckCircle2,
   Clock, XCircle, Calendar, MessageSquare, ChevronDown, Search, Filter
 } from "lucide-react";
 import { Download, Upload, BadgeCheck, BadgeMinus } from "lucide-react";
+import { toast } from "sonner";
+import { trpc } from "@/lib/trpc";
 import type { CRMContact, Stakeholder } from "./StakeholderTypes";
+
+const LOCAL_STORAGE_KEY = "inec_crm_contacts";
 
 const STATUS_CONFIG = {
   "Not Started":        { color: "oklch(0.55 0.01 240)",  bg: "oklch(0.22 0.01 240)",  icon: <Clock className="w-3 h-3" /> },
@@ -21,6 +25,76 @@ const STATUS_CONFIG = {
 };
 
 const STATUSES = Object.keys(STATUS_CONFIG) as CRMContact["status"][];
+
+// ── Server persistence mapping ────────────────────────────────────────────────
+// The stakeholder_contacts schema predates this CRM, so two columns are
+// repurposed (documented here, do not change silently):
+//   relationship → pipeline status ("Not Started" | "Contacted" | ...)
+//   category     → "verified" flag for endorsed contacts
+type ServerContact = {
+  id: number;
+  name: string | null;
+  title: string | null;
+  organization: string | null;
+  category: string | null;
+  phone: string | null;
+  email: string | null;
+  relationship: string | null;
+  lastContact: string | null;
+  nextAction: string | null;
+  notes: string | null;
+  createdAt: Date | string;
+};
+
+function serverToCRM(row: ServerContact): CRMContact {
+  const status = (STATUSES as string[]).includes(row.relationship ?? "")
+    ? (row.relationship as CRMContact["status"])
+    : "Not Started";
+  return {
+    id: `srv-${row.id}`,
+    stakeholderId: "",
+    stakeholderName: row.organization ?? "",
+    contactName: row.name ?? "",
+    role: row.title ?? "",
+    phone: row.phone ?? "",
+    email: row.email ?? "",
+    status,
+    lastContact: row.lastContact ? String(row.lastContact).slice(0, 10) : "",
+    nextAction: row.nextAction ?? "",
+    notes: row.notes ?? "",
+    createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
+    verified: row.category === "verified",
+  };
+}
+
+function crmToServer(c: CRMContact, profileId: number) {
+  const m = /^srv-(\d+)$/.exec(c.id);
+  return {
+    id: m ? Number(m[1]) : undefined,
+    profileId,
+    name: c.contactName,
+    title: c.role || undefined,
+    organization: c.stakeholderName || undefined,
+    relationship: c.status,
+    category: c.verified ? "verified" : undefined,
+    phone: c.phone || undefined,
+    email: c.email || undefined,
+    // last_contact is a DATE column — only send ISO dates, drop free text
+    lastContact: /^\d{4}-\d{2}-\d{2}/.test(c.lastContact) ? c.lastContact.slice(0, 10) : undefined,
+    nextAction: c.nextAction || undefined,
+    notes: c.notes || undefined,
+  };
+}
+
+function loadLocalContacts(): CRMContact[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 function newContact(stakeholder: Stakeholder): CRMContact {
   return {
@@ -134,15 +208,73 @@ function ContactForm({ contact, stakeholders, onSave, onCancel }: ContactFormPro
 interface Props {
   stakeholders: Stakeholder[];
   onContactsChange?: (contacts: CRMContact[]) => void;
+  /** When set, contacts are persisted to the server stakeholders router. */
+  profileId?: number | null;
 }
 
-export default function StakeholderCRM({ stakeholders, onContactsChange }: Props) {
-  const [contacts, setContacts] = useState<CRMContact[]>([]);
+export default function StakeholderCRM({ stakeholders, onContactsChange, profileId }: Props) {
+  const serverBacked = profileId != null;
+  const utils = trpc.useUtils();
 
-  function updateContacts(next: CRMContact[]) {
-    setContacts(next);
-    onContactsChange?.(next);
+  // Local-only fallback (no campaign profile selected): read-back localStorage
+  const [localContacts, setLocalContacts] = useState<CRMContact[]>(loadLocalContacts);
+
+  const { data: serverRows, isLoading: serverLoading } = trpc.stakeholders.list.useQuery(
+    { profileId: profileId! },
+    { enabled: serverBacked }
+  );
+
+  const upsertMut = trpc.stakeholders.upsert.useMutation({
+    onSuccess: () => utils.stakeholders.list.invalidate(),
+    onError: (e) => toast.error("Could not save contact: " + e.message),
+  });
+  const deleteMut = trpc.stakeholders.delete.useMutation({
+    onSuccess: () => utils.stakeholders.list.invalidate(),
+    onError: (e) => toast.error("Could not delete contact: " + e.message),
+  });
+
+  const contacts: CRMContact[] = useMemo(
+    () => (serverBacked ? (serverRows ?? []).map(serverToCRM) : localContacts),
+    [serverBacked, serverRows, localContacts]
+  );
+
+  // Keep the parent (EngagementDashboard pipeline) in sync with the loaded contacts
+  useEffect(() => {
+    onContactsChange?.(contacts);
+  }, [contacts, onContactsChange]);
+
+  // Persist local-only contacts with read-back
+  useEffect(() => {
+    if (!serverBacked) {
+      try { localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(localContacts)); } catch { /* storage full/blocked */ }
+    }
+  }, [serverBacked, localContacts]);
+
+  function updateLocal(next: CRMContact[]) {
+    setLocalContacts(next);
   }
+
+  function persistContact(contact: CRMContact) {
+    if (serverBacked) {
+      upsertMut.mutate(crmToServer(contact, profileId));
+    } else {
+      updateLocal(
+        contacts.some(c => c.id === contact.id)
+          ? contacts.map(c => (c.id === contact.id ? contact : c))
+          : [contact, ...contacts]
+      );
+    }
+  }
+
+  function removeContact(contact: CRMContact) {
+    if (serverBacked) {
+      const m = /^srv-(\d+)$/.exec(contact.id);
+      if (m) deleteMut.mutate({ id: Number(m[1]) });
+    } else {
+      updateLocal(contacts.filter(c => c.id !== contact.id));
+    }
+  }
+
   const [editingContact, setEditingContact] = useState<CRMContact | null>(null);
   const [addingFor, setAddingFor] = useState<Stakeholder | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -168,28 +300,14 @@ export default function StakeholderCRM({ stakeholders, onContactsChange }: Props
   }, [contacts]);
 
   function handleSave(contact: CRMContact) {
-    setContacts(prev => {
-      const idx = prev.findIndex(c => c.id === contact.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = contact;
-        updateContacts(next);
-        return next; // state update handled by updateContacts
-      }
-      const next = [contact, ...prev];
-      updateContacts(next);
-      return next;
-    });
+    persistContact(contact);
     setEditingContact(null);
     setAddingFor(null);
   }
 
   function handleDelete(id: string) {
-    setContacts(prev => {
-      const next = prev.filter(c => c.id !== id);
-      onContactsChange?.(next);
-      return next;
-    });
+    const contact = contacts.find(c => c.id === id);
+    if (contact) removeContact(contact);
   }
 
   const showForm = editingContact || addingFor;
@@ -240,15 +358,22 @@ export default function StakeholderCRM({ stakeholders, onContactsChange }: Props
           createdAt: clean(parts[10]) || new Date().toISOString(),
         };
       });
-      setContacts(prev => {
-        // Merge: imported contacts replace existing ones with same ID, new ones are prepended
-        const existingIds = new Set(prev.map(c => c.id));
-        const newContacts = imported.filter(c => !existingIds.has(c.id));
-        const updated = prev.map(c => imported.find(i => i.id === c.id) ?? c);
-        const merged = [...newContacts, ...updated];
-        onContactsChange?.(merged);
-        return merged;
-      });
+      if (serverBacked) {
+        // Persist each imported contact; srv-<n> ids update existing rows
+        Promise.allSettled(imported.map(c => upsertMut.mutateAsync(crmToServer(c, profileId)))).then(results => {
+          const failed = results.filter(r => r.status === "rejected").length;
+          if (failed > 0) toast.error(`${failed} of ${imported.length} contacts failed to import`);
+          else toast.success(`Imported ${imported.length} contacts`);
+          utils.stakeholders.list.invalidate();
+        });
+      } else {
+        updateLocal((() => {
+          const existingIds = new Set(contacts.map(c => c.id));
+          const newContacts = imported.filter(c => !existingIds.has(c.id));
+          const updated = contacts.map(c => imported.find(i => i.id === c.id) ?? c);
+          return [...newContacts, ...updated];
+        })());
+      }
     };
     reader.readAsText(file);
     e.target.value = ""; // reset input
@@ -259,7 +384,13 @@ export default function StakeholderCRM({ stakeholders, onContactsChange }: Props
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-bold" style={{ color: "oklch(0.88 0.005 240)" }}>Stakeholder Contact CRM</div>
-          <div className="text-xs mt-0.5" style={{ color: "oklch(0.55 0.01 240)" }}>{contacts.length} contacts logged · {statusCounts["Endorsed"] ?? 0} endorsed</div>
+          <div className="text-xs mt-0.5" style={{ color: "oklch(0.55 0.01 240)" }}>
+            {contacts.length} contacts logged · {statusCounts["Endorsed"] ?? 0} endorsed
+            {" · "}
+            {serverBacked
+              ? (serverLoading ? "Syncing…" : "Synced to campaign profile")
+              : "Local only — select a campaign profile to sync to the server"}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {/* CSV Export */}
@@ -423,12 +554,7 @@ export default function StakeholderCRM({ stakeholders, onContactsChange }: Props
                       {contact.status === "Endorsed" && (
                         <button
                           title={contact.verified ? "Remove verification" : "Mark as officially verified"}
-                          onClick={() => {
-                            const next = contacts.map(c => c.id === contact.id ? { ...c, verified: !c.verified } : c);
-                            setContacts(next);
-                            localStorage.setItem("inec_crm_contacts", JSON.stringify(next));
-                            onContactsChange?.(next);
-                          }}
+                          onClick={() => persistContact({ ...contact, verified: !contact.verified })}
                           className="p-1.5 rounded border transition-all"
                           style={{
                             background: contact.verified ? "oklch(0.20 0.08 240)" : "oklch(0.18 0.008 240)",

@@ -2,7 +2,7 @@
  * Debate Coach — AI-powered debate preparation with opponent-aware talking points
  * Palette: #4A1525 (burgundy), #008751 (green), #1A3A5C (navy), #F5F0EB (paper)
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
@@ -57,14 +57,12 @@ export default function DebateCoach() {
     onError: e => toast.error(e.message),
   });
 
-  // Timer logic
-  useState(() => {
-    let interval: ReturnType<typeof setInterval>;
-    if (timerActive) {
-      interval = setInterval(() => setTimer(t => t + 1), 1000);
-    }
+  // Timer logic — ticks once per second while active
+  useEffect(() => {
+    if (!timerActive) return;
+    const interval = setInterval(() => setTimer(t => t + 1), 1000);
     return () => clearInterval(interval);
-  });
+  }, [timerActive]);
 
   const selectedOpponent = opponents.find(o => o.id === selectedOpponentId);
 
