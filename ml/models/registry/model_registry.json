@@ -23,7 +23,8 @@
       "weights_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn.pt",
       "framework": "pytorch",
       "registered_at": "2026-06-13T03:03:30.404016+00:00",
-      "status": "archived"
+      "status": "archived",
+      "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION"
     },
     "voter_scoring-v1.1781319810": {
       "name": "voter_scoring",
@@ -36,7 +37,8 @@
       "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt",
       "framework": "pytorch",
       "registered_at": "2026-06-13T03:03:30.404837+00:00",
-      "status": "archived"
+      "status": "archived",
+      "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION"
     },
     "gnn_election-v1.1781319810": {
       "name": "gnn_election",
@@ -48,7 +50,8 @@
       "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt",
       "framework": "pytorch",
       "registered_at": "2026-06-13T03:03:30.405724+00:00",
-      "status": "archived"
+      "status": "archived",
+      "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION"
     },
     "fraud_dnn-v1.1781319961": {
       "name": "fraud_dnn",
@@ -73,7 +76,9 @@
       "weights_path": "/home/ubuntu/repos/inec/ml/models/fraud_dnn.pt",
       "framework": "pytorch",
       "registered_at": "2026-06-13T03:06:01.332073+00:00",
-      "status": "production"
+      "status": "staged",
+      "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+      "demotion_note": "Removed from production: trained on synthetic data; promotion requires trained_on == \"real\"."
     },
     "voter_scoring-v1.1781319961": {
       "name": "voter_scoring",
@@ -86,7 +91,9 @@
       "weights_path": "/home/ubuntu/repos/inec/ml/models/voter_scoring.pt",
       "framework": "pytorch",
       "registered_at": "2026-06-13T03:06:01.333164+00:00",
-      "status": "production"
+      "status": "staged",
+      "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+      "demotion_note": "Removed from production: trained on synthetic data; promotion requires trained_on == \"real\"."
     },
     "gnn_election-v1.1781319961": {
       "name": "gnn_election",
@@ -98,13 +105,12 @@
       "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt",
       "framework": "pytorch",
       "registered_at": "2026-06-13T03:06:01.334247+00:00",
-      "status": "production"
+      "status": "staged",
+      "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+      "demotion_note": "Removed from production: trained on synthetic data; promotion requires trained_on == \"real\"."
     }
   },
-  "production": {
-    "fraud_dnn": "fraud_dnn-v1.1781319961",
-    "voter_scoring": "voter_scoring-v1.1781319961",
-    "gnn_election": "gnn_election-v1.1781319961"
-  },
-  "ab_tests": {}
+  "production": {},
+  "ab_tests": {},
+  "integrity_note": "All previously checked-in \"production\" entries were trained on synthetic data and have been demoted to staged. A model may only appear in \"production\" when trained on real data."
 }

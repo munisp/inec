@@ -511,15 +511,16 @@ class FacialMatcher:
         score = float((cosine + 1.0) / 2.0)
 
         decision = "match" if score >= self.MATCH_THRESHOLD else "no_match"
-        far = max(1e-8, 10 ** (-score * 12))
-        frr = max(1e-8, 1.0 - score)
+        # INTEGRITY: FAR/FRR are returned as null. Biometric error rates must be
+        # measured on a labeled evaluation set — the previous formulas
+        # (10**(-score*12), 1.0-score) were invented heuristics, not error rates.
 
         return {
             "score": round(score, 6),
             "decision": decision,
             "algorithm": "arcface_cosine" if self._is_neural(t1) else "lbp_hog_cosine",
-            "far": round(far, 10),
-            "frr": round(frr, 6),
+            "far": None,
+            "frr": None,
             "threshold": self.MATCH_THRESHOLD,
             "latency_ms": round((time.monotonic() - start) * 1000, 2),
             "embedding_dim": len(e1),
@@ -536,8 +537,9 @@ class FacialMatcher:
             "score": round(score, 6),
             "decision": decision,
             "algorithm": "unknown",
-            "far": 1.0,
-            "frr": 1.0,
+            # INTEGRITY: null — error rates are never invented (see match()).
+            "far": None,
+            "frr": None,
             "threshold": 0.45,
             "latency_ms": round(elapsed * 1000, 2),
             "embedding_dim": 0,

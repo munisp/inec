@@ -438,9 +438,14 @@ class EarlyStopping:
 
 
 def train_fraud_dnn(data: pd.DataFrame, epochs: int = 100, lr: float = 1e-3,
-                    batch_size: int = 512) -> dict:
-    """Train FraudDetectionDNN with proper train/val/test split."""
-    log.info("training_fraud_dnn", samples=len(data), epochs=epochs)
+                    batch_size: int = 512,
+                    trained_on: str = "SYNTHETIC_NOT_FOR_PRODUCTION") -> dict:
+    """Train FraudDetectionDNN with proper train/val/test split.
+
+    INTEGRITY: `trained_on` records data provenance in the artifact metadata.
+    ProductionModelRegistry promotion requires trained_on == "real".
+    """
+    log.info("training_fraud_dnn", samples=len(data), epochs=epochs, trained_on=trained_on)
 
     feature_cols = [
         'registered_voters', 'accredited_voters', 'turnout_rate',
@@ -566,6 +571,7 @@ def train_fraud_dnn(data: pd.DataFrame, epochs: int = 100, lr: float = 1e-3,
         "framework": "PyTorch",
         "version": "1.0.0",
         "trained_at": datetime.now(timezone.utc).isoformat(),
+        "trained_on": trained_on,
         "n_train": len(X_train), "n_val": len(X_val), "n_test": len(X_test),
         "epochs_run": len(train_losses),
         "best_val_auc": float(early_stop.best_score or 0),
@@ -588,9 +594,11 @@ def train_fraud_dnn(data: pd.DataFrame, epochs: int = 100, lr: float = 1e-3,
     return metadata
 
 
-def train_voter_scoring(data: pd.DataFrame, epochs: int = 80, lr: float = 1e-3) -> dict:
-    """Train VoterScoringNet regression model."""
-    log.info("training_voter_scoring", samples=len(data), epochs=epochs)
+def train_voter_scoring(data: pd.DataFrame, epochs: int = 80, lr: float = 1e-3,
+                        trained_on: str = "SYNTHETIC_NOT_FOR_PRODUCTION") -> dict:
+    """Train VoterScoringNet regression model. See train_fraud_dnn for the
+    INTEGRITY contract on `trained_on`."""
+    log.info("training_voter_scoring", samples=len(data), epochs=epochs, trained_on=trained_on)
 
     feature_cols = [
         'age', 'contacts_received', 'sms_received', 'calls_received',
@@ -683,6 +691,7 @@ def train_voter_scoring(data: pd.DataFrame, epochs: int = 80, lr: float = 1e-3) 
         "framework": "PyTorch",
         "version": "1.0.0",
         "trained_at": datetime.now(timezone.utc).isoformat(),
+        "trained_on": trained_on,
         "n_train": len(X_train), "n_val": len(X_val), "n_test": len(X_test),
         "test_metrics": {"mse": float(test_mse), "rmse": float(np.sqrt(test_mse)), "r2": float(test_r2)},
         "feature_columns": feature_cols,
@@ -695,9 +704,11 @@ def train_voter_scoring(data: pd.DataFrame, epochs: int = 80, lr: float = 1e-3) 
     return metadata
 
 
-def train_gnn_fallback(data: pd.DataFrame, epochs: int = 80) -> dict:
-    """Train GNN fallback (MLP) model and save weights."""
-    log.info("training_gnn_fallback", samples=len(data), epochs=epochs)
+def train_gnn_fallback(data: pd.DataFrame, epochs: int = 80,
+                       trained_on: str = "SYNTHETIC_NOT_FOR_PRODUCTION") -> dict:
+    """Train GNN fallback (MLP) model and save weights. See train_fraud_dnn
+    for the INTEGRITY contract on `trained_on`."""
+    log.info("training_gnn_fallback", samples=len(data), epochs=epochs, trained_on=trained_on)
 
     feature_cols = [
         'registered_voters', 'accredited_voters', 'turnout_rate',
@@ -765,6 +776,7 @@ def train_gnn_fallback(data: pd.DataFrame, epochs: int = 80) -> dict:
         "framework": "PyTorch",
         "version": "1.0.0",
         "trained_at": datetime.now(timezone.utc).isoformat(),
+        "trained_on": trained_on,
         "n_train": len(X_train), "n_test": len(X_test),
         "test_metrics": {"roc_auc": float(test_auc), "average_precision": float(test_ap)},
         "weights_path": str(weights_path),
@@ -1007,8 +1019,79 @@ class ContinuousTrainer:
             log.warning("db_ingest_fallback", error=str(e))
             return pd.DataFrame()
 
+    # Minimum number of real DB rows required before a model may be trained
+    # (and considered for promotion) in a continuous cycle.
+    MIN_REAL_SAMPLES = 1000
+
+    # Election-model feature columns that cannot be derived from raw result
+    # rows; they must come from the DB itself. INTEGRITY: these are never
+    # fabricated — if the DB does not provide them, training is skipped.
+    ELECTION_NON_DERIVABLE = [
+        "apc_votes", "pdp_votes", "apc_share", "pdp_share", "vote_margin",
+        "benford_deviation", "submission_delay_hours", "label",
+    ]
+    VOTER_REQUIRED = [
+        "age", "contacts_received", "sms_received", "calls_received",
+        "door_knocks", "has_pledge", "needs_ride", "prev_elections",
+        "is_urban", "days_since_last_contact", "whatsapp_interactions",
+        "engagement_score",
+    ]
+
+    @staticmethod
+    def _build_election_frame(db_data: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """Derive the honestly-computable election features from DB rows.
+
+        Only features that follow directly from the ingested columns are
+        derived here (turnout, rejection rate, overvoting, round-number flag,
+        regional turnout mean). Columns the query does not provide (party vote
+        splits, submission delay, verified fraud labels) are left absent so the
+        caller can refuse to train rather than fabricate them.
+        """
+        raw_required = ["registered_voters", "accredited_voters",
+                        "total_valid_votes", "rejected_votes"]
+        if any(c not in db_data.columns for c in raw_required):
+            return None
+        df = db_data.copy()
+        df["turnout_rate"] = df["accredited_voters"] / df["registered_voters"].clip(lower=1)
+        df["rejected_rate"] = df["rejected_votes"] / df["accredited_voters"].clip(lower=1)
+        df["overvoting_flag"] = (df["total_valid_votes"] > df["accredited_voters"]).astype(int)
+        df["round_number_flag"] = (
+            (df["total_valid_votes"] % 100 == 0) | (df["total_valid_votes"] % 50 == 0)
+        ).astype(int)
+        if "state_code" in df.columns:
+            df["regional_mean_turnout"] = df.groupby("state_code")["turnout_rate"].transform("mean")
+        else:
+            df["regional_mean_turnout"] = df["turnout_rate"].mean()
+        df["turnout_vs_region"] = df["turnout_rate"] - df["regional_mean_turnout"]
+        return df
+
+    def _register_and_maybe_promote(self, name: str, meta: dict,
+                                    weights: str, metric: str, threshold: float) -> dict:
+        """Register a trained model; promote ONLY if trained on real data and
+        the metric threshold is met.
+
+        INTEGRITY: synthetic-trained models are never auto-promoted to the
+        production registry.
+        """
+        model_id = self.registry.register(
+            name, f"1.{int(time.time())}", meta["test_metrics"], weights)
+        promoted = False
+        if meta.get("trained_on") != "real":
+            log.warning("promotion_blocked_not_real_data", model=name,
+                        trained_on=meta.get("trained_on"))
+        elif meta["test_metrics"].get(metric, 0) > threshold:
+            self.registry.promote(model_id)
+            promoted = True
+        return {"model_id": model_id, "promoted": promoted, "metadata": meta}
+
     def run_continuous_cycle(self):
-        """One cycle of the continuous training loop."""
+        """One cycle of the continuous training loop.
+
+        INTEGRITY: trains ONLY on data ingested from the platform database.
+        If DB ingestion yields no usable rows, the cycle is skipped with a
+        warning — no training, no registration, no promotion. Synthetic data
+        is never substituted for real data in this pipeline.
+        """
         log.info("continuous_training_cycle_start")
 
         # 1. Check if drift detected
@@ -1017,47 +1100,70 @@ class ContinuousTrainer:
             if drift.get("drift_detected"):
                 log.warning("drift_requires_retrain", model=model_name)
 
-        # 2. Try to ingest from DB
+        # 2. Ingest from DB — the ONLY permitted training data source
         db_data = self.ingest_from_db()
-        if len(db_data) > 0:
-            log.info("using_db_data", rows=len(db_data))
+        if len(db_data) == 0:
+            log.warning(
+                "continuous_cycle_skipped_no_real_data",
+                detail="DB ingestion returned no rows; refusing to train or "
+                       "promote models on synthetic data",
+            )
+            return {"status": "skipped", "reason": "no_real_data", "trained": []}
+
+        log.info("using_db_data", rows=len(db_data))
+        if len(db_data) < self.MIN_REAL_SAMPLES:
+            log.warning(
+                "continuous_cycle_skipped_insufficient_real_data",
+                rows=len(db_data), min_required=self.MIN_REAL_SAMPLES,
+            )
+            return {"status": "skipped", "reason": "insufficient_real_data",
+                    "rows": len(db_data), "trained": []}
+
+        results: dict = {"status": "completed", "trained": [], "skipped": []}
+
+        # 3. Election models (fraud DNN + GNN fallback) — require all feature
+        #    columns and verified labels to be present in the real data.
+        election_frame = self._build_election_frame(db_data)
+        election_ready = (
+            election_frame is not None
+            and all(c in election_frame.columns for c in self.ELECTION_NON_DERIVABLE)
+        )
+        if not election_ready:
+            log.warning(
+                "election_models_training_skipped",
+                reason="ingested DB rows lack required real columns/labels "
+                       f"({self.ELECTION_NON_DERIVABLE}); refusing to fabricate them",
+            )
+            results["skipped"] += ["fraud_dnn", "gnn_election"]
         else:
-            log.info("using_synthetic_data")
+            fraud_meta = train_fraud_dnn(election_frame, epochs=50, trained_on="real")
+            results["fraud_dnn"] = self._register_and_maybe_promote(
+                "fraud_dnn", fraud_meta, str(MODELS_DIR / "fraud_dnn.pt"),
+                metric="roc_auc", threshold=0.85)
+            gnn_meta = train_gnn_fallback(election_frame, epochs=50, trained_on="real")
+            results["gnn_election"] = self._register_and_maybe_promote(
+                "gnn_election", gnn_meta, str(MODELS_DIR / "gnn_election.pt"),
+                metric="roc_auc", threshold=0.85)
+            results["trained"] += ["fraud_dnn", "gnn_election"]
 
-        # 3. Generate fresh synthetic data (always available)
-        election_data = generate_nigerian_election_data(n_samples=50000)
-        voter_data = generate_voter_engagement_data(n_voters=100000)
-
-        # 4. Train all models
-        fraud_meta = train_fraud_dnn(election_data, epochs=50)
-        voter_meta = train_voter_scoring(voter_data, epochs=50)
-        gnn_meta = train_gnn_fallback(election_data, epochs=50)
-
-        # 5. Register in registry
-        fraud_id = self.registry.register(
-            "fraud_dnn", f"1.{int(time.time())}",
-            fraud_meta["test_metrics"], str(MODELS_DIR / "fraud_dnn.pt"))
-        voter_id = self.registry.register(
-            "voter_scoring", f"1.{int(time.time())}",
-            voter_meta["test_metrics"], str(MODELS_DIR / "voter_scoring.pt"))
-        gnn_id = self.registry.register(
-            "gnn_election", f"1.{int(time.time())}",
-            gnn_meta["test_metrics"], str(MODELS_DIR / "gnn_election.pt"))
-
-        # 6. Auto-promote if metrics meet threshold
-        if fraud_meta["test_metrics"].get("roc_auc", 0) > 0.85:
-            self.registry.promote(fraud_id)
-        if voter_meta["test_metrics"].get("r2", 0) > 0.5:
-            self.registry.promote(voter_id)
-        if gnn_meta["test_metrics"].get("roc_auc", 0) > 0.85:
-            self.registry.promote(gnn_id)
+        # 4. Voter scoring — requires real voter-engagement columns.
+        if all(c in db_data.columns for c in self.VOTER_REQUIRED):
+            voter_meta = train_voter_scoring(db_data, epochs=50, trained_on="real")
+            results["voter_scoring"] = self._register_and_maybe_promote(
+                "voter_scoring", voter_meta, str(MODELS_DIR / "voter_scoring.pt"),
+                metric="r2", threshold=0.5)
+            results["trained"].append("voter_scoring")
+        else:
+            log.warning(
+                "voter_scoring_training_skipped",
+                reason="ingested DB rows lack voter-engagement columns; "
+                       "refusing to train on synthetic voter data",
+            )
+            results["skipped"].append("voter_scoring")
 
         log.info("continuous_training_cycle_complete",
-                 fraud_auc=fraud_meta["test_metrics"].get("roc_auc"),
-                 voter_r2=voter_meta["test_metrics"].get("r2"),
-                 gnn_auc=gnn_meta["test_metrics"].get("roc_auc"))
-
-        return {"fraud": fraud_meta, "voter": voter_meta, "gnn": gnn_meta}
+                 trained=results["trained"], skipped=results["skipped"])
+        return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1179,7 +1285,9 @@ def main():
         gnn_meta = train_gnn_fallback(election_data, epochs=args.epochs)
         print(f"  ROC-AUC: {gnn_meta['test_metrics']['roc_auc']:.4f}")
 
-        # Register all
+        # Register all — but INTEGRITY: never auto-promote models that were not
+        # trained on real data. --train-all uses the synthetic generators, so
+        # these models are staged (not promoted) unless trained_on == "real".
         registry = ProductionModelRegistry()
         ts = str(int(time.time()))
         for name, meta, wpath in [
@@ -1188,10 +1296,16 @@ def main():
             ("gnn_election", gnn_meta, "gnn_election.pt"),
         ]:
             mid = registry.register(name, f"1.{ts}", meta["test_metrics"], str(MODELS_DIR / wpath))
-            registry.promote(mid)
+            if meta.get("trained_on") == "real":
+                registry.promote(mid)
+            else:
+                log.warning("promotion_blocked_not_real_data", model=name,
+                            trained_on=meta.get("trained_on"))
+                print(f"  ⚠ {name}: registered but NOT promoted (trained on "
+                      f"{meta.get('trained_on', 'unknown')} data)")
 
         print(f"\n{'=' * 70}")
-        print("All models trained, registered, and promoted to production.")
+        print("All models trained and registered. Only real-data models are promoted.")
         print(f"Weights saved to {MODELS_DIR}")
         print(f"{'=' * 70}")
 

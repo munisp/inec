@@ -169,7 +169,9 @@ class ContactTargetingModel:
 
         X = self._build_features(df)
         if not self.is_fitted:
-            # Heuristic scoring if model not fitted
+            # INTEGRITY: heuristic scoring if model not fitted. These are NOT
+            # ML vote-likelihood probabilities — callers must label them as
+            # heuristic fallback scores (see "model" field on the endpoint).
             scores = X[:, 0] * 0.2 + X[:, 5] * 0.3 + X[:, 7] * 0.3 + (1 - X[:, 4] / 365) * 0.2
             scores = np.clip(scores / max(scores.max(), 1), 0, 1)
         else:
@@ -478,6 +480,10 @@ async def ml_targeting(party_id: int, limit: int = Query(100, le=500)):
     return {
         "party_id": party_id,
         "model_fitted": model.is_fitted,
+        # INTEGRITY: when the ML model is not fitted, scores are a hand-tuned
+        # heuristic — label them prominently, never present them as ML output.
+        "model": "ml_logistic_regression" if model.is_fitted else "heuristic_fallback",
+        "ml_model_fitted": model.is_fitted,
         "contacts": scores,
         "total_scored": len(scores),
     }

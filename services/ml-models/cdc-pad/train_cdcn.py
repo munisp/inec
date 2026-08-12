@@ -413,7 +413,10 @@ def main():
     parser.add_argument('--pretrained', action='store_true', help='Use pretrained weights')
     parser.add_argument('--fine-tune', action='store_true', help='Fine-tune pretrained model')
     parser.add_argument('--export-onnx', action='store_true', help='Export to ONNX after training')
-    
+    parser.add_argument('--allow-synthetic', action='store_true',
+                        help='Explicitly allow training on synthetic data when the certified '
+                             'dataset is absent (artifact marked SYNTHETIC_NOT_FOR_PRODUCTION)')
+
     args = parser.parse_args()
     
     # Setup device
@@ -450,13 +453,25 @@ def main():
     
     # Load datasets (mock if not available)
     dataset_path = Path(__file__).parent / ".." / ".." / "datasets" / args.dataset
-    
+    trained_on = "real"
+
     if dataset_path.exists():
         train_dataset = PADDataset(str(dataset_path), transform=train_transform, split='train')
         val_dataset = PADDataset(str(dataset_path), transform=val_transform, split='val')
+    elif not args.allow_synthetic:
+        # INTEGRITY: the exported artifact is COPYed into inference-engine-v2 as
+        # liveness_cdcn.onnx and served at /liveness/predict and /pad/check.
+        # Silently training it on generated blobs ships a fake PAD model.
+        print(f"ERROR: certified dataset '{args.dataset}' not found at {dataset_path}")
+        print("Refusing to train a production PAD model on synthetic data. "
+              "Download OULU-NPU / LivDet to that path, or pass --allow-synthetic "
+              "for an explicitly non-production experiment.")
+        sys.exit(2)
     else:
+        trained_on = "SYNTHETIC_NOT_FOR_PRODUCTION"
         print(f"⚠ Dataset not found at {dataset_path}")
-        print("Generating synthetic dataset for demonstration...")
+        print("WARNING: --allow-synthetic set — generating synthetic dataset. "
+              "The resulting model is NOT valid for production PAD use.")
         # Create synthetic dataset for testing
         from PIL import Image
         
@@ -513,14 +528,33 @@ def main():
         epochs=args.epochs,
         learning_rate=args.learning_rate,
     )
-    
+
     print(f"\n✓ Training complete!")
     print(f"  Best Validation AUC: {results['best_val_auc']:.4f}")
-    
+
+    # INTEGRITY: record data provenance next to the artifacts so the serving
+    # side can tell a synthetic experiment from a certified-dataset model.
+    import json as _json
+    with open(MODEL_DIR / "cdc_pad.metadata.json", "w") as _f:
+        _json.dump({
+            "model": "liveness_cdcn",
+            "dataset": args.dataset,
+            "trained_on": trained_on,
+            "best_val_auc": results["best_val_auc"],
+            "iso_30107_certified": False,
+            "note": ("Synthetic-training artifact — NOT valid for production PAD decisions"
+                     if trained_on != "real" else
+                     "Trained on the certified dataset; metrics are dataset-specific, "
+                     "not an ISO 30107 certification"),
+        }, _f, indent=2)
+
     # Export to ONNX
     if args.export_onnx:
         export_to_onnx(model, device)
-        print("✓ Model ready for production deployment")
+        if trained_on != "real":
+            print("WARNING: exported ONNX was trained on SYNTHETIC data — do NOT deploy to production")
+        else:
+            print("✓ Model ready for production deployment")
 
 
 if __name__ == "__main__":

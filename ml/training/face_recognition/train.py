@@ -271,6 +271,10 @@ def export_model_metadata():
             "CFP-FP": 0.9821,
             "AgeDB-30": 0.9815,
             "note": "May need fine-tuning for African face demographics",
+            # INTEGRITY: these are the vendor's published benchmarks for the
+            # pretrained InsightFace backbone — they were NOT measured on INEC
+            # voter data and are not a deployment-accuracy claim.
+            "source": "InsightFace vendor-published benchmarks (pretrained backbone), not evaluated on INEC data",
         },
         "recommended_thresholds": {
             "strict_kyc": 0.5,

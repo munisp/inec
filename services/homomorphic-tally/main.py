@@ -107,21 +107,82 @@ class PaillierPrivateKey:
         return plaintext
 
 
-def generate_paillier_keypair(bits: int = 512):
-    """Generate a Paillier keypair. Use 2048 bits in production."""
-    import random
+# SECURITY: small primes for trial division — a cheap pre-filter only.
+# Primality itself is established by Miller-Rabin below, never by this list.
+_SMALL_PRIMES = (
+    3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71,
+    73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151,
+    157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233,
+    239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317,
+    331, 337, 347, 349, 353, 359, 367, 373, 379, 383, 389, 397, 401, 409, 419,
+    421, 431, 433, 439, 443, 449, 457, 461, 463, 467, 479, 487, 491, 499, 503,
+    509, 521, 523, 541, 547, 557, 563, 569, 571, 577, 587, 593, 599, 601, 607,
+    613, 617, 619, 631, 641, 643, 647, 653, 659, 661, 673, 677, 683, 691, 701,
+    709, 719, 727, 733, 739, 743, 751, 757, 761, 769, 773, 787, 797, 809, 811,
+    821, 823, 827, 829, 839, 853, 857, 859, 863, 877, 881, 883, 887, 907, 911,
+    919, 929, 937, 941, 947, 953, 967, 971, 977, 983, 991, 997,
+)
 
-    def gen_prime(bits):
-        while True:
-            p = random.getrandbits(bits)
-            p |= (1 << bits - 1) | 1
-            if all(p % i != 0 for i in range(3, 1000, 2)):
-                return p
 
-    p = gen_prime(bits // 2)
-    q = gen_prime(bits // 2)
+def _is_probable_prime(n: int, rounds: int = 40) -> bool:
+    """Miller-Rabin primality test with CSPRNG-chosen bases (secrets module).
+
+    SECURITY: 40 rounds gives a worst-case false-positive probability of 4^-40,
+    vastly stronger than the previous trial-division-below-1000 check, which
+    happily accepted composites and produced breakable Paillier keys.
+    """
+    if n < 2:
+        return False
+    if n == 2:
+        return True
+    if n % 2 == 0:
+        return False
+    for p in _SMALL_PRIMES:
+        if n == p:
+            return True
+        if n % p == 0:
+            return False
+    # Write n - 1 as 2^r * d with d odd
+    r, d = 0, n - 1
+    while d % 2 == 0:
+        r += 1
+        d //= 2
+    for _ in range(rounds):
+        a = secrets.randbelow(n - 3) + 2  # a in [2, n-2]
+        x = pow(a, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(r - 1):
+            x = pow(x, 2, n)
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def _generate_prime(bits: int) -> int:
+    """Generate a probable prime of the given bit size using a CSPRNG."""
+    while True:
+        # SECURITY: secrets.randbits is backed by os.urandom (CSPRNG) — the old
+        # random.getrandbits (Mersenne Twister) made key material predictable.
+        candidate = secrets.randbits(bits) | (1 << (bits - 1)) | 1
+        if _is_probable_prime(candidate):
+            return candidate
+
+
+def generate_paillier_keypair(bits: int = 2048):
+    """Generate a Paillier keypair. 2048 bits minimum for production."""
+    if bits < 2048:
+        # SECURITY: sub-2048-bit Paillier moduli are factorable and must never
+        # protect real election tallies.
+        print(f"[HomomorphicTally] ⚠⚠ SECURITY WARNING: requested Paillier key "
+              f"size {bits} bits is BELOW the 2048-bit minimum — keys are "
+              f"factorable. Use only for local development. ⚠⚠")
+    p = _generate_prime(bits // 2)
+    q = _generate_prime(bits // 2)
     while p == q:
-        q = gen_prime(bits // 2)
+        q = _generate_prime(bits // 2)
 
     n = p * q
     lam = _lcm(p - 1, q - 1)
@@ -165,9 +226,22 @@ class DecryptRequest(BaseModel):
 @app.on_event("startup")
 async def startup():
     global public_key, private_key
-    print("[HomomorphicTally] Generating Paillier keypair (512-bit for demo)...")
-    public_key, private_key = generate_paillier_keypair(bits=512)
+    key_bits = int(os.getenv("PAILLIER_KEY_BITS", "2048"))
+    if key_bits < 2048:
+        # SECURITY: prominent startup warning for insecure key parameters.
+        print(f"[HomomorphicTally] ⚠⚠ SECURITY WARNING: PAILLIER_KEY_BITS={key_bits} "
+              f"is below the 2048-bit production minimum — tally privacy is NOT "
+              f"cryptographically safe. ⚠⚠")
+    print(f"[HomomorphicTally] Generating Paillier keypair ({key_bits}-bit, "
+          f"Miller-Rabin + CSPRNG)...")
+    public_key, private_key = generate_paillier_keypair(bits=key_bits)
     print(f"[HomomorphicTally] Keypair generated. n={str(public_key.n)[:20]}...")
+    if not os.getenv("TALLY_DECRYPT_TOKEN"):
+        # SECURITY: no hardcoded decryption token exists anymore; warn loudly
+        # that the decrypt endpoint is disabled until one is configured.
+        print("[HomomorphicTally] ⚠ SECURITY WARNING: TALLY_DECRYPT_TOKEN is not "
+              "set — the /api/v1/tally/decrypt endpoint will return 503 until a "
+              "token is configured via the environment.")
 
 
 @app.get("/api/v1/tally/public-key")
@@ -220,8 +294,15 @@ async def decrypt_final_tally(req: DecryptRequest):
         raise HTTPException(status_code=503, detail="Private key not available")
 
     # Simple auth check (production: threshold multi-sig)
-    expected_token = os.getenv("TALLY_DECRYPT_TOKEN", "inec-tally-secret")
-    if req.authorization_token != expected_token:
+    # SECURITY: the token has NO default. The previous hardcoded fallback
+    # ("inec-tally-secret") let anyone decrypt any election tally.
+    expected_token = os.getenv("TALLY_DECRYPT_TOKEN")
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail="tally decryption token not configured (set TALLY_DECRYPT_TOKEN)",
+        )
+    if not secrets.compare_digest(req.authorization_token, expected_token):
         raise HTTPException(status_code=403, detail="Unauthorized decryption attempt")
 
     election_id = req.election_id

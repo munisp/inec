@@ -1,15 +1,16 @@
 """INEC Unified Training Orchestrator.
 
 Trains all models end-to-end:
-1. XGBoost anomaly detection (50K synthetic samples)
-2. GNN election graph anomaly detection (10K node graph)
-3. CDCN liveness/PAD model (synthetic face data)
+1. XGBoost anomaly detection
+2. GNN election graph anomaly detection
+3. CDCN liveness/PAD model
 
-Generates synthetic data, trains with proper loops, saves weights + metadata.
-Can be run standalone or via Ray for distributed training.
+INTEGRITY: every sub-trainer refuses to run on synthetic data unless
+--allow-synthetic is explicitly passed; synthetic artifacts are marked
+SYNTHETIC_NOT_FOR_PRODUCTION and must never be deployed.
 
 Usage:
-    python ml/training/train_all.py                    # Train all models sequentially
+    python ml/training/train_all.py --allow-synthetic  # Train all models sequentially (synthetic demo)
     python ml/training/train_all.py --model anomaly    # Train only anomaly model
     python ml/training/train_all.py --model gnn        # Train only GNN model
     python ml/training/train_all.py --model liveness   # Train only liveness model
@@ -28,7 +29,8 @@ MODELS_DIR = Path(__file__).parent.parent / "models"
 DATA_DIR = Path(__file__).parent.parent / "data"
 
 
-def train_anomaly(output_dir: str | None = None, n_samples: int = 50000):
+def train_anomaly(output_dir: str | None = None, n_samples: int = 50000,
+                  allow_synthetic: bool = False):
     """Train XGBoost anomaly detection model."""
     print("\n" + "=" * 70)
     print("  TRAINING: XGBoost Anomaly Detection")
@@ -36,7 +38,8 @@ def train_anomaly(output_dir: str | None = None, n_samples: int = 50000):
     start = time.time()
 
     from ml.training.anomaly_detection.train import train_model
-    model, scaler, metadata = train_model(output_dir=output_dir)
+    model, scaler, metadata = train_model(output_dir=output_dir,
+                                          allow_synthetic=allow_synthetic)
 
     elapsed = time.time() - start
     print(f"\nXGBoost training completed in {elapsed:.1f}s")
@@ -45,7 +48,8 @@ def train_anomaly(output_dir: str | None = None, n_samples: int = 50000):
     return metadata
 
 
-def train_gnn(output_dir: str | None = None, epochs: int = 200):
+def train_gnn(output_dir: str | None = None, epochs: int = 200,
+              allow_synthetic: bool = False):
     """Train GNN election anomaly model."""
     print("\n" + "=" * 70)
     print("  TRAINING: Graph Neural Network (GAT)")
@@ -53,7 +57,7 @@ def train_gnn(output_dir: str | None = None, epochs: int = 200):
     start = time.time()
 
     from ml.training.gnn_network.train import train_gnn as _train_gnn
-    _train_gnn(output_dir=output_dir, epochs=epochs)
+    _train_gnn(output_dir=output_dir, epochs=epochs, allow_synthetic=allow_synthetic)
 
     elapsed = time.time() - start
     print(f"\nGNN training completed in {elapsed:.1f}s")
@@ -65,7 +69,8 @@ def train_gnn(output_dir: str | None = None, epochs: int = 200):
     return {}
 
 
-def train_liveness(output_dir: str | None = None, epochs: int = 20):
+def train_liveness(output_dir: str | None = None, epochs: int = 20,
+                   allow_synthetic: bool = False):
     """Train CDCN liveness/PAD model."""
     print("\n" + "=" * 70)
     print("  TRAINING: CDCN Liveness/PAD")
@@ -73,7 +78,8 @@ def train_liveness(output_dir: str | None = None, epochs: int = 20):
     start = time.time()
 
     from ml.training.liveness_pad.train import train_pad_model
-    train_pad_model(output_dir=output_dir, epochs=epochs)
+    train_pad_model(output_dir=output_dir, epochs=epochs,
+                    allow_synthetic=allow_synthetic)
 
     elapsed = time.time() - start
     print(f"\nCDCN training completed in {elapsed:.1f}s")
@@ -85,18 +91,28 @@ def train_liveness(output_dir: str | None = None, epochs: int = 20):
     return {}
 
 
-def train_all_sequential(output_dir: str | None = None):
+def train_all_sequential(output_dir: str | None = None, allow_synthetic: bool = False):
     """Train all models sequentially."""
     print("\n" + "#" * 70)
     print("  INEC ML TRAINING PIPELINE — Sequential Mode")
     print("#" * 70)
 
+    if not allow_synthetic:
+        # INTEGRITY: this orchestrator historically trained everything on
+        # synthetic data and shipped the artifacts as production models. It now
+        # refuses unless synthetic mode is explicitly acknowledged.
+        print("ERROR: refusing to train production models on synthetic data; "
+              "pass --allow-synthetic for an explicitly non-production run")
+        sys.exit(2)
+    print("WARNING: --allow-synthetic set — all artifacts will be marked "
+          "SYNTHETIC_NOT_FOR_PRODUCTION.")
+
     start = time.time()
     results = {}
 
-    results["anomaly"] = train_anomaly(output_dir)
-    results["gnn"] = train_gnn(output_dir, epochs=200)
-    results["liveness"] = train_liveness(output_dir, epochs=20)
+    results["anomaly"] = train_anomaly(output_dir, allow_synthetic=allow_synthetic)
+    results["gnn"] = train_gnn(output_dir, epochs=200, allow_synthetic=allow_synthetic)
+    results["liveness"] = train_liveness(output_dir, epochs=20, allow_synthetic=allow_synthetic)
 
     total = time.time() - start
     print("\n" + "#" * 70)
@@ -118,11 +134,19 @@ def train_all_sequential(output_dir: str | None = None):
     return report
 
 
-def train_all_ray(output_dir: str | None = None):
+def train_all_ray(output_dir: str | None = None, allow_synthetic: bool = False):
     """Train all models in parallel using Ray."""
     print("\n" + "#" * 70)
     print("  INEC ML TRAINING PIPELINE — Ray Distributed Mode")
     print("#" * 70)
+
+    if not allow_synthetic:
+        # INTEGRITY: same synthetic-data guard as sequential mode.
+        print("ERROR: refusing to train production models on synthetic data; "
+              "pass --allow-synthetic for an explicitly non-production run")
+        sys.exit(2)
+    print("WARNING: --allow-synthetic set — all artifacts will be marked "
+          "SYNTHETIC_NOT_FOR_PRODUCTION.")
 
     import ray
 
@@ -131,19 +155,19 @@ def train_all_ray(output_dir: str | None = None):
         print(f"Ray initialized: {ray.cluster_resources()}")
 
     @ray.remote
-    def ray_train_anomaly(out_dir):
+    def ray_train_anomaly(out_dir, allow_synth):
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         from ml.training.anomaly_detection.train import train_model
-        _, _, metadata = train_model(output_dir=out_dir)
+        _, _, metadata = train_model(output_dir=out_dir, allow_synthetic=allow_synth)
         return {"model": "anomaly_xgboost", "metrics": metadata["metrics"]}
 
     @ray.remote
-    def ray_train_gnn(out_dir, epochs):
+    def ray_train_gnn(out_dir, epochs, allow_synth):
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         from ml.training.gnn_network.train import train_gnn
-        train_gnn(output_dir=out_dir, epochs=epochs)
+        train_gnn(output_dir=out_dir, epochs=epochs, allow_synthetic=allow_synth)
         meta_path = Path(out_dir or MODELS_DIR) / "gnn_model_metadata.json"
         if meta_path.exists():
             with open(meta_path) as f:
@@ -151,11 +175,11 @@ def train_all_ray(output_dir: str | None = None):
         return {"model": "gnn_election"}
 
     @ray.remote
-    def ray_train_liveness(out_dir, epochs):
+    def ray_train_liveness(out_dir, epochs, allow_synth):
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         from ml.training.liveness_pad.train import train_pad_model
-        train_pad_model(output_dir=out_dir, epochs=epochs)
+        train_pad_model(output_dir=out_dir, epochs=epochs, allow_synthetic=allow_synth)
         meta_path = Path(out_dir or MODELS_DIR) / "liveness_model_metadata.json"
         if meta_path.exists():
             with open(meta_path) as f:
@@ -167,9 +191,9 @@ def train_all_ray(output_dir: str | None = None):
 
     # Launch all training tasks in parallel
     futures = [
-        ray_train_anomaly.remote(out),
-        ray_train_gnn.remote(out, 200),
-        ray_train_liveness.remote(out, 20),
+        ray_train_anomaly.remote(out, allow_synthetic),
+        ray_train_gnn.remote(out, 200, allow_synthetic),
+        ray_train_liveness.remote(out, 20, allow_synthetic),
     ]
 
     print(f"Launched {len(futures)} training tasks on Ray...")
@@ -200,18 +224,20 @@ if __name__ == "__main__":
     parser.add_argument("--epochs-gnn", type=int, default=200)
     parser.add_argument("--epochs-liveness", type=int, default=20)
     parser.add_argument("--samples", type=int, default=50000)
+    parser.add_argument("--allow-synthetic", action="store_true",
+                        help="Explicitly allow training on synthetic data (artifacts marked NOT_FOR_PRODUCTION)")
     args = parser.parse_args()
 
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
     if args.model == "all":
         if args.ray:
-            train_all_ray(args.output)
+            train_all_ray(args.output, allow_synthetic=args.allow_synthetic)
         else:
-            train_all_sequential(args.output)
+            train_all_sequential(args.output, allow_synthetic=args.allow_synthetic)
     elif args.model == "anomaly":
-        train_anomaly(args.output, args.samples)
+        train_anomaly(args.output, args.samples, allow_synthetic=args.allow_synthetic)
     elif args.model == "gnn":
-        train_gnn(args.output, args.epochs_gnn)
+        train_gnn(args.output, args.epochs_gnn, allow_synthetic=args.allow_synthetic)
     elif args.model == "liveness":
-        train_liveness(args.output, args.epochs_liveness)
+        train_liveness(args.output, args.epochs_liveness, allow_synthetic=args.allow_synthetic)

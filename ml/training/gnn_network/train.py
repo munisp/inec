@@ -20,6 +20,7 @@ Can run inference on CPU (PyTorch Geometric).
 """
 
 import os
+import sys
 import json
 import argparse
 from datetime import datetime, timezone
@@ -296,11 +297,26 @@ def focal_loss(pred: "torch.Tensor", target: "torch.Tensor", alpha: float = 0.75
     return (at * (1 - pt) ** gamma * bce).mean()
 
 
-def train_gnn(output_dir: str | None = None, epochs: int = 50):
-    """Train GNN model for election anomaly detection."""
+def train_gnn(output_dir: str | None = None, epochs: int = 50,
+              allow_synthetic: bool = False):
+    """Train GNN model for election anomaly detection.
+
+    INTEGRITY: only a synthetic-graph generator exists today. Unless
+    allow_synthetic is explicitly set we refuse to train rather than silently
+    ship a noise-trained model to production.
+    """
     if not TORCH_AVAILABLE:
         print("ERROR: PyTorch required. Install with: pip install torch")
-        return
+        sys.exit(2)
+
+    if not allow_synthetic:
+        print("ERROR: refusing to train production GNN election model on a "
+              "synthetic graph; provide real historical election graph data "
+              "(pass --allow-synthetic for an explicitly non-production experiment)")
+        sys.exit(2)
+
+    print("WARNING: --allow-synthetic set — training on a SYNTHETIC graph. "
+          "The resulting model is NOT valid for production use.")
 
     output_path = Path(output_dir) if output_dir else MODELS_DIR
     output_path.mkdir(parents=True, exist_ok=True)
@@ -426,11 +442,12 @@ def train_gnn(output_dir: str | None = None, epochs: int = 50):
             "cpu_ms": "200-500ms for full national graph",
             "cpu_per_node_ms": "<0.01ms",
         },
+        "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
         "metrics": {
             "precision": float(precision),
             "recall": float(recall),
             "f1": float(f1),
-            "note": "Trained on synthetic data — real performance requires historical election data",
+            "note": "Trained on synthetic data — metrics are meaningless for production; real performance requires historical election data",
         },
         "neo4j_integration": {
             "graph_source": "Polling unit adjacency stored in Neo4j",
@@ -449,6 +466,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train INEC GNN model")
     parser.add_argument("--output", type=str, help="Output directory")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--allow-synthetic", action="store_true",
+                        help="Explicitly allow training on a synthetic graph (artifact marked NOT_FOR_PRODUCTION)")
     args = parser.parse_args()
 
-    train_gnn(output_dir=args.output, epochs=args.epochs)
+    train_gnn(output_dir=args.output, epochs=args.epochs,
+              allow_synthetic=args.allow_synthetic)

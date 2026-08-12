@@ -430,7 +430,9 @@ class TableCell(BaseModel):
 class DocumentTable(BaseModel):
     headers: list[str]
     rows: list[dict]
-    confidence: float
+    # INTEGRITY: None when the extractor does not produce a real confidence
+    # score. Never a hardcoded constant.
+    confidence: float | None = None
 
 
 class DocLingResult(BaseModel):
@@ -490,11 +492,25 @@ class DocLingEngine:
                 df = table.export_to_dataframe()
                 headers = list(df.columns)
                 rows = df.to_dict(orient="records")
+                # INTEGRITY: derive confidence from actual DocLing scores if the
+                # library exposes them; otherwise leave it None. The previous
+                # hardcoded 0.85 fabricated certainty on every extraction.
+                table_confidence = getattr(table, "confidence", None)
+                if table_confidence is None:
+                    _data = getattr(table, "data", None)
+                    _cells = getattr(_data, "table_cells", []) if _data is not None else []
+                    cell_scores = [
+                        s for s in (getattr(c, "confidence", None) for c in _cells)
+                        if isinstance(s, (int, float))
+                    ]
+                    table_confidence = (
+                        round(sum(cell_scores) / len(cell_scores), 4) if cell_scores else None
+                    )
                 tables.append(
                     DocumentTable(
                         headers=headers,
                         rows=rows,
-                        confidence=0.85,
+                        confidence=table_confidence,
                     )
                 )
 
@@ -879,15 +895,20 @@ def analyze_evidence_bundle(
     assessment_status, requires_manual_review, decision = _decision_from_findings(
         findings
     )
-    docling_confidence = max(
-        (table.confidence for table in docling_result.tables), default=0.0
-    )
+    # INTEGRITY: table.confidence may be None when DocLing exposes no real
+    # scores — exclude those instead of treating them as a number.
+    docling_scores = [
+        table.confidence for table in docling_result.tables
+        if isinstance(table.confidence, (int, float))
+    ]
+    docling_confidence = max(docling_scores) if docling_scores else None
     secondary_confidence = secondary_ocr.get("confidence")
     confidence_inputs = [
         ocr_result.confidence_score,
         vlm_result.completeness_score,
-        docling_confidence,
     ]
+    if docling_confidence is not None:
+        confidence_inputs.append(docling_confidence)
     if isinstance(secondary_confidence, (int, float)):
         confidence_inputs.append(float(secondary_confidence))
     combined_confidence = round(sum(confidence_inputs) / len(confidence_inputs), 3)

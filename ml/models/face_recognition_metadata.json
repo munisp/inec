@@ -22,7 +22,8 @@
     "LFW": 0.9983,
     "CFP-FP": 0.9821,
     "AgeDB-30": 0.9815,
-    "note": "May need fine-tuning for African face demographics"
+    "note": "May need fine-tuning for African face demographics",
+    "source": "InsightFace vendor-published benchmarks (pretrained backbone), not evaluated on INEC data"
   },
   "recommended_thresholds": {
     "strict_kyc": 0.5,
@@ -35,5 +36,6 @@
     "Train last 2 residual blocks only (freeze backbone)",
     "Evaluate on held-out Nigerian test set"
   ],
-  "created_at": "2026-06-05T13:47:45.563633+00:00"
+  "created_at": "2026-06-05T13:47:45.563633+00:00",
+  "integrity_note": "Describes the pretrained InsightFace backbone. Accuracy figures are vendor-published benchmarks, NOT measured on INEC voter data; no Nigerian-demographic evaluation has been performed."
 }
