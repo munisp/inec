@@ -313,12 +313,23 @@ async def lifespan(app: FastAPI):
     if not DB_URL:
         logger.critical("database_not_configured",
                         detail="DATABASE_URL unset — all data endpoints will return 503")
-    if not get_configured_api_key():
+    if not get_configured_api_keys():
         logger.critical("api_key_not_configured",
                         detail="GOTV_ANALYTICS_API_KEY unset — all non-health endpoints will return 503")
     if not os.getenv("GOTV_ANALYTICS_ADMIN_KEY", "").strip():
         logger.warning("admin_key_not_configured",
                        detail="GOTV_ANALYTICS_ADMIN_KEY unset — /ml/train will return 503")
+    # SECURITY: fail fast in production when required secrets/DSN are missing.
+    if _PRODUCTION:
+        missing = []
+        if not get_configured_api_keys():
+            missing.append("GOTV_ANALYTICS_API_KEY")
+        if not DB_URL:
+            missing.append("DATABASE_URL")
+        if missing:
+            raise RuntimeError(
+                f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+            )
     yield
     logger.info("GOTV Analytics shutting down — cleanup complete")
 
@@ -333,6 +344,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
     openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
@@ -375,9 +387,17 @@ def _constant_time_equal(provided: str, expected: str) -> bool:
     return hmac.compare_digest(provided.encode(), expected.encode())
 
 
-def get_configured_api_key() -> str:
-    """The service API key. Empty string means unconfigured (fail closed)."""
-    return os.getenv("GOTV_ANALYTICS_API_KEY", "").strip()
+def get_configured_api_keys() -> list[str]:
+    """The service API keys. Empty list means unconfigured (fail closed).
+
+    KEY ROTATION: GOTV_ANALYTICS_API_KEY accepts a comma-separated list; any
+    constant-time match authenticates so operators can rotate without downtime.
+    """
+    return [
+        k.strip()
+        for k in os.getenv("GOTV_ANALYTICS_API_KEY", "").split(",")
+        if k.strip()
+    ]
 
 
 def _load_party_keys() -> dict[str, int]:
@@ -431,8 +451,8 @@ async def auth_middleware(request: Request, call_next):
     if request.url.path in ("/health", "/docs", "/openapi.json"):
         return await call_next(request)
 
-    expected_key = get_configured_api_key()
-    if not expected_key:
+    expected_keys = get_configured_api_keys()
+    if not expected_keys:
         logger.error("auth_misconfigured", detail="GOTV_ANALYTICS_API_KEY not set")
         return JSONResponse(
             status_code=503,
@@ -445,17 +465,18 @@ async def auth_middleware(request: Request, call_next):
     # TENANCY: when GOTV_ANALYTICS_PARTY_KEYS is configured, authenticate
     # against the per-party key map and derive the party from the key — the
     # caller's party_id can never cross tenants. Otherwise (single-tenant
-    # mode) fall back to the shared service key.
+    # mode) fall back to the shared service keys.
     key_party: Optional[int] = None
+    shared_match = bool(bearer) and any(
+        _constant_time_equal(bearer, key) for key in expected_keys
+    )
     if _PARTY_KEYS:
         key_party = _party_for_key(bearer)
-        has_key = key_party is not None or (
-            bool(bearer) and _constant_time_equal(bearer, expected_key)
-        )
+        has_key = key_party is not None or shared_match
     else:
-        has_key = bool(bearer) and _constant_time_equal(bearer, expected_key)
+        has_key = shared_match
 
-    dapr_expected = os.getenv("DAPR_API_TOKEN", "").strip() or expected_key
+    dapr_expected = os.getenv("DAPR_API_TOKEN", "").strip() or expected_keys[0]
     dapr_token = request.headers.get("dapr-api-token", "")
     has_dapr = bool(dapr_token) and _constant_time_equal(dapr_token, dapr_expected)
 

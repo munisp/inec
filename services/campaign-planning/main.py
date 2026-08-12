@@ -16,6 +16,7 @@ INEC Candidate Campaign Planning Service — Production-Complete v2.0
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import math
 import os
@@ -24,6 +25,7 @@ import uuid
 from collections import defaultdict
 from typing import Dict, List, Optional
 
+import asyncpg
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -48,9 +50,29 @@ CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split
 # SECURITY: service API key. When unset, the service FAILS CLOSED (503 on all
 # non-health routes) — previously every route was unauthenticated, including
 # the paid-LLM /speech endpoint (cost-abuse vector).
-CAMPAIGN_API_KEY = os.getenv("CAMPAIGN_PLANNING_API_KEY", "").strip()
+# KEY ROTATION: the variable accepts a comma-separated list of keys; any
+# constant-time match authenticates, so operators can rotate without downtime.
+CAMPAIGN_API_KEYS: List[str] = [
+    k.strip() for k in os.getenv("CAMPAIGN_PLANNING_API_KEY", "").split(",") if k.strip()
+]
 
-app = FastAPI(title="INEC Campaign Planning Service", version="2.1.0")
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# PostgreSQL persistence for campaign plans / war-room state. Optional in
+# development (in-memory with a loud warning), MANDATORY in production.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+_pg_pool: Optional[asyncpg.Pool] = None
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+app = FastAPI(
+    title="INEC Campaign Planning Service",
+    version="2.1.0",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
+)
 
 # Rate limiting (429 + Retry-After on breach). /speech hits a paid LLM, so it
 # is capped hardest.
@@ -68,8 +90,10 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 
 def _key_valid(provided: str) -> bool:
-    import hmac
-    return bool(provided) and hmac.compare_digest(provided.encode(), CAMPAIGN_API_KEY.encode())
+    """Constant-time match against ANY configured key (comma-separated rotation)."""
+    return bool(provided) and any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in CAMPAIGN_API_KEYS
+    )
 
 
 @app.middleware("http")
@@ -79,7 +103,7 @@ async def api_key_auth_middleware(request, call_next):
     public = ("/api/v1/campaign/health", "/docs", "/openapi.json", "/redoc")
     if request.url.path in public:
         return await call_next(request)
-    if not CAMPAIGN_API_KEY:
+    if not CAMPAIGN_API_KEYS:
         log.error("api_key_not_configured", detail="CAMPAIGN_PLANNING_API_KEY unset")
         return JSONResponse(
             status_code=503,
@@ -202,10 +226,100 @@ ZONE_PRIORITIES = {
     "SS": {"oil_gas": 0.90, "security": 0.85, "infrastructure": 0.80, "environment": 0.75, "health": 0.70},
 }
 
-# ── In-memory store ───────────────────────────────────────────────────────────
+# ── In-memory store (write-through cache over Postgres when configured) ──────
 _plans: Dict[str, Dict] = {}
 _war_rooms: Dict[str, Dict] = {}
 _ws_clients: List[WebSocket] = []
+
+
+async def _get_with_retry(url: str, *, timeout: float = 5.0, attempts: int = 3) -> httpx.Response:
+    """Idempotent GET with explicit connect/read budgets and bounded backoff retry."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=3.0)) as client:
+                return await client.get(url)
+        except httpx.TransportError as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                await asyncio.sleep(0.2 * (2 ** attempt))
+    raise last_exc  # type: ignore[misc]
+
+
+# ── PostgreSQL persistence (durable plans & war-room state) ──────────────────
+# Tables are created idempotently at startup (CREATE TABLE IF NOT EXISTS):
+#   campaign_plans(plan_id PK, data JSONB, updated_at)
+#   campaign_war_rooms(candidate_id PK, data JSONB, updated_at)
+
+async def _init_state_store() -> None:
+    """Create tables and reload persisted plans/war-room state into memory."""
+    global _pg_pool
+    _pg_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS campaign_plans (
+                plan_id    TEXT PRIMARY KEY,
+                data       JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS campaign_war_rooms (
+                candidate_id TEXT PRIMARY KEY,
+                data         JSONB NOT NULL,
+                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        plan_rows = await conn.fetch("SELECT plan_id, data FROM campaign_plans")
+        war_rows = await conn.fetch("SELECT candidate_id, data FROM campaign_war_rooms")
+    for row in plan_rows:
+        _plans[row["plan_id"]] = json.loads(row["data"])
+    for row in war_rows:
+        _war_rooms[row["candidate_id"]] = json.loads(row["data"])
+    log.info("state_store_loaded", plans=len(plan_rows), war_rooms=len(war_rows))
+
+
+async def _persist_war_room(candidate_id: str, data: Dict) -> None:
+    if _pg_pool is None:
+        return
+    async with _pg_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO campaign_war_rooms (candidate_id, data, updated_at)
+               VALUES ($1, $2::jsonb, NOW())
+               ON CONFLICT (candidate_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()""",
+            candidate_id, json.dumps(data),
+        )
+
+
+async def _load_plan_from_store(plan_id: str) -> Optional[Dict]:
+    if _pg_pool is None:
+        return None
+    async with _pg_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT data FROM campaign_plans WHERE plan_id = $1", plan_id)
+    return json.loads(row["data"]) if row else None
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    # SECURITY: fail fast in production when required config is missing —
+    # running unauthenticated or with non-durable state is never acceptable.
+    if _PRODUCTION:
+        missing = []
+        if not CAMPAIGN_API_KEYS:
+            missing.append("CAMPAIGN_PLANNING_API_KEY")
+        if not DATABASE_URL:
+            missing.append("DATABASE_URL")
+        if missing:
+            raise RuntimeError(
+                f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+            )
+    if DATABASE_URL:
+        await _init_state_store()
+        log.info("state_persistence", backend="postgresql")
+    else:
+        log.warn("state_persistence_in_memory",
+                 detail="DATABASE_URL unset — plans/war-rooms are IN-MEMORY ONLY; "
+                        "acceptable only outside production")
 
 
 def _state(code: str) -> Dict:
@@ -529,6 +643,12 @@ async def create_plan(req: PlanCreateReq):
 async def get_plan(plan_id: str):
     plan = _plans.get(plan_id)
     if not plan:
+        # Durable fallback: the in-memory dict is a write-through cache; a
+        # restarted/replica instance still serves persisted plans.
+        plan = await _load_plan_from_store(plan_id)
+        if plan:
+            _plans[plan_id] = plan
+    if not plan:
         raise HTTPException(404, "Plan not found")
     return plan
 
@@ -608,6 +728,7 @@ async def war_room_dashboard(req: WarRoomReq):
     """Innovation 10: Election day war room dashboard."""
     data = engine_war_room(req.candidate_id, req.election_id)
     _war_rooms[req.candidate_id] = data
+    await _persist_war_room(req.candidate_id, data)
     await _broadcast({"type": "war_room_update", "data": data})
     return data
 
@@ -649,7 +770,7 @@ async def campaign_ws(ws: WebSocket):
     # SECURITY: HTTP middleware does not cover WebSocket upgrades — enforce
     # the same API key here (query token), failing closed when unconfigured.
     token = ws.query_params.get("token", "")
-    if not CAMPAIGN_API_KEY or not _key_valid(token):
+    if not CAMPAIGN_API_KEYS or not _key_valid(token):
         await ws.close(code=4401)
         return
     await ws.accept()
@@ -678,15 +799,27 @@ async def health():
     degraded = False
     if INEC_API:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{INEC_API}/health")
+            resp = await _get_with_retry(f"{INEC_API}/health", timeout=5.0, attempts=2)
             checks["inec_api"] = resp.status_code < 500
         except httpx.HTTPError:
             checks["inec_api"] = False
         degraded = not checks["inec_api"]
+    # Real persistence probe: SELECT 1 against the state store when configured.
+    if _pg_pool is not None:
+        try:
+            async with _pg_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            checks["postgres"] = True
+        except (asyncpg.PostgresError, OSError):
+            checks["postgres"] = False
+            degraded = True
+    elif DATABASE_URL:
+        checks["postgres"] = False
+        degraded = True
     body = {
         "status": "degraded" if degraded else "healthy",
         "checks": checks,
+        "persistence": "postgresql" if _pg_pool is not None else "in_memory",
         "active_plans": len(_plans),
         "version": "2.1.0",
         "disabled_features": sorted(DISABLED_DATA_FEATURES),

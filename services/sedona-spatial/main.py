@@ -194,15 +194,33 @@ async def lifespan(app: FastAPI):
         authority.spark.stop()
 
 
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+_PRODUCTION = os.getenv("APP_ENV", "development").strip().lower() == "production"
+
 app = FastAPI(
-    title="INEC Apache Sedona Spatial Authority", version="1.0.0", lifespan=lifespan
+    title="INEC Apache Sedona Spatial Authority",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 
 def require_token(request: Request) -> None:
+    import hmac
+
     if settings is None or not settings.token:
         raise HTTPException(status_code=503, detail="spatial authority is unconfigured")
-    if request.headers.get("authorization", "") != f"Bearer {settings.token}":
+    # KEY ROTATION: SEDONA_SERVICE_TOKEN accepts comma-separated tokens; any
+    # constant-time match authenticates so operators can rotate without downtime.
+    tokens = [t.strip() for t in settings.token.split(",") if t.strip()]
+    auth = request.headers.get("authorization", "")
+    provided = auth[7:] if auth.lower().startswith("bearer ") else auth
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), token.encode()) for token in tokens
+    ):
         raise HTTPException(status_code=401, detail="invalid spatial authority token")
 
 

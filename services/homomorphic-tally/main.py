@@ -34,10 +34,17 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+_PRODUCTION = os.getenv("APP_ENV", "development").strip().lower() == "production"
+
 app = FastAPI(
     title="INEC Homomorphic Vote Tally Service",
     description="Privacy-preserving vote aggregation using Paillier encryption",
     version="1.0.0",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 # SECURITY: CORS is deny-by-default; operators opt in via TALLY_CORS_ORIGINS
@@ -287,18 +294,24 @@ class DecryptRequest(BaseModel):
 # SECURITY: bearer token required on /api/v1/tally/submit (fail closed when
 # unset) — previously anyone could inject forged polling-unit results into the
 # running encrypted tally.
-TALLY_SUBMIT_TOKEN = os.getenv("TALLY_SUBMIT_TOKEN", "").strip()
+# KEY ROTATION: comma-separated tokens are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+TALLY_SUBMIT_TOKENS: list[str] = [
+    t.strip() for t in os.getenv("TALLY_SUBMIT_TOKEN", "").split(",") if t.strip()
+]
 
 
 async def require_submit_token(request: Request) -> None:
-    if not TALLY_SUBMIT_TOKEN:
+    if not TALLY_SUBMIT_TOKENS:
         raise HTTPException(
             status_code=503,
             detail="TALLY_SUBMIT_TOKEN not configured; refusing unauthenticated tally submissions",
         )
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
-    if not bearer or not hmac.compare_digest(bearer.encode(), TALLY_SUBMIT_TOKEN.encode()):
+    if not bearer or not any(
+        hmac.compare_digest(bearer.encode(), token.encode()) for token in TALLY_SUBMIT_TOKENS
+    ):
         raise HTTPException(status_code=401, detail="authentication required")
 
 
@@ -327,6 +340,17 @@ async def startup():
         print("[HomomorphicTally] ⚠⚠ SECURITY WARNING: DATABASE_URL unset — tallies "
               "are IN-MEMORY ONLY and will be lost on restart. Acceptable only in "
               "development; set DATABASE_URL for any real deployment. ⚠⚠")
+    # SECURITY: in production every required secret must be present at startup.
+    if APP_ENV == "production":
+        missing = []
+        if not TALLY_SUBMIT_TOKENS:
+            missing.append("TALLY_SUBMIT_TOKEN")
+        if not os.getenv("TALLY_DECRYPT_TOKEN"):
+            missing.append("TALLY_DECRYPT_TOKEN")
+        if missing:
+            raise RuntimeError(
+                f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+            )
     if not os.getenv("TALLY_DECRYPT_TOKEN"):
         # SECURITY: no hardcoded decryption token exists anymore; warn loudly
         # that the decrypt endpoint is disabled until one is configured.
@@ -388,13 +412,18 @@ async def decrypt_final_tally(req: DecryptRequest):
     # Simple auth check (production: threshold multi-sig)
     # SECURITY: the token has NO default. The previous hardcoded fallback
     # ("inec-tally-secret") let anyone decrypt any election tally.
-    expected_token = os.getenv("TALLY_DECRYPT_TOKEN")
-    if not expected_token:
+    # KEY ROTATION: comma-separated tokens; any constant-time match authorizes.
+    expected_tokens = [
+        t.strip() for t in os.getenv("TALLY_DECRYPT_TOKEN", "").split(",") if t.strip()
+    ]
+    if not expected_tokens:
         raise HTTPException(
             status_code=503,
             detail="tally decryption token not configured (set TALLY_DECRYPT_TOKEN)",
         )
-    if not secrets.compare_digest(req.authorization_token, expected_token):
+    if not any(
+        secrets.compare_digest(req.authorization_token, token) for token in expected_tokens
+    ):
         raise HTTPException(status_code=403, detail="Unauthorized decryption attempt")
 
     election_id = req.election_id

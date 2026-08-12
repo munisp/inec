@@ -765,6 +765,11 @@ services:
     environment:
       - TALLY_DECRYPT_TOKEN=${TALLY_DECRYPT_TOKEN:?TALLY_DECRYPT_TOKEN must be set}
       - TALLY_SUBMIT_TOKEN=${TALLY_SUBMIT_TOKEN:?TALLY_SUBMIT_TOKEN must be set}
+      # Durable tally persistence (same pg service as the other stateful
+      # services). With APP_ENV=production the service refuses to start
+      # without DATABASE_URL, keeping in-memory tallies out of production.
+      - APP_ENV=${APP_ENV:-production}
+      - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
 
   federated-fraud-detection:
     build:

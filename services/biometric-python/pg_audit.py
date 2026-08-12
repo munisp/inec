@@ -62,6 +62,18 @@ async def init_pool() -> asyncpg.Pool:
     return _pool
 
 
+async def ping() -> bool:
+    """Real connectivity probe (SELECT 1) for health checks."""
+    if _pool is None:
+        return False
+    try:
+        async with _pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
 async def close_pool():
     """Close the PostgreSQL connection pool."""
     global _pool

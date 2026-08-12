@@ -26,12 +26,20 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC AI Anomaly Detection Service",
     description=(
         "Real-time election irregularity detection using the trained CPU ONNX model"
     ),
     version="2.0.0",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -43,15 +51,37 @@ app.add_middleware(
 
 # SECURITY: anomaly scoring endpoints were unauthenticated. The service FAILS
 # CLOSED when AI_ANOMALY_API_KEY is unset (503 on all non-health routes).
-AI_ANOMALY_API_KEY = os.getenv("AI_ANOMALY_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+AI_ANOMALY_API_KEYS: list[str] = [
+    k.strip() for k in os.getenv("AI_ANOMALY_API_KEY", "").split(",") if k.strip()
+]
 
 
 def _key_valid(provided: str) -> bool:
+    """Constant-time match against ANY configured key (comma-separated rotation)."""
     import hmac
 
-    return bool(provided) and hmac.compare_digest(
-        provided.encode(), AI_ANOMALY_API_KEY.encode()
+    return bool(provided) and any(
+        hmac.compare_digest(provided.encode(), key.encode())
+        for key in AI_ANOMALY_API_KEYS
     )
+
+
+@app.on_event("startup")
+async def production_config_guard() -> None:
+    """Fail fast in production when any required secret/config is missing."""
+    if not _PRODUCTION:
+        return
+    missing = []
+    if not AI_ANOMALY_API_KEYS:
+        missing.append("AI_ANOMALY_API_KEY")
+    if not INFERENCE_ENGINE_URL:
+        missing.append("INFERENCE_ENGINE_URL")
+    if missing:
+        raise RuntimeError(
+            f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+        )
 
 
 @app.middleware("http")
@@ -61,7 +91,7 @@ async def api_key_auth_middleware(request, call_next):
 
     if request.url.path == "/api/v1/anomaly/health":
         return await call_next(request)
-    if not AI_ANOMALY_API_KEY:
+    if not AI_ANOMALY_API_KEYS:
         return JSONResponse(
             status_code=503,
             content={"error": "AI_ANOMALY_API_KEY not configured; refusing to serve unauthenticated requests"},
@@ -269,8 +299,17 @@ async def score_batch(records: list[VotingRecord]):
 async def health():
     base_url = require_inference_url()
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{base_url}/health")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+            # Idempotent GET probe: one bounded retry before declaring degraded.
+            response = None
+            for attempt in range(2):
+                try:
+                    response = await client.get(f"{base_url}/health")
+                    break
+                except httpx.TransportError:
+                    if attempt == 1:
+                        raise
+                    await asyncio.sleep(0.2)
             response.raise_for_status()
             inference_health = response.json()
     except httpx.HTTPError as exc:
@@ -305,7 +344,7 @@ async def health():
 async def websocket_anomalies(websocket: WebSocket):
     # SECURITY: HTTP middleware does not cover WebSocket upgrades — require the
     # API key as a query token, failing closed when unconfigured.
-    if not AI_ANOMALY_API_KEY or not _key_valid(websocket.query_params.get("token", "")):
+    if not AI_ANOMALY_API_KEYS or not _key_valid(websocket.query_params.get("token", "")):
         await websocket.close(code=4401)
         return
     await websocket.accept()

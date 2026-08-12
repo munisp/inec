@@ -14,7 +14,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 10.0
+# Explicit connect/read/write/pool budgets — no unbounded inter-service waits.
+DEFAULT_TIMEOUT = httpx.Timeout(10.0, connect=3.0, write=10.0, pool=5.0)
+MAX_GET_ATTEMPTS = 3
 
 
 class ServiceClient:
@@ -30,9 +32,19 @@ class ServiceClient:
         )
 
     async def get(self, path: str) -> Any:
-        resp = await self._client.get(path)
-        resp.raise_for_status()
-        return resp.json()
+        """Idempotent GET with bounded exponential-backoff retry."""
+        import asyncio
+
+        for attempt in range(MAX_GET_ATTEMPTS):
+            try:
+                resp = await self._client.get(path)
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.TransportError:
+                if attempt == MAX_GET_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(0.2 * (2 ** attempt))
+        raise httpx.TransportError("unreachable")  # pragma: no cover
 
     async def post(self, path: str, body: Any) -> Any:
         resp = await self._client.post(path, json=body)

@@ -14,13 +14,14 @@ INEC Digital Twin Simulation Service — Production-Complete v2.0
   10. WebSocket streaming simulation API
 """
 from __future__ import annotations
-import asyncio, json, math, os, random, statistics, time, uuid
+import asyncio, hmac, json, math, os, random, statistics, time, uuid
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+import asyncpg
 import httpx
 import numpy as np
 import uvicorn
@@ -46,14 +47,34 @@ OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "").strip()
 
 # SECURITY: every simulation endpoint was unauthenticated. The service FAILS
 # CLOSED when DIGITAL_TWIN_API_KEY is unset (503 on all non-health routes).
-DIGITAL_TWIN_API_KEY = os.getenv("DIGITAL_TWIN_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+DIGITAL_TWIN_API_KEYS: List[str] = [
+    k.strip() for k in os.getenv("DIGITAL_TWIN_API_KEY", "").split(",") if k.strip()
+]
+
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# PostgreSQL persistence for simulation state. Optional in development
+# (in-memory with a loud warning), MANDATORY in production.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+_pg_pool: Optional[asyncpg.Pool] = None
 # SECURITY: CORS is deny-by-default; operators opt in via DIGITAL_TWIN_CORS_ORIGINS
 # (comma-separated). Previously allow_origins=["*"].
 DIGITAL_TWIN_CORS_ORIGINS = [
     o.strip() for o in os.getenv("DIGITAL_TWIN_CORS_ORIGINS", "").split(",") if o.strip()
 ]
 
-app = FastAPI(title="INEC Digital Twin v2", version="2.0.0")
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
+app = FastAPI(
+    title="INEC Digital Twin v2",
+    version="2.0.0",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
+)
 
 # Rate limiting (429 + Retry-After on breach). /what-if invokes a paid LLM.
 limiter = Limiter(key_func=get_remote_address)
@@ -70,8 +91,10 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 
 def _key_valid(provided: str) -> bool:
-    import hmac
-    return bool(provided) and hmac.compare_digest(provided.encode(), DIGITAL_TWIN_API_KEY.encode())
+    """Constant-time match against ANY configured key (comma-separated rotation)."""
+    return bool(provided) and any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in DIGITAL_TWIN_API_KEYS
+    )
 
 
 @app.middleware("http")
@@ -79,7 +102,7 @@ async def api_key_auth_middleware(request: Request, call_next):
     """Require the service API key on all non-health endpoints (fail closed)."""
     if request.url.path == "/api/v1/twin/health":
         return await call_next(request)
-    if not DIGITAL_TWIN_API_KEY:
+    if not DIGITAL_TWIN_API_KEYS:
         log.error("api_key_not_configured", detail="DIGITAL_TWIN_API_KEY unset")
         return JSONResponse(
             status_code=503,
@@ -455,10 +478,166 @@ async def ai_scenario(prompt: str, base: Dict) -> Dict:
         log.error("ai_scenario_failed", error=str(exc))
         raise RuntimeError("configured AI scenario service failed") from exc
 
-# ── State ─────────────────────────────────────────────────────────────────────
+# ── State (write-through cache over Postgres when configured) ────────────────
 _sims: Dict[str, ElectionTwin] = {}
 _ws_clients: List[WebSocket] = []
 _mc_cache: Dict[str, List[Dict]] = {}
+
+
+# ── PostgreSQL persistence (durable simulation state) ────────────────────────
+# Tables are created idempotently at startup (CREATE TABLE IF NOT EXISTS):
+#   twin_simulations(election_id PK, state JSONB, updated_at)
+#   twin_mc_cache(election_id PK, results JSONB, updated_at)
+
+def _unit_to_dict(u: PUTwin) -> Dict:
+    return {
+        "id": u.id, "name": u.name, "state": u.state, "lga": u.lga, "ward": u.ward,
+        "registered": u.registered, "lat": u.lat, "lon": u.lon, "elev_m": u.elev_m,
+        "status": u.status.value, "accredited": u.accredited, "votes": u.votes,
+        "transmitted": u.transmitted, "incidents": u.incidents,
+        "disruptions": [d.value for d in u.disruptions],
+        "weather": asdict(u.weather), "supply": asdict(u.supply),
+        "vote_dist": u.vote_dist, "completion_time": u.completion_time,
+        "queue": u.queue, "throughput_hr": u.throughput_hr,
+        "sim_time": u.sim_time, "events": u.events,
+    }
+
+
+def _unit_from_dict(d: Dict) -> PUTwin:
+    u = PUTwin(
+        id=d["id"], name=d["name"], state=d["state"], lga=d["lga"], ward=d["ward"],
+        registered=d["registered"], lat=d["lat"], lon=d["lon"],
+        elev_m=d.get("elev_m", 0.0),
+    )
+    u.status = PUStatus(d.get("status", "pending"))
+    u.accredited = d.get("accredited", 0)
+    u.votes = d.get("votes", 0)
+    u.transmitted = d.get("transmitted", False)
+    u.incidents = d.get("incidents", 0)
+    u.disruptions = [DisruptionType(x) for x in d.get("disruptions", [])]
+    u.weather = Weather(**d.get("weather", {}))
+    u.supply = SupplyChain(**d.get("supply", {}))
+    u.vote_dist = d.get("vote_dist", {})
+    u.completion_time = d.get("completion_time")
+    u.queue = d.get("queue", 0)
+    u.throughput_hr = d.get("throughput_hr", 0.0)
+    u.sim_time = d.get("sim_time", 0.0)
+    u.events = d.get("events", [])
+    return u
+
+
+def _twin_to_dict(t: ElectionTwin) -> Dict:
+    return {
+        "election_id": t.election_id, "scenario": t.scenario.value,
+        "total_registered": t.total_registered, "parties": t.parties,
+        "party_weights": t.party_weights, "sim_time": t.sim_time,
+        "events": t.events, "completed": t.completed, "run_id": t.run_id,
+        "units": [_unit_to_dict(u) for u in t.units],
+    }
+
+
+def _twin_from_dict(d: Dict) -> ElectionTwin:
+    t = ElectionTwin(
+        election_id=d["election_id"], scenario=ScenarioType(d["scenario"]),
+        total_registered=d["total_registered"],
+        units=[_unit_from_dict(u) for u in d.get("units", [])],
+        parties=d.get("parties", ["APC", "PDP", "LP", "NNPP"]),
+        party_weights=d.get("party_weights", [0.35, 0.30, 0.20, 0.15]),
+        sim_time=d.get("sim_time", 0.0), events=d.get("events", []),
+        completed=d.get("completed", False),
+        run_id=d.get("run_id", str(uuid.uuid4())),
+    )
+    return t
+
+
+async def _init_state_store() -> None:
+    """Create tables and reload persisted simulations/MC results into memory."""
+    global _pg_pool
+    _pg_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS twin_simulations (
+                election_id TEXT PRIMARY KEY,
+                state       JSONB NOT NULL,
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS twin_mc_cache (
+                election_id TEXT PRIMARY KEY,
+                results     JSONB NOT NULL,
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        sim_rows = await conn.fetch("SELECT election_id, state FROM twin_simulations")
+        mc_rows = await conn.fetch("SELECT election_id, results FROM twin_mc_cache")
+    for row in sim_rows:
+        try:
+            _sims[row["election_id"]] = _twin_from_dict(json.loads(row["state"]))
+        except (KeyError, ValueError, TypeError) as exc:
+            log.warning("twin_restore_skipped", election_id=row["election_id"], error=str(exc))
+    for row in mc_rows:
+        _mc_cache[row["election_id"]] = json.loads(row["results"])
+    # NOTE: restored twins keep their state but realtime tick loops are not
+    # auto-resumed; operators re-drive them via /disrupt//calibrate or a new run.
+    log.info("state_store_loaded", simulations=len(_sims), mc_cached=len(_mc_cache))
+
+
+async def _persist_twin(election_id: str) -> None:
+    if _pg_pool is None:
+        return
+    twin = _sims.get(election_id)
+    if twin is None:
+        return
+    async with _pg_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO twin_simulations (election_id, state, updated_at)
+               VALUES ($1, $2::jsonb, NOW())
+               ON CONFLICT (election_id) DO UPDATE SET state = EXCLUDED.state, updated_at = NOW()""",
+            election_id, json.dumps(_twin_to_dict(twin)),
+        )
+
+
+async def _delete_twin_state(election_id: str) -> None:
+    if _pg_pool is None:
+        return
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("DELETE FROM twin_simulations WHERE election_id = $1", election_id)
+
+
+async def _persist_mc_cache(election_id: str) -> None:
+    if _pg_pool is None:
+        return
+    async with _pg_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO twin_mc_cache (election_id, results, updated_at)
+               VALUES ($1, $2::jsonb, NOW())
+               ON CONFLICT (election_id) DO UPDATE SET results = EXCLUDED.results, updated_at = NOW()""",
+            election_id, json.dumps(_mc_cache.get(election_id, [])),
+        )
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    # SECURITY: fail fast in production when required config is missing —
+    # running unauthenticated or with non-durable state is never acceptable.
+    if _PRODUCTION:
+        missing = []
+        if not DIGITAL_TWIN_API_KEYS:
+            missing.append("DIGITAL_TWIN_API_KEY")
+        if not DATABASE_URL:
+            missing.append("DATABASE_URL")
+        if missing:
+            raise RuntimeError(
+                f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+            )
+    if DATABASE_URL:
+        await _init_state_store()
+        log.info("state_persistence", backend="postgresql")
+    else:
+        log.warn("state_persistence_in_memory",
+                 detail="DATABASE_URL unset — simulations are IN-MEMORY ONLY; "
+                        "acceptable only outside production")
 
 async def broadcast(data: Dict):
     dead = []
@@ -480,6 +659,7 @@ async def run_realtime(eid: str, dt: float = TICK_SECONDS):
         await broadcast({"type":"simulation_tick","data":s})
         await asyncio.sleep(1)
     twin.completed = True
+    await _persist_twin(eid)
     await broadcast({"type":"simulation_completed","data":twin.summary()})
 
 # ── Request Models ────────────────────────────────────────────────────────────
@@ -532,6 +712,7 @@ async def create_twin(cfg: SimConfig, bg: BackgroundTasks):
                         total_registered=sum(u.registered for u in units),
                         units=units, parties=cfg.parties, party_weights=cfg.party_weights)
     _sims[cfg.election_id] = twin
+    await _persist_twin(cfg.election_id)
     if cfg.realtime: bg.add_task(run_realtime, cfg.election_id)
     log.info("twin_created", eid=cfg.election_id, units=len(units))
     return {"run_id":twin.run_id,"election_id":cfg.election_id,"scenario":cfg.scenario.value,
@@ -565,6 +746,7 @@ async def run_mc(req: MCRequest):
     result = await monte_carlo(req.election_id, req.scenario, req.num_states, req.pus_per_state,
                                req.parties, req.party_weights, req.weather_severity, req.n_runs)
     _mc_cache.setdefault(req.election_id, []).append(result)
+    await _persist_mc_cache(req.election_id)
     return result
 
 @app.post("/api/v1/twin/scenario-compare", tags=["Monte Carlo"])
@@ -588,6 +770,7 @@ async def apply_disruption(req: DisruptReq):
     for u in t.units:
         if req.state_codes and u.state not in req.state_codes: continue
         if random.random() < req.severity: u.apply_disruption(req.disruption); affected += 1
+    await _persist_twin(req.election_id)
     return {"election_id":req.election_id,"disruption":req.disruption.value,"affected_units":affected}
 
 @app.post("/api/v1/twin/adversarial", tags=["Adversarial Simulation"])
@@ -637,6 +820,7 @@ async def calibrate(req: CalibrateReq):
         if u.status in [PUStatus.ACCREDITATION, PUStatus.VOTING]:
             adj = int(u.registered * drift * 0.1)
             u.accredited = max(0, min(u.registered, u.accredited + adj)); cal += 1
+    await _persist_twin(req.election_id)
     return {"election_id":req.election_id,"drift_corrected_pct":round(drift*100,2),
             "calibrated_units":cal,"new_turnout_pct":t.turnout_pct}
 
@@ -700,7 +884,10 @@ async def list_sims():
 
 @app.delete("/api/v1/twin/{election_id}", tags=["Digital Twin"])
 async def delete_sim(election_id: str):
-    if election_id in _sims: del _sims[election_id]; return {"deleted":True}
+    if election_id in _sims:
+        del _sims[election_id]
+        await _delete_twin_state(election_id)
+        return {"deleted":True}
     raise HTTPException(404, "Simulation not found")
 
 @app.websocket("/ws/twin")
@@ -708,7 +895,7 @@ async def twin_ws(ws: WebSocket):
     """Innovation 10: WebSocket streaming simulation API."""
     # SECURITY: HTTP middleware does not cover WebSocket upgrades — enforce the
     # same API key here (query token), failing closed when unconfigured.
-    if not DIGITAL_TWIN_API_KEY or not _key_valid(ws.query_params.get("token", "")):
+    if not DIGITAL_TWIN_API_KEYS or not _key_valid(ws.query_params.get("token", "")):
         await ws.close(code=4401)
         return
     await ws.accept(); _ws_clients.append(ws)
@@ -726,7 +913,31 @@ async def twin_ws(ws: WebSocket):
 
 @app.get("/api/v1/twin/health", tags=["Health"])
 async def health():
-    return {"status":"healthy","active_simulations":len(_sims),"ws_clients":len(_ws_clients),"version":"2.0.0"}
+    """Liveness + real persistence probe; 503 when the state store is down."""
+    checks: Dict[str, bool] = {}
+    degraded = False
+    if _pg_pool is not None:
+        try:
+            async with _pg_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            checks["postgres"] = True
+        except (asyncpg.PostgresError, OSError):
+            checks["postgres"] = False
+            degraded = True
+    elif DATABASE_URL:
+        checks["postgres"] = False
+        degraded = True
+    return JSONResponse(
+        status_code=503 if degraded else 200,
+        content={
+            "status": "degraded" if degraded else "healthy",
+            "checks": checks,
+            "persistence": "postgresql" if _pg_pool is not None else "in_memory",
+            "active_simulations": len(_sims),
+            "ws_clients": len(_ws_clients),
+            "version": "2.0.0",
+        },
+    )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8203, log_level="info")
