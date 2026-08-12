@@ -30,12 +30,14 @@ type AuthMiddleware struct {
 	db     *sql.DB
 	config AuthConfig
 	client *http.Client
-	// gatewaySecret is the shared secret (env GOTV_GATEWAY_SECRET) that the
-	// API gateway MUST present before X-Party-ID/X-Internal-Service trust
-	// headers are honored. SECURITY: when empty, those trust headers are
-	// rejected outright (fail closed) — otherwise any direct client could
-	// impersonate any party by setting two headers.
-	gatewaySecret string
+	// internalToken is the shared secret (env INTERNAL_SERVICE_SECRET, with
+	// GOTV_GATEWAY_SECRET accepted as a legacy alias) that the API gateway
+	// MUST present via the X-Internal-Token header before
+	// X-Party-ID/X-Internal-Service trust headers are honored. SECURITY:
+	// when empty, those trust headers are rejected outright (fail closed) —
+	// otherwise any direct client could impersonate any party by setting
+	// two headers.
+	internalToken string
 	// Rate limiter: party_id -> (count, window_start)
 	rateMap map[int]*rateEntry
 	rateMu  sync.RWMutex
@@ -48,16 +50,22 @@ type rateEntry struct {
 
 // NewAuthMiddleware creates auth middleware with JWT + API key support.
 func NewAuthMiddleware(db *sql.DB, config AuthConfig) *AuthMiddleware {
-	gwSecret := os.Getenv("GOTV_GATEWAY_SECRET")
-	if gwSecret == "" {
-		// SECURITY: startup warning — gateway trust headers fail closed.
-		log.Warn().Msg("GOTV auth: GOTV_GATEWAY_SECRET is not set — X-Party-ID/X-Internal-Service gateway trust headers will be REJECTED (fail closed). Set a strong shared secret on the gateway and this service to enable inter-service trust.")
+	secret := os.Getenv("INTERNAL_SERVICE_SECRET")
+	if secret == "" {
+		// Legacy alias kept for existing deployments.
+		secret = os.Getenv("GOTV_GATEWAY_SECRET")
+	}
+	if secret == "" {
+		// SECURITY: gateway trust headers fail closed. In production this
+		// means the X-Party-ID inter-service path is dead until the shared
+		// secret is configured — by design.
+		log.Warn().Msg("GOTV auth: INTERNAL_SERVICE_SECRET is not set — X-Party-ID/X-Internal-Service gateway trust headers will be REJECTED (fail closed). Set a strong shared secret on the gateway and this service to enable inter-service trust.")
 	}
 	return &AuthMiddleware{
 		db:            db,
 		config:        config,
 		client:        &http.Client{Timeout: 5 * time.Second},
-		gatewaySecret: gwSecret,
+		internalToken: secret,
 		rateMap:       make(map[int]*rateEntry),
 	}
 }
@@ -117,17 +125,22 @@ func (am *AuthMiddleware) authenticate(r *http.Request) (int, string, error) {
 		if r.Header.Get("X-Internal-Service") == "gateway" {
 			// SECURITY: trust headers are spoofable by any direct client.
 			// They are honored ONLY when the caller also proves possession of
-			// the gateway shared secret (GOTV_GATEWAY_SECRET) via the
-			// X-Gateway-Secret header, compared in constant time. When the
-			// secret is not configured on this service, fail CLOSED — never
-			// trust caller-supplied identity headers.
-			if am.gatewaySecret == "" {
-				return 0, "", fmt.Errorf("unauthorized: gateway trust headers rejected (GOTV_GATEWAY_SECRET not configured)")
+			// the inter-service shared secret (INTERNAL_SERVICE_SECRET) via
+			// the X-Internal-Token header, compared in constant time. When
+			// the secret is not configured on this service (e.g. forgotten
+			// in production), fail CLOSED — never trust caller-supplied
+			// identity headers.
+			if am.internalToken == "" {
+				return 0, "", fmt.Errorf("unauthorized: gateway trust headers rejected (INTERNAL_SERVICE_SECRET not configured)")
 			}
-			provided := r.Header.Get("X-Gateway-Secret")
+			provided := r.Header.Get("X-Internal-Token")
+			if provided == "" {
+				// Legacy header name kept for existing gateway deployments.
+				provided = r.Header.Get("X-Gateway-Secret")
+			}
 			if provided == "" ||
-				subtle.ConstantTimeCompare([]byte(provided), []byte(am.gatewaySecret)) != 1 {
-				return 0, "", fmt.Errorf("unauthorized: invalid gateway secret")
+				subtle.ConstantTimeCompare([]byte(provided), []byte(am.internalToken)) != 1 {
+				return 0, "", fmt.Errorf("unauthorized: invalid internal service token")
 			}
 			partyID, err := strconv.Atoi(pid)
 			if err != nil {
@@ -173,7 +186,9 @@ func (am *AuthMiddleware) validateAPIKey(apiKey string) (int, string, error) {
 		return 0, "", fmt.Errorf("API key expired")
 	}
 
-	_ = subtle.ConstantTimeCompare([]byte(hashHex), []byte(hashHex)) // timing-safe
+	// The constant-time property is provided by looking the key up by its
+	// SHA-256 hash (no secret material is compared byte-by-byte here); a
+	// matching active row is proof of validity.
 	return partyID, createdBy, nil
 }
 

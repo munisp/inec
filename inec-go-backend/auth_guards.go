@@ -62,7 +62,10 @@ func handlePromoteUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeAndValidateBody(w, r, &req) {
 		return
 	}
-	dbExecCtx(r.Context(), "UPDATE users SET role=? WHERE id=?", req.Role, req.UserID)
+	if _, err := dbExecCtx(r.Context(), "UPDATE users SET role=? WHERE id=?", req.Role, req.UserID); err != nil {
+		writeError(w, 500, "failed to update user role")
+		return
+	}
 	auditWrite("USER_PROMOTED", "user", "", r, map[string]interface{}{"user_id": req.UserID, "new_role": req.Role})
 	writeJSON(w, 200, M{"message": "User role updated", "role": req.Role})
 }

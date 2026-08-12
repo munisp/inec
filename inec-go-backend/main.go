@@ -42,6 +42,12 @@ var (
 				allowed = os.Getenv("CORS_ORIGINS")
 			}
 			if allowed == "*" {
+				// SECURITY: wildcard WebSocket origins are never allowed in
+				// production; in other environments they are only honored as
+				// an explicit dev-mode choice.
+				if os.Getenv("APP_ENV") == "production" {
+					return false
+				}
 				return true // explicitly allow all (dev mode)
 			}
 			if allowed == "" {
@@ -61,12 +67,32 @@ var (
 	rateLimiter = newRateLimiter()
 )
 
+// validateConfig fails fast in production when required environment variables
+// are missing, instead of booting into an insecure half-configured state.
+func validateConfig() {
+	if os.Getenv("APP_ENV") != "production" {
+		return
+	}
+	required := []string{"JWT_SECRET", "DATABASE_URL", "CORS_ORIGINS"}
+	var missing []string
+	for _, k := range required {
+		if strings.TrimSpace(os.Getenv(k)) == "" {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		log.Fatal().Strs("missing", missing).Msg("required environment variables are missing in production (see .env.example)")
+	}
+}
+
 func main() {
 	// Initialize OpenTelemetry Tracing
 	_ = otel.Tracer("inec-backend")
 
 	// Initialize structured logging
 	initLogger()
+	// Fail fast on missing required configuration in production.
+	validateConfig()
 	// Initialize input validation
 	initValidator()
 	// Initialize Prometheus metrics
@@ -865,8 +891,10 @@ func main() {
 	// Static file serving for observer photo uploads
 	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
-	// Prometheus metrics endpoint
-	r.Handle("/metrics", metricsHandler()).Methods("GET")
+	// Prometheus metrics endpoint. When METRICS_BEARER_TOKEN is set, requests
+	// must present it as a Bearer token; otherwise the endpoint stays open
+	// (e.g. in-cluster scraping) — see .env.example.
+	r.Handle("/metrics", metricsBearerGuard(metricsHandler())).Methods("GET")
 
 	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
 	handler := panicRecoveryMiddleware(

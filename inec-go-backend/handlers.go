@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 )
@@ -52,9 +53,15 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if user has MFA enabled — require TOTP code if so
+	// Check if user has MFA enabled — require TOTP code if so.
+	// SECURITY: fail closed — a DB error must NOT silently downgrade to
+	// password-only login.
 	var mfaEnabled bool
-	dbQueryRowCtx(r.Context(), "SELECT EXISTS(SELECT 1 FROM mfa_totp WHERE user_id=? AND is_active=1)", id).Scan(&mfaEnabled)
+	if err := dbQueryRowCtx(r.Context(), "SELECT EXISTS(SELECT 1 FROM mfa_totp WHERE user_id=? AND is_active=1)", id).Scan(&mfaEnabled); err != nil {
+		log.Error().Err(err).Int("user_id", id).Msg("MFA status check failed")
+		writeError(w, 500, "authentication service error")
+		return
+	}
 	if mfaEnabled {
 		if req.TOTPCode == "" {
 			writeJSON(w, 200, M{
@@ -76,8 +83,11 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Include state_code + staff_id so write handlers can enforce
+	// state-level tenancy without extra lookups or trusting the request body.
 	claims := map[string]interface{}{
 		"sub": fmt.Sprintf("%d", id), "username": username, "role": role, "full_name": fullName,
+		"staff_id": nullStr(staffID), "state_code": nullStr(stateCode),
 	}
 	token, _ := createAccessToken(claims)
 	refresh, _ := createRefreshToken(claims)
@@ -205,9 +215,15 @@ func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "not a refresh token")
 		return
 	}
-	// Issue new access + refresh tokens
+	// Reject revoked refresh tokens (logout / session revocation by jti).
+	if jti, _ := claims["jti"].(string); jti != "" && blacklist.isBlacklisted(jti) {
+		writeError(w, 401, "refresh token has been revoked")
+		return
+	}
+	// Issue new access + refresh tokens (preserving tenancy claims)
 	baseClaims := map[string]interface{}{
 		"sub": claims["sub"], "username": claims["username"], "role": claims["role"], "full_name": claims["full_name"],
+		"staff_id": claims["staff_id"], "state_code": claims["state_code"],
 	}
 	newAccess, _ := createAccessToken(baseClaims)
 	newRefresh, _ := createRefreshToken(baseClaims)
@@ -332,7 +348,10 @@ func handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 	}
 	updates = append(updates, "updated_at=CURRENT_TIMESTAMP")
 	vals = append(vals, id)
-	dbExecCtx(r.Context(), "UPDATE elections SET "+strings.Join(updates, ",")+` WHERE id=?`, vals...)
+	if _, err := dbExecCtx(r.Context(), "UPDATE elections SET "+strings.Join(updates, ",")+` WHERE id=?`, vals...); err != nil {
+		writeError(w, 500, "failed to update election")
+		return
+	}
 	auditWrite("ELECTION_UPDATED", "election", id, r, req)
 	writeJSON(w, 200, M{"message": "Election updated"})
 }
@@ -392,8 +411,12 @@ func logAuditCtx(ctx context.Context, action, entityType, entityID string, userI
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
 	detailsJSON, _ := json.Marshal(details)
-	dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
-		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev)
+	// Audit failures must be loud, not silent — the chain is a security control.
+	if _, err := dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
+		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev); err != nil {
+		log.Error().Err(err).Str("action", action).Str("entity_type", entityType).Str("entity_id", entityID).
+			Msg("SECURITY: audit log write failed")
+	}
 }
 
 func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +464,11 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	var regVoters int
 	if err := dbQueryRowCtx(r.Context(), "SELECT registered_voters FROM polling_units WHERE code=?", req.PollingUnitCode).Scan(&regVoters); err != nil {
 		writeError(w, 400, "Polling unit not found")
+		return
+	}
+	// State-level tenancy: officers may only submit results for polling units
+	// in their own state (from verified JWT claims, never the request body).
+	if !enforceStateTenancy(w, r, user, req.PollingUnitCode) {
 		return
 	}
 	var dupCheck int
@@ -1695,6 +1723,31 @@ func handleAuditStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"total_entries": total, "action_counts": actionCounts, "latest_block_hash": nullStr(latestHash)})
 }
 
+// enforceStateTenancy resolves the state of a polling unit (via the
+// pu→ward→lga→state join) and rejects the request with 403 when a non-admin
+// user's verified state_code JWT claim does not match. Admins are exempt.
+// Returns false after writing the error response.
+func enforceStateTenancy(w http.ResponseWriter, r *http.Request, user jwt.MapClaims, puCode string) bool {
+	role, _ := user["role"].(string)
+	if role == "admin" {
+		return true
+	}
+	claimState, _ := user["state_code"].(string)
+	var puState string
+	err := dbReadQueryRow(r.Context(), `SELECT s.code FROM polling_units pu
+		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code
+		JOIN states s ON s.code=l.state_code WHERE pu.code=?`, puCode).Scan(&puState)
+	if err != nil {
+		writeError(w, 400, "Polling unit not found")
+		return false
+	}
+	if claimState == "" || claimState != puState {
+		writeError(w, 403, "forbidden: polling unit is outside your assigned state")
+		return false
+	}
+	return true
+}
+
 // ── Incidents ──
 
 func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
@@ -1710,6 +1763,11 @@ func handleCreateIncident(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Severity == "" {
 		req.Severity = "medium"
+	}
+	// State-level tenancy: officers may only file incidents for polling units
+	// in their own state (from verified JWT claims, never the request body).
+	if req.PollingUnitCode != "" && !enforceStateTenancy(w, r, user, req.PollingUnitCode) {
+		return
 	}
 	userSub, _ := user["sub"].(string)
 	uid, _ := strconv.Atoi(userSub)
@@ -1796,7 +1854,10 @@ func handleUpdateIncident(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "resolved" {
 		resolved = ", resolved_at=CURRENT_TIMESTAMP"
 	}
-	dbExecCtx(r.Context(), "UPDATE incidents SET status=?"+resolved+" WHERE id=?", req.Status, id)
+	if _, err := dbExecCtx(r.Context(), "UPDATE incidents SET status=?"+resolved+" WHERE id=?", req.Status, id); err != nil {
+		writeError(w, 500, "failed to update incident")
+		return
+	}
 	auditWrite("INCIDENT_UPDATED", "incident", id, r, map[string]interface{}{"status": req.Status})
 	writeJSON(w, 200, M{"message": "Incident updated"})
 }

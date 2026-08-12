@@ -65,7 +65,7 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	if *dbURL == "" {
-		*dbURL = "postgres://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable"
+		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
 
 	db, err := sql.Open("postgres", *dbURL)

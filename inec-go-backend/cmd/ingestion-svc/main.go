@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"inec-go-backend/internal/authmw"
 	"inec-go-backend/internal/ingestion"
 
 	"github.com/gorilla/mux"
@@ -34,7 +35,7 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	if *dbURL == "" {
-		*dbURL = "postgres://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable"
+		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
 
 	db, err := sql.Open("postgres", *dbURL)
@@ -53,8 +54,21 @@ func main() {
 	log.Info().Int("recovered", recovered).Msg("Startup recovery complete")
 
 	r := mux.NewRouter()
+	// JWT authentication on all routes except /health.
+	r.Use(authmw.Middleware("/health"))
 
-	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		// Readiness: database must be reachable (2s timeout), 503 on failure.
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(pingCtx); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"service": "ingestion-svc", "status": "unhealthy", "version": "1.0.0",
+			})
+			return
+		}
 		stats := svc.QueueStats()
 		stats["service"] = "ingestion-svc"
 		stats["version"] = "1.0.0"

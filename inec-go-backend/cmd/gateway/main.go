@@ -38,6 +38,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"inec-go-backend/internal/authmw"
 )
 
 // ServiceEndpoint defines a backend service for routing.
@@ -109,13 +111,24 @@ func main() {
 	}
 
 	r := mux.NewRouter()
-	r.Use(corsMiddleware)
+	r.Use(authmw.CORS())
 	r.Use(requestIDMiddleware)
+	// JWT authentication on everything except health and the login/refresh
+	// flow. This runs BEFORE any proxying so unauthenticated requests never
+	// reach a backend service.
+	r.Use(authmw.Middleware("/health", "/auth/login", "/auth/register", "/auth/refresh", "/auth/mfa/verify"))
 
 	// Gateway health — aggregates all service health
 	r.HandleFunc("/health", gatewayHealth(services)).Methods("GET")
 	r.HandleFunc("/services", listServices(services)).Methods("GET")
 	r.HandleFunc("/architecture", architectureInfo(services)).Methods("GET")
+
+	// internalToken proves to backend services (e.g. gotv-svc) that identity
+	// headers were set by this gateway, not spoofed by a direct client.
+	internalToken := os.Getenv("INTERNAL_SERVICE_SECRET")
+	if internalToken == "" {
+		log.Warn().Msg("INTERNAL_SERVICE_SECRET not set — backend services will reject gateway trust headers (fail closed)")
+	}
 
 	if *distributed {
 		for _, svc := range services {
@@ -125,6 +138,14 @@ func main() {
 			}
 			proxy := httputil.NewSingleHostReverseProxy(target)
 			proxy.ErrorHandler = proxyErrorHandler(svc.Name)
+			if internalToken != "" {
+				base := proxy.Director
+				token := internalToken
+				proxy.Director = func(req *http.Request) {
+					base(req)
+					req.Header.Set("X-Internal-Token", token)
+				}
+			}
 			r.PathPrefix(svc.Prefix).Handler(http.StripPrefix("", proxy))
 			log.Info().Str("service", svc.Name).Str("url", svc.URL).Str("lang", svc.Lang).Msg("Routing to service")
 		}
@@ -256,24 +277,6 @@ func proxyErrorHandler(serviceName string) func(http.ResponseWriter, *http.Reque
 			"message": fmt.Sprintf("Service %s is not responding", serviceName),
 		})
 	}
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "http://localhost:3000"
-		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Request-ID")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(204)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func requestIDMiddleware(next http.Handler) http.Handler {

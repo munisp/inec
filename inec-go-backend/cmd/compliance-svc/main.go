@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"inec-go-backend/internal/authmw"
 	"inec-go-backend/internal/compliance"
 
 	"github.com/gorilla/mux"
@@ -34,7 +35,7 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	if *dbURL == "" {
-		*dbURL = "postgres://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable"
+		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
 
 	db, err := sql.Open("postgres", *dbURL)
@@ -49,12 +50,11 @@ func main() {
 	svc := compliance.NewService(db)
 
 	r := mux.NewRouter()
+	// JWT authentication on all routes except /health.
+	r.Use(authmw.Middleware("/health"))
 
-	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service": "compliance-svc", "status": "healthy", "version": "1.0.0",
-		})
-	}).Methods("GET")
+	// Health — pings the database, 503 when unreachable
+	r.HandleFunc("/health", authmw.HealthHandler(db, "compliance-svc")).Methods("GET")
 
 	// Processing register
 	r.HandleFunc("/compliance/register", func(w http.ResponseWriter, _ *http.Request) {

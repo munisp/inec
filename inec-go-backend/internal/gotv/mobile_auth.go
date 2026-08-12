@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +30,20 @@ type MobileAuth struct {
 }
 
 // NewMobileAuth creates a mobile auth handler.
+//
+// SECURITY: a random per-process JWT key invalidates all sessions on restart
+// and masks misconfiguration. In production (APP_ENV=production) a missing or
+// short GOTV_MOBILE_JWT_SECRET is a fatal startup error; the ephemeral random
+// key is only allowed outside production.
 func NewMobileAuth(db *sql.DB, svc *Service, jwtSecretHex string) *MobileAuth {
-	secret, _ := hex.DecodeString(jwtSecretHex)
+	secret, err := hex.DecodeString(strings.TrimSpace(jwtSecretHex))
+	if err != nil {
+		secret = nil
+	}
 	if len(secret) < 32 {
+		if os.Getenv("APP_ENV") == "production" {
+			log.Fatal().Msg("GOTV_MOBILE_JWT_SECRET must be set in production and decode (hex) to at least 32 bytes")
+		}
 		secret = make([]byte, 32)
 		rand.Read(secret)
 		log.Warn().Msg("GOTV Mobile Auth: using random JWT secret (set GOTV_MOBILE_JWT_SECRET for production)")

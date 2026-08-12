@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"inec-go-backend/internal/auth"
+	"inec-go-backend/internal/authmw"
 
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
@@ -37,7 +38,7 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	if *dbURL == "" {
-		*dbURL = "postgres://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable"
+		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
 	if *jwtSecret == "" {
 		log.Fatal().Msg("JWT_SECRET is required")
@@ -58,14 +59,12 @@ func main() {
 	mfaSvc.InitTables(context.Background())
 
 	r := mux.NewRouter()
-	r.Use(corsMiddleware)
+	r.Use(authmw.CORS())
+	// JWT authentication on all routes except health and the login/refresh flow.
+	r.Use(authmw.Middleware("/health", "/auth/login", "/auth/register", "/auth/refresh", "/auth/mfa/verify"))
 
-	// Health
-	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service": "auth-svc", "status": "healthy", "version": "1.0.0",
-		})
-	}).Methods("GET")
+	// Health — pings the database, 503 when unreachable
+	r.HandleFunc("/health", authmw.HealthHandler(db, "auth-svc")).Methods("GET")
 
 	// Auth endpoints
 	r.HandleFunc("/auth/login", login(svc, mfaSvc)).Methods("POST")
@@ -285,34 +284,6 @@ func mfaStatus(svc *auth.Service, mfaSvc *auth.MFAService) http.HandlerFunc {
 	}
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	allowed := os.Getenv("CORS_ORIGINS")
-	if allowed == "" {
-		allowed = "*"
-	}
-	origins := strings.Split(allowed, ",")
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if allowed == "*" {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
-			for _, o := range origins {
-				if strings.TrimSpace(o) == origin {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					break
-				}
-			}
-		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(204)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // Placeholder for unused import
 var _ = strconv.Itoa
+var _ = strings.TrimSpace
