@@ -70,8 +70,9 @@ var (
 // validateConfig fails fast in production when required environment variables
 // are missing, instead of booting into an insecure half-configured state.
 // The list is kept in sync with every variable labeled REQUIRED-IN-PROD in
-// .env.example (gotv-deployment-specific variables are enforced by gotv-svc's
-// own startup checks).
+// .env.example (gotv-deployment secrets such as GOTV_ENCRYPTION_KEY and
+// GOTV_MOBILE_JWT_SECRET are additionally enforced by gotv-svc's own startup
+// checks, which honor both APP_ENV and INEC_ENV).
 func validateConfig() {
 	if os.Getenv("APP_ENV") != "production" {
 		return
@@ -90,6 +91,11 @@ func validateConfig() {
 		"TLS_KEY_FILE",
 		// /metrics must never fail open in production (see metricsBearerGuard).
 		"METRICS_BEARER_TOKEN",
+		// GOTV route targets (gateway routing + gotv-svc ML serving): without
+		// them the services silently fall back to localhost defaults in prod.
+		"GOTV_URL",
+		"GOTV_ENGINE_URL",
+		"GOTV_ANALYTICS_URL",
 	}
 	var missing []string
 	for _, k := range required {
