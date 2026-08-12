@@ -2510,14 +2510,62 @@ func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
 	return R * c
 }
 
-// corsMiddleware adds CORS headers for party portal cross-origin requests.
-// In production, GOTV_CORS_ORIGINS env var should whitelist specific origins.
-func corsMiddleware(next http.Handler) http.Handler {
-	allowedOrigins := map[string]bool{}
-	if origins := os.Getenv("GOTV_CORS_ORIGINS"); origins != "" {
-		for _, o := range strings.Split(origins, ",") {
-			allowedOrigins[strings.TrimSpace(o)] = true
+// corsConfig is the resolved CORS policy for gotv-svc.
+type corsConfig struct {
+	// allowedOrigins is the explicit allow-list from GOTV_CORS_ORIGINS.
+	allowedOrigins map[string]bool
+	// devWildcard permits a credential-LESS "*" reflection (dev fallback or
+	// an explicit "*" entry). Access-Control-Allow-Credentials is NEVER
+	// combined with a wildcard origin.
+	devWildcard bool
+}
+
+// resolveCORSConfig parses the GOTV_CORS_ORIGINS value into a CORS policy.
+//
+// SECURITY (deny default, mirrors the monolith's authmw.CORS):
+//   - Unset in production (APP_ENV/INEC_ENV=production) is a fatal
+//     misconfiguration: an error is returned and the caller must refuse to
+//     boot rather than fail open.
+//   - Unset in dev falls back to a credential-LESS wildcard ("*").
+//   - When set, only the listed origins are reflected, with credentials
+//     allowed. A "*" entry degrades to the credential-less wildcard.
+func resolveCORSConfig(raw string, production bool) (corsConfig, error) {
+	cfg := corsConfig{allowedOrigins: map[string]bool{}}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		if production {
+			return cfg, fmt.Errorf("GOTV_CORS_ORIGINS must be set in production (explicit origin allow-list required)")
 		}
+		cfg.devWildcard = true
+		return cfg, nil
+	}
+	for _, o := range strings.Split(raw, ",") {
+		o = strings.TrimSpace(o)
+		if o == "*" {
+			cfg.devWildcard = true
+			continue
+		}
+		if o != "" {
+			cfg.allowedOrigins[o] = true
+		}
+	}
+	return cfg, nil
+}
+
+// corsMiddleware adds CORS headers for party portal cross-origin requests.
+// In production, GOTV_CORS_ORIGINS env var must whitelist specific origins;
+// booting without it is fatal (see resolveCORSConfig). The previous
+// behaviour reflected ANY origin WITH credentials when the variable was
+// unset — a fail-open hole — and is no longer possible.
+func corsMiddleware(next http.Handler) http.Handler {
+	cfg, err := resolveCORSConfig(os.Getenv("GOTV_CORS_ORIGINS"), gotv.IsProductionEnv())
+	if err != nil {
+		log.Fatal().Err(err).Msg("CORS misconfiguration — refusing to start")
+	}
+	if cfg.devWildcard && len(cfg.allowedOrigins) == 0 {
+		log.Warn().Msg("GOTV_CORS_ORIGINS not set — dev fallback: wildcard origin WITHOUT credentials (never allowed in production)")
+	} else if cfg.devWildcard {
+		log.Warn().Msg("GOTV_CORS_ORIGINS contains wildcard — credentials will not be allowed for non-listed origins")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -2525,16 +2573,23 @@ func corsMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// In production (GOTV_CORS_ORIGINS set), only allow whitelisted origins
-		if len(allowedOrigins) > 0 && !allowedOrigins[origin] {
+		switch {
+		case cfg.allowedOrigins[origin]:
+			// Explicitly listed origin: reflect it, credentials permitted.
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Vary", "Origin")
+		case cfg.devWildcard:
+			// Dev-only wildcard: NEVER combined with credentials.
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		default:
+			// Unlisted origin: deny (no CORS headers).
 			next.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-GOTV-Party-ID, X-GOTV-Party-Code, X-GOTV-User, X-CSRF-Token")
 		w.Header().Set("Access-Control-Max-Age", "86400")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
 			return
