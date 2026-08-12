@@ -37,8 +37,6 @@ function generateRivalStakeholders(base: Stakeholder[], rival: CandidateProfile)
     // Religion affects religious bodies
     if (rival.religion === "Christian" && s.subcategory?.includes("CAN")) adj += 1;
     if (rival.religion === "Muslim" && s.subcategory?.includes("JNI")) adj += 1;
-    // Random variance to make it realistic
-    adj += (Math.random() - 0.5) * 1.5;
     return { ...s, priority: Math.max(1, Math.min(10, s.priority + adj)) };
   });
 }
@@ -108,9 +106,21 @@ export default function CandidateComparison({ primaryStakeholders, primaryName, 
 
   return (
     <div className="space-y-4">
+      {/* Hypothetical-model disclaimer — no real rival data source exists */}
+      <div
+        className="flex items-center gap-2 px-3 py-2 rounded text-xs"
+        style={{ background: "oklch(0.18 0.05 80)", border: "1px solid oklch(0.45 0.15 80)", color: "oklch(0.85 0.12 80)" }}
+      >
+        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+        <span>
+          <strong>Hypothetical scenario — not based on real rival data.</strong> Rival priorities below are derived
+          deterministically from simple profile heuristics, not from any measured or collected rival data.
+        </span>
+      </div>
+
       {/* Rival profile configurator */}
       <div className="p-4 rounded" style={{ background: "oklch(0.13 0.008 240)", border: "1px solid oklch(0.22 0.01 240)" }}>
-        <div className="text-xs font-bold tracking-wider mb-3" style={{ color: "oklch(0.55 0.01 240)" }}>RIVAL CANDIDATE PROFILE</div>
+        <div className="text-xs font-bold tracking-wider mb-3" style={{ color: "oklch(0.55 0.01 240)" }}>RIVAL CANDIDATE PROFILE (HYPOTHETICAL)</div>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
           <div>
             <label className="block text-xs mb-1" style={{ color: "oklch(0.55 0.01 240)" }}>NAME</label>
@@ -184,7 +194,15 @@ export default function CandidateComparison({ primaryStakeholders, primaryName, 
         <>
           {/* Overall strength bar */}
           <div className="p-4 rounded" style={{ background: "oklch(0.13 0.008 240)", border: "1px solid oklch(0.22 0.01 240)" }}>
-            <div className="text-xs font-bold tracking-wider mb-3" style={{ color: "oklch(0.55 0.01 240)" }}>OVERALL STAKEHOLDER STRENGTH</div>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-bold tracking-wider" style={{ color: "oklch(0.55 0.01 240)" }}>OVERALL STAKEHOLDER STRENGTH</span>
+              <span
+                className="text-xs px-1.5 py-0.5 rounded font-bold"
+                style={{ background: "oklch(0.18 0.05 80)", color: "oklch(0.85 0.12 80)", border: "1px solid oklch(0.45 0.15 80)" }}
+              >
+                Hypothetical model
+              </span>
+            </div>
             <div className="flex items-center gap-3 mb-2">
               <span className="text-xs font-bold w-32 truncate" style={{ color: "oklch(0.55 0.18 145)" }}>{primaryName}</span>
               <div className="flex-1 h-4 rounded overflow-hidden" style={{ background: "oklch(0.22 0.01 240)" }}>

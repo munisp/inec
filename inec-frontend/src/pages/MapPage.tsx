@@ -4,7 +4,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
-import { generateStateBoundaryGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
+import { generateStateMarkerGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -758,26 +758,21 @@ export default function MapPage() {
     map.on('load', () => {
       const t1 = performance.now();
       sendMetric('map_load', { duration_ms: Math.round(t1 - t0), tileMode, compareMode, state: selectedState?.code || null });
-      const stateGeoJSON = generateStateBoundaryGeoJSON(states);
+      // States are rendered as center-point markers: official boundary
+      // geometry is not bundled in this build, so no polygon layer is drawn.
+      const stateGeoJSON = generateStateMarkerGeoJSON(states);
       map.addSource('states', { type: 'geojson', data: stateGeoJSON as GeoJSON.GeoJSON });
 
       map.addLayer({
         id: 'state-fills',
-        type: 'fill',
+        type: 'circle',
         source: 'states',
         paint: {
-          'fill-color': getStateFillExpression(mapMode),
-          'fill-opacity': 0.6,
-        },
-      });
-
-      map.addLayer({
-        id: 'state-borders',
-        type: 'line',
-        source: 'states',
-        paint: {
-          'line-color': '#374151',
-          'line-width': 1.5,
+          'circle-color': getStateFillExpression(mapMode),
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 8, 7, 14, 10, 20],
+          'circle-opacity': 0.75,
+          'circle-stroke-color': '#374151',
+          'circle-stroke-width': 1.5,
         },
       });
 
@@ -972,11 +967,17 @@ export default function MapPage() {
     mapB.addControl(new maplibregl.FullscreenControl(), 'top-right');
 
     mapB.on('load', () => {
-      const stateGeoJSON = generateStateBoundaryGeoJSON(states);
+      // Center-point markers only: no fabricated boundary polygons.
+      const stateGeoJSON = generateStateMarkerGeoJSON(states);
       mapB.addSource('states-b', { type: 'geojson', data: stateGeoJSON as GeoJSON.GeoJSON });
 
-      mapB.addLayer({ id: 'state-fills-b', type: 'fill', source: 'states-b', paint: { 'fill-color': getStateFillExpression(mapMode), 'fill-opacity': 0.6 } });
-      mapB.addLayer({ id: 'state-borders-b', type: 'line', source: 'states-b', paint: { 'line-color': '#374151', 'line-width': 1.5 } });
+      mapB.addLayer({ id: 'state-fills-b', type: 'circle', source: 'states-b', paint: {
+        'circle-color': getStateFillExpression(mapMode),
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 8, 7, 14, 10, 20],
+        'circle-opacity': 0.75,
+        'circle-stroke-color': '#374151',
+        'circle-stroke-width': 1.5,
+      } });
       mapB.addLayer({ id: 'state-labels-b', type: 'symbol', source: 'states-b', layout: { 'text-field': ['get', 'code'], 'text-size': 11, 'text-font': ['Open Sans Regular'], 'text-allow-overlap': true }, paint: { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
       if (showPUs) {
@@ -1238,6 +1239,9 @@ export default function MapPage() {
                   )}
                 </div>
               )}
+              <div className="absolute bottom-2 left-2 bg-white/90 dark:bg-zinc-800/90 rounded px-2 py-1 text-xs text-zinc-600 dark:text-zinc-300 shadow max-w-xs">
+                State boundary geometry not available in this build — states are shown as center-point markers.
+              </div>
               <div className="absolute bottom-8 right-2 flex flex-col gap-1">
                 {Object.entries(STATUS_COLORS).map(([status, color]) => (
                   <div key={status} className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-0.5 text-xs shadow">

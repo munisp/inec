@@ -97,8 +97,10 @@ export interface GOTVCoverageProperties {
 export type PollingUnitFeature = Feature<Point, PollingUnitProperties>;
 export type PollingUnitCollection = FeatureCollection<Point, PollingUnitProperties>;
 
-export type StateFeature = Feature<Polygon, StateProperties>;
-export type StateCollection = FeatureCollection<Polygon, StateProperties>;
+// States use Point geometry: official boundary polygons are not bundled in
+// this build, so states are represented at their approximate center points.
+export type StateFeature = Feature<Point, StateProperties>;
+export type StateCollection = FeatureCollection<Point, StateProperties>;
 
 export type IncidentFeature = Feature<Point, IncidentProperties>;
 export type IncidentCollection = FeatureCollection<Point, IncidentProperties>;

@@ -101,7 +101,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Pastoral":            "bg-stone-900/40 text-stone-300 border-stone-700/50",
 };
 
-// ── Full stakeholder database ─────────────────────────────────────────────────
+// ── Stakeholder knowledge base ──────────────────────────────────────────────
+// Group templates for campaign planning. NOTE: reach_pct / priority values are
+// editorial heuristics curated for planning purposes — they are NOT measured
+// data and are displayed in the UI labelled as editorial estimates.
 const ALL_STAKEHOLDERS: Stakeholder[] = [
   {
     id: "trad_rulers", name: "State Council of Traditional Rulers",
@@ -431,7 +434,7 @@ export default function StakeholdersPage() {
     const lines = [
       `📋 *STAKEHOLDER BRIEF — ${s.name}*`,
       `Category: ${s.category} (${s.subcategory})`,
-      `Est. Reach: ~${((s.estimated_voter_reach ?? 0) / 1000).toFixed(0)}K voters`,
+      `Est. Reach (editorial heuristic, not measured): ~${((s.estimated_voter_reach ?? 0) / 1000).toFixed(0)}K voters`,
       ``,
       `*Key Ask:* ${s.key_ask}`,
       ``,
@@ -713,9 +716,12 @@ export default function StakeholdersPage() {
                 <span className="font-bold" style={{ color: "oklch(0.65 0.18 145)" }}>{priority1Count}</span>
               </div>
               <div className="flex justify-between text-xs">
-                <span style={{ color: "oklch(0.55 0.01 240)" }}>Est. Total Reach</span>
+                <span style={{ color: "oklch(0.55 0.01 240)" }}>Est. reach (editorial heuristic)</span>
                 <span className="font-bold" style={{ color: "oklch(0.75 0.15 50)" }}>{(totalReach / 1_000_000).toFixed(1)}M</span>
               </div>
+              <p className="text-xs leading-snug" style={{ color: "oklch(0.45 0.01 240)" }}>
+                Reach figures are editorial estimates for planning only — not measured data.
+              </p>
             </div>
           )}
           {/* Sentiment Feed — live approval tracker */}
@@ -865,8 +871,11 @@ export default function StakeholdersPage() {
                   </div>
                   <div className="flex items-center gap-2 text-xs px-3 py-1 rounded" style={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.01 240)" }}>
                     <CheckCircle2 className="w-3 h-3" style={{ color: "oklch(0.65 0.18 145)" }} />
-                    <span style={{ color: "oklch(0.65 0.18 145)" }}>{filtered.length} groups · {(totalReach / 1_000_000).toFixed(1)}M est. reach</span>
+                    <span style={{ color: "oklch(0.65 0.18 145)" }}>{filtered.length} groups · {(totalReach / 1_000_000).toFixed(1)}M est. reach (editorial heuristic)</span>
                   </div>
+                </div>
+                <div className="px-4 py-1.5 border-b text-xs" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)", color: "oklch(0.45 0.01 240)" }}>
+                  Reach percentages and voter estimates are editorial heuristics for planning, not measured data.
                 </div>
 
                 {/* Stakeholder grid */}
@@ -914,7 +923,7 @@ export default function StakeholdersPage() {
 
                             <div className="flex items-center justify-between mt-2">
                               <span className="text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>
-                                ~{((s.estimated_voter_reach ?? 0) / 1000).toFixed(0)}K voters
+                                ~{((s.estimated_voter_reach ?? 0) / 1000).toFixed(0)}K voters (heuristic)
                               </span>
                               <div className="flex items-center gap-1 text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>
                                 <span>Score: {s.relevance_score?.toFixed(0)}</span>

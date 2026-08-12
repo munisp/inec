@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -58,46 +59,47 @@ export default function GOTVLedger() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [reconciliation, setReconciliation] = useState<Reconciliation | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [acctRes, txRes, reconRes] = await Promise.all([
+        api.get('/gotv/ledger/accounts'),
+        api.get('/gotv/ledger/history?limit=50'),
+        api.get('/gotv/ledger/reconcile'),
+      ]);
+      setAccounts(acctRes.data.accounts || []);
+      setTransfers(txRes.data.transfers || []);
+      setReconciliation(reconRes.data);
+    } catch (err) {
+      // Never fabricate accounts, transfers, or a reconciliation result on failure.
+      setAccounts([]);
+      setTransfers([]);
+      setReconciliation(null);
+      setLoadError(err instanceof Error ? err.message : 'ledger-source-unavailable');
+    }
+    setLoading(false);
+  };
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const [acctRes, txRes, reconRes] = await Promise.all([
-          api.get('/gotv/ledger/accounts'),
-          api.get('/gotv/ledger/history?limit=50'),
-          api.get('/gotv/ledger/reconcile'),
-        ]);
-        setAccounts(acctRes.data.accounts || []);
-        setTransfers(txRes.data.transfers || []);
-        setReconciliation(reconRes.data);
-      } catch {
-        // Seed demo data for display
-        setAccounts([
-          { id: 'gotv-party-1-operations', account_type: 'operations', balance_kobo: 45000000, balance_naira: 450000, pending_kobo: 2500000, currency: 'NGN' },
-          { id: 'gotv-party-1-campaigns', account_type: 'campaigns', balance_kobo: 28000000, balance_naira: 280000, pending_kobo: 1200000, currency: 'NGN' },
-          { id: 'gotv-party-1-transport', account_type: 'transport', balance_kobo: 8500000, balance_naira: 85000, pending_kobo: 350000, currency: 'NGN' },
-          { id: 'gotv-party-1-reimbursement', account_type: 'reimbursement', balance_kobo: 3200000, balance_naira: 32000, pending_kobo: 0, currency: 'NGN' },
-          { id: 'gotv-party-1-escrow', account_type: 'escrow', balance_kobo: 12000000, balance_naira: 120000, pending_kobo: 5000000, currency: 'NGN' },
-        ]);
-        setTransfers([
-          { id: 'GOTV-TX-a1b2c3d4', debit: 'operations', credit: 'campaigns', amount_kobo: 5000000, amount_naira: 50000, code: 100, status: 'POSTED', description: 'Lagos phone bank campaign', created_at: '2026-06-10T10:00:00Z', posted_at: '2026-06-10T10:00:05Z' },
-          { id: 'GOTV-TX-e5f6g7h8', debit: 'operations', credit: 'transport', amount_kobo: 750000, amount_naira: 7500, code: 200, status: 'POSTED', description: 'Ride cost: 15 election day rides', created_at: '2026-06-09T14:30:00Z', posted_at: '2026-06-09T14:30:02Z' },
-          { id: 'GOTV-TX-i9j0k1l2', debit: 'transport', credit: 'reimbursement', amount_kobo: 320000, amount_naira: 3200, code: 300, status: 'POSTED', description: 'Volunteer transport reimbursement x8', created_at: '2026-06-08T09:15:00Z' },
-          { id: 'GOTV-TX-m3n4o5p6', debit: 'operations', credit: 'campaigns', amount_kobo: 2800000, amount_naira: 28000, code: 600, status: 'POSTED', description: 'SMS blast: 12,000 voters', created_at: '2026-06-07T16:45:00Z' },
-          { id: 'GOTV-TX-q7r8s9t0', debit: 'operations', credit: 'campaigns', amount_kobo: 1500000, amount_naira: 15000, code: 400, status: 'PENDING', description: 'Campaign materials: 5000 flyers', created_at: '2026-06-06T11:20:00Z' },
-        ]);
-        setReconciliation({
-          party_id: 1, account_count: 5, transfer_count: 47,
-          posted: 42, pending: 3, voided: 2,
-          total_posted_ngn: 967000, balanced: true, variance: 0,
-        });
-      }
-      setLoading(false);
-    };
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (loading) return <div className="text-center py-12 text-muted-foreground">Loading ledger...</div>;
+
+  if (loadError || !reconciliation) {
+    return (
+      <AuthoritativeDataUnavailable
+        title="Ledger data is unavailable"
+        description="The TigerBeetle ledger service did not return verified account, transfer, and reconciliation records. No simulated balances, transfers, or balance status are shown."
+        error={loadError || 'ledger-source-unavailable'}
+        onRetry={load}
+      />
+    );
+  }
 
   const accountChart = accounts.map(a => ({
     name: a.account_type.charAt(0).toUpperCase() + a.account_type.slice(1),
