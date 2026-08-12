@@ -1,6 +1,6 @@
 {
-  "id": "b7b8f429-243b-4ba0-be47-9bceda575ade",
-  "prevId": "1289d80d-0b0f-4aa7-bf28-9ed4512c4d12",
+  "id": "9b418f95-4345-4e31-ac18-63408be26bd8",
+  "prevId": "fa5b5a65-075e-413c-941e-1767228bf564",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -75,97 +75,6 @@
           "tableTo": "candidate_profiles",
           "columnsFrom": [
             "profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.campaign_members": {
-      "name": "campaign_members",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "email": {
-          "name": "email",
-          "type": "varchar(320)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "role": {
-          "name": "role",
-          "type": "member_role",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'viewer'"
-        },
-        "invited_at": {
-          "name": "invited_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "accepted_at": {
-          "name": "accepted_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "campaign_members_profile_id_candidate_profiles_id_fk": {
-          "name": "campaign_members_profile_id_candidate_profiles_id_fk",
-          "tableFrom": "campaign_members",
-          "tableTo": "candidate_profiles",
-          "columnsFrom": [
-            "profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "campaign_members_user_id_users_id_fk": {
-          "name": "campaign_members_user_id_users_id_fk",
-          "tableFrom": "campaign_members",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
           ],
           "columnsTo": [
             "id"
@@ -1641,18 +1550,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "ai_narrative": {
-          "name": "ai_narrative",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "label": {
-          "name": "label",
-          "type": "varchar(120)",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -1943,111 +1840,6 @@
           ]
         }
       },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.volunteer_tasks": {
-      "name": "volunteer_tasks",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "volunteer_id": {
-          "name": "volunteer_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "title": {
-          "name": "title",
-          "type": "varchar(300)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_type": {
-          "name": "task_type",
-          "type": "volunteer_task_type",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'other'"
-        },
-        "status": {
-          "name": "status",
-          "type": "volunteer_task_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'pending'"
-        },
-        "due_date": {
-          "name": "due_date",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "volunteer_tasks_profile_id_candidate_profiles_id_fk": {
-          "name": "volunteer_tasks_profile_id_candidate_profiles_id_fk",
-          "tableFrom": "volunteer_tasks",
-          "tableTo": "candidate_profiles",
-          "columnsFrom": [
-            "profile_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "volunteer_tasks_volunteer_id_volunteers_id_fk": {
-          "name": "volunteer_tasks_volunteer_id_volunteers_id_fk",
-          "tableFrom": "volunteer_tasks",
-          "tableTo": "volunteers",
-          "columnsFrom": [
-            "volunteer_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -2346,6 +2138,46 @@
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
+    },
+    "public.rate_limits": {
+      "name": "rate_limits",
+      "schema": "",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "window_start": {
+          "name": "window_start",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "count": {
+          "name": "count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "rate_limits_pkey": {
+          "name": "rate_limits_pkey",
+          "columns": [
+            "key",
+            "window_start"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
   "enums": {
@@ -2386,15 +2218,6 @@
         "open",
         "escalated",
         "resolved"
-      ]
-    },
-    "public.member_role": {
-      "name": "member_role",
-      "schema": "public",
-      "values": [
-        "owner",
-        "manager",
-        "viewer"
       ]
     },
     "public.office_type": {
@@ -2444,29 +2267,6 @@
       "values": [
         "user",
         "admin"
-      ]
-    },
-    "public.volunteer_task_status": {
-      "name": "volunteer_task_status",
-      "schema": "public",
-      "values": [
-        "pending",
-        "in_progress",
-        "completed",
-        "cancelled"
-      ]
-    },
-    "public.volunteer_task_type": {
-      "name": "volunteer_task_type",
-      "schema": "public",
-      "values": [
-        "canvassing",
-        "polling_unit",
-        "data_entry",
-        "logistics",
-        "security",
-        "media",
-        "other"
       ]
     }
   },

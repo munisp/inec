@@ -11,6 +11,7 @@ import {
   router,
 } from "./_core/trpc";
 import { notifyOwner } from "./_core/notification";
+import { hitRateLimit } from "./_core/rateLimit";
 // NOTE: imported from ./sse, not ./index — importing the entrypoint boots the
 // HTTP server as a side effect (circular import).
 import { broadcastWarRoomUpdate } from "./_core/sse";
@@ -100,39 +101,26 @@ async function getMemberOrThrow(memberId: number) {
   return member;
 }
 
-// SECURITY: lightweight in-memory dedup/rate-limit for public petition signing
+// SECURITY: dedup/rate-limit for public petition signing
 // (petitions.publicSign is intentionally unauthenticated, so it is abusable for
-// signature stuffing). NOTE: this is per-process state — it resets on restart
-// and is not shared across replicas (no Redis dependency in this stack). A
-// durable control (DB unique constraint on petition_id+phone) is the
-// recommended follow-up; see handoff notes.
-const PETITION_SIGN_IP_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+// signature stuffing). Backed by the shared Postgres rate_limits table
+// (server/_core/rateLimit.ts) so limits survive restarts and hold across
+// replicas; the in-memory fallback is non-production only. A durable unique
+// constraint on petition_id+phone remains a worthwhile follow-up.
+const PETITION_SIGN_IP_WINDOW_SECONDS = 60 * 60; // 1 hour
 const PETITION_SIGN_IP_LIMIT = 5; // max signatures per petition per IP per window
-const PETITION_SIGN_PHONE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h phone dedup
-const petitionSignLog = new Map<string, number[]>();
+const PETITION_SIGN_PHONE_WINDOW_SECONDS = 24 * 60 * 60; // 24h phone dedup
 
-function pruneTimestamps(list: number[], windowMs: number, now: number) {
-  return list.filter(t => now - t < windowMs);
-}
-
-function checkPublicSignAllowed(petitionId: number, ip: string, phone?: string) {
-  const now = Date.now();
-  // Opportunistic sweep so the map cannot grow unboundedly.
-  if (petitionSignLog.size > 10_000) {
-    petitionSignLog.forEach((v, k) => {
-      const kept = pruneTimestamps(v, PETITION_SIGN_PHONE_WINDOW_MS, now);
-      if (kept.length === 0) petitionSignLog.delete(k);
-      else petitionSignLog.set(k, kept);
-    });
-  }
+async function checkPublicSignAllowed(petitionId: number, ip: string, phone?: string) {
   // Dedup: identify the signer by phone when supplied; when it is omitted,
   // fall back to an ip+petition key so anonymous signature stuffing is also
-  // blocked (previously the dedup was simply skipped without a phone).
+  // blocked. The dedup key allows exactly one hit per window — a repeat
+  // signature is rejected.
   const dedupKey = phone
     ? `p:${petitionId}:ph:${phone}`
     : `p:${petitionId}:ip-dedup:${ip}`;
-  const dedupHits = pruneTimestamps(petitionSignLog.get(dedupKey) ?? [], PETITION_SIGN_PHONE_WINDOW_MS, now);
-  if (dedupHits.length > 0) {
+  const dedup = await hitRateLimit(dedupKey, PETITION_SIGN_PHONE_WINDOW_SECONDS, 1);
+  if (!dedup.allowed) {
     throw new TRPCError({
       code: "TOO_MANY_REQUESTS",
       message: phone
@@ -140,48 +128,35 @@ function checkPublicSignAllowed(petitionId: number, ip: string, phone?: string) 
         : "A signature from this network was already recorded for this petition.",
     });
   }
-  const ipKey = `p:${petitionId}:ip:${ip}`;
-  const ipHits = pruneTimestamps(petitionSignLog.get(ipKey) ?? [], PETITION_SIGN_IP_WINDOW_MS, now);
-  if (ipHits.length >= PETITION_SIGN_IP_LIMIT) {
+  const ipHit = await hitRateLimit(
+    `p:${petitionId}:ip:${ip}`,
+    PETITION_SIGN_IP_WINDOW_SECONDS,
+    PETITION_SIGN_IP_LIMIT,
+  );
+  if (!ipHit.allowed) {
     throw new TRPCError({
       code: "TOO_MANY_REQUESTS",
       message: "Too many signatures from this network. Please try again later.",
     });
   }
-  ipHits.push(now);
-  petitionSignLog.set(ipKey, ipHits);
-  petitionSignLog.set(dedupKey, [now]);
 }
 
 // ─── LLM cost-abuse limiter ──────────────────────────────────────────────────
-// SECURITY: per-user sliding-window cap on AI endpoints (same in-memory
-// sliding-window pattern as the login throttle in _core/localAuth.ts). LLM
-// calls cost real money; without a per-user ceiling any authenticated account
-// could run up unbounded spend. Per-process state — a multi-replica
-// deployment should move this to a shared store (e.g. Redis).
-const LLM_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+// SECURITY: per-user fixed-window cap on AI endpoints, backed by the shared
+// Postgres rate_limits table (server/_core/rateLimit.ts). LLM calls cost real
+// money; without a per-user ceiling any authenticated account could run up
+// unbounded spend.
+const LLM_WINDOW_SECONDS = 60 * 60; // 1 hour
 const LLM_MAX_CALLS_PER_USER = 20;
-const llmCallLog = new Map<number, number[]>();
 
-function assertLlmCallAllowed(userId: number) {
-  const now = Date.now();
-  // Opportunistic sweep so the map cannot grow unboundedly.
-  if (llmCallLog.size > 10_000) {
-    llmCallLog.forEach((v, k) => {
-      const kept = pruneTimestamps(v, LLM_WINDOW_MS, now);
-      if (kept.length === 0) llmCallLog.delete(k);
-      else llmCallLog.set(k, kept);
-    });
-  }
-  const hits = pruneTimestamps(llmCallLog.get(userId) ?? [], LLM_WINDOW_MS, now);
-  if (hits.length >= LLM_MAX_CALLS_PER_USER) {
+async function assertLlmCallAllowed(userId: number) {
+  const hit = await hitRateLimit(`llm:${userId}`, LLM_WINDOW_SECONDS, LLM_MAX_CALLS_PER_USER);
+  if (!hit.allowed) {
     throw new TRPCError({
       code: "TOO_MANY_REQUESTS",
       message: `AI usage limit reached (${LLM_MAX_CALLS_PER_USER} requests/hour). Please try again later.`,
     });
   }
-  hits.push(now);
-  llmCallLog.set(userId, hits);
 }
 
 export const appRouter = router({
@@ -401,7 +376,7 @@ export const appRouter = router({
         tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const name = profile?.candidateName ?? "The Candidate";
         const party = profile?.partyName ?? "The Party";
@@ -454,7 +429,7 @@ export const appRouter = router({
         tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const candidate = profile?.candidateName ?? "The Candidate";
         const party = profile?.partyName ?? "The Party";
@@ -524,7 +499,7 @@ export const appRouter = router({
         threatLevel: z.string().max(20).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const candidate = profile?.candidateName ?? "Our candidate";
         const response = await invokeLLM({
@@ -691,9 +666,15 @@ export const appRouter = router({
         signerLga: z.string().max(100).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        // SECURITY: only members of the owning campaign may record signatures
-        // through the authenticated path.
-        await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
+        // SECURITY (role decision): recording a signature is a WRITE to the
+        // campaign's petition data, and the authenticated path exists for
+        // campaign staff entering signatures collected in the field — so it
+        // requires the "manager" role, consistent with every other write in
+        // this router. "viewer" is read-only everywhere else and was a
+        // privilege-escalation hole here. The general public signs through
+        // the unauthenticated petitions.publicSign endpoint below, which
+        // keeps its own dedup/rate-limit controls and requires no account.
+        await assertPetitionAccess(ctx.user, input.petitionId, "manager");
         // FIX: petition_signatures columns are phone/lga — signerPhone/signerLga
         // matched nothing and were silently dropped.
         return db.addPetitionSignature({
@@ -739,12 +720,13 @@ export const appRouter = router({
             message: "This petition is not open for signatures",
           });
         }
-        // SECURITY: in-memory dedup + per-IP rate limit against signature
-        // stuffing (see note at petitionSignLog — per-process only). req.ip is
-        // trustworthy because the app sets `trust proxy` (see _core/index.ts);
-        // never parse x-forwarded-for by hand.
+        // SECURITY: dedup + per-IP rate limit against signature stuffing,
+        // backed by the shared Postgres rate_limits store (see
+        // checkPublicSignAllowed). req.ip is trustworthy because the app sets
+        // `trust proxy` (see _core/index.ts); never parse x-forwarded-for by
+        // hand.
         const ip = ctx.req.ip || ctx.req.socket?.remoteAddress || "unknown";
-        checkPublicSignAllowed(input.petitionId, ip, input.signerPhone);
+        await checkPublicSignAllowed(input.petitionId, ip, input.signerPhone);
         return db.addPetitionSignature({
           petitionId: input.petitionId,
           signerName: input.signerName,
@@ -793,7 +775,7 @@ export const appRouter = router({
         keyMessage: z.string().max(2000).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const systemPrompt = `You are a Nigerian political campaign communications specialist. Write personalised outreach messages for diaspora Nigerians. Be warm, specific, and compelling. Keep WhatsApp messages under 300 words and emails under 400 words.`;
         const userPrompt = `Write a ${input.messageType === "whatsapp" ? "WhatsApp" : "professional email"} message to ${input.contactName} in ${input.city ? input.city + ", " : ""}${input.country}.
 Candidate: ${input.candidateName || "our candidate"}
@@ -937,7 +919,7 @@ Make it personal, specific to their location, and include a clear call to action
         partyName: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const systemPrompt = `You are an expert Nigerian political debate coach preparing a candidate for a gubernatorial/senatorial debate.
 Generate structured debate preparation material in a professional, confident tone appropriate for Nigerian political discourse.`;
         const userPrompt = `Prepare debate material for ${input.candidateName || "our candidate"} (${input.partyName || "our party"}) on the topic: "${input.topic}".
@@ -1065,7 +1047,7 @@ Format with clear headers. Be specific to Nigerian political context.`;
         disruptions: z.array(z.string().max(200)).max(20),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const promptLines = [
           "You are an election analyst for Nigeria. Summarise this Monte Carlo simulation result in 2-3 plain-English sentences for a campaign team briefing. Be specific about the numbers and actionable in your recommendation. Do not use bullet points.",
           "",
@@ -1281,7 +1263,7 @@ The invitee can use this link to join the campaign team.`,
         tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        assertLlmCallAllowed(ctx.user.id);
+        await assertLlmCallAllowed(ctx.user.id);
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const name = profile?.candidateName ?? "The Candidate";
         const party = profile?.partyName ?? "The Party";

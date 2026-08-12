@@ -4,6 +4,7 @@ import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import * as schema from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { logger } from "./_core/logger";
 
 let _pool: Pool | null = null;
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -21,7 +22,7 @@ export function getDb() {
     // Prefer POSTGRES_URL (local Postgres) over DATABASE_URL (platform MySQL/TiDB)
     const url = process.env.POSTGRES_URL || process.env.DATABASE_URL || ENV.databaseUrl;
     if (!url) {
-      console.warn("[Database] DATABASE_URL not set");
+      logger.warn("database: DATABASE_URL not set");
       return null;
     }
     _pool = new Pool({ connectionString: url });
@@ -1312,7 +1313,7 @@ export async function getMyRoleForProfile(profileId: number, userId: number): Pr
     if (role === "owner" || role === "manager" || role === "viewer") return role;
     return null;
   } catch (err) {
-    console.error("[getMyRoleForProfile] lookup failed:", err);
+    logger.error("getMyRoleForProfile lookup failed", { err });
     return null;
   }
 }

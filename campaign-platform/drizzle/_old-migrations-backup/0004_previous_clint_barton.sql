@@ -1,1 +1,0 @@
-ALTER TABLE "simulation_runs" ADD COLUMN "ai_narrative" text;
