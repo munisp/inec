@@ -6,7 +6,9 @@ Designed for deployment behind APISIX in the INEC election platform.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import hmac
 import io
 import os
 import time
@@ -52,10 +54,18 @@ face_quality = FaceQualityAssessor()
 iris_quality = IrisQualityAssessor()
 INFERENCE_ENGINE_URL = os.getenv("INFERENCE_ENGINE_URL", "").strip().rstrip("/")
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global facial_engine
+    # SECURITY: fail fast in production when any required secret is missing.
+    if _PRODUCTION and not BIOMETRIC_API_KEYS:
+        raise RuntimeError(
+            "APP_ENV=production requires BIOMETRIC_API_KEY; refusing to start"
+        )
     if not INFERENCE_ENGINE_URL:
         raise RuntimeError("INFERENCE_ENGINE_URL is required for trained biometric PAD")
     facial_engine = FacialEngine()
@@ -81,16 +91,25 @@ async def lifespan(app: FastAPI):
     log.info("biometric_service_stopped")
 
 
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC Biometric Processing Service",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 # SECURITY: match/PAD endpoints process voter biometrics. The service FAILS
 # CLOSED when BIOMETRIC_API_KEY is unset (503 on all non-health routes).
 # /metrics exposes operational internals, so it also requires the key.
-BIOMETRIC_API_KEY = os.getenv("BIOMETRIC_API_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+BIOMETRIC_API_KEYS: list[str] = [
+    k.strip() for k in os.getenv("BIOMETRIC_API_KEY", "").split(",") if k.strip()
+]
 # SECURITY: CORS is deny-by-default; operators opt in via BIOMETRIC_CORS_ORIGINS
 # (comma-separated). Previously allow_origins=["*"].
 BIOMETRIC_CORS_ORIGINS = [
@@ -101,13 +120,11 @@ BIOMETRIC_CORS_ORIGINS = [
 @app.middleware("http")
 async def api_key_auth_middleware(request, call_next):
     """Require the service API key on all non-health endpoints (fail closed)."""
-    import hmac
-
     from starlette.responses import JSONResponse
 
     if request.url.path == "/health":
         return await call_next(request)
-    if not BIOMETRIC_API_KEY:
+    if not BIOMETRIC_API_KEYS:
         log.error("api_key_not_configured", detail="BIOMETRIC_API_KEY unset")
         return JSONResponse(
             status_code=503,
@@ -116,7 +133,9 @@ async def api_key_auth_middleware(request, call_next):
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), BIOMETRIC_API_KEY.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in BIOMETRIC_API_KEYS
+    ):
         return JSONResponse(status_code=401, content={"error": "authentication required"})
     return await call_next(request)
 
@@ -195,19 +214,98 @@ class QualityRequest(BaseModel):
 
 
 # ─── Health ──────────────────────────────────────────────────────
+# Real engine/model-availability probes — no hardcoded True. Any failed probe
+# degrades the service to 503.
+
+def _synthetic_fingerprint() -> np.ndarray:
+    """Deterministic concentric-ridge pattern used for the extractor self-test."""
+    yy, xx = np.mgrid[0:160, 0:160]
+    radius = np.sqrt((yy - 80) ** 2 + (xx - 80) ** 2)
+    gray = (np.sin(radius * 0.55) * 60 + 128).clip(0, 255).astype(np.uint8)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def _probe_fingerprint() -> bool:
+    try:
+        fingerprint_engine.extract_template(_synthetic_fingerprint())
+        return True
+    except Exception as exc:
+        log.warning("health_probe_failed", engine="fingerprint", error=str(exc))
+        return False
+
+
+def _probe_iris() -> bool:
+    try:
+        canvas = np.full((120, 160, 3), 200, np.uint8)
+        cv2.circle(canvas, (80, 60), 40, (120, 120, 120), -1)
+        cv2.circle(canvas, (80, 60), 18, (20, 20, 20), -1)
+        iris_engine.extract_template(canvas)
+        return True
+    except Exception as exc:
+        log.warning("health_probe_failed", engine="iris", error=str(exc))
+        return False
+
+
+def _probe_quality() -> bool:
+    try:
+        fp_quality.assess(_synthetic_fingerprint())
+        return True
+    except Exception as exc:
+        log.warning("health_probe_failed", engine="quality", error=str(exc))
+        return False
+
+
+_pad_probe_cache = {"ts": 0.0, "ok": False}
+
+
+async def _probe_pad_model() -> bool:
+    """Probe the deployed trained liveness model via the inference engine."""
+    if not INFERENCE_ENGINE_URL:
+        return False
+    now = time.monotonic()
+    if now - _pad_probe_cache["ts"] < 15.0:
+        return bool(_pad_probe_cache["ok"])
+    ok = False
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+            response = await client.get(f"{INFERENCE_ENGINE_URL}/health")
+            response.raise_for_status()
+        ok = bool(response.json().get("models", {}).get("liveness_cdcn", False))
+    except httpx.HTTPError as exc:
+        log.warning("health_probe_failed", engine="pad_model", error=str(exc))
+    _pad_probe_cache.update(ts=now, ok=ok)
+    return ok
+
+
+async def _probe_postgres() -> bool:
+    try:
+        from pg_audit import ping
+        return await ping()
+    except Exception as exc:
+        log.warning("health_probe_failed", engine="postgresql", error=str(exc))
+        return False
+
+
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy",
-        "persistence": "postgresql",
-        "engines": {
-            "fingerprint": True,
-            "facial": facial_engine is not None,
-            "iris": True,
-            "pad": True,
-            "quality": True,
-        },
+    checks = {
+        "fingerprint": await asyncio.to_thread(_probe_fingerprint),
+        "facial": facial_engine is not None and facial_engine.available(),
+        "iris": await asyncio.to_thread(_probe_iris),
+        "pad_model": await _probe_pad_model(),
+        "quality": await asyncio.to_thread(_probe_quality),
+        "postgresql": await _probe_postgres(),
     }
+    degraded = not all(checks.values())
+    from starlette.responses import JSONResponse
+    return JSONResponse(
+        status_code=503 if degraded else 200,
+        content={
+            "status": "degraded" if degraded else "healthy",
+            "checks": checks,
+            "persistence": "postgresql",
+        },
+    )
 
 
 @app.get("/processing/stats")
