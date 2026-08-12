@@ -108,6 +108,9 @@ jobs:
           - services/inference-engine-v2
           - services/fluvio-stream
           - services/geolibre-spatial
+          # inference-engine (v1) has a committed Cargo.lock and passes
+          # `cargo check --locked`; keep it in the matrix so it stays green.
+          - services/inference-engine
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -174,12 +177,18 @@ jobs:
       matrix:
         # NOTE: gotv-engine/biometric-rust Dockerfiles land with the rust
         # hardening PR; gotv-analytics/python-pipeline-optimizer with the
-        # python hardening PR. This matrix requires all four to be present.
+        # python hardening PR. rust-hot-path/geolibre-spatial Dockerfiles land
+        # with the rust r95 PR. This matrix requires all six to be present.
+        # fluvio-stream/inference-engine(-v2) are intentionally not built here:
+        # their Dockerfiles pin rust:1.89/1.88 slim-trixie builders and heavy
+        # native deps (fluvio, ONNX Runtime) that blow the CI time budget.
         context:
           - services/gotv-engine
           - services/biometric-rust
           - services/gotv-analytics
           - services/python-pipeline-optimizer
+          - services/rust-hot-path
+          - services/geolibre-spatial
     steps:
       - uses: actions/checkout@v7
       - name: Build ${{ matrix.context }}

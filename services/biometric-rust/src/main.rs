@@ -140,6 +140,39 @@ async fn main() {
 #[derive(Clone)]
 struct VaultActor(String);
 
+/// Constant-time byte comparison. Length is checked first (length is not
+/// secret); the XOR-accumulate loop never short-circuits on content.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
+}
+
+/// Parse a comma-separated API-key list (e.g. "KEY1,KEY2") so key rotation
+/// is possible without downtime: during a rotation window both the old and
+/// the new key authenticate. Blank entries are ignored.
+fn configured_api_keys(env_var: &str) -> Vec<String> {
+    std::env::var(env_var)
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// Return the configured key that matches `provided`, comparing each
+/// candidate in constant time.
+fn matching_api_key<'a>(provided: &str, keys: &'a [String]) -> Option<&'a str> {
+    keys.iter()
+        .find(|k| constant_time_eq(provided.as_bytes(), k.as_bytes()))
+        .map(String::as_str)
+}
+
 /// Derive a stable, non-secret identity for the configured API key:
 /// BIOMETRIC_VAULT_KEY_LABEL when set, otherwise a SHA-256 hash prefix so the
 /// raw key never appears in the audit log.
@@ -157,14 +190,16 @@ fn vault_actor_identity(key: &str) -> String {
 /// API-key authentication for all vault/matching endpoints. /health stays
 /// public for orchestrator probes. Fail-closed: when BIOMETRIC_VAULT_API_KEY
 /// is unset the service returns 503 rather than serving unauthenticated
-/// biometric plaintext.
+/// biometric plaintext. BIOMETRIC_VAULT_API_KEY accepts a comma-separated
+/// key list so rotation is possible without downtime; the presented key is
+/// compared against each configured key in constant time.
 async fn vault_api_key_auth(req: Request, next: Next) -> Response {
     if req.uri().path() == "/health" {
         return next.run(req).await;
     }
 
-    let expected_key = std::env::var("BIOMETRIC_VAULT_API_KEY").unwrap_or_default();
-    if expected_key.is_empty() {
+    let expected_keys = configured_api_keys("BIOMETRIC_VAULT_API_KEY");
+    if expected_keys.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -178,18 +213,19 @@ async fn vault_api_key_auth(req: Request, next: Next) -> Response {
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == expected_key)
-        .unwrap_or(false);
+        .and_then(|v| matching_api_key(v, &expected_keys));
 
-    if !provided {
+    let Some(matched_key) = provided else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "missing or invalid x-api-key" })),
         )
             .into_response();
-    }
+    };
 
-    let actor = vault_actor_identity(&expected_key);
+    // The audit actor is derived from the key that actually authenticated,
+    // so rotation windows never blur caller identity.
+    let actor = vault_actor_identity(matched_key);
     let mut req = req;
     req.extensions_mut().insert(VaultActor(actor));
     next.run(req).await
