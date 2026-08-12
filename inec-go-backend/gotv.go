@@ -2471,20 +2471,47 @@ func handleGOTVVerifyVolunteerNIN(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	var req struct {
 		NIN    string `json:"nin"`
-		Result string `json:"result"`
+		Result string `json:"result"` // SECURITY: never trusted; client assertions cannot verify a NIN
 	}
 	json.NewDecoder(r.Body).Decode(&req)
+
+	if req.NIN == "" {
+		http.Error(w, `{"error":"nin required"}`, http.StatusBadRequest)
+		return
+	}
 
 	ninEnc, err := gotvEncrypt(req.NIN)
 	if err == nil {
 		db.Exec("UPDATE gotv_volunteers SET nin_encrypted=$1 WHERE volunteer_id=$2 AND party_id=$3", ninEnc, id, partyID)
 	}
-	if req.Result == "verified" {
-		db.Exec("UPDATE gotv_volunteers SET vetting_status='nin_verified', nin_verified_at=NOW() WHERE volunteer_id=$1 AND party_id=$2", id, partyID)
+
+	// SECURITY: refuses to mark nin_verified from the request body's
+	// "result":"verified". Verification must come from the NIMC identity
+	// service; when it is not configured the vetting status stays pending.
+	nimc := NewNIMCClient()
+	if nimc.apiKey == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"status": "pending", "error": "NIMC identity service not configured; NIN verification not performed"})
+		return
+	}
+	resp, verr := nimc.VerifyNIN(r.Context(), NINVerifyRequest{NIN: req.NIN})
+	if verr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"status": "pending", "error": "NIMC identity service unavailable; NIN verification not performed"})
+		return
+	}
+	if !resp.Verified {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"status": "pending", "error": "NIN could not be verified by the identity service"})
+		return
 	}
 
+	db.Exec("UPDATE gotv_volunteers SET vetting_status='nin_verified', nin_verified_at=NOW() WHERE volunteer_id=$1 AND party_id=$2", id, partyID)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "nin_checked"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "nin_verified"})
 }
 
 func handleGOTVCompleteVolunteerTraining(w http.ResponseWriter, r *http.Request) {

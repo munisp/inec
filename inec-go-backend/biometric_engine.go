@@ -1027,7 +1027,9 @@ func (e *ABISEngine) estimateFRR(score float64, modality string) float64 {
 }
 
 // performPADCheck calls the CDCN liveness model via the ML inference service.
-// Falls back to heuristic scoring if the ML service is unavailable.
+// SECURITY: refuses to fabricate liveness scores. When the ML service is
+// unreachable the decision is "unavailable" and callers MUST fail closed
+// (503, no persisted result, no ISO compliance stamp).
 func performPADCheck(vin, modality, deviceID string) *PADResult {
 	// Try calling real CDCN model via ML service
 	ctx := context.Background()
@@ -1093,46 +1095,16 @@ func performPADCheck(vin, modality, deviceID string) *PADResult {
 		}
 	}
 
-	// Fallback: deterministic hash-based PAD (when ML service unavailable)
-	// Derives scores from input characteristics so same input → same output
-	inputHash := sha256.Sum256([]byte(vin + modality + deviceID))
-	var textureScore, motionScore, depthScore, spectralScore, livenessScore float64
-
-	// Derive deterministic scores from hash bytes (0-255 → 0.7-1.0 range)
-	textureScore = 0.7 + float64(inputHash[0])/255.0*0.3
-	motionScore = 0.75 + float64(inputHash[1])/255.0*0.25
-	depthScore = 0.8 + float64(inputHash[2])/255.0*0.2
-	spectralScore = 0.7 + float64(inputHash[3])/255.0*0.3
-
-	switch modality {
-	case "fingerprint":
-		livenessScore = textureScore*0.4 + motionScore*0.1 + depthScore*0.3 + spectralScore*0.2
-	case "facial":
-		livenessScore = textureScore*0.2 + motionScore*0.4 + depthScore*0.3 + spectralScore*0.1
-	case "iris":
-		livenessScore = textureScore*0.15 + motionScore*0.15 + depthScore*0.2 + spectralScore*0.5
-	default:
-		livenessScore = (textureScore + motionScore + depthScore + spectralScore) / 4
-	}
-
-	decision := "live"
-	if livenessScore < 0.5 {
-		decision = "spoof"
-	} else if livenessScore < 0.6 {
-		decision = "uncertain"
-	}
-
+	// SECURITY: refuses to fabricate PAD results from SHA256(vin+modality+deviceID).
+	// The previous deterministic hash-based fallback scored 0.7-1.0 (essentially
+	// always "live") and stamped ISO 30107 Level 2 compliance it never earned.
+	// Fail closed instead: report "unavailable" so callers return 503 and never
+	// persist a fabricated PAD result.
 	return &PADResult{
-		LivenessScore: livenessScore,
-		TextureScore:  textureScore,
-		MotionScore:   motionScore,
-		DepthScore:    depthScore,
-		SpectralScore: spectralScore,
-		Decision:      decision,
-		PADLevel:      "level2",
-		AttackType:    "",
-		Confidence:    livenessScore,
-		ISOCompliant:  true,
+		Decision:     "unavailable",
+		PADLevel:     "",
+		AttackType:   "",
+		ISOCompliant: false,
 	}
 }
 
@@ -1289,71 +1261,10 @@ func (r *BVASDeviceRegistry) RegisterDevice(deviceID, firmware string, modalitie
 
 	return M{"device_id": deviceID, "status": "registered", "modalities": modalities, "tls": "TLS1.3"}
 }
-func seedBiometricEngine(database *sql.DB) {
-	var count int
-	database.QueryRow("SELECT COUNT(*) FROM biometric_templates").Scan(&count)
-	if count > 0 {
-		return
-	}
 
-	rng := NewSecureRng()
-
-	_ = biometricVault
-	engine := abisEngine
-
-	voterRows, _ := database.Query("SELECT vin FROM voters ORDER BY RANDOM() LIMIT 200")
-	var vins []string
-	for voterRows.Next() {
-		var v string
-		voterRows.Scan(&v)
-		vins = append(vins, v)
-	}
-	voterRows.Close()
-
-	if len(vins) == 0 {
-		return
-	}
-
-	devices := []string{"BVAS-001", "BVAS-002", "BVAS-003", "BVAS-004", "BVAS-005"}
-	for _, d := range devices {
-		mods := []string{"fingerprint", "facial"}
-		if rng.Float64() < 0.4 {
-			mods = append(mods, "iris")
-		}
-		deviceRegistry.RegisterDevice(d, "v3.2.1", mods, M{
-			"fingerprint_sensor": "capacitive_500dpi",
-			"fap_level":          "FAP30",
-			"camera_resolution":  "1920x1080",
-			"iris_sensor":        "NIR_dual_eye",
-			"nfc_capable":        true,
-			"secure_element":     "CC_EAL5+",
-		})
-	}
-
-	for _, vin := range vins {
-		device := devices[rng.Intn(len(devices))]
-		engine.Enroll(vin, "fingerprint", device)
-		if rng.Float64() < 0.8 {
-			engine.Enroll(vin, "facial", device)
-		}
-		if rng.Float64() < 0.3 {
-			engine.Enroll(vin, "iris", device)
-		}
-
-		sessionID := fmt.Sprintf("CAP-%s-%d", device, rng.Int63())
-		database.Exec(`INSERT INTO bvas_capture_sessions (session_id, device_id, voter_vin, modality, capture_quality, nfiq2_score, image_width, image_height, image_dpi, status, processing_time_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			sessionID, device, vin, "fingerprint", 0.7+rng.Float64()*0.3, 1+rng.Intn(5), 300, 400, 500, "processed", 50+rng.Intn(200))
-
-		padResult := performPADCheck(vin, "fingerprint", device)
-		database.Exec(`INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			vin, "fingerprint", device, padResult.LivenessScore, padResult.TextureScore, padResult.MotionScore, padResult.DepthScore, padResult.SpectralScore, padResult.Decision, padResult.PADLevel, padResult.AttackType, padResult.Confidence, 1)
-	}
-
-	deduplicationMgr.StartJob("full_scan", "fingerprint,facial", platformCfg.BiometricMatchThreshold)
-
-	database.Exec(`INSERT INTO biometric_vault_audit (operation, key_id, actor, success, error_detail) VALUES (?,?,?,?,?)`,
-		"system_seed", "SYSTEM", "seed_process", 1, "seeded "+strconv.Itoa(len(vins))+" biometric profiles")
-}
+// seedBiometricEngine was deleted: it fabricated enrolled biometric templates,
+// capture sessions and PAD results for random voters. SECURITY: refuses to
+// fabricate biometric enrollment data.
 
 func handleBiometricEngineStats(w http.ResponseWriter, r *http.Request) {
 	var totalTemplates, fpTemplates, faceTemplates, irisTemplates int
@@ -1513,9 +1424,10 @@ func handleABISEnroll(w http.ResponseWriter, r *http.Request) {
 
 func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		VIN      string `json:"vin"`
-		Modality string `json:"modality"`
-		DeviceID string `json:"device_id"`
+		VIN       string `json:"vin"`
+		Modality  string `json:"modality"`
+		DeviceID  string `json:"device_id"`
+		ProbeData string `json:"probe_data"` // base64-encoded probe template/sample
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -1525,8 +1437,25 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "vin and modality required")
 		return
 	}
+	// SECURITY: refuses to fabricate a match by self-matching the enrolled
+	// template against itself. A live probe captured at the device is mandatory.
+	if strings.TrimSpace(req.ProbeData) == "" {
+		writeError(w, 400, "probe_data (base64-encoded biometric probe) required")
+		return
+	}
+	probeData, err := base64.StdEncoding.DecodeString(req.ProbeData)
+	if err != nil || len(probeData) == 0 {
+		writeError(w, 400, "probe_data must be valid non-empty base64")
+		return
+	}
 
 	padResult := performPADCheck(req.VIN, req.Modality, req.DeviceID)
+	// SECURITY: fail closed when the PAD service is unavailable; never persist
+	// a fabricated PAD result.
+	if padResult.Decision == "unavailable" {
+		writeError(w, http.StatusServiceUnavailable, "PAD liveness service unavailable; verification refused")
+		return
+	}
 	dbExecLog("pad_result", `INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.VIN, req.Modality, req.DeviceID, padResult.LivenessScore, padResult.TextureScore, padResult.MotionScore, padResult.DepthScore, padResult.SpectralScore, padResult.Decision, padResult.PADLevel, padResult.AttackType, padResult.Confidence, 1)
 
@@ -1540,8 +1469,7 @@ func handleABISVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	probeData, err := biometricVault.RetrieveTemplate(req.VIN, req.Modality)
-	if err != nil {
+	if _, err := biometricVault.RetrieveTemplate(req.VIN, req.Modality); err != nil {
 		writeError(w, 404, "no enrolled template for this VIN/modality")
 		return
 	}
@@ -1583,6 +1511,12 @@ func handlePADCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := performPADCheck(req.VIN, req.Modality, req.DeviceID)
+	// SECURITY: fail closed when the PAD service is unavailable; never persist
+	// a fabricated PAD result or stamp ISO 30107 compliance.
+	if result.Decision == "unavailable" {
+		writeError(w, http.StatusServiceUnavailable, "PAD liveness service unavailable")
+		return
+	}
 	dbExecLog("pad_result", `INSERT INTO pad_results (voter_vin, modality, device_id, liveness_score, texture_score, motion_score, depth_score, spectral_score, pad_decision, pad_level, attack_type, confidence, iso_30107_compliance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.VIN, req.Modality, req.DeviceID, result.LivenessScore, result.TextureScore, result.MotionScore, result.DepthScore, result.SpectralScore, result.Decision, result.PADLevel, result.AttackType, result.Confidence, 1)
 	writeJSON(w, 200, result)
@@ -2053,8 +1987,9 @@ func handleTemplateIntegrity(w http.ResponseWriter, r *http.Request) {
 
 func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		VIN      string `json:"vin"`
-		DeviceID string `json:"device_id"`
+		VIN      string            `json:"vin"`
+		DeviceID string            `json:"device_id"`
+		Probes   map[string]string `json:"probes"` // modality -> base64-encoded probe data
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -2064,17 +1999,41 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "vin required")
 		return
 	}
+	// SECURITY: refuses to fabricate per-modality matches by self-matching
+	// enrolled templates against themselves. Real probe captures are mandatory
+	// for every modality that participates in the fusion.
+	if len(req.Probes) == 0 {
+		writeError(w, 400, "probes (map of modality -> base64-encoded probe data) required")
+		return
+	}
 
 	modResults := M{}
 	var fpScore, faceScore, irisScore float64
+	probed := 0
 
 	for _, mod := range []string{"fingerprint", "facial", "iris"} {
-		probeData, err := biometricVault.RetrieveTemplate(req.VIN, mod)
-		if err != nil {
+		probeB64, ok := req.Probes[mod]
+		if !ok || strings.TrimSpace(probeB64) == "" {
+			continue
+		}
+		probeData, err := base64.StdEncoding.DecodeString(probeB64)
+		if err != nil || len(probeData) == 0 {
+			writeError(w, 400, "probes."+mod+" must be valid non-empty base64")
+			return
+		}
+		probed++
+
+		if _, err := biometricVault.RetrieveTemplate(req.VIN, mod); err != nil {
+			modResults[mod] = M{"pad": nil, "match": nil, "result": "no_enrolled_template"}
 			continue
 		}
 
 		padResult := performPADCheck(req.VIN, mod, req.DeviceID)
+		// SECURITY: fail closed when the PAD service is unavailable.
+		if padResult.Decision == "unavailable" {
+			writeError(w, http.StatusServiceUnavailable, "PAD liveness service unavailable; verification refused")
+			return
+		}
 		if padResult.Decision == "spoof" {
 			modResults[mod] = M{"pad": padResult, "match": nil, "result": "rejected_spoof"}
 			continue
@@ -2091,6 +2050,11 @@ func handleMultiModalVerify(w http.ResponseWriter, r *http.Request) {
 		case "iris":
 			irisScore = matchResult.Score
 		}
+	}
+
+	if probed == 0 {
+		writeError(w, 400, "probes must include at least one of: fingerprint, facial, iris")
+		return
 	}
 
 	fusedScore, fusionMethod := fuseScores(fpScore, faceScore, irisScore)

@@ -677,35 +677,33 @@ type PADModel struct {
 }
 
 func NewProductionPADEngine(database *sql.DB) *ProductionPADEngine {
+	// SECURITY: refuses to fabricate PAD model metrics. The previous version
+	// registered invented accuracies (0.987/0.973/0.991), FAR/FRR and ISO
+	// 30107 levels and persisted them at every startup. Models are now
+	// registered as "unevaluated" — metrics are zero until measured by a real
+	// benchmark run — and nothing is inserted into pad_models here.
 	engine := &ProductionPADEngine{
 		db: database,
 		models: map[string]*PADModel{
 			"fingerprint_pad_v3": {
 				Name: "FingerprintPAD", Version: "3.1", Modality: "fingerprint",
 				AttackTypes: []string{"printed_image", "latex_mold", "gelatin", "silicone", "3d_printed", "cadaver"},
-				Accuracy:    0.987, FAR: 0.001, FRR: 0.012, ISOLevel: "level3",
+				Accuracy:    0, FAR: 0, FRR: 0, ISOLevel: "unevaluated",
 			},
 			"facial_pad_v3": {
 				Name: "FacialPAD", Version: "3.0", Modality: "facial",
 				AttackTypes: []string{"printed_photo", "screen_replay", "3d_mask", "deepfake", "morphed", "video_replay"},
-				Accuracy:    0.973, FAR: 0.003, FRR: 0.024, ISOLevel: "level2",
+				Accuracy:    0, FAR: 0, FRR: 0, ISOLevel: "unevaluated",
 			},
 			"iris_pad_v2": {
 				Name: "IrisPAD", Version: "2.5", Modality: "iris",
 				AttackTypes: []string{"printed_iris", "contact_lens", "prosthetic_eye", "screen_display"},
-				Accuracy:    0.991, FAR: 0.0005, FRR: 0.009, ISOLevel: "level3",
+				Accuracy:    0, FAR: 0, FRR: 0, ISOLevel: "unevaluated",
 			},
 		},
 	}
 
-	for mid, m := range engine.models {
-		database.Exec(`INSERT INTO pad_models (model_name, model_version, modality, attack_types, accuracy, far, frr, iso_30107_level)
-			VALUES (?,?,?,?,?,?,?,?)`,
-			m.Name, m.Version, m.Modality, strings.Join(m.AttackTypes, ","), m.Accuracy, m.FAR, m.FRR, m.ISOLevel)
-		_ = mid
-	}
-
-	log.Info().Msg("PAD engine initialized with 3 models")
+	log.Info().Msg("PAD engine initialized with 3 unevaluated model registrations (no metrics until measured)")
 	return engine
 }
 

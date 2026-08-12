@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -609,62 +611,16 @@ func NewDistributedDedupManager(database *sql.DB) *DistributedDedupManager {
 	return &DistributedDedupManager{db: database}
 }
 
+// StartDistributed previously fabricated a mapreduce dedup job: no workers ran,
+// comparison counts were theoretical, and the job was instantly "completed" at
+// 100%. SECURITY: refuses to fabricate distributed dedup results.
 func (d *DistributedDedupManager) StartDistributed(modality string, workers int, threshold float64) M {
-	jobID := insertReturningID(d.db, `INSERT INTO dedup_jobs (job_type, status, modalities, threshold, blocking_strategy, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`,
-		"distributed_mapreduce", "running", modality, threshold, "lsh_partitioned")
-
-	totalRecords := 0
-	d.db.QueryRow("SELECT COUNT(*) FROM biometric_templates WHERE modality=?", modality).Scan(&totalRecords)
-
-	// Detect actual duplicates by comparing template_hash values within the modality
-	var actualDuplicates int
-	d.db.QueryRow(`SELECT COUNT(*) FROM (
-		SELECT template_hash FROM biometric_templates WHERE modality=?
-		GROUP BY template_hash HAVING COUNT(*) > 1
-	)`, modality).Scan(&actualDuplicates)
-
-	partitions := []M{}
-	perWorker := totalRecords / workers
-	if perWorker < 1 {
-		perWorker = 1
-	}
-	totalComps := 0
-	totalDups := 0
-	dupsPerWorker := actualDuplicates / workers
-
-	for i := 0; i < workers; i++ {
-		workerID := fmt.Sprintf("worker-%d", i)
-		partKey := fmt.Sprintf("partition-%d", i)
-		recs := perWorker
-		if i == workers-1 {
-			recs = totalRecords - (perWorker * i)
-		}
-		comps := recs * (recs - 1) / 2
-		dups := dupsPerWorker
-		if i == workers-1 {
-			dups = actualDuplicates - (dupsPerWorker * i)
-		}
-		if dups < 0 {
-			dups = 0
-		}
-		dbExecLog("dedup_partition", `INSERT INTO distributed_dedup_partitions (job_id, partition_key, worker_id, status, records_count, comparisons, duplicates, started_at, completed_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`,
-			jobID, partKey, workerID, "completed", recs, comps, dups)
-		partitions = append(partitions, M{
-			"partition": partKey, "worker": workerID, "records": recs,
-			"comparisons": comps, "duplicates": dups, "status": "completed",
-		})
-		totalComps += comps
-		totalDups += dups
-	}
-
-	dbExecLog("dedup_complete", `UPDATE dedup_jobs SET status='completed', progress_percent=100, total_comparisons=?, duplicates_found=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
-		totalComps, totalDups, jobID)
-
 	return M{
-		"job_id": jobID, "strategy": "mapreduce_lsh_partitioned", "workers": workers,
-		"total_records": totalRecords, "total_comparisons": totalComps,
-		"duplicates_found": totalDups, "partitions": partitions,
-		"status": "completed", "scalability": "100M+ gallery support",
+		"status":    "not_implemented",
+		"error":     "distributed dedup not implemented; use the sequential dedup job instead",
+		"modality":  modality,
+		"workers":   workers,
+		"threshold": threshold,
 	}
 }
 
@@ -914,85 +870,17 @@ func NewNISTBenchmarkRunner(database *sql.DB) *NISTBenchmarkRunner {
 	return &NISTBenchmarkRunner{db: database}
 }
 
+// RunBenchmark previously fabricated NIST benchmark results: it never touched
+// the labeled NIST datasets, derived EER from heuristics or a poisoned match
+// log, and stamped nist_compliant=true. SECURITY: refuses to fabricate
+// benchmark metrics — no benchmark datasets are configured in this deployment,
+// so the run is refused.
 func (n *NISTBenchmarkRunner) RunBenchmark(benchType, modality string) M {
-	datasets := map[string]string{
-		"MINEX": "NIST_SD302", "IREX": "NIST_ICE2006", "FRVT": "NIST_FRVT_1N",
-	}
-	dataset := datasets[benchType]
-	if dataset == "" {
-		dataset = "NIST_generic"
-	}
-
-	// Count actual subjects (distinct voters with templates of this modality)
-	var subjects int
-	n.db.QueryRow("SELECT COUNT(DISTINCT voter_vin) FROM biometric_templates WHERE modality=?", modality).Scan(&subjects)
-	if subjects == 0 {
-		subjects = 1
-	}
-	comparisons := subjects * (subjects - 1) / 2
-	if comparisons == 0 {
-		comparisons = 1
-	}
-
-	// Compute real FNMR from match log data at various FMR thresholds
-	var totalGenuine, totalImpostor int
-	n.db.QueryRow("SELECT COUNT(*) FROM biometric_match_log WHERE modality=? AND is_genuine=1", modality).Scan(&totalGenuine)
-	n.db.QueryRow("SELECT COUNT(*) FROM biometric_match_log WHERE modality=? AND is_genuine=0", modality).Scan(&totalImpostor)
-
-	// FMR thresholds correspond to score thresholds that let through 0.01%, 0.1%, 1% of impostors
-	fnmrFMR001, fnmrFMR01, fnmrFMR1 := 0.0, 0.0, 0.0
-	eer := 0.0
-
-	if totalGenuine > 10 && totalImpostor > 10 {
-		// Use threshold tuner logic to compute at specific FMR operating points
-		tuner := NewThresholdAutoTuner(n.db)
-		analysis := tuner.RunAnalysis(modality)
-		if v, ok := analysis["eer"].(float64); ok {
-			eer = v
-		}
-		fnmrFMR001 = eer * 0.5
-		fnmrFMR01 = eer * 0.8
-		fnmrFMR1 = eer * 1.2
-	} else {
-		// Estimate from quality scores using realistic EER ranges by modality and quality
-		var avgQuality float64
-		n.db.QueryRow("SELECT COALESCE(AVG(quality_score), 0.8) FROM biometric_templates WHERE modality=?", modality).Scan(&avgQuality)
-		eer = computeEERFromQuality(modality, avgQuality)
-		fnmrFMR001 = eer * 0.5
-		fnmrFMR01 = eer * 0.8
-		fnmrFMR1 = eer * 1.2
-	}
-
-	// Measure throughput (templates per second based on template count and processing time)
-	start := time.Now()
-	var tmplCount int
-	n.db.QueryRow("SELECT COUNT(*) FROM biometric_templates WHERE modality=?", modality).Scan(&tmplCount)
-	elapsed := time.Since(start).Seconds()
-	throughput := float64(tmplCount) / math.Max(elapsed, 0.001)
-	if throughput > 10000 {
-		throughput = 10000
-	}
-
-	// Actual template size from DB
-	var tmplSize int
-	n.db.QueryRow("SELECT COALESCE(AVG(LENGTH(template_hash)), 256) FROM biometric_templates WHERE modality=?", modality).Scan(&tmplSize)
-	if tmplSize == 0 {
-		tmplSize = 512
-	}
-
-	dbExecLog("nist_bench", `INSERT INTO nist_benchmark_results (benchmark_type, modality, dataset, total_subjects, total_comparisons, fnmr_at_fmr_001, fnmr_at_fmr_01, fnmr_at_fmr_1, eer, throughput_per_sec, template_size_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		benchType, modality, dataset, subjects, comparisons, fnmrFMR001, fnmrFMR01, fnmrFMR1, eer, throughput, tmplSize)
-
 	return M{
-		"benchmark": benchType, "modality": modality, "dataset": dataset,
-		"subjects": subjects, "comparisons": comparisons,
-		"fnmr_at_fmr_0.01%":   math.Round(fnmrFMR001*10000) / 10000,
-		"fnmr_at_fmr_0.1%":    math.Round(fnmrFMR01*10000) / 10000,
-		"fnmr_at_fmr_1%":      math.Round(fnmrFMR1*10000) / 10000,
-		"eer":                 math.Round(eer*10000) / 10000,
-		"throughput_per_sec":  math.Round(throughput),
-		"template_size_bytes": tmplSize,
-		"nist_compliant":      true,
+		"benchmark": benchType, "modality": modality,
+		"status":         "unavailable",
+		"error":          "no benchmark datasets configured; benchmark not run",
+		"nist_compliant": false,
 	}
 }
 
@@ -1103,6 +991,9 @@ func (k *EnrollmentKioskManager) StartSession(deviceID, vin string) M {
 	return M{"session_id": sessionID, "device_id": deviceID, "voter_vin": vin, "steps": steps, "current_step": 1, "status": "in_progress"}
 }
 
+// AdvanceStep moves a kiosk session to the next step. SECURITY: callers must
+// verify real capture/quality evidence BEFORE invoking this (see
+// handleKioskAdvance); a session must never reach "completed" without evidence.
 func (k *EnrollmentKioskManager) AdvanceStep(sessionID string) M {
 	var currentStep, totalSteps int
 	var stepName, status string
@@ -1169,34 +1060,67 @@ func NewMultiInstanceEnrollment(database *sql.DB) *MultiInstanceEnrollment {
 	return &MultiInstanceEnrollment{db: database}
 }
 
-func (m *MultiInstanceEnrollment) EnrollFingers(vin string, fingers []string, primaryFinger string) M {
-	enrolled := []M{}
+// EnrollFingers enrolls fingerprints from real capture data. captures maps each
+// finger position to its base64-encoded capture image. SECURITY: refuses to
+// fabricate templates — without per-finger capture data and a reachable
+// quality/extraction service it returns an error result instead of inventing
+// template hashes and quality scores from SHA256(vin+finger).
+func (m *MultiInstanceEnrollment) EnrollFingers(vin string, fingers []string, primaryFinger string, captures map[string]string) M {
 	positions := map[string]int{
 		"right_thumb": 1, "right_index": 2, "right_middle": 3, "right_ring": 4, "right_little": 5,
 		"left_thumb": 6, "left_index": 7, "left_middle": 8, "left_ring": 9, "left_little": 10,
 	}
 
-	// NFIQ2 quality assessment based on computed Laplacian variance of each finger image.
-	// When actual image data is unavailable (API call), we use a deterministic hash-based
-	// estimate from the enrollment parameters, seeded by VIN to be consistent.
-	// In production, this would call a real image quality analysis function.
+	// Every finger must have real capture data.
 	for _, f := range fingers {
+		if strings.TrimSpace(captures[f]) == "" {
+			return M{
+				"status": "rejected",
+				"error":  "capture data required for finger: " + f,
+			}
+		}
+	}
+
+	enrolled := []M{}
+	for _, f := range fingers {
+		captureBytes, err := base64.StdEncoding.DecodeString(captures[f])
+		if err != nil || len(captureBytes) == 0 {
+			return M{"status": "rejected", "error": "capture data for finger " + f + " must be valid non-empty base64"}
+		}
+
+		// Quality/NFIQ must come from the real extraction/quality service.
+		mlCtx, mlCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		mlResult, mlErr := callMLInference(mlCtx, "python", "/fingerprint/assess-quality", M{
+			"vin": vin, "finger": f, "image_data": captures[f],
+		})
+		mlCancel()
+		if mlErr != nil || mlResult == nil {
+			// SECURITY: fail closed — no fabricated NFIQ/quality scores.
+			return M{
+				"status": "unavailable",
+				"error":  "fingerprint quality/extraction service unavailable; enrollment refused",
+			}
+		}
+		quality, qok := mlResult["quality_score"].(float64)
+		if !qok {
+			return M{
+				"status": "unavailable",
+				"error":  "fingerprint quality service returned no quality score; enrollment refused",
+			}
+		}
+		nfiq := 0
+		if v, ok := mlResult["nfiq2_score"].(float64); ok {
+			nfiq = int(v)
+		}
+
 		idx := positions[f]
 		if idx == 0 {
 			idx = len(enrolled) + 1
 		}
-
-		// Compute NFIQ2 from estimated Laplacian variance.
-		// Use VIN+finger hash as pseudo-quality proxy when image bytes unavailable.
-		qualityHash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-quality", vin, f)))
-		laplaceEstimate := float64(qualityHash[0]) / 256.0 * 500.0 // Map 0-255 -> 0-500 variance
-		nfiq := ComputeNFIQ2Score(laplaceEstimate)
-		quality := laplaceEstimate / 500.0 // Normalize to 0-1 scale
-
 		isPrimary := f == primaryFinger
 
-		// Generate deterministic template hash from VIN + finger position
-		hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-enroll", vin, f)))
+		// Template hash is derived from the ACTUAL capture bytes, never from VIN+finger.
+		hash := sha256.Sum256(captureBytes)
 		dbExecLog("multi_finger", `INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
 			vin, f, idx, hex.EncodeToString(hash[:16]), quality, nfiq, advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
 		enrolled = append(enrolled, M{
@@ -1257,41 +1181,16 @@ func NewPrivacyPreservingMatcher(database *sql.DB) *PrivacyPreservingMatcher {
 	return &PrivacyPreservingMatcher{db: database}
 }
 
+// SecureMatch previously performed NO matching: it reported a Paillier
+// homomorphic scheme, claimed templates were never decrypted, claimed
+// zero-knowledge proofs and ISO 24745 compliance, and wrote is_genuine rows to
+// biometric_match_log — all fabricated. SECURITY: refuses to fabricate
+// privacy-preserving match results and compliance claims.
 func (p *PrivacyPreservingMatcher) SecureMatch(vin, modality string) M {
-	start := time.Now()
-
-	// Look up whether voter has an enrolled template of this modality
-	var templateExists int
-	var qualityScore float64
-	p.db.QueryRow("SELECT COUNT(*), COALESCE(MAX(quality_score), 0) FROM biometric_templates WHERE voter_vin=? AND modality=?", vin, modality).Scan(&templateExists, &qualityScore)
-
-	matched := templateExists > 0
-	computeTime := int(time.Since(start).Milliseconds())
-
-	dbExecLog("privacy_op", `INSERT INTO privacy_preserving_ops (operation_type, encryption_scheme, voter_vin, modality, computation_time_ms, template_never_decrypted, result_encrypted) VALUES (?,?,?,?,?,?,?)`,
-		"secure_match", "paillier_homomorphic", vin, modality, computeTime, 1, 1)
-
-	// Log the match attempt
-	isGenuine := 0
-	if matched {
-		isGenuine = 1
-	}
-	dbExecLog("match_log", `INSERT INTO biometric_match_log (voter_vin, modality, match_score, is_genuine, created_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)`,
-		vin, modality, qualityScore, isGenuine)
-
 	return M{
 		"voter_vin": vin, "modality": modality,
-		"encrypted_score": true, "score_available": matched,
-		"computation_time_ms": computeTime,
-		"encryption_scheme":   "paillier_homomorphic",
-		"template_found":      matched,
-		"properties": M{
-			"template_never_decrypted":       true,
-			"server_never_sees_plaintext":    true,
-			"result_encrypted_end_to_end":    true,
-			"zero_knowledge_proof_available": true,
-		},
-		"iso_24745_compliant": true,
+		"status": "not_implemented",
+		"error":  "privacy-preserving matching not implemented; no match was performed and nothing was logged",
 	}
 }
 
@@ -1322,192 +1221,11 @@ func advBoolToInt(b bool) int {
 	return 0
 }
 
-func seedBiometricAdvanced(database *sql.DB) {
-	var count int
-	database.QueryRow("SELECT COUNT(*) FROM hsm_keys").Scan(&count)
-	if count > 0 {
-		return
-	}
-
-	rng := NewSecureRng()
-
-	for i := 0; i < 8; i++ {
-		hsmManager.GenerateKey("template_encryption", i%4)
-	}
-
-	sdkRegistry.RegisterProvider(&SDKProvider{Name: "Neurotechnology_VeriFinger", Version: "12.4", Modalities: []string{"fingerprint"}, License: "commercial", Endpoint: "sdk://verifinger/v12", Status: "active"})
-	sdkRegistry.RegisterProvider(&SDKProvider{Name: "Neurotechnology_NeoFace", Version: "8.2", Modalities: []string{"facial"}, License: "commercial", Endpoint: "sdk://neoface/v8", Status: "active"})
-	sdkRegistry.RegisterProvider(&SDKProvider{Name: "IrisID_iCAM", Version: "5.0", Modalities: []string{"iris"}, License: "commercial", Endpoint: "sdk://icam/v5", Status: "active"})
-	sdkRegistry.RegisterProvider(&SDKProvider{Name: "Innovatrics_DOT", Version: "6.1", Modalities: []string{"fingerprint", "facial"}, License: "commercial", Endpoint: "sdk://dot/v6", Status: "standby"})
-
-	voterRows, vErr := database.Query("SELECT vin FROM voters ORDER BY RANDOM() LIMIT 100")
-	var vins []string
-	if vErr == nil {
-		for voterRows.Next() {
-			var v string
-			voterRows.Scan(&v)
-			vins = append(vins, v)
-		}
-		voterRows.Close()
-	}
-
-	for _, vin := range vins {
-		for _, mod := range []string{"fingerprint", "facial", "iris"} {
-			ageDays := rng.Intn(2000)
-			decay := float64(ageDays) / 2500.0
-			reEnroll := 0
-			status := "valid"
-			if ageDays > 1825 {
-				reEnroll = 1
-				status = "expired"
-			} else if ageDays > 1460 {
-				status = "near_expiry"
-			}
-			database.Exec(`INSERT INTO template_aging_records (voter_vin, modality, enrolled_at, age_days, max_age_days, quality_decay, re_enrollment_required, status) VALUES (?,?,NOW() - (? || ' days')::INTERVAL,?,1825,?,?,?)`,
-				vin, mod, ageDays, ageDays, decay, reEnroll, status)
-
-			seed := make([]byte, 32)
-			rand.Read(seed)
-			tid := fmt.Sprintf("CT-%s-%s-v1", vin[:8], mod[:2])
-			database.Exec(`INSERT INTO cancelable_transforms (voter_vin, modality, transform_id, transform_type, transform_seed, version) VALUES (?,?,?,?,?,?)`,
-				vin, mod, tid, "biohashing", seed, 1)
-		}
-
-		fingerPositions := []string{"right_thumb", "right_index", "right_middle", "right_ring", "right_little", "left_thumb", "left_index", "left_middle", "left_ring", "left_little"}
-		numFingers := 4 + rng.Intn(7)
-		if numFingers > 10 {
-			numFingers = 10
-		}
-		for fi := 0; fi < numFingers; fi++ {
-			pos := fingerPositions[fi]
-			// Compute quality from deterministic hash (simulating Laplacian variance estimate)
-			qualityHash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-enroll-%d", vin, pos, rng.Int63())))
-			laplaceEstimate := float64(qualityHash[0])/256.0*500.0 + float64(qualityHash[1])/256.0*100.0
-			nfiq := ComputeNFIQ2Score(laplaceEstimate)
-			quality := laplaceEstimate / 500.0
-			if quality > 1.0 {
-				quality = 1.0
-			}
-			hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%d", vin, pos, qualityHash[0])))
-			isPrimary := fi == 0
-			database.Exec(`INSERT INTO multi_finger_enrollments (voter_vin, finger_position, finger_index, template_hash, quality_score, nfiq2_score, is_primary, is_fallback) VALUES (?,?,?,?,?,?,?,?)`,
-				vin, pos, fi+1, hex.EncodeToString(hash[:16]), quality, nfiq, advBoolToInt(isPrimary), advBoolToInt(!isPrimary))
-		}
-	}
-
-	for _, mod := range []string{"fingerprint", "facial", "iris"} {
-		thresholdTuner.RunAnalysis(mod)
-
-		// Use NIST benchmark cohort values for deterministic, evidence-based initialization.
-		bench := GetBenchmarkCohort(mod)
-		cohortID := fmt.Sprintf("cohort-%s-default", mod)
-		if bench != nil {
-			database.Exec(`INSERT INTO score_normalization_cohorts (cohort_id, modality, norm_type, mean_genuine, std_genuine, mean_impostor, std_impostor, sample_size) VALUES (?,?,?,?,?,?,?,?)`,
-				cohortID, mod, "z_norm", bench.MeanGenuine, bench.StdGenuine, bench.MeanImpostor, bench.StdImpostor, bench.SampleSize)
-		} else {
-			// Fallback: NIST FRVT defaults
-			database.Exec(`INSERT INTO score_normalization_cohorts (cohort_id, modality, norm_type, mean_genuine, std_genuine, mean_impostor, std_impostor, sample_size) VALUES (?,?,?,?,?,?,?,?)`,
-				cohortID, mod, "z_norm", 0.98, 0.03, 0.42, 0.14, 50000)
-		}
-	}
-
-	padModels := []struct {
-		id, mod, ver, algo, attacks string
-	}{
-		{"PAD-FP-v3.1", "fingerprint", "3.1", "texture_cnn", "silicone_mold,printed_overlay,latex_finger,gel_pad"},
-		{"PAD-FACE-v4.2", "facial", "4.2", "depth_motion_cnn", "printed_photo,screen_replay,3d_mask,deepfake"},
-		{"PAD-IRIS-v2.0", "iris", "2.0", "spectral_cnn", "printed_iris,contact_lens,screen_replay"},
-		{"PAD-MULTI-v1.5", "multi_modal", "1.5", "ensemble_fusion", "all_known_attacks"},
-	}
-	for _, pm := range padModels {
-		acc := 0.96 + rng.Float64()*0.039
-		database.Exec(`INSERT INTO pad_models (model_id, modality, model_version, algorithm, attack_types, accuracy, false_live_rate, false_spoof_rate, model_size_kb, status, ota_available) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			pm.id, pm.mod, pm.ver, pm.algo, pm.attacks, acc, 0.001+rng.Float64()*0.009, 0.005+rng.Float64()*0.02, 1024+rng.Intn(2048), "active", 1)
-	}
-
-	devices := []string{"BVAS-001", "BVAS-002", "BVAS-003", "BVAS-004", "BVAS-005"}
-	qgLimit := 30
-	if qgLimit > len(vins) {
-		qgLimit = len(vins)
-	}
-	for i, vin := range vins[:qgLimit] {
-		dev := devices[i%len(devices)]
-		quality := 0.3 + rng.Float64()*0.3
-		nfiq := 3 + rng.Intn(3)
-		database.Exec(`INSERT INTO quality_gateway_rejections (device_id, voter_vin, modality, nfiq2_score, quality_score, rejection_reason, threshold_applied, bandwidth_saved_kb) VALUES (?,?,?,?,?,?,?,?)`,
-			dev, vin, "fingerprint", nfiq, quality, "quality below threshold", 0.5, 10+rng.Float64()*20)
-	}
-
-	oqLimit := 20
-	if oqLimit > len(vins) {
-		oqLimit = len(vins)
-	}
-	for i, vin := range vins[:oqLimit] {
-		dev := devices[i%len(devices)]
-		hash := sha256.Sum256([]byte(vin))
-		syncStatus := "synced"
-		if rng.Float64() < 0.3 {
-			syncStatus = "pending"
-		}
-		database.Exec(`INSERT INTO offline_enrollment_queue (device_id, voter_vin, modality, template_data_hash, connectivity_status, sync_status, sync_attempts) VALUES (?,?,?,?,?,?,?)`,
-			dev, vin, "fingerprint", hex.EncodeToString(hash[:16]), "restored", syncStatus, 1+rng.Intn(3))
-	}
-
-	nistBenchmark.RunBenchmark("MINEX", "fingerprint")
-	nistBenchmark.RunBenchmark("FRVT", "facial")
-	nistBenchmark.RunBenchmark("IREX", "iris")
-
-	events := []struct {
-		et, cat, sev string
-	}{
-		{"enrollment_complete", "enrollment", "info"},
-		{"pad_spoof_detected", "security", "warning"},
-		{"key_rotation", "vault", "info"},
-		{"quality_rejection", "quality", "info"},
-		{"device_calibration", "device", "info"},
-		{"dedup_match_found", "deduplication", "warning"},
-		{"template_revoked", "security", "critical"},
-		{"offline_sync_complete", "sync", "info"},
-		{"threshold_tuning", "configuration", "info"},
-		{"nist_benchmark_run", "benchmark", "info"},
-	}
-	for i := 0; i < 50; i++ {
-		ev := events[rng.Intn(len(events))]
-		vin := ""
-		if len(vins) > 0 {
-			vin = vins[rng.Intn(len(vins))]
-		}
-		database.Exec(`INSERT INTO bio_audit_timeline (event_type, category, severity, actor, voter_vin, device_id, details) VALUES (?,?,?,?,?,?,?)`,
-			ev.et, ev.cat, ev.sev, "system", vin, devices[rng.Intn(len(devices))], fmt.Sprintf("Automated %s event", ev.et))
-	}
-
-	for i := 0; i < 10; i++ {
-		dev := devices[rng.Intn(len(devices))]
-		vin := ""
-		if len(vins) > 0 {
-			vin = vins[rng.Intn(len(vins))]
-		}
-		sid := fmt.Sprintf("KIOSK-%s-%d", dev, rng.Int63())
-		step := 1 + rng.Intn(8)
-		status := "in_progress"
-		if step == 8 {
-			status = "completed"
-		}
-		stepNames := []string{"identity_verification", "fingerprint_capture", "quality_check_fp", "facial_capture", "quality_check_face", "iris_capture", "dedup_check", "confirmation"}
-		database.Exec(`INSERT INTO kiosk_sessions (session_id, device_id, voter_vin, current_step, total_steps, step_name, status) VALUES (?,?,?,?,?,?,?)`,
-			sid, dev, vin, step, 8, stepNames[step-1], status)
-	}
-
-	for i := 0; i < 15; i++ {
-		vin := ""
-		if len(vins) > 0 {
-			vin = vins[rng.Intn(len(vins))]
-		}
-		mod := []string{"fingerprint", "facial", "iris"}[rng.Intn(3)]
-		database.Exec(`INSERT INTO privacy_preserving_ops (operation_type, encryption_scheme, voter_vin, modality, computation_time_ms, template_never_decrypted, result_encrypted) VALUES (?,?,?,?,?,?,?)`,
-			"secure_match", "paillier_homomorphic", vin, mod, 10+rng.Intn(90), 1, 1)
-	}
-}
+// seedBiometricAdvanced was deleted: it fabricated HSM keys, SDK provider
+// registrations, template aging records, cancelable transforms, multi-finger
+// enrollments, score-normalization cohorts, PAD model accuracy metrics,
+// quality rejections, offline queues, NIST benchmark runs, audit events and
+// kiosk sessions. SECURITY: refuses to fabricate biometric platform data.
 
 func handleHSMStats(w http.ResponseWriter, r *http.Request) {
 	var totalKeys, activeKeys int
@@ -1660,7 +1378,9 @@ func handleDistributedDedup(w http.ResponseWriter, r *http.Request) {
 	if req.Threshold == 0 {
 		req.Threshold = platformCfg.BiometricMatchThreshold
 	}
-	writeJSON(w, 200, distributedDedupMgr.StartDistributed(req.Modality, req.Workers, req.Threshold))
+	// SECURITY: refuses to fabricate a distributed dedup job; the mapreduce
+	// path is not implemented.
+	writeJSON(w, http.StatusNotImplemented, distributedDedupMgr.StartDistributed(req.Modality, req.Workers, req.Threshold))
 }
 
 func handlePADModels(w http.ResponseWriter, r *http.Request) {
@@ -1764,7 +1484,9 @@ func handleNISTBenchmark(w http.ResponseWriter, r *http.Request) {
 		if req.Modality == "" {
 			req.Modality = "fingerprint"
 		}
-		writeJSON(w, 200, nistBenchmark.RunBenchmark(req.Type, req.Modality))
+		// SECURITY: refuses to fabricate NIST benchmark results; no real
+		// benchmark datasets are configured.
+		writeJSON(w, http.StatusServiceUnavailable, nistBenchmark.RunBenchmark(req.Type, req.Modality))
 		return
 	}
 	writeJSON(w, 200, M{"benchmarks": nistBenchmark.GetResults()})
@@ -1798,6 +1520,34 @@ func handleKioskStart(w http.ResponseWriter, r *http.Request) {
 
 func handleKioskAdvance(w http.ResponseWriter, r *http.Request) {
 	sessionID := mux.Vars(r)["session_id"]
+	var req struct {
+		CaptureID string `json:"capture_id"` // server-side capture record (bvas_capture_sessions.session_id)
+	}
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+	// SECURITY: refuses to advance an enrollment kiosk step without evidence of
+	// a real capture/quality result. Previously 8 empty "advance" calls
+	// completed identity verification + 10-finger capture + facial/iris + dedup,
+	// so a session could reach "completed" with zero captures.
+	if strings.TrimSpace(req.CaptureID) == "" {
+		writeError(w, 400, "capture_id (server-side capture/quality record) required to advance a step")
+		return
+	}
+	var captureStatus string
+	captureErr := db.QueryRow(`SELECT status FROM bvas_capture_sessions WHERE session_id=?`, req.CaptureID).Scan(&captureStatus)
+	if captureErr == sql.ErrNoRows {
+		writeError(w, 403, "capture record not found; step advance refused")
+		return
+	}
+	if captureErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "capture evidence store unavailable; step advance refused")
+		return
+	}
+	if captureStatus != "processed" {
+		writeError(w, 403, "capture record not processed; step advance refused")
+		return
+	}
 	writeJSON(w, 200, kioskModeManager.AdvanceStep(sessionID))
 }
 
@@ -1808,9 +1558,10 @@ func handleKioskSessions(w http.ResponseWriter, r *http.Request) {
 
 func handleMultiFingerEnroll(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		VIN           string   `json:"vin"`
-		Fingers       []string `json:"fingers"`
-		PrimaryFinger string   `json:"primary_finger"`
+		VIN           string            `json:"vin"`
+		Fingers       []string          `json:"fingers"`
+		PrimaryFinger string            `json:"primary_finger"`
+		Captures      map[string]string `json:"captures"` // finger position -> base64 capture image
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -1821,12 +1572,29 @@ func handleMultiFingerEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Fingers) == 0 {
-		req.Fingers = []string{"right_thumb", "right_index", "right_middle", "right_ring", "right_little", "left_thumb", "left_index", "left_middle", "left_ring", "left_little"}
+		writeError(w, 400, "fingers required (no default: enrollment without capture data is refused)")
+		return
+	}
+	// SECURITY: refuses to enroll fingerprints with no image data; every finger
+	// must carry a real capture.
+	for _, f := range req.Fingers {
+		if strings.TrimSpace(req.Captures[f]) == "" {
+			writeError(w, 400, "captures."+f+" (base64 capture image) required")
+			return
+		}
 	}
 	if req.PrimaryFinger == "" {
 		req.PrimaryFinger = req.Fingers[0]
 	}
-	writeJSON(w, 200, multiFingerMgr.EnrollFingers(req.VIN, req.Fingers, req.PrimaryFinger))
+	result := multiFingerMgr.EnrollFingers(req.VIN, req.Fingers, req.PrimaryFinger, req.Captures)
+	switch result["status"] {
+	case "rejected":
+		writeJSON(w, 400, result)
+	case "unavailable":
+		writeJSON(w, http.StatusServiceUnavailable, result)
+	default:
+		writeJSON(w, 200, result)
+	}
 }
 
 func handleMultiFingerStatus(w http.ResponseWriter, r *http.Request) {
@@ -1850,7 +1618,8 @@ func handlePrivacyMatch(w http.ResponseWriter, r *http.Request) {
 	if req.Modality == "" {
 		req.Modality = "fingerprint"
 	}
-	writeJSON(w, 200, privacyMatcher.SecureMatch(req.VIN, req.Modality))
+	// SECURITY: refuses to fabricate a privacy-preserving match; not implemented.
+	writeJSON(w, http.StatusNotImplemented, privacyMatcher.SecureMatch(req.VIN, req.Modality))
 }
 
 func handlePrivacyStats(w http.ResponseWriter, r *http.Request) {
