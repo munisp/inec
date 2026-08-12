@@ -11,6 +11,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
+import { STATE_LGAS } from "../components/LGADrillDown";
 import {
   Users, Calendar, MapPin, UserCheck, Megaphone, Share2,
   Scale, Search, Zap, BarChart2, FileText, ClipboardList,
@@ -62,6 +63,7 @@ interface SimulationResult {
   disruptions: string[];
   timelineData: { hour: number; cumTurnout: number; incidents: number }[];
   lgaData: { lga: string; turnout: number; risk: string }[];
+  turnoutHistogram: { turnout: number; density: number }[];
 }
 
 interface SimConfig {
@@ -76,59 +78,162 @@ interface SimConfig {
   iterations: number;
 }
 
-function runSimulation(config: SimConfig): SimulationResult {
-  const seed = config.scenario.charCodeAt(0) + config.weatherSeverity + config.securityThreat;
-  const rng = (n: number) => ((Math.sin(seed * n + n * 7.3) + 1) / 2);
-  const scenarioMultipliers = {
-    baseline:    { turnout: 1.00, failure: 1.00, security: 1.00, cert: 1.00 },
-    optimistic:  { turnout: 1.18, failure: 0.40, security: 0.30, cert: 0.75 },
-    pessimistic: { turnout: 0.78, failure: 2.20, security: 1.80, cert: 1.60 },
-    crisis:      { turnout: 0.55, failure: 4.50, security: 3.50, cert: 2.80 },
-  };
-  const m = scenarioMultipliers[config.scenario];
+// ─── Sampling helpers (real Monte Carlo — no fixed seeds, results vary per run) ─
+function sampleNormal(mean: number, sd: number): number {
+  // Box–Muller transform
+  let u = 0;
+  while (u === 0) u = Math.random();
+  return mean + sd * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+}
+
+function samplePoisson(lambda: number): number {
+  // Knuth's algorithm — fine for the small lambdas used here
+  const L = Math.exp(-lambda);
+  let k = 0, p = 1;
+  do { k++; p *= Math.random(); } while (p > L);
+  return k - 1;
+}
+
+function percentileOf(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+const SCENARIO_MULTIPLIERS = {
+  baseline:    { turnout: 1.00, failure: 1.00, security: 1.00, cert: 1.00, spread: 0.030 },
+  optimistic:  { turnout: 1.18, failure: 0.40, security: 0.30, cert: 0.75, spread: 0.030 },
+  pessimistic: { turnout: 0.78, failure: 2.20, security: 1.80, cert: 1.60, spread: 0.055 },
+  crisis:      { turnout: 0.55, failure: 4.50, security: 3.50, cert: 2.80, spread: 0.090 },
+} as const;
+
+/** Deterministic mean turnout for a config — used by the sensitivity heatmap. */
+export function meanTurnoutPct(config: SimConfig): number {
+  const m = SCENARIO_MULTIPLIERS[config.scenario];
   const baseTurnout = 0.42 + (config.staffTraining / 100) * 0.12 - (config.weatherSeverity / 100) * 0.15;
-  const turnout = Math.min(0.95, Math.max(0.20, baseTurnout * m.turnout + (rng(1) - 0.5) * 0.04));
-  const bvasFailure = Math.min(0.35, Math.max(0.005, (1 - config.bvasReliability / 100) * m.failure * 0.12));
-  const rejectedRate = 0.015 + bvasFailure * 0.3 + (rng(2) - 0.5) * 0.005;
-  const totalVotes = Math.round(config.registeredVoters * turnout);
-  const validVotes = Math.round(totalVotes * (1 - rejectedRate));
-  const logisticsScore = Math.min(100, Math.max(10, 85 - config.weatherSeverity * 0.4 - (1 - config.bvasReliability / 100) * 20 + rng(3) * 10));
-  const securityIndex = Math.min(100, Math.max(5, 90 - config.securityThreat * 0.6 * m.security + rng(4) * 8));
+  return Math.round(Math.min(0.95, Math.max(0.20, baseTurnout * m.turnout)) * 100);
+}
+
+function runSimulation(config: SimConfig): SimulationResult {
+  const m = SCENARIO_MULTIPLIERS[config.scenario];
+  const iterations = Math.max(10, Math.min(50_000, Math.floor(config.iterations) || 1000));
+
+  const turnoutMean = Math.min(0.95, Math.max(0.20,
+    (0.42 + (config.staffTraining / 100) * 0.12 - (config.weatherSeverity / 100) * 0.15) * m.turnout));
+  // Worse weather/security widen the credible range
+  const turnoutSd = m.spread + (config.weatherSeverity / 100) * 0.02 + (config.securityThreat / 100) * 0.02;
+  const bvasFailureMean = Math.min(0.35, Math.max(0.005, (1 - config.bvasReliability / 100) * m.failure * 0.12));
+
+  // ── N-iteration Monte Carlo loop ──────────────────────────────────────────
+  const turnoutSamples: number[] = new Array(iterations);
+  const rejectedSamples: number[] = new Array(iterations);
+  for (let i = 0; i < iterations; i++) {
+    const t = Math.min(0.95, Math.max(0.05, sampleNormal(turnoutMean, turnoutSd)));
+    turnoutSamples[i] = t;
+    const f = Math.min(0.35, Math.max(0.001, sampleNormal(bvasFailureMean, bvasFailureMean * 0.35)));
+    rejectedSamples[i] = Math.min(0.20, Math.max(0.001, 0.015 + f * 0.3 + sampleNormal(0, 0.003)));
+  }
+  turnoutSamples.sort((a, b) => a - b);
+  rejectedSamples.sort((a, b) => a - b);
+
+  const p5 = percentileOf(turnoutSamples, 0.05);
+  const p50 = percentileOf(turnoutSamples, 0.50);
+  const p95 = percentileOf(turnoutSamples, 0.95);
+  const rejectedMedian = percentileOf(rejectedSamples, 0.50);
+  const bvasFailureMedian = Math.max(0.001, (rejectedMedian - 0.015) / 0.3);
+
+  const totalVotes = Math.round(config.registeredVoters * p50);
+  const validVotes = Math.round(totalVotes * (1 - rejectedMedian));
+  const logisticsScore = Math.min(100, Math.max(10,
+    85 - config.weatherSeverity * 0.4 - (1 - config.bvasReliability / 100) * 20 + sampleNormal(0, 3)));
+  const securityIndex = Math.min(100, Math.max(5,
+    90 - config.securityThreat * 0.6 * m.security + sampleNormal(0, 3)));
   const certHours = Math.round((24 + config.pollingUnits / 800 * 12) * m.cert * (1 + (1 - logisticsScore / 100) * 0.5));
-  const confidence = Math.round(70 + (config.bvasReliability - 50) * 0.3 + (config.staffTraining - 50) * 0.2 - config.securityThreat * 0.2);
-  const variance = config.scenario === "crisis" ? 0.15 : config.scenario === "pessimistic" ? 0.08 : 0.04;
-  const p50 = turnout;
-  const p5 = Math.max(0.15, p50 - variance * 2);
-  const p95 = Math.min(0.95, p50 + variance * 1.5);
+
+  // Confidence reflects the modelled spread (P95−P5) and Monte Carlo standard
+  // error of the median — more iterations genuinely tighten the estimate.
+  const spreadPts = (p95 - p5) * 100;
+  const medianSePts = 1.2533 * turnoutSd * 100 / Math.sqrt(iterations);
+  const confidence = Math.min(98, Math.max(30, Math.round(100 - spreadPts * 2.2 - medianSePts * 8)));
+
+  // ── Disruptions derived from the user's inputs and sampled outcomes ───────
   const disruptions: string[] = [];
-  if (config.weatherSeverity > 60) disruptions.push("Severe weather affecting 23 LGAs");
-  if (config.securityThreat > 50) disruptions.push("Security incidents at 12 polling units");
-  if (config.bvasReliability < 70) disruptions.push("BVAS connectivity failures in 8 zones");
-  if (config.scenario === "crisis") disruptions.push("Coordinated infrastructure attack detected");
-  if (config.scenario === "pessimistic") disruptions.push("Ballot paper shortage in 5 LGAs");
-  if (disruptions.length === 0) disruptions.push("No significant disruptions detected");
+  if (config.weatherSeverity > 60) {
+    const units = Math.round(config.pollingUnits * (config.weatherSeverity / 100) * 0.3);
+    disruptions.push(`Severe weather modelled to disrupt ~${units.toLocaleString()} of ${config.pollingUnits.toLocaleString()} polling units`);
+  }
+  if (config.securityThreat > 50) {
+    const units = Math.round(config.pollingUnits * (config.securityThreat / 100) * 0.15 * m.security);
+    disruptions.push(`Security incidents modelled at ~${units.toLocaleString()} of ${config.pollingUnits.toLocaleString()} polling units`);
+  }
+  if (config.bvasReliability < 70) {
+    const units = Math.round(config.pollingUnits * bvasFailureMedian);
+    disruptions.push(`BVAS failures modelled at ~${units.toLocaleString()} polling units (${(bvasFailureMedian * 100).toFixed(1)}% median rate)`);
+  }
+  if (config.scenario === "crisis") disruptions.push("Crisis scenario: coordinated disruption applied across all modelled polling units");
+  if (config.scenario === "pessimistic") disruptions.push(`Rejected-ballot rate elevated to ${(rejectedMedian * 100).toFixed(1)}% in modelled runs`);
+  if (disruptions.length === 0) disruptions.push("No significant disruptions modelled for these parameters");
+
+  const incidentLambda = (config.securityThreat / 100) * m.security * 2.5;
   const timelineData = Array.from({ length: 13 }, (_, i) => {
     const hour = 8 + i;
     const progress = i / 12;
-    const cumTurnout = Math.round(turnout * config.registeredVoters * (progress ** 0.7) * (1 + (rng(i + 10) - 0.5) * 0.06));
-    const incidents = config.scenario === "crisis" ? Math.round(rng(i + 20) * 8) :
-                      config.scenario === "pessimistic" ? Math.round(rng(i + 30) * 3) : Math.round(rng(i + 40) * 0.8);
-    return { hour, cumTurnout, incidents };
+    const cumTurnout = Math.round(p50 * config.registeredVoters * (progress ** 0.7) * (1 + sampleNormal(0, 0.02)));
+    return { hour, cumTurnout, incidents: samplePoisson(incidentLambda) };
   });
-  const lgas = ["Abuja Municipal", "Gwagwalada", "Kuje", "Bwari", "Abaji", "Kwali"];
-  const lgaData = lgas.map((lga, i) => ({
-    lga, turnout: Math.round((turnout + (rng(i + 50) - 0.5) * 0.12) * 100),
-    risk: config.scenario === "crisis" ? "HIGH" : config.scenario === "pessimistic" && rng(i + 60) > 0.5 ? "MEDIUM" : "LOW",
-  }));
+
+  // LGA breakdown derived from the selected state's actual LGA list
+  const lgaNames = LGAS_FOR_STATE[config.state] ?? [];
+  const sampleStep = Math.max(1, Math.floor(lgaNames.length / 8));
+  const lgaData = lgaNames.filter((_, i) => i % sampleStep === 0).slice(0, 8).map(lga => {
+    const lgaTurnout = Math.min(0.95, Math.max(0.05, sampleNormal(p50, turnoutSd * 0.8)));
+    const lgaSecurity = Math.min(100, Math.max(5, sampleNormal(securityIndex, 10)));
+    return {
+      lga,
+      turnout: Math.round(lgaTurnout * 100),
+      risk: lgaSecurity < 45 ? "HIGH" : lgaSecurity < 65 ? "MEDIUM" : "LOW",
+    };
+  });
+
+  // Turnout histogram of the actual samples for the Monte Carlo chart
+  const lo = p5 * 100, hi = p95 * 100;
+  const binW = Math.max((hi - lo) / 19, 0.1);
+  const bins = Array.from({ length: 20 }, (_, i) => ({ turnout: Math.round((lo + binW * i) * 10) / 10, density: 0 }));
+  for (const s of turnoutSamples) {
+    const pct = s * 100;
+    if (pct < lo || pct > hi + binW) continue;
+    const b = Math.min(19, Math.floor((pct - lo) / binW));
+    bins[b].density++;
+  }
+
   return {
-    scenario: config.scenario, turnout: Math.round(turnout * 100), validVotes,
-    rejectedBallots: totalVotes - validVotes, bvasFailureRate: Math.round(bvasFailure * 100 * 10) / 10,
+    scenario: config.scenario, turnout: Math.round(p50 * 100), validVotes,
+    rejectedBallots: totalVotes - validVotes, bvasFailureRate: Math.round(bvasFailureMedian * 100 * 10) / 10,
     logisticsScore: Math.round(logisticsScore), securityIndex: Math.round(securityIndex),
-    certificationHours: certHours, confidence: Math.min(98, Math.max(30, confidence)),
+    certificationHours: certHours, confidence,
     monteCarloP5: Math.round(p5 * 100), monteCarloP50: Math.round(p50 * 100), monteCarloP95: Math.round(p95 * 100),
     disruptions, timelineData, lgaData,
+    turnoutHistogram: bins,
   };
 }
+
+// States offered by the simulation (those with LGA reference data available).
+const SIM_STATES: { code: string; name: string }[] = [
+  { code: "FCT", name: "FCT — Abuja" },
+  { code: "LAG", name: "Lagos" },
+  { code: "KAN", name: "Kano" },
+  { code: "RIV", name: "Rivers" },
+  { code: "OYO", name: "Oyo" },
+  { code: "ANM", name: "Anambra" },
+  { code: "ENU", name: "Enugu" },
+  { code: "DEL", name: "Delta" },
+  { code: "KAT", name: "Katsina" },
+  { code: "BOR", name: "Borno" },
+];
+const LGAS_FOR_STATE: Record<string, string[]> = Object.fromEntries(
+  SIM_STATES.map(s => [s.name, STATE_LGAS[s.code] ?? []])
+);
 
 const SCENARIO_META = {
   baseline:    { label: "Baseline",    color: "#1A3A5C", bg: "#EBF2F8", border: "#1A3A5C" },
@@ -198,10 +303,11 @@ function ComparisonPanel({ runA, runB }: { runA: any; runB: any }) {
 
 function SensitivityHeatmap({ config }: { config: SimConfig }) {
   const steps = [0, 20, 40, 60, 80, 100];
-  const heatCells = steps.flatMap(w => steps.map(s => {
-    const hr = runSimulation({ ...config, weatherSeverity: w, securityThreat: s });
-    return { w, s, turnout: hr.turnout };
-  }));
+  // Deterministic mean turnout per cell — full Monte Carlo per cell would be
+  // 36×N iterations and jitter on every render.
+  const heatCells = steps.flatMap(w => steps.map(s => ({
+    w, s, turnout: meanTurnoutPct({ ...config, weatherSeverity: w, securityThreat: s }),
+  })));
   const minT = Math.min(...heatCells.map(c => c.turnout));
   const maxT = Math.max(...heatCells.map(c => c.turnout));
   const lerp = (t: number): string => {
@@ -213,7 +319,7 @@ function SensitivityHeatmap({ config }: { config: SimConfig }) {
   };
   return (
     <div>
-      <p className="text-xs text-gray-500 mb-3">Projected turnout (%) across Weather Severity (X) × Security Threat (Y). Current config highlighted.</p>
+      <p className="text-xs text-gray-500 mb-3">Projected mean turnout (%) across Weather Severity (X) × Security Threat (Y). Current config highlighted.</p>
       <div style={{ overflowX: "auto" }}>
         <table className="text-xs border-collapse" style={{ minWidth: 340 }}>
           <thead>
@@ -469,13 +575,8 @@ export default function Home() {
 
   const sm = SCENARIO_META[config.scenario];
 
-  const mcData = result ? Array.from({ length: 20 }, (_, i) => {
-    const x = result.monteCarloP5 + (result.monteCarloP95 - result.monteCarloP5) * (i / 19);
-    const mu = result.monteCarloP50;
-    const sigma = (result.monteCarloP95 - result.monteCarloP5) / 4;
-    const density = Math.round(Math.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * Math.sqrt(2 * Math.PI)) * 800);
-    return { turnout: Math.round(x), density };
-  }) : [];
+  // Histogram of the actual Monte Carlo turnout samples
+  const mcData = result ? result.turnoutHistogram : [];
 
   return (
     <div className="min-h-screen pb-16 sm:pb-0" style={{ background: "#F5F0EB", fontFamily: "'Inter', sans-serif" }}>
@@ -595,6 +696,17 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+            </div>
+            <div className="p-4 border-b" style={{ borderColor: "#3D1520" }}>
+              <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "#C9B8BE" }}>State</p>
+              <select
+                value={config.state}
+                onChange={e => setConfig(c => ({ ...c, state: e.target.value }))}
+                className="w-full py-2 px-2 text-xs font-mono bg-transparent focus:outline-none"
+                style={{ color: "white", border: "1px solid #3D1520", background: "#2C0D1A" }}
+              >
+                {SIM_STATES.map(s => <option key={s.code} value={s.name}>{s.name}</option>)}
+              </select>
             </div>
             <div className="p-4 border-b" style={{ borderColor: "#3D1520" }}>
               <p className="text-xs font-semibold uppercase tracking-widest mb-4" style={{ color: "#C9B8BE" }}>Parameters</p>
@@ -754,7 +866,10 @@ export default function Home() {
                             </AreaChart>
                           </ResponsiveContainer>
                         )}
-                        {chartTab === "lga" && (
+                        {chartTab === "lga" && result.lgaData.length === 0 && (
+                          <p className="text-sm text-gray-500 py-16 text-center">No LGA reference data for the selected state.</p>
+                        )}
+                        {chartTab === "lga" && result.lgaData.length > 0 && (
                           <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={result.lgaData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#F0EBE8" />

@@ -11,7 +11,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 const COLORS = ["#4A1525","#008751","#1A3A5C","#C0392B","#F59E0B","#6366F1"];
 
 export default function PostElectionAnalytics() {
-  const { profileId, canEdit } = useCandidateProfile();
+  const { profileId, profile, canEdit } = useCandidateProfile();
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const aiMut = trpc.simulation.narrative.useMutation({
     onSuccess: d => setAiSummary(typeof d.narrative === 'string' ? d.narrative : String(d.narrative)),
@@ -67,22 +67,33 @@ export default function PostElectionAnalytics() {
           <Button size="sm" variant="outline" className="gap-1.5 text-white border-white/40 hover:bg-white/10"
             disabled={aiMut.isPending || results.length === 0}
             onClick={() => {
-              const myPartyVotes = results.reduce((s, r) => s + (r.votes ?? 0), 0);
+              // Only metrics derivable from real collation data are meaningful here.
+              // The narrative endpoint's schema requires numeric fields, so unmeasured
+              // metrics are sent as 0 AND explicitly flagged as unmeasured in the notes —
+              // never send plausible-looking fabricated constants to the LLM.
+              const myPartyVotes = profile?.partyName
+                ? results.filter(r => r.party === profile.partyName).reduce((s, r) => s + (r.votes ?? 0), 0)
+                : totalVotes;
               aiMut.mutate({
                 scenario: "post-election",
-                stateCode: "NG",
+                stateCode: profile?.stateCode ?? undefined,
                 projectedTurnout: voters.length > 0 ? Math.round((totalVotes / voters.length) * 100) : 0,
                 validVotesCast: totalVotes,
                 bvasFailureRate: 0,
-                logisticsScore: 80,
-                securityIndex: 80,
-                certificationEta: 48,
+                logisticsScore: 0,
+                securityIndex: 0,
+                certificationEta: 0,
                 rejectedBallots: 0,
                 monteCarloP5: 0,
                 monteCarloP50: totalVotes > 0 ? Math.round((myPartyVotes / totalVotes) * 100) : 0,
                 monteCarloP95: 0,
-                modelConfidence: 95,
-                disruptions: [`${results.length} result entries across ${Object.keys(lgaBreakdown).length} LGAs`],
+                modelConfidence: 0,
+                disruptions: [
+                  `${results.length} result entries across ${Object.keys(lgaBreakdown).length} LGAs`,
+                  ...(lgaData[0] ? [`Highest-vote LGA: ${lgaData[0].lga} (${lgaData[0].votes.toLocaleString()} votes)`] : []),
+                  ...(voters.length > 0 ? [`Turnout computed as votes cast / ${voters.length.toLocaleString()} registered voter records`] : ["No registered-voter records — turnout could not be computed"]),
+                  "NOT MEASURED (values are 0 — do not cite them): BVAS failure rate, logistics score, security index, certification ETA, rejected ballots, model confidence, P5/P95 range.",
+                ],
               });
             }}>
             {aiMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} AI Summary

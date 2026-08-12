@@ -10,7 +10,7 @@ import { MapPin, Users, ChevronDown, Search, Building2, Star } from "lucide-reac
 import type { LGALeader } from "./StakeholderTypes";
 
 // LGA data for all 36 states + FCT (representative sample — full DB in production)
-const STATE_LGAS: Record<string, string[]> = {
+export const STATE_LGAS: Record<string, string[]> = {
   FCT:  ["Abaji", "Abuja Municipal", "Bwari", "Gwagwalada", "Kuje", "Kwali"],
   LAG:  ["Agege", "Ajeromi-Ifelodun", "Alimosho", "Amuwo-Odofin", "Apapa", "Badagry", "Epe", "Eti-Osa", "Ibeju-Lekki", "Ifako-Ijaiye", "Ikeja", "Ikorodu", "Kosofe", "Lagos Island", "Lagos Mainland", "Mushin", "Ojo", "Oshodi-Isolo", "Shomolu", "Surulere"],
   KAN:  ["Dala", "Fagge", "Gwale", "Kano Municipal", "Nassarawa", "Tarauni", "Ungogo", "Kumbotso", "Dawakin Tofa", "Tofa", "Rimin Gado", "Bagwai", "Gezawa", "Gabasawa", "Minjibir", "Warawa", "Gwarzo", "Karaye", "Rogo", "Kibiya", "Rano", "Tudun Wada", "Doguwa", "Kiru", "Bebeji", "Sumaila", "Garko", "Albasu", "Gaya", "Ajingi", "Wudil", "Takai", "Bunkure", "Tsanyawa", "Shanono", "Garo", "Madobi", "Makoda", "Kunchi", "Bichi", "Kabo", "Dambatta", "Miga", "Dawakin Kudu"],

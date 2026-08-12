@@ -3,7 +3,7 @@
  * Handles permission requests, scheduling reminders 24h before events,
  * and persisting scheduled reminders in localStorage.
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 export interface ReminderEvent {
   id: string;
@@ -45,7 +45,10 @@ export function useNotificationReminders() {
     typeof Notification !== "undefined" ? Notification.permission : "default"
   );
   const [reminders, setReminders] = useState<ScheduledReminder[]>(loadReminders);
-  const [activeTimers, setActiveTimers] = useState<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Timer handles live in a ref — they are not UI state, and storing them in
+  // state made every schedule/cancel retrigger the cleanup effect below,
+  // which cancelled all previously scheduled reminders.
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Request notification permission
   const requestPermission = useCallback(async () => {
@@ -57,6 +60,7 @@ export function useNotificationReminders() {
 
   // Fire a notification immediately (used when timer triggers)
   const fireNotification = useCallback((reminder: ScheduledReminder) => {
+    timersRef.current.delete(reminder.id);
     if (permission !== "granted") return;
     try {
       const n = new Notification(`⏰ Stakeholder Meeting Tomorrow`, {
@@ -104,7 +108,7 @@ export function useNotificationReminders() {
     if (msUntilReminder > 0) {
       // Schedule for the future
       const timer = setTimeout(() => fireNotification(reminder), msUntilReminder);
-      setActiveTimers(prev => new Map(prev).set(reminder.id, timer));
+      timersRef.current.set(reminder.id, timer);
     } else if (msUntilReminder > -86400000) {
       // Event is within the next 24h — fire immediately as a "happening soon" alert
       fireNotification({ ...reminder, title: `[TODAY] ${reminder.title}` });
@@ -125,15 +129,15 @@ export function useNotificationReminders() {
     setReminders(prev => {
       const target = prev.find(r => r.eventId === eventId);
       if (target) {
-        const timer = activeTimers.get(target.id);
+        const timer = timersRef.current.get(target.id);
         if (timer) clearTimeout(timer);
-        setActiveTimers(m => { const nm = new Map(m); nm.delete(target.id); return nm; });
+        timersRef.current.delete(target.id);
       }
       const updated = prev.filter(r => r.eventId !== eventId);
       saveReminders(updated);
       return updated;
     });
-  }, [activeTimers]);
+  }, []);
 
   // Check if a specific event has a reminder
   const hasReminder = useCallback((eventId: string) => {
@@ -147,18 +151,20 @@ export function useNotificationReminders() {
       const ms = new Date(r.reminderDate).getTime() - Date.now();
       if (ms > 0) {
         const timer = setTimeout(() => fireNotification(r), ms);
-        setActiveTimers(prev => new Map(prev).set(r.id, timer));
+        timersRef.current.set(r.id, timer);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permission]);
 
-  // Cleanup timers on unmount
+  // Cleanup timers only on unmount — never on re-render
   useEffect(() => {
+    const timers = timersRef.current;
     return () => {
-      activeTimers.forEach(t => clearTimeout(t));
+      timers.forEach(t => clearTimeout(t));
+      timers.clear();
     };
-  }, [activeTimers]);
+  }, []);
 
   return {
     permission,
