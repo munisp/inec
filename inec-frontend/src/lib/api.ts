@@ -10,7 +10,45 @@ export class ApiError extends Error {
   }
 }
 
-// Token is in httpOnly cookie — no localStorage access needed for auth
+// ─── Auth token storage ─────────────────────────────────────────────────────
+// Session JWTs live IN MEMORY only — never in localStorage, where any XSS
+// payload could exfiltrate them. Persistence across reloads is provided by the
+// backend-issued `inec_token` httpOnly cookie (sent via credentials:'include').
+//
+// DEV-ONLY fallback: under `vite dev` the SPA and API may run cross-origin
+// without cookie configuration, so the token is mirrored to localStorage to
+// keep the Bearer flow working across HMR reloads. This fallback is compiled
+// out of production builds (import.meta.env.DEV === false) and any legacy
+// stored token is scrubbed on load in production.
+let inMemoryToken: string | null = null;
+const DEV_TOKEN_KEY = 'auth_token';
+
+export function setAuthToken(token: string | null): void {
+  inMemoryToken = token;
+  if (import.meta.env.DEV) {
+    try {
+      if (token) localStorage.setItem(DEV_TOKEN_KEY, token);
+      else localStorage.removeItem(DEV_TOKEN_KEY);
+    } catch { /* storage unavailable */ }
+  }
+}
+
+export function getAuthToken(): string | null {
+  if (inMemoryToken) return inMemoryToken;
+  if (import.meta.env.DEV && typeof localStorage !== 'undefined') {
+    try {
+      const t = localStorage.getItem(DEV_TOKEN_KEY);
+      if (t) { inMemoryToken = t; return t; }
+    } catch { /* storage unavailable */ }
+  }
+  return null;
+}
+
+// Scrub any JWT persisted by an older build — tokens must not linger in
+// web storage in production.
+if (!import.meta.env.DEV && typeof localStorage !== 'undefined') {
+  try { localStorage.removeItem(DEV_TOKEN_KEY); } catch { /* ignore */ }
+}
 
 /** Dispatched on an unrecoverable 401 so the auth layer can end the session
  * and route to /login (with a return path) — never a blunt location.reload(). */
@@ -18,12 +56,12 @@ export const SESSION_EXPIRED_EVENT = 'inec-session-expired';
 
 function handleAuthFailure() {
   localStorage.removeItem('user');
-  localStorage.removeItem('auth_token');
+  setAuthToken(null);
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
 async function request(path: string, options: RequestInit = {}, retries = 2) {
-  const storedToken = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const storedToken = getAuthToken();
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

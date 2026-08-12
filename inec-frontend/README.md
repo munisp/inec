@@ -38,9 +38,15 @@ SSE/WS endpoints (gotv-svc authenticates Bearer tokens only).
 
 ## Auth model
 
-- Login POSTs to `/auth/login`; the backend sets an httpOnly session cookie.
-- `localStorage.auth_token` holds the JWT only as a documented fallback for
-  non-browser clients / cross-origin dev (`Authorization: Bearer …` header).
+- Login POSTs to `/auth/login`; the backend sets the `inec_token` httpOnly
+  session cookie, which is the primary credential (`credentials: 'include'`).
+- The JWT itself is held **in memory only** (`setAuthToken`/`getAuthToken` in
+  `src/lib/api.ts`) so an XSS payload cannot exfiltrate it from web storage.
+  **Dev-only fallback:** under `vite dev` (`import.meta.env.DEV`) the token is
+  mirrored to `localStorage.auth_token` to keep the Bearer flow working across
+  HMR reloads on cross-origin dev setups without cookie config. This fallback
+  is compiled out of production builds, and production scrubs any legacy
+  stored token on load.
 - A 401 from any API call dispatches `inec-session-expired`; the auth context
   clears state and routes to `#/login?returnTo=<page>` — no full-page reload.
 - GOTV pages additionally require an explicit party tenancy selection

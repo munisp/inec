@@ -3,6 +3,7 @@ import { logger } from '@/lib/utils';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
+import { popupEl } from '@/lib/popup-dom';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { useResolvedElection } from '@/lib/gotv-session';
 import { generateStateMarkerGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
@@ -355,19 +356,21 @@ export default function MapPage() {
       bounds.extend(lngLat);
       hasValidCoords = true;
 
+      // DOM-built popup (textContent only) — server data never becomes markup.
+      const popup = popupEl('div', '', 'font-size:12px;min-width:200px');
+      popup.appendChild(popupEl('div', off.staff_id, `font-weight:700;margin-bottom:6px;font-size:14px;color:${color}`));
+      const roleRow = popupEl('div', 'Role: ');
+      roleRow.appendChild(popupEl('b', off.role.replace(/_/g, ' ')));
+      popup.appendChild(roleRow);
+      popup.appendChild(popupEl('div', `Activity: ${off.activity}`));
+      popup.appendChild(popupEl('div', `Battery: ${off.battery_pct}%`));
+      popup.appendChild(popupEl('div', `PU: ${off.pu_code}`));
+      popup.appendChild(popupEl('div', `Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}`));
+      popup.appendChild(popupEl('div', off.updated_at, 'color:#888;font-size:10px;margin-top:4px'));
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat(lngLat)
-        .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
-          <div style="font-size:12px;min-width:200px">
-            <div style="font-weight:700;margin-bottom:6px;font-size:14px;color:${color}">${off.staff_id}</div>
-            <div>Role: <b>${off.role.replace(/_/g, ' ')}</b></div>
-            <div>Activity: ${off.activity}</div>
-            <div>Battery: ${off.battery_pct}%</div>
-            <div>PU: ${off.pu_code}</div>
-            <div>Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}</div>
-            <div style="color:#888;font-size:10px;margin-top:4px">${off.updated_at}</div>
-          </div>
-        `))
+        .setPopup(new maplibregl.Popup({ offset: 25 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       officialMarkers.current.push(marker);
     });
@@ -423,18 +426,22 @@ export default function MapPage() {
       bounds.extend(lngLat);
       hasValidCoords = true;
 
+      // DOM-built popup (textContent only) — server data never becomes markup.
+      const popup = popupEl('div', '', 'font-size:12px;min-width:200px');
+      popup.appendChild(popupEl('div', cr.pu_name || cr.pu_code, 'font-weight:600;margin-bottom:4px'));
+      const headRow = popupEl('div', 'Head Count: ');
+      headRow.appendChild(popupEl('b', String(cr.head_count)));
+      popup.appendChild(headRow);
+      const densityRow = popupEl('div', 'Density: ');
+      densityRow.appendChild(popupEl('b', cr.density_level.toUpperCase(), `color:${color}`));
+      popup.appendChild(densityRow);
+      popup.appendChild(popupEl('div', `Queue Length: ${cr.queue_length} people`));
+      popup.appendChild(popupEl('div', `Wait Time: ${cr.wait_time_min} min`));
+      popup.appendChild(popupEl('div', `Coords: ${cr.latitude.toFixed(4)}, ${cr.longitude.toFixed(4)}`));
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat(lngLat)
-        .setPopup(new maplibregl.Popup({ offset: 20 }).setHTML(`
-          <div style="font-size:12px;min-width:200px">
-            <div style="font-weight:600;margin-bottom:4px">${cr.pu_name || cr.pu_code}</div>
-            <div>Head Count: <b>${cr.head_count}</b></div>
-            <div>Density: <b style="color:${color}">${cr.density_level.toUpperCase()}</b></div>
-            <div>Queue Length: ${cr.queue_length} people</div>
-            <div>Wait Time: ${cr.wait_time_min} min</div>
-            <div>Coords: ${cr.latitude.toFixed(4)}, ${cr.longitude.toFixed(4)}</div>
-          </div>
-        `))
+        .setPopup(new maplibregl.Popup({ offset: 20 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       crowdMarkers.current.push(marker);
     });
@@ -474,8 +481,19 @@ export default function MapPage() {
 
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([lm.longitude, lm.latitude])
-        .setPopup(new maplibregl.Popup({ offset: 15 }).setHTML(
-          `<div style="font-size:12px"><strong>${lm.name}</strong><br/><span style="color:#6b7280">${lm.category.replace(/_/g, ' ')}</span>${lm.address ? `<br/><span style="font-size:10px">${lm.address}</span>` : ''}</div>`
+        .setPopup(new maplibregl.Popup({ offset: 15 }).setDOMContent(
+          (() => {
+            // DOM-built popup (textContent only) — server data never becomes markup.
+            const popup = popupEl('div', '', 'font-size:12px');
+            popup.appendChild(popupEl('strong', lm.name));
+            popup.appendChild(document.createElement('br'));
+            popup.appendChild(popupEl('span', lm.category.replace(/_/g, ' '), 'color:#6b7280'));
+            if (lm.address) {
+              popup.appendChild(document.createElement('br'));
+              popup.appendChild(popupEl('span', lm.address, 'font-size:10px'));
+            }
+            return popup;
+          })()
         ))
         .addTo(mapRef.current!);
       landmarkMarkers.current.push(marker);
@@ -857,38 +875,66 @@ export default function MapPage() {
           if (puData) setSelectedPU(puData);
           const statusColor = STATUS_COLORS[props.status] || '#9ca3af';
           const statusLabel = props.status === 'no_result' ? 'No Result' : (props.status || 'N/A').charAt(0).toUpperCase() + (props.status || '').slice(1);
-          const partyBars = puData?.party_scores?.slice(0, 5).map(p =>
-            '<div style="display:flex;align-items:center;gap:6px;margin:2px 0">' +
-              '<div style="width:10px;height:10px;border-radius:50%;background:' + p.color + ';flex-shrink:0"></div>' +
-              '<span style="flex:1">' + p.abbreviation + '</span>' +
-              '<span style="font-weight:600">' + formatNumber(p.votes) + '</span></div>'
-          ).join('') || '<div style="color:#999">No results submitted</div>';
           const svUrl = 'https://kartaview.org/map/@' + coords[1] + ',' + coords[0] + ',17z';
           const dirUrl = 'https://www.openstreetmap.org/#map=18/' + coords[1] + '/' + coords[0];
+          // DOM-built popup (textContent only) — server data never becomes markup.
+          const popup = popupEl('div', '', 'font-family:system-ui;font-size:13px;max-height:350px;overflow-y:auto');
+          const header = popupEl('div', '', 'display:flex;align-items:center;gap:6px;margin-bottom:6px');
+          header.appendChild(popupEl('div', '', `width:10px;height:10px;border-radius:50%;background:${statusColor};flex-shrink:0`));
+          header.appendChild(popupEl('span', String(props.name ?? ''), 'font-weight:700;font-size:14px'));
+          popup.appendChild(header);
+          const meta = popupEl('div', '', 'color:#666;font-size:11px;margin-bottom:8px;line-height:1.4');
+          meta.appendChild(popupEl('div', String(props.code ?? '')));
+          meta.appendChild(popupEl('div', `${props.ward ?? ''} • ${props.lga ?? ''} • ${props.state ?? ''}`));
+          popup.appendChild(meta);
+          const statsBox = popupEl('div', '', 'background:#f9fafb;border-radius:6px;padding:8px;margin-bottom:8px');
+          const statsGrid = popupEl('div', '', 'display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px');
+          const statRow = (label: string, value: string, valueCss = 'font-weight:600') => {
+            statsGrid.appendChild(popupEl('span', label, 'color:#888'));
+            statsGrid.appendChild(popupEl('span', value, valueCss));
+          };
+          statRow('Status:', statusLabel, `font-weight:600;color:${statusColor}`);
+          statRow('Registered:', formatNumber(Number(props.registered) || 0));
+          statRow('Valid Votes:', formatNumber(Number(props.votes) || 0));
+          statRow('Total Cast:', formatNumber(Number(props.cast) || 0), '');
+          statRow('TigerBeetle:', String(props.tb ?? ''), '');
+          statRow('Hyperledger:', String(props.hl ?? ''), '');
+          statsBox.appendChild(statsGrid);
+          popup.appendChild(statsBox);
+          const partySection = popupEl('div', '', 'margin-bottom:8px');
+          partySection.appendChild(popupEl('div', 'Party Results', 'font-weight:600;font-size:12px;margin-bottom:4px'));
+          const scores = puData?.party_scores?.slice(0, 5) || [];
+          if (scores.length === 0) {
+            partySection.appendChild(popupEl('div', 'No results submitted', 'color:#999'));
+          } else {
+            scores.forEach(p => {
+              const row = popupEl('div', '', 'display:flex;align-items:center;gap:6px;margin:2px 0');
+              row.appendChild(popupEl('div', '', `width:10px;height:10px;border-radius:50%;background:${p.color};flex-shrink:0`));
+              row.appendChild(popupEl('span', p.abbreviation, 'flex:1'));
+              row.appendChild(popupEl('span', formatNumber(p.votes), 'font-weight:600'));
+              partySection.appendChild(row);
+            });
+          }
+          popup.appendChild(partySection);
+          const links = popupEl('div', '', 'display:flex;gap:6px;border-top:1px solid #eee;padding-top:8px');
+          const linkCss = 'flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 8px;color:white;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600';
+          const mkLink = (href: string, label: string, bg: string) => {
+            const a = document.createElement('a');
+            a.href = href; // built from numeric map coords only — never server strings
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.style.cssText = `${linkCss};background:${bg}`;
+            a.textContent = label;
+            return a;
+          };
+          links.appendChild(mkLink(svUrl, 'KartaView', '#16a34a'));
+          links.appendChild(mkLink(dirUrl, 'Open in OSM', '#2563eb'));
+          popup.appendChild(links);
+          popup.appendChild(popupEl('div', `${coords[1].toFixed(6)}, ${coords[0].toFixed(6)}`, 'font-size:10px;color:#aaa;margin-top:6px;text-align:center'));
           new maplibregl.Popup({ closeButton: true, maxWidth: '320px', className: 'pu-popup' })
             .setLngLat(coords)
-            .setHTML(
-              '<div style="font-family:system-ui;font-size:13px;max-height:350px;overflow-y:auto">' +
-              '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
-              '<div style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';flex-shrink:0"></div>' +
-              '<span style="font-weight:700;font-size:14px">' + props.name + '</span></div>' +
-              '<div style="color:#666;font-size:11px;margin-bottom:8px;line-height:1.4">' +
-              '<div>' + props.code + '</div>' +
-              '<div>' + props.ward + ' &bull; ' + props.lga + ' &bull; ' + props.state + '</div></div>' +
-              '<div style="background:#f9fafb;border-radius:6px;padding:8px;margin-bottom:8px">' +
-              '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px">' +
-              '<span style="color:#888">Status:</span><span style="font-weight:600;color:' + statusColor + '">' + statusLabel + '</span>' +
-              '<span style="color:#888">Registered:</span><span style="font-weight:600">' + formatNumber(Number(props.registered) || 0) + '</span>' +
-              '<span style="color:#888">Valid Votes:</span><span style="font-weight:600">' + formatNumber(Number(props.votes) || 0) + '</span>' +
-              '<span style="color:#888">Total Cast:</span><span>' + formatNumber(Number(props.cast) || 0) + '</span>' +
-              '<span style="color:#888">TigerBeetle:</span><span>' + props.tb + '</span>' +
-              '<span style="color:#888">Hyperledger:</span><span>' + props.hl + '</span></div></div>' +
-              '<div style="margin-bottom:8px"><div style="font-weight:600;font-size:12px;margin-bottom:4px">Party Results</div>' + partyBars + '</div>' +
-              '<div style="display:flex;gap:6px;border-top:1px solid #eee;padding-top:8px">' +
-              '<a href="' + svUrl + '" target="_blank" rel="noopener" style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 8px;background:#16a34a;color:white;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600">KartaView</a>' +
-              '<a href="' + dirUrl + '" target="_blank" rel="noopener" style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 8px;background:#2563eb;color:white;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600">Open in OSM</a></div>' +
-              '<div style="font-size:10px;color:#aaa;margin-top:6px;text-align:center">' + coords[1].toFixed(6) + ', ' + coords[0].toFixed(6) + '</div></div>'
-            ).addTo(map);
+            .setDOMContent(popup)
+            .addTo(map);
         });
 
         map.on('mouseenter', 'pu-markers', () => { map.getCanvas().style.cursor = 'pointer'; });
@@ -914,10 +960,19 @@ export default function MapPage() {
         map.getCanvas().style.cursor = 'pointer';
         if (!e.features || e.features.length === 0) return;
         const props = e.features[0].properties;
-        const html = `<b>${props.name}</b><br/>${props.geo_zone}<br/>Reported: ${props.reported_pus}/${props.total_pus} (${props.completion}%)<br/>Leading: <b style="color:${props.leading_color}">${props.leading_party}</b>`;
+        // DOM-built popup (textContent only) — server data never becomes markup.
+        const hoverPopup = popupEl('div', '', 'font-family:system-ui;font-size:12px');
+        hoverPopup.appendChild(popupEl('b', String(props.name ?? '')));
+        hoverPopup.appendChild(document.createElement('br'));
+        hoverPopup.appendChild(document.createTextNode(String(props.geo_zone ?? '')));
+        hoverPopup.appendChild(document.createElement('br'));
+        hoverPopup.appendChild(document.createTextNode(`Reported: ${props.reported_pus}/${props.total_pus} (${props.completion}%)`));
+        hoverPopup.appendChild(document.createElement('br'));
+        hoverPopup.appendChild(document.createTextNode('Leading: '));
+        hoverPopup.appendChild(popupEl('b', String(props.leading_party ?? ''), `color:${props.leading_color}`));
         new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'state-hover-popup' })
           .setLngLat(e.lngLat)
-          .setHTML(`<div style="font-family:system-ui;font-size:12px">${html}</div>`)
+          .setDOMContent(hoverPopup)
           .addTo(map);
       });
 

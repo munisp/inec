@@ -344,8 +344,10 @@ export const documentAIApi = {
 export const integrityApi = {
   journey: (resultId: number) => api<IntegrityJourney>(`/integrity/results/${resultId}/journey`),
   verify: (resultId: number) => api<IntegrityVerification>(`/integrity/results/${resultId}/verify`),
-  materialManifests: (electionId?: number) =>
-    api<MaterialManifestsResponse>(`/integrity/material-manifests${electionId ? `?election_id=${electionId}` : ''}`),
+  // electionId is REQUIRED — never omit it (fail-open) or default it to a
+  // hardcoded id. Callers must resolve an election via useResolvedElection.
+  materialManifests: (electionId: number) =>
+    api<MaterialManifestsResponse>(`/integrity/material-manifests?election_id=${electionId}`),
   voterServices: () => api<OfficialVoterServicesResponse>('/integrity/voter-services'),
 };
 
@@ -565,8 +567,10 @@ export const geoApi = {
     ),
   streetView: (lat: number, lng: number) =>
     api<{ street_view: { mapillary: { viewer_url: string }; google: { viewer_url: string } } }>(`/geo/street-view?lat=${lat}&lng=${lng}`),
-  spatialStats: (electionId?: number, stateCode?: string) => {
-    const p = new URLSearchParams({ election_id: String(electionId || 1) });
+  // electionId is REQUIRED — never fail open to a hardcoded id. Callers must
+  // resolve an election via useResolvedElection and gate on a non-null id.
+  spatialStats: (electionId: number, stateCode?: string) => {
+    const p = new URLSearchParams({ election_id: String(electionId) });
     if (stateCode) p.set('state_code', stateCode);
     return api<{ total_pus: number; avg_turnout: number; area_km2: number; pu_density_per_km2: number }>(`/geo/spatial-stats?${p}`);
   },

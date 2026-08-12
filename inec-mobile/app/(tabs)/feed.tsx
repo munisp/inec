@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { fetch as expoFetch } from 'expo/fetch';
 import { observerApi, getToken, API_URL, ObserverStats } from '../../src/lib/api';
 import { syncPendingData, getPendingReportCount } from '../../src/lib/offline';
 import { EmptyState } from '../../src/components/EmptyState';
@@ -30,65 +31,103 @@ export default function FeedScreen() {
   const [pendingCount, setPendingCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingStats, setLoadingStats] = useState(true);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
 
-  const connectSSE = useCallback(async () => {
-    const token = await getToken();
-    if (!token) return;
-
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
+  const handleSSEEvent = useCallback((type: string, raw: string) => {
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return; // malformed frame — drop it
     }
-
-    const url = `${API_URL}/observer/stream?token=${token}`;
-    const es = new EventSource(url);
-
-    es.onopen = () => {
+    if (!mountedRef.current) return;
+    if (type === 'connected') {
       setConnected(true);
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    };
-
-    es.addEventListener('connected', (e: MessageEvent) => {
-      setConnected(true);
-      const data = JSON.parse(e.data);
       setEvents((prev) => [{
-        id: data.subscriber_id,
+        id: String(data.subscriber_id ?? `conn-${Date.now()}`),
         type: 'connected',
         data,
         time: new Date().toLocaleTimeString(),
       }, ...prev].slice(0, 50));
-    });
-
-    es.addEventListener('result_submitted', (e: MessageEvent) => {
+    } else if (type === 'result_submitted') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      const data = JSON.parse(e.data);
       setEvents((prev) => [{
         id: `result-${Date.now()}`,
         type: 'result_submitted',
         data,
         time: new Date().toLocaleTimeString(),
       }, ...prev].slice(0, 50));
-    });
-
-    es.addEventListener('observer_checkin', (e: MessageEvent) => {
+    } else if (type === 'observer_checkin') {
       Haptics.selectionAsync();
-      const data = JSON.parse(e.data);
       setEvents((prev) => [{
         id: `checkin-${Date.now()}`,
         type: 'observer_checkin',
         data,
         time: new Date().toLocaleTimeString(),
       }, ...prev].slice(0, 50));
-    });
-
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      setTimeout(connectSSE, 5000);
-    };
-
-    eventSourceRef.current = es;
+    }
   }, []);
+
+  // Header-authenticated SSE: the JWT travels in the Authorization header —
+  // NEVER as a ?token= query parameter, which leaks into server logs, proxies
+  // and crash reports. expo/fetch supports streaming response bodies (the
+  // stock RN fetch/EventSource cannot send Authorization on SSE).
+  const connectSSE = useCallback(async () => {
+    const token = await getToken();
+    if (!token) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await expoFetch(`${API_URL}/observer/stream`, {
+        headers: {
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+      if (controller.signal.aborted || !mountedRef.current) return;
+
+      setConnected(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let eventType = 'message';
+      let dataLines: string[] = [];
+      const dispatchFrame = () => {
+        if (dataLines.length > 0) handleSSEEvent(eventType, dataLines.join('\n'));
+        eventType = 'message';
+        dataLines = [];
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).replace(/\r$/, '');
+          buffer = buffer.slice(nl + 1);
+          if (line === '') dispatchFrame();
+          else if (line.startsWith(':')) { /* comment/keep-alive */ }
+          else if (line.startsWith('event:')) eventType = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+        }
+      }
+      throw new Error('stream ended');
+    } catch {
+      if (controller.signal.aborted || !mountedRef.current) return;
+      setConnected(false);
+      retryRef.current = setTimeout(connectSSE, 5000);
+    }
+  }, [handleSSEEvent]);
 
   const loadStats = useCallback(async () => {
     try {
@@ -110,10 +149,15 @@ export default function FeedScreen() {
   }, [loadStats]);
 
   useEffect(() => {
+    mountedRef.current = true;
     connectSSE();
     loadStats();
     getPendingReportCount().then(setPendingCount);
-    return () => { eventSourceRef.current?.close(); };
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+      if (retryRef.current) clearTimeout(retryRef.current);
+    };
   }, [connectSSE, loadStats]);
 
   const renderEvent = ({ item }: { item: SSEEvent }) => {

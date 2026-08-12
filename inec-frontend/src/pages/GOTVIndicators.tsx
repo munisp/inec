@@ -21,10 +21,7 @@ const BASE_URL = '';
 function getAuthHeaders() {
   // Real session Bearer token when available; party headers only from an explicit
   // user selection — never defaulted.
-  const headers = gotvAuthHeaders({ 'Content-Type': 'application/json' });
-  const partyId = localStorage.getItem('gotv_party_id');
-  if (partyId) headers['X-GOTV-Party-ID'] = partyId;
-  return headers;
+  return gotvAuthHeaders({ 'Content-Type': 'application/json' });
 }
 
 async function apiFetch(path: string, opts?: RequestInit) {

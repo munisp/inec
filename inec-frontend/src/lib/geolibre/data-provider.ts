@@ -14,16 +14,19 @@ import type {
   PartyScore,
 } from './types';
 import { NIGERIA_STATE_COORDS } from '@/lib/nigeria-geo';
+import { getAuthToken } from '@/lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 async function apiFetch(path: string): Promise<unknown> {
-  const token = localStorage.getItem('auth_token') || '';
+  // Bearer from the in-memory token store when present; otherwise rely on the
+  // `inec_token` httpOnly cookie (credentials: 'include'). Never localStorage.
+  const token = getAuthToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
+    credentials: 'include',
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
   return res.json();
