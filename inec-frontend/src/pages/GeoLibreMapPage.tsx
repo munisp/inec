@@ -35,6 +35,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { useGeoLibreStore } from '@/lib/geolibre/store';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 import {
   fetchPollingUnitsGeoJSON,
   // fetchStatesGeoJSON,
@@ -160,6 +161,7 @@ function LiveMapTab() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const deckOverlay = useRef<MapboxOverlay | null>(null);
+  const { electionId: resolvedElectionId } = useResolvedElection();
   const [mapReady, setMapReady] = useState(false);
   const [stats, setStats] = useState({ pus: 0, incidents: 0, bvas: 0, officials: 0 });
   const [selectedFeature, setSelectedFeature] = useState<Record<string, unknown> | null>(null);
@@ -757,9 +759,11 @@ function LiveMapTab() {
     setSelectionBox(null);
   }
 
-  // Export functions
+  // Export functions — election scope comes from the resolved election
+  // (explicit selection or latest active), never a hardcoded id.
   function exportCSV() {
-    const base = `${API_BASE}/geo/reports/polling-units.csv?election_id=1${selectedState ? `&state_code=${selectedState}` : ''}`;
+    if (!resolvedElectionId) return;
+    const base = `${API_BASE}/geo/reports/polling-units.csv?election_id=${resolvedElectionId}${selectedState ? `&state_code=${selectedState}` : ''}`;
     window.open(base, '_blank');
   }
 
@@ -970,7 +974,7 @@ function LiveMapTab() {
             onClick={() => downloadGeoJSON(store.incidents, 'inec-incidents.geojson')}>
             <Download className="w-3.5 h-3.5 mr-1" /> Incidents (GeoJSON)
           </Button>
-          <Button variant="outline" size="sm" className="w-full text-xs" onClick={exportCSV}>
+          <Button variant="outline" size="sm" className="w-full text-xs" onClick={exportCSV} disabled={!resolvedElectionId} title={resolvedElectionId ? undefined : 'No election resolved — export unavailable'}>
             <Download className="w-3.5 h-3.5 mr-1" /> Export CSV
           </Button>
         </div>

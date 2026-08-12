@@ -4,6 +4,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
+import { useResolvedElection } from '@/lib/gotv-session';
 import { generateStateMarkerGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -46,6 +47,7 @@ export default function MapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapContainerB = useRef<HTMLDivElement>(null);
   const mapRefB = useRef<maplibregl.Map | null>(null);
+  const { electionId: resolvedElectionId } = useResolvedElection();
   const [loading, setLoading] = useState(true);
   const [states, setStates] = useState<StateData[]>([]);
   const [pus, setPus] = useState<PUData[]>([]);
@@ -1173,14 +1175,16 @@ export default function MapPage() {
           <Button variant={selecting ? 'default' : 'outline'} size="sm" onClick={() => { setSelecting(v => !v); setSelectionBox(null); }} className="gap-1 h-8" aria-label="Toggle box select">
             Box Select
           </Button>
-          <Button variant="outline" size="sm" onClick={() => {
-            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.csv?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
+          <Button variant="outline" size="sm" disabled={!resolvedElectionId} onClick={() => {
+            if (!resolvedElectionId) return;
+            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.csv?election_id=${resolvedElectionId}${selectedState ? `&state_code=${selectedState.code}` : ''}`;
             window.open(base, '_blank');
           }} className="gap-1 h-8" aria-label="Export polling units CSV">
             Export CSV
           </Button>
-          <Button variant="outline" size="sm" onClick={() => {
-            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.geojson?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
+          <Button variant="outline" size="sm" disabled={!resolvedElectionId} onClick={() => {
+            if (!resolvedElectionId) return;
+            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.geojson?election_id=${resolvedElectionId}${selectedState ? `&state_code=${selectedState.code}` : ''}`;
             window.open(base, '_blank');
           }} className="gap-1 h-8" aria-label="Export polling units GeoJSON">
             Export GeoJSON

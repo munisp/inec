@@ -16,6 +16,8 @@ import {
   FlaskConical, Download, Camera, Inbox, Shield,
   ChevronRight,
 } from 'lucide-react';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
+import { GOTVPartySelector, gotvAuthHeaders, useGOTVParty } from '@/lib/gotv-session';
 
 const API_BASE = '/gotv';
 
@@ -62,50 +64,69 @@ export default function GOTVPlatform() {
   const [simCount, setSimCount] = useState(10);
   const [simResult, setSimResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const [partyCode] = useGOTVParty();
 
-  const headers = { 'X-GOTV-Party-Code': 'APC' };
+  const setSectionError = (section: string, message: string | null) =>
+    setErrors(prev => ({ ...prev, [section]: message }));
 
   const fetchAlerts = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/warroom/ai-alerts`, { headers });
+      const res = await fetch(`${API_BASE}/warroom/ai-alerts`, { headers: gotvAuthHeaders(), credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAlerts(data.alerts || []);
-    } catch { /* ignore */ }
+      setSectionError('alerts', null);
+    } catch (e) {
+      setSectionError('alerts', `Failed to load AI alerts: ${(e as Error).message}`);
+    }
   }, []);
 
   const fetchTeams = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/teams/leaderboard?group_by=ward`, { headers });
+      const res = await fetch(`${API_BASE}/teams/leaderboard?group_by=ward`, { headers: gotvAuthHeaders(), credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setTeams(data.teams || []);
-    } catch { /* ignore */ }
+      setSectionError('teams', null);
+    } catch (e) {
+      setSectionError('teams', `Failed to load team leaderboard: ${(e as Error).message}`);
+    }
   }, []);
 
   const fetchExperiments = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/experiments`, { headers });
+      const res = await fetch(`${API_BASE}/experiments`, { headers: gotvAuthHeaders(), credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setVariants(data.variants || []);
-    } catch { /* ignore */ }
+      setSectionError('experiments', null);
+    } catch (e) {
+      setSectionError('experiments', `Failed to load experiments: ${(e as Error).message}`);
+    }
   }, []);
 
   useEffect(() => {
+    // GOTV data is party-scoped — require an explicit party selection, never a default.
+    if (!partyCode) return;
     fetchAlerts();
     fetchTeams();
     fetchExperiments();
-  }, []);
+  }, [partyCode, fetchAlerts, fetchTeams, fetchExperiments]);
 
   const askGOTV = async () => {
     if (!nlQuery.trim()) return;
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/nl/query`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'POST', headers: gotvAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
         body: JSON.stringify({ query: nlQuery }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setNlAnswer(data.answer);
-    } catch { setNlAnswer('Error processing query'); }
+    } catch (e) { setNlAnswer(`Query failed: ${(e as Error).message}`); }
     setLoading(false);
   };
 
@@ -113,11 +134,15 @@ export default function GOTVPlatform() {
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/simulation`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'POST', headers: gotvAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
         body: JSON.stringify({ scenario: simScenario, additional_count: simCount }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setSimResult(await res.json());
-    } catch { /* ignore */ }
+    } catch (e) {
+      setSectionError('simulation', `Simulation failed: ${(e as Error).message}`);
+    }
     setLoading(false);
   };
 
@@ -133,7 +158,18 @@ export default function GOTVPlatform() {
 
   // ─── Sub-tab renderers ──────────────────────────────────────
 
-  const renderAlerts = () => (
+  const renderAlerts = () => {
+    if (errors.alerts) {
+      return (
+        <AuthoritativeDataUnavailable
+          title="AI alerts unavailable"
+          description="The authoritative GOTV service could not be reached. Stale or placeholder alerts are not shown."
+          error={errors.alerts}
+          onRetry={fetchAlerts}
+        />
+      );
+    }
+    return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">🤖 War Room AI Alerts</h3>
@@ -159,9 +195,21 @@ export default function GOTVPlatform() {
         </Card>
       ))}
     </div>
-  );
+    );
+  };
 
-  const renderTeams = () => (
+  const renderTeams = () => {
+    if (errors.teams) {
+      return (
+        <AuthoritativeDataUnavailable
+          title="Team leaderboard unavailable"
+          description="The authoritative GOTV service could not be reached. Stale or placeholder standings are not shown."
+          error={errors.teams}
+          onRetry={fetchTeams}
+        />
+      );
+    }
+    return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">🏆 Team Leaderboard</h3>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -191,11 +239,19 @@ export default function GOTVPlatform() {
         </tbody>
       </table>
     </div>
-  );
+    );
+  };
 
   const renderSimulation = () => (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">🔮 Digital Twin Simulation</h3>
+      {errors.simulation && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="py-3 flex items-center gap-2 text-red-600 text-sm">
+            <AlertTriangle className="h-4 w-4" /> {errors.simulation}
+          </CardContent>
+        </Card>
+      )}
       <Card>
         <CardContent className="py-4 space-y-4">
           <div className="flex gap-4">
@@ -248,7 +304,18 @@ export default function GOTVPlatform() {
     </div>
   );
 
-  const renderExperiments = () => (
+  const renderExperiments = () => {
+    if (errors.experiments) {
+      return (
+        <AuthoritativeDataUnavailable
+          title="Experiments unavailable"
+          description="The authoritative GOTV service could not be reached. Stale or placeholder variants are not shown."
+          error={errors.experiments}
+          onRetry={fetchExperiments}
+        />
+      );
+    }
+    return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">🔬 A/B Experiments</h3>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -271,7 +338,8 @@ export default function GOTVPlatform() {
         ))}
       </div>
     </div>
-  );
+    );
+  };
 
   const renderExport = () => (
     <div className="space-y-4">
@@ -412,23 +480,38 @@ export default function GOTVPlatform() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
-        {subTabs.map(st => (
-          <Button key={st.key} size="sm" variant={sub === st.key ? 'default' : 'outline'} onClick={() => setSub(st.key)}>
-            <st.icon className="h-3 w-3 mr-1" /> {st.label}
-          </Button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          {subTabs.map(st => (
+            <Button key={st.key} size="sm" variant={sub === st.key ? 'default' : 'outline'} onClick={() => setSub(st.key)}>
+              <st.icon className="h-3 w-3 mr-1" /> {st.label}
+            </Button>
+          ))}
+        </div>
+        <GOTVPartySelector />
       </div>
-      {sub === 'alerts' && renderAlerts()}
-      {sub === 'route' && renderRoute()}
-      {sub === 'teams' && renderTeams()}
-      {sub === 'simulation' && renderSimulation()}
-      {sub === 'ask' && renderAskGOTV()}
-      {sub === 'experiments' && renderExperiments()}
-      {sub === 'export' && renderExport()}
-      {sub === 'crowd' && renderCrowd()}
-      {sub === 'social' && renderSocial()}
-      {sub === 'federated' && renderFederated()}
+
+      {!partyCode && (
+        <AuthoritativeDataUnavailable
+          title="Select a party to continue"
+          description="GOTV platform data is party-scoped. Choose a party above — no default party is assumed."
+        />
+      )}
+
+      {partyCode && (
+        <>
+          {sub === 'alerts' && renderAlerts()}
+          {sub === 'route' && renderRoute()}
+          {sub === 'teams' && renderTeams()}
+          {sub === 'simulation' && renderSimulation()}
+          {sub === 'ask' && renderAskGOTV()}
+          {sub === 'experiments' && renderExperiments()}
+          {sub === 'export' && renderExport()}
+          {sub === 'crowd' && renderCrowd()}
+          {sub === 'social' && renderSocial()}
+          {sub === 'federated' && renderFederated()}
+        </>
+      )}
     </div>
   );
 }

@@ -18,15 +18,23 @@ const PARTY_COLORS: Record<string, string> = {
 };
 
 export default function DashboardScreen() {
-  const [selectedParty, setSelectedParty] = useState('APC');
+  // No party is preselected: an electoral-body app must not default to any
+  // single party. The user picks a party explicitly (or views all parties
+  // neutrally via the unfiltered empty state below).
+  const [selectedParty, setSelectedParty] = useState<string | null>(null);
   const [data, setData] = useState<PartyDashboard | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [checkedIn, setCheckedIn] = useState(false);
   const [checkInStatus, setCheckInStatus] = useState('');
   const [checkingIn, setCheckingIn] = useState(false);
 
   const loadDashboard = useCallback(async () => {
+    if (!selectedParty) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     try {
       const result = await observerApi.partyDashboard(selectedParty);
       setData(result);
