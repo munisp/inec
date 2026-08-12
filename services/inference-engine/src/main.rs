@@ -46,16 +46,22 @@ struct IntegritySigner {
     signing_key: Option<SigningKey>,
     verifying_key: Option<VerifyingKey>,
     key_id: String,
-    service_token: Option<String>,
+    /// Bearer tokens accepted for integrity operations. INTEGRITY_SERVICE_TOKEN
+    /// accepts a comma-separated list ("TOKEN1,TOKEN2") so token rotation is
+    /// possible without downtime; any listed token authorizes.
+    service_tokens: Vec<String>,
 }
 
 impl IntegritySigner {
     fn load() -> Self {
         let key_id = std::env::var("INTEGRITY_SIGNER_KEY_ID")
             .unwrap_or_else(|_| "unconfigured".to_string());
-        let service_token = std::env::var("INTEGRITY_SERVICE_TOKEN")
-            .ok()
-            .filter(|token| !token.trim().is_empty());
+        let service_tokens: Vec<String> = std::env::var("INTEGRITY_SERVICE_TOKEN")
+            .unwrap_or_default()
+            .split(',')
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .collect();
         let signing_key = std::env::var("INTEGRITY_SIGNING_KEY")
             .ok()
             .and_then(|encoded| BASE64_STANDARD.decode(encoded.trim()).ok())
@@ -70,27 +76,32 @@ impl IntegritySigner {
                 .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
                 .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok())
         };
-        Self { signing_key, verifying_key, key_id, service_token }
+        Self { signing_key, verifying_key, key_id, service_tokens }
     }
 
     fn signing_ready(&self) -> bool {
-        self.signing_key.is_some() && self.service_token.is_some() && self.key_id != "unconfigured"
+        self.signing_key.is_some() && !self.service_tokens.is_empty() && self.key_id != "unconfigured"
     }
 
     fn authorizes(&self, headers: &HeaderMap) -> bool {
-        let Some(expected) = self.service_token.as_ref() else {
+        if self.service_tokens.is_empty() {
             return false;
-        };
+        }
         let Some(header) = headers.get("authorization").and_then(|value| value.to_str().ok()) else {
             return false;
         };
         let Some(provided) = header.strip_prefix("Bearer ") else {
             return false;
         };
+        // Constant-time comparison (subtle::ct_eq, length-checked first)
+        // against every configured token; any match authorizes so a rotation
+        // window can serve old and new tokens concurrently.
         let provided_bytes = provided.as_bytes();
-        let expected_bytes = expected.as_bytes();
-        provided_bytes.len() == expected_bytes.len()
-            && bool::from(provided_bytes.ct_eq(expected_bytes))
+        self.service_tokens.iter().any(|expected| {
+            let expected_bytes = expected.as_bytes();
+            provided_bytes.len() == expected_bytes.len()
+                && bool::from(provided_bytes.ct_eq(expected_bytes))
+        })
     }
 }
 
@@ -1073,7 +1084,7 @@ mod integrity_tests {
             verifying_key: Some(signing_key.verifying_key()),
             signing_key: Some(signing_key),
             key_id: "inec-test-key".to_string(),
-            service_token: Some("service-secret".to_string()),
+            service_tokens: vec!["service-secret".to_string()],
         };
         let mut accepted = HeaderMap::new();
         accepted.insert("authorization", HeaderValue::from_static("Bearer service-secret"));
@@ -1128,7 +1139,7 @@ mod integrity_tests {
             signing_key: Some(signer_key),
             verifying_key: None,
             key_id: "integrity-device-test-key".into(),
-            service_token: Some("service-secret".into()),
+            service_tokens: vec!["service-secret".into()],
         };
         let request = signed_device_request(serde_json::json!({
             "voter_pvc_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1149,7 +1160,7 @@ mod integrity_tests {
             signing_key: Some(signer_key),
             verifying_key: None,
             key_id: "integrity-device-test-key".into(),
-            service_token: Some("service-secret".into()),
+            service_tokens: vec!["service-secret".into()],
         };
         let request = signed_device_request(serde_json::json!({"voter_pvc_number": "not-permitted"}));
         let error = verify_device_envelope_payload(&request, &signer).expect_err("sensitive field must fail");
