@@ -195,8 +195,8 @@ inec/
 ### Production hardening (2026-08-12)
 
 An infrastructure/deployment hardening pass was applied on 2026-08-12. See
-`INEC_MOCKWARE_AUDIT_REPORT.md` for the current authoritative audit and
-remediation status; older audit documents (`AI_ML_PRODUCTION_AUDIT.md`,
+`INEC_MOCKWARE_AUDIT_REPORT.md` (in the repository root) for the current
+authoritative audit and remediation status; older audit documents (`AI_ML_PRODUCTION_AUDIT.md`,
 `AUDIT_REPORT.md`) are superseded and retained for historical context only.
 
 Key changes:

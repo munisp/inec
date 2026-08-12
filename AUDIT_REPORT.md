@@ -1,6 +1,6 @@
 # INEC Election Platform — Comprehensive Audit Report
 
-> **SUPERSEDED — 2026-08-12.** This report is retained for historical context only. Its scores and claims predate the current hardening audit; see `INEC_MOCKWARE_AUDIT_REPORT.md` for the authoritative, current assessment and remediation status.
+> **SUPERSEDED — 2026-08-12.** This report is retained for historical context only. Its scores and claims predate the current hardening audit; see `INEC_MOCKWARE_AUDIT_REPORT.md` (in the repository root) for the authoritative, current assessment and remediation status.
 
 
 ## 1. MIDDLEWARE ROBUSTNESS ASSESSMENT (12 Components)

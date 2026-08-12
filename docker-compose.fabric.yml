@@ -11,6 +11,7 @@ networks:
 
 services:
   go-backend:
+    restart: unless-stopped
     depends_on:
       fabric-gateway-health:
         condition: service_completed_successfully
@@ -34,6 +35,12 @@ services:
     volumes:
       - ${FABRIC_SECRETS_DIR:?FABRIC_SECRETS_DIR must point to the protected Fabric client identity directory}:/run/secrets/fabric:ro
 
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
   # This one-shot health gate checks connectivity and identity file presence only.
   # It cannot approve or initialize a consortium and does not create Fabric state.
   fabric-gateway-health:
@@ -56,3 +63,8 @@ services:
     volumes:
       - ${FABRIC_SECRETS_DIR:?FABRIC_SECRETS_DIR must point to the protected Fabric client identity directory}:/run/secrets/fabric:ro
     restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.25"
