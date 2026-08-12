@@ -179,9 +179,9 @@ jobs:
         # hardening PR; gotv-analytics/python-pipeline-optimizer with the
         # python hardening PR. rust-hot-path/geolibre-spatial Dockerfiles land
         # with the rust r95 PR. This matrix requires all six to be present.
-        # fluvio-stream/inference-engine(-v2) are intentionally not built here:
-        # their Dockerfiles pin rust:1.89/1.88 slim-trixie builders and heavy
-        # native deps (fluvio, ONNX Runtime) that blow the CI time budget.
+        # fluvio-stream/inference-engine(-v2) pin rust slim-trixie builders and
+        # heavy native deps (fluvio, ONNX Runtime), so their builds are slow —
+        # they are built here anyway; skipping image builds is not acceptable.
         context:
           - services/gotv-engine
           - services/biometric-rust
@@ -189,6 +189,9 @@ jobs:
           - services/python-pipeline-optimizer
           - services/rust-hot-path
           - services/geolibre-spatial
+          - services/fluvio-stream
+          - services/inference-engine
+          - services/inference-engine-v2
     steps:
       - uses: actions/checkout@v7
       - name: Build ${{ matrix.context }}
