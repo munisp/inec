@@ -286,11 +286,20 @@ impl CancelableBiometrics {
 mod tests {
     use super::*;
 
+    // Tests require a running PostgreSQL instance provided via TEST_DATABASE_URL.
+    // No credentials are committed to the repository — tests skip when unset.
+    async fn test_pool() -> Option<sqlx::PgPool> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        Some(crate::db::init_pool(&url).await.unwrap())
+    }
+
     #[tokio::test]
     #[ignore]
     async fn test_biohash_same_features_same_result() {
-        let pool = crate::db::init_pool("postgresql://ngapp:ngapp123@localhost:5432/ngapp")
-            .await.unwrap();
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
         let cb = CancelableBiometrics::new(pool);
         let tid = cb.create_transform("VIN001", "fingerprint", TransformType::BioHashing).await.unwrap();
 
@@ -305,8 +314,10 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_revoke_blocks_usage() {
-        let pool = crate::db::init_pool("postgresql://ngapp:ngapp123@localhost:5432/ngapp")
-            .await.unwrap();
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
         let cb = CancelableBiometrics::new(pool);
         let tid = cb.create_transform("VIN001", "facial", TransformType::BioHashing).await.unwrap();
 

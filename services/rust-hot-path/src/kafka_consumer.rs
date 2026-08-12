@@ -7,6 +7,11 @@
 //! - Parallel partition consumers (one consumer per partition)
 //! - Cooperative sticky rebalancing (minimal partition movement)
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+#[cfg(feature = "kafka")]
+use std::sync::atomic::Ordering;
+
 use crossbeam::channel::Sender;
 use serde_json;
 
@@ -46,7 +51,7 @@ impl KafkaHotConsumer {
     /// - auto.commit.interval.ms = 1000 (batch commits)
     /// - partition.assignment.strategy = cooperative-sticky
     #[cfg(feature = "kafka")]
-    pub async fn consume_batched(&self, _config: &Config, sender: Sender<Vec<Transaction>>) -> anyhow::Result<()> {
+    pub async fn consume_batched(&self, _config: &Config, sender: Sender<Vec<Transaction>>, errors: Arc<AtomicU64>) -> anyhow::Result<()> {
         use rdkafka::config::ClientConfig;
         use rdkafka::consumer::{Consumer, StreamConsumer};
         use rdkafka::message::Message;
@@ -88,8 +93,18 @@ impl KafkaHotConsumer {
                 Ok(msg) => {
                     // Zero-copy: borrow the payload from the rdkafka buffer.
                     if let Some(payload) = msg.payload() {
-                        if let Some(tx) = deserialize_zero_copy(payload) {
-                            batch.push(tx);
+                        match deserialize_zero_copy(payload) {
+                            Ok(tx) => batch.push(tx),
+                            Err(e) => {
+                                // Never drop silently: count and locate the bad message.
+                                errors.fetch_add(1, Ordering::Relaxed);
+                                tracing::warn!(
+                                    partition = msg.partition(),
+                                    offset = msg.offset(),
+                                    error = %e,
+                                    "kafka message deserialization failed; dropping message"
+                                );
+                            }
                         }
                     }
                     if batch.len() >= self.batch_size {
@@ -111,7 +126,7 @@ impl KafkaHotConsumer {
 
     /// Non-Kafka build: fail loudly instead of simulating consumption.
     #[cfg(not(feature = "kafka"))]
-    pub async fn consume_batched(&self, _config: &Config, _sender: Sender<Vec<Transaction>>) -> anyhow::Result<()> {
+    pub async fn consume_batched(&self, _config: &Config, _sender: Sender<Vec<Transaction>>, _errors: Arc<AtomicU64>) -> anyhow::Result<()> {
         Err(anyhow::anyhow!(
             "kafka consumer unavailable: this binary was built WITHOUT the `kafka` feature (rdkafka); refusing to simulate election hot-path consumption"
         ))
@@ -139,17 +154,21 @@ pub struct ConsumerConfig {
 
 /// Zero-copy message deserialization.
 /// Instead of copying the Kafka payload, we borrow directly from the rdkafka buffer.
+/// Returns the serde error so callers can log/count failures instead of
+/// silently dropping messages.
 #[inline]
-pub fn deserialize_zero_copy(payload: &[u8]) -> Option<Transaction> {
-    serde_json::from_slice(payload).ok()
+pub fn deserialize_zero_copy(payload: &[u8]) -> Result<Transaction, serde_json::Error> {
+    serde_json::from_slice(payload)
 }
 
 /// Batch deserialization with pre-allocated output vector.
+/// Undeserializable payloads are logged and skipped, never silently dropped.
 pub fn deserialize_batch(payloads: &[&[u8]]) -> Vec<Transaction> {
     let mut results = Vec::with_capacity(payloads.len());
-    for payload in payloads {
-        if let Some(tx) = deserialize_zero_copy(payload) {
-            results.push(tx);
+    for (idx, payload) in payloads.iter().enumerate() {
+        match deserialize_zero_copy(payload) {
+            Ok(tx) => results.push(tx),
+            Err(e) => tracing::warn!(batch_index = idx, error = %e, "batch deserialization failed; skipping message"),
         }
     }
     results

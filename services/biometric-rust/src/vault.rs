@@ -383,8 +383,21 @@ impl BiometricVault {
     }
 
     /// Rotate key: generate new key, re-encrypt all templates using old key.
+    ///
+    /// Each template is re-encrypted inside its own transaction so a crash
+    /// mid-rotation leaves every template either fully on the old key or fully
+    /// on the new key — never corrupted. The scan is paged (templates still on
+    /// the old key drop out of the result set as they are rotated), the vault
+    /// never holds every template ID in memory at once, and re-running the
+    /// rotation after a failure simply resumes with the remaining templates.
     pub async fn rotate_key(&self, key_id: &str, actor: &str) -> Result<String, VaultError> {
+        let old_key = self.load_key(key_id).await?;
+        if old_key.is_revoked {
+            return Err(VaultError::KeyRevoked(key_id.to_string()));
+        }
+
         let new_key_id = self.generate_key(KeyPurpose::TemplateEncryption, actor).await?;
+        let new_key = self.load_key(&new_key_id).await?;
 
         // Mark old key as rotated
         sqlx::query(
@@ -395,54 +408,137 @@ impl BiometricVault {
             .execute(&self.pool)
             .await?;
 
-        // Re-encrypt all templates that used the old key
-        let template_ids: Vec<(String,)> = sqlx::query_as(
-            "SELECT template_id FROM vault_templates WHERE key_id = $1"
-        )
-            .bind(key_id)
-            .fetch_all(&self.pool)
-            .await?;
+        const PAGE_SIZE: i64 = 500;
+        let mut processed: i64 = 0;
 
-        for (tid,) in &template_ids {
-            let plaintext = self.decrypt_template(tid, actor).await?;
-            let row = sqlx::query_as::<_, (String, String)>(
-                "SELECT voter_vin, modality FROM vault_templates WHERE template_id = $1"
+        loop {
+            // Paged scan: rotated rows no longer match key_id, so the first
+            // page always contains the next un-rotated templates.
+            let page: Vec<(String, String, String, Vec<u8>, Vec<u8>, String)> = sqlx::query_as(
+                "SELECT template_id, voter_vin, modality, ciphertext, nonce, integrity_hash
+                 FROM vault_templates WHERE key_id = $1
+                 ORDER BY template_id LIMIT $2"
             )
-                .bind(tid)
-                .fetch_one(&self.pool)
+                .bind(key_id)
+                .bind(PAGE_SIZE)
+                .fetch_all(&self.pool)
                 .await?;
 
-            // Re-encrypt with new key
-            let new_key = self.get_active_key(KeyPurpose::TemplateEncryption).await?;
-            let cipher = Aes256Gcm::new_from_slice(&new_key.key_material)
-                .map_err(|e| VaultError::EncryptionFailed(e.to_string()))?;
+            if page.is_empty() {
+                break;
+            }
 
-            let mut nonce_bytes = [0u8; 12];
-            OsRng.fill_bytes(&mut nonce_bytes);
-            let nonce = Nonce::from_slice(&nonce_bytes);
-            let aad = format!("{}:{}", row.0, row.1).into_bytes();
+            for (tid, voter_vin, modality, ciphertext, nonce_vec, integrity_hash) in &page {
+                // Per-template transaction: decrypt with the old key, re-encrypt
+                // with the new key, and persist atomically.
+                let mut tx = self.pool.begin().await?;
 
-            let new_ciphertext = cipher
-                .encrypt(nonce, aes_gcm::aead::Payload { msg: &plaintext, aad: &aad })
-                .map_err(|e| VaultError::EncryptionFailed(e.to_string()))?;
+                // Lock the row and skip if a concurrent rotation already moved it.
+                let current: Option<(String,)> = sqlx::query_as(
+                    "SELECT key_id FROM vault_templates WHERE template_id = $1 FOR UPDATE"
+                )
+                    .bind(tid)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                match current {
+                    Some((current_key,)) if current_key == key_id => {}
+                    _ => {
+                        tx.rollback().await?;
+                        continue;
+                    }
+                }
 
-            let integrity_hash = self.compute_hmac_hex(&new_key.key_material, &new_ciphertext);
+                let plaintext = self.decrypt_with_key(
+                    &old_key,
+                    voter_vin,
+                    modality,
+                    ciphertext,
+                    nonce_vec,
+                    integrity_hash,
+                )?;
 
-            sqlx::query(
-                "UPDATE vault_templates SET key_id = $1, ciphertext = $2, nonce = $3, integrity_hash = $4, version = version + 1, updated_at = NOW()
-                 WHERE template_id = $5"
-            )
-                .bind(&new_key_id)
-                .bind(&new_ciphertext)
-                .bind(&nonce_bytes[..])
-                .bind(&integrity_hash)
-                .bind(tid)
-                .execute(&self.pool)
-                .await?;
+                let cipher = Aes256Gcm::new_from_slice(&new_key.key_material)
+                    .map_err(|e| VaultError::EncryptionFailed(e.to_string()))?;
+
+                let mut nonce_bytes = [0u8; 12];
+                OsRng.fill_bytes(&mut nonce_bytes);
+                let nonce = Nonce::from_slice(&nonce_bytes);
+                let aad = format!("{}:{}", voter_vin, modality).into_bytes();
+
+                let new_ciphertext = cipher
+                    .encrypt(nonce, aes_gcm::aead::Payload { msg: &plaintext, aad: &aad })
+                    .map_err(|e| VaultError::EncryptionFailed(e.to_string()))?;
+
+                let new_integrity = self.compute_hmac_hex(&new_key.key_material, &new_ciphertext);
+
+                sqlx::query(
+                    "UPDATE vault_templates SET key_id = $1, ciphertext = $2, nonce = $3, integrity_hash = $4, version = version + 1, updated_at = NOW()
+                     WHERE template_id = $5"
+                )
+                    .bind(&new_key_id)
+                    .bind(&new_ciphertext)
+                    .bind(&nonce_bytes[..])
+                    .bind(&new_integrity)
+                    .bind(tid)
+                    .execute(&mut *tx)
+                    .await?;
+
+                tx.commit().await?;
+                processed += 1;
+            }
+
+            // Audit progress after each page so long rotations are observable.
+            self.log_audit(
+                "rotate_key_progress",
+                Some(key_id),
+                None,
+                None,
+                actor,
+                true,
+                Some(&format!("templates_processed={}", processed)),
+            ).await;
         }
 
-        self.log_audit("rotate_key", Some(key_id), None, None, actor, true, None).await;
+        self.log_audit(
+            "rotate_key",
+            Some(key_id),
+            None,
+            None,
+            actor,
+            true,
+            Some(&format!("new_key_id={} templates_processed={}", new_key_id, processed)),
+        ).await;
         Ok(new_key_id)
+    }
+
+    /// Verify integrity and decrypt template material with a specific key.
+    /// Used by key rotation, which loads rows directly inside a transaction.
+    fn decrypt_with_key(
+        &self,
+        key: &VaultKey,
+        voter_vin: &str,
+        modality: &str,
+        ciphertext: &[u8],
+        nonce_vec: &[u8],
+        integrity_hash: &str,
+    ) -> Result<Vec<u8>, VaultError> {
+        let expected_hmac = self.compute_hmac_hex(&key.key_material, ciphertext);
+        if expected_hmac != integrity_hash {
+            return Err(VaultError::IntegrityCheckFailed);
+        }
+
+        let cipher = Aes256Gcm::new_from_slice(&key.key_material)
+            .map_err(|e| VaultError::DecryptionFailed(e.to_string()))?;
+
+        let nonce_arr: [u8; 12] = nonce_vec
+            .try_into()
+            .map_err(|_| VaultError::DecryptionFailed("invalid nonce length".to_string()))?;
+        let nonce = Nonce::from_slice(&nonce_arr);
+        let aad = format!("{}:{}", voter_vin, modality).into_bytes();
+
+        cipher
+            .decrypt(nonce, aes_gcm::aead::Payload { msg: ciphertext, aad: &aad })
+            .map_err(|e| VaultError::DecryptionFailed(e.to_string()))
     }
 
     /// Revoke a key — templates encrypted with this key can no longer be decrypted.
@@ -455,6 +551,12 @@ impl BiometricVault {
             .await?;
 
         self.log_audit("revoke_key", Some(key_id), None, None, actor, true, None).await;
+        Ok(())
+    }
+
+    /// Probe PostgreSQL reachability for health/readiness checks.
+    pub async fn health_check(&self) -> Result<(), VaultError> {
+        sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
     }
 
@@ -657,13 +759,20 @@ impl Drop for BiometricVault {
 mod tests {
     use super::*;
 
-    // Tests require a running PostgreSQL instance.
-    // Run with: DATABASE_URL=postgresql://... cargo test -- --ignored
+    // Tests require a running PostgreSQL instance provided via TEST_DATABASE_URL.
+    // Run with: TEST_DATABASE_URL=postgresql://... cargo test -- --ignored
+    // No credentials are committed to the repository — tests skip when unset.
+    async fn test_pool() -> Option<sqlx::PgPool> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        Some(crate::db::init_pool(&url).await.unwrap())
+    }
     #[tokio::test]
     #[ignore]
     async fn test_encrypt_decrypt_roundtrip() {
-        let pool = crate::db::init_pool("postgresql://ngapp:ngapp123@localhost:5432/ngapp")
-            .await.unwrap();
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
         let vault = BiometricVault::new(pool).await.unwrap();
         let template_data = b"fingerprint_minutiae_data_here";
 
@@ -683,8 +792,10 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_key_rotation() {
-        let pool = crate::db::init_pool("postgresql://ngapp:ngapp123@localhost:5432/ngapp")
-            .await.unwrap();
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
         let vault = BiometricVault::new(pool).await.unwrap();
         let template_data = b"test_template";
 
@@ -704,8 +815,10 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_revoked_key_blocks_decrypt() {
-        let pool = crate::db::init_pool("postgresql://ngapp:ngapp123@localhost:5432/ngapp")
-            .await.unwrap();
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
         let vault = BiometricVault::new(pool).await.unwrap();
         let template_data = b"test_template";
 
@@ -723,8 +836,10 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_audit_trail() {
-        let pool = crate::db::init_pool("postgresql://ngapp:ngapp123@localhost:5432/ngapp")
-            .await.unwrap();
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
         let vault = BiometricVault::new(pool).await.unwrap();
         let _ = vault.encrypt_template("VIN005", "fingerprint", b"data", "officer1").await;
 

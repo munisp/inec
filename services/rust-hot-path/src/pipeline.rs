@@ -77,7 +77,9 @@ impl Config {
             fluvio_topics: env_str("FLUVIO_TOPICS", "inec.stream.results,inec.stream.ballots")
                 .split(',').map(|s| s.to_string()).collect(),
             fluvio_workers: env_usize("FLUVIO_WORKERS", 8),
-            channel_capacity: env_usize("CHANNEL_CAPACITY", 1_000_000),
+            // Default 5k batches (not 1M): a million-deep buffer of 10k-message
+            // batches is an unbounded-memory footgun, not backpressure.
+            channel_capacity: env_usize("CHANNEL_CAPACITY", 5_000),
         }
     }
 }
@@ -101,6 +103,31 @@ pub struct Transaction {
     pub data: serde_json::Value,
 }
 
+/// Per-sink outcome counters used by /readyz to distinguish a sink that has
+/// never been exercised from one that is always failing.
+#[derive(Default)]
+pub struct SinkStats {
+    pub successes: AtomicU64,
+    pub errors: AtomicU64,
+}
+
+impl SinkStats {
+    fn record(&self, ok: bool, n: u64) {
+        if ok {
+            self.successes.fetch_add(n, Ordering::Relaxed);
+        } else {
+            self.errors.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> (u64, u64) {
+        (
+            self.successes.load(Ordering::Relaxed),
+            self.errors.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// The main engine coordinating all pipeline stages.
 pub struct Engine {
     config: Arc<Config>,
@@ -110,6 +137,12 @@ pub struct Engine {
     consumed: Arc<AtomicU64>,
     processed: Arc<AtomicU64>,
     errors: Arc<AtomicU64>,
+
+    // Per-sink outcomes for readiness reporting (/readyz).
+    sink_redis: Arc<SinkStats>,
+    sink_tigerbeetle: Arc<SinkStats>,
+    sink_opensearch: Arc<SinkStats>,
+    sink_fluvio: Arc<SinkStats>,
 
     // Internal channels (lock-free MPMC)
     tx_sender: channel::Sender<Vec<Transaction>>,
@@ -135,6 +168,10 @@ impl Engine {
             consumed: Arc::new(AtomicU64::new(0)),
             processed: Arc::new(AtomicU64::new(0)),
             errors: Arc::new(AtomicU64::new(0)),
+            sink_redis: Arc::new(SinkStats::default()),
+            sink_tigerbeetle: Arc::new(SinkStats::default()),
+            sink_opensearch: Arc::new(SinkStats::default()),
+            sink_fluvio: Arc::new(SinkStats::default()),
             tx_sender,
             tx_receiver,
         })
@@ -153,8 +190,9 @@ impl Engine {
         let kafka_handle = tokio::spawn({
             let config = config.clone();
             let sender = sender.clone();
+            let errors = self.errors.clone();
             async move {
-                kafka.consume_batched(&config, sender).await
+                kafka.consume_batched(&config, sender, errors).await
             }
         });
 
@@ -176,6 +214,10 @@ impl Engine {
             let consumed = self.consumed.clone();
             let processed = self.processed.clone();
             let errors = self.errors.clone();
+            let sink_redis = self.sink_redis.clone();
+            let sink_tigerbeetle = self.sink_tigerbeetle.clone();
+            let sink_opensearch = self.sink_opensearch.clone();
+            let sink_fluvio = self.sink_fluvio.clone();
 
             handles.push(tokio::spawn(async move {
                 loop {
@@ -196,10 +238,14 @@ impl Engine {
                             // Log any errors but don't stop processing;
                             // every sink failure is counted loudly.
                             let mut failed = false;
-                            if let Err(e) = r1 { failed = true; tracing::warn!(worker_id, "redis error: {}", e); }
-                            if let Err(e) = r2 { failed = true; tracing::warn!(worker_id, "tb error: {}", e); }
-                            if let Err(e) = r3 { failed = true; tracing::warn!(worker_id, "os error: {}", e); }
-                            if let Err(e) = r4 { failed = true; tracing::warn!(worker_id, "fluvio error: {}", e); }
+                            if let Err(e) = &r1 { failed = true; tracing::warn!(worker_id, "redis error: {}", e); }
+                            if let Err(e) = &r2 { failed = true; tracing::warn!(worker_id, "tb error: {}", e); }
+                            if let Err(e) = &r3 { failed = true; tracing::warn!(worker_id, "os error: {}", e); }
+                            if let Err(e) = &r4 { failed = true; tracing::warn!(worker_id, "fluvio error: {}", e); }
+                            sink_redis.record(r1.is_ok(), batch_len);
+                            sink_tigerbeetle.record(r2.is_ok(), batch_len);
+                            sink_opensearch.record(r3.is_ok(), batch_len);
+                            sink_fluvio.record(r4.is_ok(), batch_len);
 
                             if failed {
                                 errors.fetch_add(batch_len, Ordering::Relaxed);
@@ -247,6 +293,41 @@ impl Engine {
              inec_hot_path_tps {:.0}\n",
             if uptime > 0.0 { processed as f64 / uptime } else { 0.0 }
         )
+    }
+
+    /// Readiness snapshot: per-sink outcomes plus the global error counter.
+    /// A sink that has recorded errors but never a success is "always-Err" —
+    /// the service is alive but NOT ready, and /readyz must report non-200.
+    pub fn readiness(&self) -> (bool, serde_json::Value) {
+        let sink_json = |name: &str, s: &SinkStats| {
+            let (ok, err) = s.snapshot();
+            serde_json::json!({
+                "sink": name,
+                "successes": ok,
+                "errors": err,
+                // Not exercised yet counts as available; always-Err does not.
+                "available": err == 0 || ok > 0,
+            })
+        };
+
+        let sinks = serde_json::json!([
+            sink_json("redis", &self.sink_redis),
+            sink_json("tigerbeetle", &self.sink_tigerbeetle),
+            sink_json("opensearch", &self.sink_opensearch),
+            sink_json("fluvio", &self.sink_fluvio),
+        ]);
+
+        let ready = sinks
+            .as_array()
+            .map(|arr| arr.iter().all(|s| s["available"].as_bool().unwrap_or(false)))
+            .unwrap_or(false);
+
+        let body = serde_json::json!({
+            "ready": ready,
+            "errors_total": self.errors.load(Ordering::Relaxed),
+            "sinks": sinks,
+        });
+        (ready, body)
     }
 
     pub fn stats(&self) -> serde_json::Value {

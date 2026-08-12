@@ -10,8 +10,10 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use axum::{
-    extract::{Json, State},
+    extract::{Json, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -30,6 +32,44 @@ use models::{AnomalyModel, FaceModel, LivenessModel};
 use neo4j_client::Neo4jClient;
 
 // ── Application State ──
+
+/// API-key authentication for all inference endpoints (including
+/// /face/compare, /liveness/predict, /anomaly/batch). /health stays public
+/// for orchestrator probes. Fail-closed: when INFERENCE_API_KEY is unset the
+/// service returns 503 rather than serving biometric inference to anyone.
+async fn inference_api_key_auth(req: Request, next: Next) -> Response {
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
+    let expected_key = std::env::var("INFERENCE_API_KEY").unwrap_or_default();
+    if expected_key.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "INFERENCE_API_KEY not configured; refusing to serve unauthenticated requests"
+            })),
+        )
+            .into_response();
+    }
+
+    let authorized = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == expected_key)
+        .unwrap_or(false);
+
+    if !authorized {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "missing or invalid x-api-key" })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
+}
 
 /// The actual anomaly-model artifact served by this binary. The response
 /// label "xgboost-onnx-v1.0" describes this file (XGBoost, ONNX format).
@@ -339,7 +379,10 @@ async fn batch_predict(
         let state_clone = state.clone();
         handles.push(tokio::spawn(async move {
             let s = state_clone.read().await;
-            let model = s.anomaly_model.as_ref().unwrap();
+            // Model may be unavailable (ORT_DYLIB_PATH unset / load failure) —
+            // surface 503 instead of panicking the spawned task.
+            let model = s.anomaly_model.as_ref()
+                .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
             let mut chunk_results = Vec::with_capacity(chunk.len());
 
             for pu in &chunk {
@@ -681,6 +724,7 @@ async fn main() {
 		.route("/liveness/predict", post(predict_liveness))
         .route("/graph/neighborhood", post(query_graph))
         .route("/gps/spoof-detect", post(detect_gps_spoof))
+        .layer(middleware::from_fn(inference_api_key_auth))
         .layer({
             let origins_str = std::env::var("CORS_ORIGINS")
                 .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());

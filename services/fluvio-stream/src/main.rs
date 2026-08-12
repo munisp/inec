@@ -1,5 +1,10 @@
-use actix_web::{web, App, HttpServer, HttpResponse, middleware};
-use fluvio::{Fluvio, FluvioConfig, TopicProducer, ConsumerConfig, Offset};
+use actix_web::{
+    body::BoxBody,
+    dev::{ServiceRequest, ServiceResponse},
+    middleware::{self, Next},
+    web, App, Error, HttpResponse, HttpServer,
+};
+use fluvio::{Fluvio, FluvioConfig, TopicProducerPool, ConsumerConfig, Offset};
 use fluvio::metadata::topic::TopicSpec;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -67,10 +72,16 @@ const ALL_TOPICS: &[&str] = &[
     TOPIC_AUDIT,
 ];
 
+/// Hard cap on records returned per /consume request.
+const MAX_CONSUME_LIMIT: usize = 1000;
+/// Maximum time a /consume request may spend reading from the broker.
+const CONSUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 // Shared application state.
 struct AppState {
     fluvio: Fluvio,
-    producers: RwLock<std::collections::HashMap<String, TopicProducer>>,
+    // TopicProducer<SpuSocketPool> is not Clone in fluvio 0.24 — shared via Arc.
+    producers: RwLock<std::collections::HashMap<String, Arc<TopicProducerPool>>>,
     stats: RwLock<StreamStats>,
 }
 
@@ -116,6 +127,7 @@ async fn produce_event(
         None => {
             match state.fluvio.topic_producer(topic).await {
                 Ok(p) => {
+                    let p = Arc::new(p);
                     let mut producers = state.producers.write().await;
                     producers.insert(topic.clone(), p.clone());
                     p
@@ -157,43 +169,86 @@ async fn consume_events(
 ) -> HttpResponse {
     let topic = &query.topic;
     let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(100);
+    let limit = query.limit.unwrap_or(100).min(MAX_CONSUME_LIMIT);
 
+    // All managed topics are created with a single partition (see
+    // ensure_topics), so partition 0 holds the full log.
     let consumer = match state
         .fluvio
-        .consumer_with_config(
-            ConsumerConfig::builder()
-                .topic(topic)
-                .offset_start(Offset::absolute(offset).unwrap_or(Offset::beginning()))
-                .build()
-                .expect("consumer config"),
-        )
+        .partition_consumer(topic.clone(), 0)
         .await
     {
         Ok(c) => c,
         Err(e) => {
+            error!("Failed to create consumer for topic {}: {}", topic, e);
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Consumer creation failed: {}", e)
             }));
         }
     };
 
-    let mut records = Vec::new();
-    use futures_lite::StreamExt;
-    let mut stream = consumer.stream(Offset::absolute(offset).unwrap_or(Offset::beginning())).await.unwrap();
-    
-    while let Some(Ok(record)) = stream.next().await {
-        let value: serde_json::Value = serde_json::from_slice(record.value())
-            .unwrap_or(serde_json::Value::String(String::from_utf8_lossy(record.value()).to_string()));
-        records.push(serde_json::json!({
-            "offset": record.offset(),
-            "key": String::from_utf8_lossy(record.key().unwrap_or(&[])),
-            "value": value,
-            "timestamp": record.timestamp(),
-        }));
-        if records.len() >= limit {
-            break;
+    let consumer_config = match ConsumerConfig::builder().build() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Invalid consumer config for topic {}: {}", topic, e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Invalid consumer config: {}", e)
+            }));
         }
+    };
+
+    let mut records = Vec::new();
+    use futures_util::StreamExt;
+    let offset_start = Offset::absolute(offset).unwrap_or_else(|_| Offset::beginning());
+    let mut stream = match consumer
+        .stream_with_config(offset_start, consumer_config)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to open consumer stream for topic {}: {}", topic, e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Consumer stream failed: {}", e)
+            }));
+        }
+    };
+
+    // Bounded read: a topic with fewer records than `limit` (or a stalled
+    // broker) must not hang the request forever. On timeout we return the
+    // records collected so far and flag the response as partial.
+    let timed_out = tokio::time::timeout(CONSUME_TIMEOUT, async {
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(record) => {
+                    let value: serde_json::Value = serde_json::from_slice(record.value())
+                        .unwrap_or(serde_json::Value::String(
+                            String::from_utf8_lossy(record.value()).to_string(),
+                        ));
+                    records.push(serde_json::json!({
+                        "offset": record.offset(),
+                        "key": String::from_utf8_lossy(record.key().unwrap_or(&[])),
+                        "value": value,
+                        "timestamp": record.timestamp(),
+                    }));
+                    if records.len() >= limit {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("Consumer stream error on topic {}: {}", topic, e);
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .is_err();
+
+    if timed_out {
+        warn!(
+            "Consume on topic {} timed out after {:?}; returning {} partial records",
+            topic, CONSUME_TIMEOUT, records.len()
+        );
     }
 
     let mut stats = state.stats.write().await;
@@ -203,6 +258,7 @@ async fn consume_events(
         "topic": topic,
         "records": records,
         "count": records.len(),
+        "partial": timed_out,
     }))
 }
 
@@ -228,6 +284,47 @@ async fn health_check(state: web::Data<Arc<AppState>>) -> HttpResponse {
 async fn get_stats(state: web::Data<Arc<AppState>>) -> HttpResponse {
     let stats = state.stats.read().await;
     HttpResponse::Ok().json(serde_json::json!(*stats))
+}
+
+/// API-key authentication for all endpoints. /health stays public for
+/// orchestrator probes. Fail-closed: when FLUVIO_STREAM_API_KEY is unset the
+/// service returns 503 rather than allowing forged audit/election events to
+/// be produced by unauthenticated callers.
+async fn api_key_auth(
+    req: ServiceRequest,
+    next: Next<BoxBody>,
+) -> Result<ServiceResponse<BoxBody>, Error> {
+    if req.path() == "/health" {
+        return next.call(req).await.map(ServiceResponse::map_into_boxed_body);
+    }
+
+    let expected_key = std::env::var("FLUVIO_STREAM_API_KEY").unwrap_or_default();
+    if expected_key.is_empty() {
+        return Ok(req.into_response(
+            HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({
+                    "error": "FLUVIO_STREAM_API_KEY not configured; refusing to serve unauthenticated requests"
+                }))
+                .map_into_boxed_body(),
+        ));
+    }
+
+    let authorized = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == expected_key)
+        .unwrap_or(false);
+
+    if !authorized {
+        return Ok(req.into_response(
+            HttpResponse::Unauthorized()
+                .json(serde_json::json!({ "error": "missing or invalid x-api-key" }))
+                .map_into_boxed_body(),
+        ));
+    }
+
+    next.call(req).await.map(ServiceResponse::map_into_boxed_body)
 }
 
 // Ensure all INEC topics exist.
@@ -285,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(state.clone()))
+            .wrap(middleware::from_fn(api_key_auth))
             .route("/health", web::get().to(health_check))
             .route("/stats", web::get().to(get_stats))
             .route("/topics", web::get().to(list_topics))

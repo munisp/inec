@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// PostgreSQL persistence client for volunteer/ride state.
 #[derive(Clone)]
@@ -12,6 +14,11 @@ pub struct PersistenceLayer {
     pg_url: Option<String>,
     redis_url: Option<String>,
     client: Option<reqwest::Client>,
+    /// Count of failed persistence writes. Responses claim "persistent" when
+    /// the layer is enabled, so failures must be loud and observable: every
+    /// failed write is logged and counted, and /health reports "degraded"
+    /// while this counter is non-zero.
+    write_failures: Arc<AtomicU64>,
 }
 
 impl PersistenceLayer {
@@ -23,6 +30,7 @@ impl PersistenceLayer {
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
                 .unwrap_or_default()),
+            write_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -30,36 +38,57 @@ impl PersistenceLayer {
         self.pg_url.is_some()
     }
 
+    /// Number of persistence writes that have failed since startup.
+    pub fn write_failures(&self) -> u64 {
+        self.write_failures.load(Ordering::Relaxed)
+    }
+
+    fn record_failure(&self, url: &str, err: &str) {
+        let n = self.write_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::warn!(url = %url, error = %err, total_failures = n, "persistence write failed");
+    }
+
+    /// POST JSON, logging and counting any failure instead of discarding it.
+    async fn post_json(&self, url: String, body: serde_json::Value) {
+        if let Some(ref client) = self.client {
+            match client.post(&url).json(&body).send().await {
+                Ok(resp) if resp.status().is_success() => {}
+                Ok(resp) => {
+                    self.record_failure(&url, &format!("HTTP {}", resp.status()))
+                }
+                Err(e) => self.record_failure(&url, &e.to_string()),
+            }
+        }
+    }
+
     /// Persist volunteer position to PostgreSQL via GOTV backend API.
     pub async fn save_volunteer_position(&self, vol_id: &str, party_id: i64, lat: f64, lng: f64) {
-        if let Some(ref _url) = self.pg_url {
-            if let Some(ref client) = self.client {
-                let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
-                let _ = client.post(format!("{}/gotv/volunteers/{}/location", api_url, vol_id))
-                    .json(&serde_json::json!({
-                        "latitude": lat,
-                        "longitude": lng,
-                        "party_id": party_id,
-                    }))
-                    .send()
-                    .await;
-            }
+        if self.pg_url.is_some() {
+            let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
+            self.post_json(
+                format!("{}/gotv/volunteers/{}/location", api_url, vol_id),
+                serde_json::json!({
+                    "latitude": lat,
+                    "longitude": lng,
+                    "party_id": party_id,
+                }),
+            )
+            .await;
         }
     }
 
     /// Save ride match to persistent store.
     pub async fn save_ride_match(&self, ride_id: &str, volunteer_id: &str, distance_km: f64) {
-        if let Some(ref _url) = self.pg_url {
-            if let Some(ref client) = self.client {
-                let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
-                let _ = client.post(format!("{}/gotv/rides/{}/match", api_url, ride_id))
-                    .json(&serde_json::json!({
-                        "volunteer_id": volunteer_id,
-                        "distance_km": distance_km,
-                    }))
-                    .send()
-                    .await;
-            }
+        if self.pg_url.is_some() {
+            let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
+            self.post_json(
+                format!("{}/gotv/rides/{}/match", api_url, ride_id),
+                serde_json::json!({
+                    "volunteer_id": volunteer_id,
+                    "distance_km": distance_km,
+                }),
+            )
+            .await;
         }
     }
 
@@ -67,9 +96,12 @@ impl PersistenceLayer {
     pub async fn cache_volunteer_position(&self, vol_id: &str, lat: f64, lng: f64) {
         if let Some(ref redis_url) = self.redis_url {
             if let Some(ref client) = self.client {
-                let _ = client.post(format!("{}/GEOADD/gotv:volunteer_positions/{}/{}/{}", redis_url, lng, lat, vol_id))
-                    .send()
-                    .await;
+                let url = format!("{}/GEOADD/gotv:volunteer_positions/{}/{}/{}", redis_url, lng, lat, vol_id);
+                match client.post(&url).send().await {
+                    Ok(resp) if resp.status().is_success() => {}
+                    Ok(resp) => self.record_failure(&url, &format!("HTTP {}", resp.status())),
+                    Err(e) => self.record_failure(&url, &e.to_string()),
+                }
             }
         }
     }
