@@ -53,7 +53,9 @@ class Config:
     REDIS_POOL_SIZE = int(os.getenv("REDIS_POOL_SIZE", "100"))
     
     # Postgres
-    PG_DSN = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
+    # SECURITY: no hardcoded DSN fallback — DATABASE_URL is mandatory and the
+    # service fails fast at startup when it is unset.
+    PG_DSN = os.getenv("DATABASE_URL", "").strip()
     PG_POOL_SIZE = int(os.getenv("PG_POOL_SIZE", "50"))
     PG_BATCH_SIZE = int(os.getenv("PG_BATCH_SIZE", "10000"))
     
@@ -88,6 +90,10 @@ pipeline_engine: Optional["PipelineEngine"] = None
 async def lifespan(app: FastAPI):
     global pipeline_engine
     cfg = Config()
+    if not cfg.PG_DSN:
+        raise RuntimeError(
+            "DATABASE_URL is required for python-pipeline-optimizer; refusing to start"
+        )
     pipeline_engine = PipelineEngine(cfg)
     await pipeline_engine.start()
     log.info("pipeline optimizer started", port=cfg.PORT, workers=cfg.WORKERS)
@@ -117,23 +123,37 @@ class PipelineEngine:
         
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=cfg.QUEUE_SIZE)
         self._running = False
-    
+        # Keep strong references to every spawned task so they are not
+        # garbage-collected mid-flight, and so stop() can cancel them.
+        self._tasks: set[asyncio.Task] = set()
+
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
     async def start(self):
         self._running = True
         # Start all pipeline components
         await self.lakehouse.initialize()
         await self.redis.connect()
         await self.pg.connect()
-        
+
         # Start worker tasks
         for i in range(self.cfg.WORKERS):
-            asyncio.create_task(self._worker(i))
-        
+            self._spawn(self._worker(i))
+
         # Start Kafka consumer
-        asyncio.create_task(self.kafka.consume(self._queue))
-    
+        self._spawn(self.kafka.consume(self._queue))
+
     async def stop(self):
         self._running = False
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
         await self.redis.close()
         await self.pg.close()
     
