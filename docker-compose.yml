@@ -6,6 +6,7 @@ services:
   # Caddy proxies /api traffic to this service, then the attachment invokes the
   # OpenAppSec agent before APISIX forwards the request to platform services.
   apisix:
+    restart: unless-stopped
     depends_on:
       openappsec-agent:
         condition: service_started
@@ -23,7 +24,14 @@ services:
   # NOTE: the etcd service was removed (2026-08-12 hardening). APISIX runs in
   # standalone data-plane mode (config/apisix), so etcd was an orphaned,
   # unauthenticated service published on host port 2379.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
   biometric-go:
+    restart: unless-stopped
     build:
       context: ./services/biometric-go
       dockerfile: Dockerfile
@@ -43,15 +51,25 @@ services:
       retries: 3
       test:
       - CMD
-      - curl
-      - -f
+      - /usr/bin/busybox
+      - wget
+      - -q
+      - -O
+      - /dev/null
       - http://localhost:8092/health
       timeout: 5s
     networks:
     - inec-network
     ports:
     - 8092:8092
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
   biometric-python:
+    restart: unless-stopped
     build:
       context: ./services/biometric-python
       dockerfile: Dockerfile
@@ -70,15 +88,22 @@ services:
       retries: 3
       test:
       - CMD
-      - curl
-      - -f
-      - http://localhost:8090/health
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8090/health')
       timeout: 5s
     networks:
     - inec-network
     ports:
     - 8090:8090
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+
   biometric-rust:
+    restart: unless-stopped
     build:
       context: ./services/biometric-rust
       dockerfile: Dockerfile
@@ -98,7 +123,14 @@ services:
     - inec-network
     ports:
     - 8091:8091
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
   dapr-sidecar:
+    restart: unless-stopped
     command:
     - ./daprd
     - --app-id=inec-backend
@@ -114,6 +146,12 @@ services:
     network_mode: service:go-backend
     volumes:
     - ./config/dapr/components:/components
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
   fluvio-sc:
     command: run sc --local /fluvio/metadata
     image: infinyon/fluvio:latest
@@ -124,6 +162,12 @@ services:
     restart: unless-stopped
     volumes:
     - fluvio-data:/fluvio
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
   fluvio-stream:
     build:
       context: ./services/fluvio-stream
@@ -151,6 +195,12 @@ services:
     restart: on-failure
     volumes:
     - fluvio-bridge-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
   frontend:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -166,6 +216,7 @@ services:
     - inec-network
     ports:
     - 3000:80
+
   go-backend:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -262,6 +313,7 @@ services:
     - "8088"
     volumes:
     - app-data:/data
+
   document-ai:
     build:
       context: ./services/document-ai
@@ -301,6 +353,12 @@ services:
     networks:
     - inec-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+
   inference-engine:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     mem_limit: 2G
@@ -332,6 +390,7 @@ services:
     volumes:
     - ./ml/models:/app/models:ro
     restart: unless-stopped
+
   kafka:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -357,6 +416,7 @@ services:
     - 29092:29092
     volumes:
     - kafka-data:/var/lib/kafka/data
+
   kafka-rest:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -372,6 +432,7 @@ services:
     - inec-network
     ports:
     - 8082:8082
+
   keycloak:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -404,6 +465,7 @@ services:
     volumes:
     - ./config/keycloak/inec-realm.json:/opt/keycloak/data/import-template/inec-realm.json:ro
     - ./config/keycloak/import-realm.sh:/opt/keycloak/import-realm.sh:ro
+
   lakehouse:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -436,7 +498,9 @@ services:
     - 127.0.0.1:8093:8090
     volumes:
     - lakehouse-data:/data
+
   sedona-spatial:
+    restart: unless-stopped
     build:
       context: ./services/sedona-spatial
       dockerfile: Dockerfile
@@ -451,6 +515,12 @@ services:
     - inec-network
     ports:
     - 8212:8212
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
   permify:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -465,6 +535,7 @@ services:
     - 3478:3478
     volumes:
     - permify-data:/tmp/permify
+
   pg-primary:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -492,6 +563,7 @@ services:
     volumes:
     - pg-primary-data:/var/lib/postgresql/data
     - ./config/postgres/primary-init.sh:/docker-entrypoint-initdb.d/01-replication.sh
+
   pg-replica:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -523,6 +595,7 @@ services:
     volumes:
     - pg-replica-data:/var/lib/postgresql/data
     - ./config/postgres/replica-entrypoint.sh:/replica-entrypoint.sh
+
   pgpool:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -562,6 +635,7 @@ services:
     - ./config/pgpool/pgpool.conf:/etc/pgpool-II/pgpool.conf
     - ./config/pgpool/pool_hba.conf:/etc/pgpool-II/pool_hba.conf
     - ./config/pgpool/failover.sh:/etc/pgpool-II/failover.sh
+
   redis:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -573,6 +647,7 @@ services:
     - inec-network
     volumes:
     - redis-data:/data
+
   temporal:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -595,6 +670,7 @@ services:
     - inec-network
     ports:
     - 7233:7233
+
   temporal-ui:
     # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
@@ -609,6 +685,7 @@ services:
     - inec-network
     ports:
     - 8233:8080
+
   tigerbeetle:
     cap_add:
     - IPC_LOCK
@@ -627,6 +704,12 @@ services:
     - seccomp=unconfined
     volumes:
     - tigerbeetle-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
   # Official OpenAppSec standalone services. The agent is paired with the
   # APISIX attachment above; it is not an application-level inspection API.
   openappsec-agent:
@@ -647,6 +730,12 @@ services:
     - ./data/openappsec/agent:/etc/cp/data
     - ./logs/openappsec:/var/log/nano_agent
     - ./config/openappsec/policy.yaml:/ext/appsec/local_policy.yaml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
   openappsec-smartsync:
     environment:
     - SHARED_STORAGE_HOST=openappsec-shared-storage
@@ -654,6 +743,12 @@ services:
     networks:
     - inec-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
   openappsec-shared-storage:
     image: ghcr.io/openappsec/smartsync-shared-files:${APPSEC_VERSION:?APPSEC_VERSION must be set}
     ipc: host
@@ -663,6 +758,12 @@ services:
     user: root
     volumes:
     - openappsec-shared-storage:/db
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
   openappsec-tuning:
     depends_on:
     - openappsec-db
@@ -678,6 +779,12 @@ services:
     restart: unless-stopped
     volumes:
     - ./config/openappsec/agent-config:/etc/cp/conf
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+
   openappsec-db:
     environment:
     - POSTGRES_DB=openappsec
@@ -689,6 +796,12 @@ services:
     restart: unless-stopped
     volumes:
     - openappsec-db-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+
   caddy:
     build:
       context: ./caddy
@@ -712,6 +825,11 @@ services:
     environment:
       # Admin API must never be reachable off-loopback.
       - CADDY_ADMIN=127.0.0.1:2019
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
 
   geolibre-web:
     build:
@@ -720,6 +838,11 @@ services:
     restart: always
     networks:
       - inec-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
 
   geolibre-collab:
     build:
@@ -728,9 +851,13 @@ services:
     restart: always
     networks:
       - inec-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
 
   # ── Next-Generation Innovation Services ─────────────────────────────────────
-
   ai-anomaly-detection:
     build:
       context: ./services/ai-anomaly-detection
@@ -755,6 +882,11 @@ services:
       - -c
       - import urllib.request; urllib.request.urlopen('http://localhost:8200/api/v1/anomaly/health')
       timeout: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   homomorphic-tally:
     build:
@@ -765,6 +897,11 @@ services:
     environment:
       - TALLY_DECRYPT_TOKEN=${TALLY_DECRYPT_TOKEN:?TALLY_DECRYPT_TOKEN must be set}
       - TALLY_SUBMIT_TOKEN=${TALLY_SUBMIT_TOKEN:?TALLY_SUBMIT_TOKEN must be set}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
 
   federated-fraud-detection:
     build:
@@ -774,6 +911,11 @@ services:
       - inec-network
     environment:
       - FEDERATED_SUBMIT_KEY=${FEDERATED_SUBMIT_KEY:?FEDERATED_SUBMIT_KEY must be set}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   digital-twin-simulation:
     build:
@@ -783,6 +925,11 @@ services:
       - inec-network
     environment:
       - DIGITAL_TWIN_API_KEY=${DIGITAL_TWIN_API_KEY:?DIGITAL_TWIN_API_KEY must be set}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   satellite-change-detection:
     build:
@@ -807,6 +954,11 @@ services:
       timeout: 10s
     networks:
     - inec-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   predictive-resource-allocation:
     build:
@@ -839,6 +991,11 @@ services:
       - inec-network
     volumes:
       - resource-allocation-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
 
   campaign-planning:
     build: ./services/campaign-planning
@@ -861,10 +1018,16 @@ services:
     networks:
       - inec-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8206/api/v1/campaign/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8206/api/v1/campaign/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
   # NOTE: Dockerfile is delivered by the python hardening track
   # (services/gotv-analytics/Dockerfile). The service fails closed without
   # GOTV_ANALYTICS_API_KEY.
