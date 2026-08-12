@@ -11,7 +11,9 @@ import {
   router,
 } from "./_core/trpc";
 import { notifyOwner } from "./_core/notification";
-import { broadcastWarRoomUpdate } from "./_core/index";
+// NOTE: imported from ./sse, not ./index — importing the entrypoint boots the
+// HTTP server as a side effect (circular import).
+import { broadcastWarRoomUpdate } from "./_core/sse";
 import { createHeartbeatJob, deleteHeartbeatJob, listHeartbeatJobs } from "./_core/heartbeat";
 import { parse as parseCookie } from "cookie";
 import * as db from "./db";
