@@ -33,17 +33,52 @@ use neo4j_client::Neo4jClient;
 
 // ── Application State ──
 
+/// Constant-time byte comparison. Length is checked first (length is not
+/// secret); the XOR-accumulate loop never short-circuits on content.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
+}
+
+/// Parse a comma-separated API-key list (e.g. "KEY1,KEY2") so key rotation
+/// is possible without downtime: during a rotation window both the old and
+/// the new key authenticate. Blank entries are ignored.
+fn configured_api_keys(env_var: &str) -> Vec<String> {
+    std::env::var(env_var)
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// True when `provided` matches any configured key, comparing each
+/// candidate in constant time.
+fn api_key_matches(provided: &str, keys: &[String]) -> bool {
+    keys.iter()
+        .any(|k| constant_time_eq(provided.as_bytes(), k.as_bytes()))
+}
+
 /// API-key authentication for all inference endpoints (including
 /// /face/compare, /liveness/predict, /anomaly/batch). /health stays public
 /// for orchestrator probes. Fail-closed: when INFERENCE_API_KEY is unset the
 /// service returns 503 rather than serving biometric inference to anyone.
+/// INFERENCE_API_KEY accepts a comma-separated key list so rotation is
+/// possible without downtime; the presented key is compared against each
+/// configured key in constant time.
 async fn inference_api_key_auth(req: Request, next: Next) -> Response {
     if req.uri().path() == "/health" {
         return next.run(req).await;
     }
 
-    let expected_key = std::env::var("INFERENCE_API_KEY").unwrap_or_default();
-    if expected_key.is_empty() {
+    let expected_keys = configured_api_keys("INFERENCE_API_KEY");
+    if expected_keys.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -57,7 +92,7 @@ async fn inference_api_key_auth(req: Request, next: Next) -> Response {
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == expected_key)
+        .map(|v| api_key_matches(v, &expected_keys))
         .unwrap_or(false);
 
     if !authorized {

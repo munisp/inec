@@ -289,7 +289,42 @@ async fn get_stats(state: web::Data<Arc<AppState>>) -> HttpResponse {
 /// API-key authentication for all endpoints. /health stays public for
 /// orchestrator probes. Fail-closed: when FLUVIO_STREAM_API_KEY is unset the
 /// service returns 503 rather than allowing forged audit/election events to
-/// be produced by unauthenticated callers.
+/// be produced by unauthenticated callers. FLUVIO_STREAM_API_KEY accepts a
+/// comma-separated key list so rotation is possible without downtime; the
+/// presented key is compared against each configured key in constant time.
+///
+/// Constant-time byte comparison. Length is checked first (length is not
+/// secret); the XOR-accumulate loop never short-circuits on content.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
+}
+
+/// Parse a comma-separated API-key list (e.g. "KEY1,KEY2") so key rotation
+/// is possible without downtime: during a rotation window both the old and
+/// the new key authenticate. Blank entries are ignored.
+fn configured_api_keys(env_var: &str) -> Vec<String> {
+    std::env::var(env_var)
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// True when `provided` matches any configured key, comparing each
+/// candidate in constant time.
+fn api_key_matches(provided: &str, keys: &[String]) -> bool {
+    keys.iter()
+        .any(|k| constant_time_eq(provided.as_bytes(), k.as_bytes()))
+}
+
 async fn api_key_auth(
     req: ServiceRequest,
     next: Next<BoxBody>,
@@ -298,8 +333,8 @@ async fn api_key_auth(
         return next.call(req).await.map(ServiceResponse::map_into_boxed_body);
     }
 
-    let expected_key = std::env::var("FLUVIO_STREAM_API_KEY").unwrap_or_default();
-    if expected_key.is_empty() {
+    let expected_keys = configured_api_keys("FLUVIO_STREAM_API_KEY");
+    if expected_keys.is_empty() {
         return Ok(req.into_response(
             HttpResponse::ServiceUnavailable()
                 .json(serde_json::json!({
@@ -313,7 +348,7 @@ async fn api_key_auth(
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == expected_key)
+        .map(|v| api_key_matches(v, &expected_keys))
         .unwrap_or(false);
 
     if !authorized {
