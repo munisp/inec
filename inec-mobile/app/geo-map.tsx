@@ -5,6 +5,7 @@ import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 import MapView, { Marker, Circle, Polyline, Callout, PROVIDER_DEFAULT } from 'react-native-maps';
 import { geoApi } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 
 interface Landmark {
   id: number; name: string; category: string; latitude: number; longitude: number; address: string; icon: string;
@@ -59,6 +60,9 @@ export default function GeoMapScreen() {
   const [showPanel, setShowPanel] = useState(true);
   const [selectedMarker, setSelectedMarker] = useState<string | null>(null);
   const trackingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Election scope is resolved, never hardcoded — spatial stats fetch is
+  // gated on a non-null electionId below.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   useEffect(() => {
     (async () => {
@@ -68,8 +72,21 @@ export default function GeoMapScreen() {
         setLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
       }
     })();
-    loadInitialData();
   }, []);
+
+  const loadInitialData = useCallback(async () => {
+    if (!electionId) return;
+    setLoading(true);
+    try {
+      const [statsData] = await Promise.all([
+        geoApi.spatialStats(electionId).catch(() => null),
+      ]);
+      if (statsData) setSpatialStats(statsData);
+    } catch {}
+    setLoading(false);
+  }, [electionId]);
+
+  useEffect(() => { loadInitialData(); }, [loadInitialData]);
 
   // SSE-like polling for tracking (every 10s when enabled)
   useEffect(() => {
@@ -81,17 +98,6 @@ export default function GeoMapScreen() {
     }
     return () => { if (trackingTimer.current) clearInterval(trackingTimer.current); };
   }, [layers.officials]);
-
-  const loadInitialData = async () => {
-    setLoading(true);
-    try {
-      const [statsData] = await Promise.all([
-        geoApi.spatialStats(1).catch(() => null),
-      ]);
-      if (statsData) setSpatialStats(statsData);
-    } catch {}
-    setLoading(false);
-  };
 
   const findNearby = async () => {
     if (!location) return;
@@ -187,6 +193,19 @@ export default function GeoMapScreen() {
   const openStreetView = (lat: number, lng: number) => {
     Linking.openURL(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat},${lng}`);
   };
+
+  // Gate rendering until the election scope is resolved — never fetch with a hardcoded id.
+  if (electionLoading || !electionId) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+        {electionLoading ? (
+          <ActivityIndicator size="large" color="#166534" />
+        ) : (
+          <Text style={{ color: '#6b7280', textAlign: 'center' }}>No active election is available.</Text>
+        )}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
