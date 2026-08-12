@@ -43,7 +43,9 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Media & Influencers":   "#34d399",
 };
 
-// Predefined relationship edges between stakeholder categories
+// Illustrative relationship edges between stakeholder categories.
+// These are editorial assumptions about how stakeholder groups typically
+// relate — they are NOT derived from engagement data or any measured source.
 const CATEGORY_EDGES: Array<{ from: string; to: string; strength: number; type: NetworkEdge["type"] }> = [
   { from: "Traditional Rulers",    to: "Youth Groups",          strength: 0.7, type: "referral"  },
   { from: "Traditional Rulers",    to: "Women Associations",    strength: 0.8, type: "coalition" },
@@ -308,6 +310,10 @@ export default function StakeholderNetworkGraph({ stakeholders }: Props) {
 
   return (
     <div className="relative w-full" style={{ background: "oklch(0.10 0.008 240)", border: "1px solid oklch(0.22 0.01 240)", borderRadius: "0.5rem" }}>
+      {/* Provenance notice */}
+      <div role="note" className="px-4 pt-3 pb-2 text-xs border-b" style={{ borderColor: "oklch(0.22 0.01 240)", color: "oklch(0.72 0.12 60)" }}>
+        Illustrative relationship model — edges and strengths are editorial assumptions, not derived from engagement data.
+      </div>
       {/* Legend */}
       <div className="flex flex-wrap gap-4 px-4 pt-3 pb-2 border-b" style={{ borderColor: "oklch(0.22 0.01 240)" }}>
         <span className="text-xs font-bold tracking-wider" style={{ color: "oklch(0.55 0.01 240)" }}>EDGE TYPES:</span>

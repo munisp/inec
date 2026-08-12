@@ -8,13 +8,6 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { CheckCircle, FileText, Users, AlertCircle } from "lucide-react";
 
-const NIGERIAN_LGAS = [
-  "Abuja Municipal", "Gwagwalada", "Kuje", "Bwari", "Abaji", "Kwali",
-  "Lagos Island", "Lagos Mainland", "Ikeja", "Surulere", "Alimosho",
-  "Kano Municipal", "Fagge", "Dala", "Gwale", "Tarauni",
-  "Other",
-];
-
 export default function PetitionSignPage() {
   const params = useParams<{ petitionId: string }>();
   const petitionId = Number(params.petitionId);
@@ -40,7 +33,11 @@ export default function PetitionSignPage() {
     if (!form.signerName.trim() || form.signerName.trim().length < 2) {
       return toast.error("Please enter your full name");
     }
-    signMut.mutate({ petitionId, ...form });
+    const lga = form.signerLga.trim();
+    if (lga && (lga.length < 2 || !/^[a-zA-ZÀ-ÿ'’.\-/ ]+$/.test(lga))) {
+      return toast.error("Please enter a valid LGA name (letters only)");
+    }
+    signMut.mutate({ petitionId, ...form, signerLga: lga });
   };
 
   if (isNaN(petitionId)) {
@@ -166,14 +163,14 @@ export default function PetitionSignPage() {
 
               <div>
                 <label className="text-xs font-semibold uppercase tracking-wider text-gray-500 block mb-1">LGA</label>
-                <select
+                <input
+                  type="text"
                   value={form.signerLga}
                   onChange={e => setForm(f => ({ ...f, signerLga: e.target.value }))}
+                  placeholder="Your Local Government Area (e.g. Ikeja)"
+                  maxLength={100}
                   className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-white focus:outline-none focus:border-gray-500"
-                >
-                  <option value="">— Select your LGA —</option>
-                  {NIGERIAN_LGAS.map(lga => <option key={lga} value={lga}>{lga}</option>)}
-                </select>
+                />
               </div>
 
               <div>

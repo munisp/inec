@@ -21,11 +21,38 @@ interface SiteConfig {
   email: string;
   twitter: string;
   facebook: string;
+  donationUrl: string;
   manifesto: string[];
   showEndorsements: boolean;
   showTimeline: boolean;
   showDonation: boolean;
   theme: "dark" | "light" | "green";
+}
+
+interface EndorsementEntry {
+  endorserName?: string | null;
+  title?: string | null;
+  organization?: string | null;
+  statement?: string | null;
+  isPublic?: boolean | null;
+}
+
+/** Escape &, <, >, ", ' so user-supplied values cannot inject markup into the generated page. */
+function esc(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[ch]!
+  );
+}
+
+/** Only allow http(s) URLs in generated links. */
+function safeUrl(url: string): string {
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? esc(trimmed) : "";
+}
+
+/** Only allow hex colours in generated CSS. */
+function safeColor(color: string): string {
+  return /^#[0-9a-fA-F]{3,8}$/.test(color.trim()) ? color.trim() : "#006400";
 }
 
 const DEFAULT_CONFIG: SiteConfig = {
@@ -40,6 +67,7 @@ const DEFAULT_CONFIG: SiteConfig = {
   email: "",
   twitter: "",
   facebook: "",
+  donationUrl: "",
   manifesto: [],
   showEndorsements: true,
   showTimeline: false,
@@ -53,15 +81,19 @@ const THEMES = {
   green: { bg: "#052e16", text: "#dcfce7", card: "#14532d", border: "#166534" },
 };
 
-function generateHTML(cfg: SiteConfig): string {
+function generateHTML(cfg: SiteConfig, endorsements: EndorsementEntry[] = []): string {
   const t = THEMES[cfg.theme];
-  const accent = cfg.partyColor;
+  const accent = safeColor(cfg.partyColor);
+  const name = esc(cfg.candidateName);
+  const firstName = esc(cfg.candidateName.split(" ")[0]);
+  const publicEndorsements = endorsements.filter(e => e.isPublic !== false && (e.endorserName ?? "").trim());
+  const donateUrl = safeUrl(cfg.donationUrl);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${cfg.candidateName} for ${cfg.office} — ${cfg.state} ${cfg.party}</title>
+  <title>${name} for ${esc(cfg.office)} — ${esc(cfg.state)} ${esc(cfg.party)}</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family: 'Segoe UI', sans-serif; background:${t.bg}; color:${t.text}; }
@@ -82,36 +114,51 @@ function generateHTML(cfg: SiteConfig): string {
     ${cfg.showDonation ? `.donate { background:${accent}11; border:1px solid ${accent}44; padding:40px; text-align:center; border-radius:12px; margin:40px 0; }
     .donate h3 { font-size:1.4rem; font-weight:800; margin-bottom:8px; }
     .donate-btn { display:inline-block; background:${accent}; color:#fff; padding:12px 28px; border-radius:8px; font-weight:700; text-decoration:none; margin-top:16px; }` : ""}
+    ${cfg.showEndorsements ? `.endorse-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
+    .endorse-item { background:${t.card}; border:1px solid ${t.border}; padding:20px; border-radius:8px; font-size:0.95rem; }
+    .endorse-item .quote { font-style:italic; opacity:0.85; margin-bottom:10px; }
+    .endorse-item .who { font-weight:700; }
+    .endorse-item .org { font-size:0.8rem; opacity:0.6; }` : ""}
   </style>
 </head>
 <body>
   <div class="hero">
-    <div class="party">${cfg.party} · ${cfg.state}</div>
-    <h1>${cfg.candidateName}</h1>
-    <p class="tagline">${cfg.tagline}</p>
+    <div class="party">${esc(cfg.party)} · ${esc(cfg.state)}</div>
+    <h1>${name}</h1>
+    <p class="tagline">${esc(cfg.tagline)}</p>
     <a href="#contact" class="cta">Join the Movement →</a>
   </div>
   <div class="section">
-    <h2>About ${cfg.candidateName.split(" ")[0]}</h2>
-    <div class="bio-section">${cfg.bio}</div>
+    <h2>About ${firstName}</h2>
+    <div class="bio-section">${esc(cfg.bio).replace(/\n/g, "<br/>")}</div>
   </div>
   <div class="section">
     <h2>Our Manifesto</h2>
     <div class="manifesto-grid">
-      ${cfg.manifesto.map((p, i) => `<div class="manifesto-item"><strong style="color:${accent};font-size:1.2rem;">${i + 1}.</strong> ${p}</div>`).join("\n      ")}
+      ${cfg.manifesto.map((p, i) => `<div class="manifesto-item"><strong style="color:${accent};font-size:1.2rem;">${i + 1}.</strong> ${esc(p)}</div>`).join("\n      ")}
     </div>
   </div>
-  ${cfg.showDonation ? `<div class="section"><div class="donate"><h3>Support the Campaign</h3><p>Your contribution powers grassroots mobilisation across all 36 LGAs.</p><a href="#" class="donate-btn">Donate Now</a></div></div>` : ""}
+  ${cfg.showEndorsements && publicEndorsements.length > 0 ? `<div class="section">
+    <h2>Endorsements</h2>
+    <div class="endorse-grid">
+      ${publicEndorsements.map(e => `<div class="endorse-item">
+        ${(e.statement ?? "").trim() ? `<div class="quote">“${esc(e.statement)}”</div>` : ""}
+        <div class="who">${esc(e.endorserName)}</div>
+        <div class="org">${esc([e.title, e.organization].filter(Boolean).join(" · "))}</div>
+      </div>`).join("\n      ")}
+    </div>
+  </div>` : ""}
+  ${cfg.showDonation && donateUrl ? `<div class="section"><div class="donate"><h3>Support the Campaign</h3><p>Your contribution powers grassroots mobilisation${cfg.state.trim() ? ` in ${esc(cfg.state)}` : ""}.</p><a href="${donateUrl}" class="donate-btn" rel="noopener noreferrer" target="_blank">Donate Now</a></div></div>` : ""}
   <div class="section" id="contact">
     <h2>Get in Touch</h2>
     <div class="contact-grid">
-      <div class="contact-item"><strong>PHONE</strong>${cfg.phone}</div>
-      <div class="contact-item"><strong>EMAIL</strong>${cfg.email}</div>
-      <div class="contact-item"><strong>TWITTER</strong>${cfg.twitter}</div>
-      <div class="contact-item"><strong>FACEBOOK</strong>${cfg.facebook}</div>
+      <div class="contact-item"><strong>PHONE</strong>${esc(cfg.phone)}</div>
+      <div class="contact-item"><strong>EMAIL</strong>${esc(cfg.email)}</div>
+      <div class="contact-item"><strong>TWITTER</strong>${esc(cfg.twitter)}</div>
+      <div class="contact-item"><strong>FACEBOOK</strong>${esc(cfg.facebook)}</div>
     </div>
   </div>
-  <div class="footer">Authorised by ${cfg.candidateName} Campaign Organisation · ${cfg.party} ${cfg.state} · Powered by INEC Campaign Intelligence Platform</div>
+  <div class="footer">Authorised by ${name} Campaign Organisation · ${esc(cfg.party)} ${esc(cfg.state)} · Powered by INEC Campaign Intelligence Platform</div>
 </body>
 </html>`;
 }
@@ -154,7 +201,7 @@ export default function CandidateWebsite() {
     onError: (e) => toast.error(e.message),
   });
 
-  const html = generateHTML(cfg);
+  const html = generateHTML(cfg, endorsements);
   const missingPublicationFields = [
     !cfg.candidateName.trim() && "candidate name",
     !cfg.office.trim() && "office sought",
@@ -207,7 +254,7 @@ export default function CandidateWebsite() {
       {/* Header */}
       <div className="border-b px-4 py-3 flex flex-col items-stretch gap-3 flex-shrink-0 sm:px-6 lg:flex-row lg:items-center lg:justify-between" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)" }}>
         <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-          <Link href="/stakeholders">
+          <Link href="/">
             <button className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border" style={{ borderColor: "oklch(0.28 0.01 240)", color: "oklch(0.65 0.01 240)" }}>
               <ArrowLeft className="w-3.5 h-3.5" /> Back
             </button>
@@ -338,9 +385,10 @@ export default function CandidateWebsite() {
           {field("Email", "email")}
           {field("Twitter Handle", "twitter")}
           {field("Facebook Page", "facebook")}
+          {field("Donation URL (https://…)", "donationUrl")}
 
           <div className="text-xs font-bold tracking-widest uppercase mb-3 mt-5" style={{ color: "oklch(0.55 0.01 240)" }}>Sections</div>
-          {([["showEndorsements", "Show Endorsements"], ["showDonation", "Show Donation CTA"]] as const).map(([key, label]) => (
+          {([["showEndorsements", `Show Endorsements (${endorsements.filter(e => e.isPublic !== false).length} public)`], ["showDonation", "Show Donation CTA (requires Donation URL)"]] as const).map(([key, label]) => (
             <label key={key} className="flex items-center gap-2 mb-2 cursor-pointer">
               <div onClick={() => setCfg(c => ({ ...c, [key]: !c[key] }))} className="w-8 h-4 rounded-full relative transition-all" style={{ background: cfg[key] ? "oklch(0.55 0.18 145)" : "oklch(0.28 0.01 240)" }}>
                 <div className="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all" style={{ left: cfg[key] ? "17px" : "2px" }} />

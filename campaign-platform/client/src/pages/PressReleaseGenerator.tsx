@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Download, Megaphone, Sparkles, Save, Loader2, FileText, Trash2 } from "lucide-react";
+import { ArrowLeft, Download, Megaphone, Sparkles, Save, Loader2, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -202,7 +202,7 @@ export default function PressReleaseGenerator() {
                 </div>
                 <div className="flex gap-1">
                   <Button variant="outline" size="sm" className="gap-1" onClick={() => handleExportPDF({ ...selected!, template: selected!.template ?? "" })}><Download size={12}/> PDF</Button>
-                  <Button variant="ghost" size="sm" onClick={() => setSelected(null)}><Trash2 size={14}/></Button>
+                  <Button variant="ghost" size="sm" title="Close" aria-label="Close" onClick={() => setSelected(null)}><X size={14}/></Button>
                 </div>
               </div>
               <div className="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap font-mono text-xs leading-relaxed border border-gray-100 rounded p-4 bg-gray-50">

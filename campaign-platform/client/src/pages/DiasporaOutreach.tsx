@@ -80,7 +80,7 @@ export default function DiasporaOutreach() {
                 <Input placeholder="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}/>
                 <Button onClick={() => {
                   if (!profileId || !form.name || !form.country) return toast.error("Name and country required");
-                  addMut.mutate({ profileId, fullName: form.name, country: form.country, city: form.city || undefined, email: form.email || undefined, phone: form.phone || undefined, organization: form.organization || undefined, notes: form.notes || undefined });
+                  addMut.mutate({ profileId, fullName: form.name, country: form.country, city: form.city || undefined, email: form.email || undefined, phone: form.phone || undefined, organization: form.organization || undefined, pledgedAmount: form.pledgedAmount ? Number(form.pledgedAmount) : undefined, notes: form.notes || undefined });
                 }} disabled={addMut.isPending} style={{ background: "#4A1525", color: "white" }}>
                   {addMut.isPending ? <Loader2 size={14} className="animate-spin"/> : "Add Contact"}
                 </Button>

@@ -22,6 +22,7 @@ import CandidateComparison from "../components/CandidateComparison";
 import SentimentFeed from "../components/SentimentFeed";
 import StakeholderBriefPDF from "../components/StakeholderBriefPDF";
 import { useNotificationReminders } from "../hooks/useNotificationReminders";
+import { useCandidateProfile } from "@/contexts/CandidateProfileContext";
 import { Bell, BellOff } from "lucide-react";
 
 // Use the shared type
@@ -427,6 +428,7 @@ export default function StakeholdersPage() {
   const [results, setResults] = useState<Stakeholder[]>([]);
   const [activeTab, setActiveTab] = useState<"recommendations" | "calendar" | "lga" | "crm" | "dashboard" | "network" | "compare">("recommendations");
   const [crmContacts, setCrmContacts] = useState<CRMContact[]>([]);
+  const { profileId } = useCandidateProfile();
   const { permission, scheduleReminder, cancelReminder, hasReminder, requestPermission } = useNotificationReminders();
 
   // ── WhatsApp Quick-Share ───────────────────────────────────────────────────────
@@ -1068,7 +1070,11 @@ export default function StakeholdersPage() {
               {/* Tab: Contact CRM */}
               {activeTab === "crm" && (
                 <div className="flex-1 overflow-y-auto p-4">
-                  <StakeholderCRM stakeholders={results} />
+                  <StakeholderCRM
+                    stakeholders={results}
+                    profileId={profileId}
+                    onContactsChange={setCrmContacts}
+                  />
                 </div>
               )}
             </>

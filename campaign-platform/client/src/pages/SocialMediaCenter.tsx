@@ -165,11 +165,17 @@ export default function SocialMediaCenter() {
               </div>
             )}
             <Button onClick={handleSave} disabled={saveMut.isPending || !content.trim()}
-              style={{ background: "#4A1525", color: "white" }} className="ml-auto gap-1.5" size="sm">
+              style={{ background: "#4A1525", color: "white" }} className="ml-auto gap-1.5" size="sm"
+              title={scheduledDate ? "Saved as a scheduled draft — no publishing integration is connected, so it will not auto-publish" : "Save as draft"}>
               {saveMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-              {scheduledDate ? "Schedule Post" : "Save Post"}
+              {scheduledDate ? "Save scheduled draft" : "Save draft"}
             </Button>
           </div>
+          {scheduledDate && (
+            <p role="status" className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+              No publishing integration is connected — scheduled posts are stored as drafts and will not auto-publish to {platform}. You'll need to post manually at the scheduled time.
+            </p>
+          )}
         </div>
 
         {/* View toggle */}
@@ -244,7 +250,7 @@ export default function SocialMediaCenter() {
                       <span className="text-xs text-gray-400">{new Date(p.createdAt).toLocaleString()}</span>
                       {p.scheduledAt && (
                         <span className="flex items-center gap-1 text-xs text-blue-600">
-                          <Calendar size={11} /> Scheduled: {new Date(p.scheduledAt).toLocaleString()}
+                          <Calendar size={11} /> Scheduled draft (manual publish): {new Date(p.scheduledAt).toLocaleString()}
                         </span>
                       )}
                       <Badge variant="outline" className="ml-auto capitalize">{p.status}</Badge>

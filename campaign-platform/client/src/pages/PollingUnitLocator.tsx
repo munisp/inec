@@ -243,7 +243,7 @@ export default function PollingUnitLocator() {
             <div className="text-xs tracking-widest uppercase mb-0.5 truncate" style={{ color: "oklch(0.55 0.01 240)" }}>INEC Campaign Intelligence</div>
             <div className="font-bold text-sm flex items-center gap-2 min-w-0">
               Polling Unit Locator
-              {usingDemo && <span className="text-xs px-2 py-0.5 rounded-full font-normal" style={{ background: "oklch(0.22 0.04 60)", color: "oklch(0.70 0.08 60)" }}>Demo data — add units in Volunteer Portal</span>}
+              {usingDemo && <span className="text-xs px-2 py-0.5 rounded-full font-normal" style={{ background: "oklch(0.22 0.04 60)", color: "oklch(0.70 0.08 60)" }}>Demo data — import real units via the CSV import on this page</span>}
               {isLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ color: "oklch(0.55 0.01 240)" }} />}
             </div>
           </div>
