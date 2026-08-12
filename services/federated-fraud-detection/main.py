@@ -24,16 +24,25 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import asyncpg
 import numpy as np
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+_PRODUCTION = APP_ENV == "production"
+
+# SECURITY: in production the interactive docs/OpenAPI schema are disabled —
+# they leak the full API surface to unauthenticated callers.
 app = FastAPI(
     title="INEC Federated Fraud Detection Aggregator",
     description="Privacy-preserving federated learning for election fraud detection",
     version="1.0.0",
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
 )
 
 # SECURITY: CORS is deny-by-default; operators opt in via FEDERATED_CORS_ORIGINS
@@ -51,13 +60,17 @@ app.add_middleware(
 # SECURITY: /api/v1/federated/submit-update was unauthenticated — anyone could
 # poison the global fraud model. A shared submit key is now mandatory and the
 # endpoint FAILS CLOSED when it is unset.
-FEDERATED_SUBMIT_KEY = os.getenv("FEDERATED_SUBMIT_KEY", "").strip()
+# KEY ROTATION: comma-separated keys are accepted; any constant-time match
+# authenticates so operators can rotate without downtime.
+FEDERATED_SUBMIT_KEYS: list[str] = [
+    k.strip() for k in os.getenv("FEDERATED_SUBMIT_KEY", "").split(",") if k.strip()
+]
 # Reject model-poisoning updates whose weight norm is implausibly large.
 FEDERATED_MAX_UPDATE_NORM = float(os.getenv("FEDERATED_MAX_UPDATE_NORM", "100.0"))
 
 
 async def require_submit_key(request: Request) -> None:
-    if not FEDERATED_SUBMIT_KEY:
+    if not FEDERATED_SUBMIT_KEYS:
         raise HTTPException(
             status_code=503,
             detail="FEDERATED_SUBMIT_KEY not configured; refusing unauthenticated model updates",
@@ -65,7 +78,9 @@ async def require_submit_key(request: Request) -> None:
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
     provided = bearer or request.headers.get("x-api-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), FEDERATED_SUBMIT_KEY.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in FEDERATED_SUBMIT_KEYS
+    ):
         raise HTTPException(status_code=401, detail="authentication required")
 
 # ── Global Model State ────────────────────────────────────────────────────────
@@ -81,6 +96,85 @@ MIN_CLIENTS_PER_ROUND = 3  # Minimum state offices needed before aggregation
 # Differential privacy parameters
 DP_NOISE_SCALE = 0.01  # Gaussian noise std dev
 DP_CLIP_NORM = 1.0     # Gradient clipping norm
+
+# ── PostgreSQL persistence (durable global model state) ──────────────────────
+# Optional in development (in-memory with a loud warning), MANDATORY in
+# production. Table created idempotently at startup:
+#   fl_global_state(id=1 PK, round_number, weights JSONB, bias, client_updates JSONB)
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+_pg_pool: Optional[asyncpg.Pool] = None
+
+
+async def _init_state_store() -> None:
+    """Create the state table and reload the persisted global model."""
+    global _pg_pool, global_weights, global_bias, round_number, client_updates
+    _pg_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=3)
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS fl_global_state (
+                id             SMALLINT PRIMARY KEY CHECK (id = 1),
+                round_number   INTEGER NOT NULL,
+                weights        JSONB NOT NULL,
+                bias           DOUBLE PRECISION NOT NULL,
+                client_updates JSONB NOT NULL,
+                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        row = await conn.fetchrow(
+            "SELECT round_number, weights, bias, client_updates FROM fl_global_state WHERE id = 1"
+        )
+    if row:
+        round_number = int(row["round_number"])
+        global_weights = np.asarray(json.loads(row["weights"]), dtype=float)
+        global_bias = float(row["bias"])
+        client_updates = json.loads(row["client_updates"])
+        print(f"[FederatedFL] Restored global model at round {round_number} "
+              f"({len(client_updates)} pending updates) from Postgres")
+
+
+async def _persist_state() -> None:
+    """Write-through persist the global model + pending updates."""
+    if _pg_pool is None:
+        return
+    async with _pg_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO fl_global_state (id, round_number, weights, bias, client_updates, updated_at)
+               VALUES (1, $1, $2::jsonb, $3, $4::jsonb, NOW())
+               ON CONFLICT (id) DO UPDATE SET
+                   round_number = EXCLUDED.round_number,
+                   weights = EXCLUDED.weights,
+                   bias = EXCLUDED.bias,
+                   client_updates = EXCLUDED.client_updates,
+                   updated_at = NOW()""",
+            round_number,
+            json.dumps(global_weights.tolist()),
+            float(global_bias),
+            json.dumps(client_updates),
+        )
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    # SECURITY: fail fast in production when required config is missing —
+    # an unauthenticated aggregator or non-durable global model is never
+    # acceptable in production.
+    if _PRODUCTION:
+        missing = []
+        if not FEDERATED_SUBMIT_KEYS:
+            missing.append("FEDERATED_SUBMIT_KEY")
+        if not DATABASE_URL:
+            missing.append("DATABASE_URL")
+        if missing:
+            raise RuntimeError(
+                f"APP_ENV=production requires {', '.join(missing)}; refusing to start"
+            )
+    if DATABASE_URL:
+        await _init_state_store()
+        print("[FederatedFL] State persistence: PostgreSQL (durable)")
+    else:
+        print("[FederatedFL] ⚠⚠ SECURITY WARNING: DATABASE_URL unset — global model "
+              "state is IN-MEMORY ONLY and will be lost on restart. Acceptable only "
+              "in development; set DATABASE_URL for any real deployment. ⚠⚠")
 
 
 # ── Federated Learning Utilities ──────────────────────────────────────────────
@@ -187,6 +281,7 @@ async def submit_model_update(update: ModelUpdate, _auth=Depends(require_submit_
         )
 
     client_updates.append(update.dict())
+    await _persist_state()
 
     response = {
         "accepted": True,
@@ -203,6 +298,7 @@ async def submit_model_update(update: ModelUpdate, _auth=Depends(require_submit_
         global_bias = new_bias
         round_number += 1
         client_updates.clear()
+        await _persist_state()
         response["aggregated"] = True
         response["new_round"] = round_number
         print(f"[FederatedFL] Round {round_number} aggregated from {MIN_CLIENTS_PER_ROUND}+ clients")
