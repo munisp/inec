@@ -138,6 +138,15 @@ spec:
                 secretKeyRef:
                   name: inec-secrets
                   key: gotv-engine-api-key
+            # Tenancy is fail-closed: production pods refuse to boot without
+            # either GOTV_ENGINE_PARTY_KEYS (multi-tenant) or this explicit
+            # single-tenant opt-in. This deployment is single-tenant: party_id
+            # is trusted from request bodies. Switch to GOTV_ENGINE_PARTY_KEYS
+            # before serving multiple parties from one deployment.
+            - name: GOTV_SINGLE_TENANT_MODE
+              value: "true"
+            - name: ENVIRONMENT
+              value: "production"
             - name: RUST_LOG
               value: "info"
           resources:

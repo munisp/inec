@@ -295,12 +295,102 @@ struct PartyKey(i64);
 /// {"<api-key>": <party_id>}. When set, the map is authoritative — every
 /// request must present a key from the map and the derived party is enforced
 /// against any party_id in the request (403 on mismatch). When unset, the
-/// single GOTV_ENGINE_API_KEY mode is the documented SINGLE-TENANT fallback:
-/// one shared key, party_id trusted from the request body.
+/// single GOTV_ENGINE_API_KEY mode is a SINGLE-TENANT fallback that trusts
+/// party_id from the request body; it must be explicitly enabled with
+/// GOTV_SINGLE_TENANT_MODE=true (see tenancy_mode).
 fn party_keys() -> Option<HashMap<String, i64>> {
     std::env::var("GOTV_ENGINE_PARTY_KEYS")
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Constant-time byte comparison. Length is checked first (length is not
+/// secret); the XOR-accumulate loop never short-circuits on content.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
+}
+
+/// Parse a comma-separated API-key list (e.g. "KEY1,KEY2") so key rotation
+/// is possible without downtime: during a rotation window both the old and
+/// the new key authenticate. Blank entries are ignored.
+fn configured_api_keys(env_var: &str) -> Vec<String> {
+    std::env::var(env_var)
+        .unwrap_or_default()
+        .split(',')
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+/// True when `provided` matches any configured key, comparing each
+/// candidate in constant time.
+fn api_key_matches(provided: &str, keys: &[String]) -> bool {
+    keys.iter()
+        .any(|k| constant_time_eq(provided.as_bytes(), k.as_bytes()))
+}
+
+/// Find the party bound to `key` in the party-keys map, comparing each
+/// registered key in constant time.
+fn party_for_key(keys: &HashMap<String, i64>, key: &str) -> Option<i64> {
+    keys.iter()
+        .find(|(k, _)| constant_time_eq(k.as_bytes(), key.as_bytes()))
+        .map(|(_, p)| *p)
+}
+
+/// Tenancy modes. Multi-tenant (GOTV_ENGINE_PARTY_KEYS) is the only mode
+/// that binds callers to parties. The single-tenant fallback trusts the
+/// request body's party_id and therefore must be an explicit, deliberate
+/// choice: GOTV_SINGLE_TENANT_MODE=true.
+fn single_tenant_mode_enabled() -> bool {
+    std::env::var("GOTV_SINGLE_TENANT_MODE")
+        .map(|v| v.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Production detection for fail-closed startup checks. Conservatively,
+/// any ENVIRONMENT/APP_ENV other than an explicit non-prod value counts as
+/// production — including unset.
+fn is_production() -> bool {
+    let env = std::env::var("ENVIRONMENT")
+        .or_else(|_| std::env::var("APP_ENV"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !matches!(env.as_str(), "development" | "dev" | "test" | "testing" | "local" | "staging")
+}
+
+/// Startup tenancy guard: refuse to boot in production with neither
+/// GOTV_ENGINE_PARTY_KEYS (multi-tenant) nor GOTV_SINGLE_TENANT_MODE=true
+/// (explicit single-tenant fallback). Without this guard an operator who
+/// simply forgot GOTV_ENGINE_PARTY_KEYS would silently run a deployment
+/// that trusts any caller-supplied party_id.
+fn enforce_tenancy_config_at_startup() {
+    if party_keys().is_some() {
+        info!("tenancy: multi-tenant mode (GOTV_ENGINE_PARTY_KEYS)");
+        return;
+    }
+    if single_tenant_mode_enabled() {
+        warn!("tenancy: GOTV_SINGLE_TENANT_MODE=true — party_id from request bodies is trusted; do not use for multi-party deployments");
+        return;
+    }
+    if is_production() {
+        eprintln!(
+            "FATAL: no tenancy configuration. Set GOTV_ENGINE_PARTY_KEYS (multi-tenant) \
+             or explicitly opt into the single-tenant fallback with \
+             GOTV_SINGLE_TENANT_MODE=true. Refusing to start in production \
+             with an implicit trust-body-party_id fallback."
+        );
+        std::process::exit(1);
+    }
+    // Non-prod: boot so developers can iterate, but the auth middleware
+    // still fails closed (503) until one of the two modes is configured.
+    warn!("tenancy: neither GOTV_ENGINE_PARTY_KEYS nor GOTV_SINGLE_TENANT_MODE=true is set — non-prod boot allowed, but authenticated requests will be rejected (503) until tenancy is configured");
 }
 
 /// Reject a request whose party_id disagrees with the key-derived party.
@@ -331,8 +421,11 @@ async fn internal_api_key_auth(
     // SECURITY: fail closed. Previously, when GOTV_ENGINE_API_KEY was unset
     // ALL requests were allowed (auth silently disabled), and ANY request
     // bearing ANY dapr-api-token header value passed unauthenticated.
-    let expected_key = std::env::var("GOTV_ENGINE_API_KEY").unwrap_or_default();
-    if expected_key.is_empty() {
+    // GOTV_ENGINE_API_KEY accepts a comma-separated key list so rotation is
+    // possible without downtime; the presented key is compared against each
+    // configured key in constant time.
+    let expected_keys = configured_api_keys("GOTV_ENGINE_API_KEY");
+    if expected_keys.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -349,43 +442,77 @@ async fn internal_api_key_auth(
 
     let has_key = presented_key
         .as_deref()
-        .map(|v| v == expected_key)
+        .map(|v| api_key_matches(v, &expected_keys))
         .unwrap_or(false);
 
     // The dapr-api-token header must match the configured Dapr API token
-    // (DAPR_API_TOKEN, falling back to the service key) — mere presence of
-    // the header is NOT authentication.
-    let dapr_expected = std::env::var("DAPR_API_TOKEN").unwrap_or_else(|_| expected_key.clone());
-    let has_dapr = req.headers()
+    // (DAPR_API_TOKEN, falling back to the service key list; both accept
+    // comma-separated values for rotation) — mere presence of the header is
+    // NOT authentication.
+    let dapr_tokens = {
+        let tokens = configured_api_keys("DAPR_API_TOKEN");
+        if tokens.is_empty() { expected_keys.clone() } else { tokens }
+    };
+    let presented_dapr = req.headers()
         .get("dapr-api-token")
         .and_then(|v| v.to_str().ok())
-        .map(|v| !dapr_expected.is_empty() && v == dapr_expected)
+        .map(|v| v.to_string());
+    let has_dapr = presented_dapr
+        .as_deref()
+        .map(|v| api_key_matches(v, &dapr_tokens))
         .unwrap_or(false);
 
     if has_dapr || has_key {
         let mut req = req;
-        // Multi-tenant mode: when GOTV_ENGINE_PARTY_KEYS is set, the presented
-        // key must be bound to a party; the party travels as an extension and
-        // handlers reject mismatched party_ids with 403.
         if let Some(keys) = party_keys() {
-            match presented_key.as_deref().and_then(|k| keys.get(k)) {
+            // Multi-tenant mode: the presented credential must be bound to a
+            // party; the party travels as an extension and handlers reject
+            // mismatched party_ids with 403. The x-api-key is consulted
+            // first, then the Dapr token — registering the Dapr token value
+            // in GOTV_ENGINE_PARTY_KEYS is how a service account is bound to
+            // a party.
+            let binding = presented_key
+                .as_deref()
+                .and_then(|k| party_for_key(&keys, k))
+                .or_else(|| presented_dapr.as_deref().and_then(|t| party_for_key(&keys, t)));
+            match binding {
                 Some(party_id) => {
-                    req.extensions_mut().insert(PartyKey(*party_id));
+                    req.extensions_mut().insert(PartyKey(party_id));
                 }
                 None => {
-                    // A dapr-token-authenticated service call carries no party
-                    // binding; leave the extension absent (handlers then apply
-                    // no per-party restriction for service accounts). A request
-                    // authenticated ONLY with an unknown x-api-key is rejected.
-                    if !has_dapr {
+                    // Fail closed. A dapr-token-authenticated call with no
+                    // party binding used to sail through with NO per-party
+                    // restriction (cross-tenant service account); it is now
+                    // rejected with 403. An x-api-key unknown to the party
+                    // map remains a 401.
+                    if has_dapr && !has_key {
                         return (
-                            StatusCode::UNAUTHORIZED,
-                            Json(serde_json::json!({"error": "x-api-key not authorized for any party"})),
+                            StatusCode::FORBIDDEN,
+                            Json(serde_json::json!({
+                                "error": "party_binding_required",
+                                "message": "dapr-token-authenticated calls carry no party binding; register the Dapr token in GOTV_ENGINE_PARTY_KEYS or call with a party-scoped x-api-key"
+                            })),
                         )
                             .into_response();
                     }
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error": "x-api-key not authorized for any party"})),
+                    )
+                        .into_response();
                 }
             }
+        } else if !single_tenant_mode_enabled() {
+            // Single-tenant fallback (party_id trusted from the request body)
+            // only when explicitly enabled; otherwise fail closed.
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "tenancy_not_configured",
+                    "message": "set GOTV_ENGINE_PARTY_KEYS (multi-tenant) or GOTV_SINGLE_TENANT_MODE=true (explicit single-tenant fallback)"
+                })),
+            )
+                .into_response();
         }
         return next.run(req).await;
     }
@@ -461,15 +588,27 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     } else {
         "ok"
     };
-    Json(serde_json::json!({
-        "service": "gotv-engine",
-        "status": "healthy",
-        "version": "1.0.0",
-        "language": "rust",
-        "persistence": persistence,
-        "persistence_write_failures": failures,
-        "capabilities": ["ride_matching", "route_optimization", "proximity_search", "coverage_analysis"]
-    }))
+    // A degraded persistence layer means writes are being discarded while
+    // reads keep serving stale in-memory state: report 503 so orchestrator
+    // probes (readiness/liveness) take the pod out of rotation instead of
+    // trusting a healthy-looking 200 payload.
+    let status = if persistence == "degraded" {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "service": "gotv-engine",
+            "status": if persistence == "degraded" { "degraded" } else { "healthy" },
+            "version": "1.0.0",
+            "language": "rust",
+            "persistence": persistence,
+            "persistence_write_failures": failures,
+            "capabilities": ["ride_matching", "route_optimization", "proximity_search", "coverage_analysis"]
+        })),
+    )
 }
 
 async fn register_volunteers(
@@ -1178,6 +1317,10 @@ async fn main() {
                 .unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    // Fail closed on tenancy misconfiguration: production refuses to boot
+    // without GOTV_ENGINE_PARTY_KEYS or an explicit GOTV_SINGLE_TENANT_MODE=true.
+    enforce_tenancy_config_at_startup();
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8101".to_string());
     let state = Arc::new(AppState::new());
