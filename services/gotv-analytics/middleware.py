@@ -153,24 +153,63 @@ def aggregate_opensearch(index: str, party_id: int, field: str) -> dict:
 LAKEHOUSE_URL = os.getenv("LAKEHOUSE_URL")
 
 
-FORBIDDEN_SQL_KEYWORDS = {"DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "EXEC", "--", ";"}
+# ─── Lakehouse allowlist (fail closed) ──────────────────────────────────────
+# SECURITY: arbitrary caller SQL (even with a keyword blacklist) allowed
+# cross-tenant reads and tautology/comment bypasses. We now only serve
+# canned SELECTs against this explicit allowlist of analytics views, with the
+# party filter injected server-side and the row limit capped. Anything not in
+# this map is rejected — no parsing of caller SQL means no parse-doubt.
+#
+# view name -> party scoping column
+ALLOWED_LAKEHOUSE_VIEWS = {
+    "gotv_contacts": "party_id",
+    "gotv_outreach_log": "party_id",
+    "gotv_pledges": "party_id",
+    "gotv_volunteers": "party_id",
+    "gotv_cpi_history": "party_id",
+    "gotv_campaign_metrics": "party_id",
+    "gotv_sentiment_log": "party_id",
+}
+
+_VIEW_NAME_RE = None  # lazily compiled
 
 
-def query_lakehouse(sql: str) -> list[dict]:
-    """Run an analytical query against the Lakehouse/Trino cluster.
-    Only SELECT queries are allowed to prevent injection."""
+class LakehouseQueryRejected(ValueError):
+    """Raised when a lakehouse request is not in the allowlist."""
+
+
+def query_lakehouse_view(view: str, party_id: int, limit: int = 500) -> list[dict]:
+    """Run a canned SELECT against an allowlisted analytics view.
+
+    The party filter is always injected server-side — callers can never read
+    another tenant's rows. Identifiers are validated against a strict regex
+    AND the allowlist, so no caller-controlled bytes reach the query text.
+    """
+    global _VIEW_NAME_RE
+    if _VIEW_NAME_RE is None:
+        import re
+        _VIEW_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
+
+    if not isinstance(view, str) or not _VIEW_NAME_RE.match(view):
+        logger.warning("lakehouse_query_rejected", reason="invalid view identifier", view=str(view)[:64])
+        raise LakehouseQueryRejected("invalid view identifier")
+    if view not in ALLOWED_LAKEHOUSE_VIEWS:
+        logger.warning("lakehouse_query_rejected", reason="view not allowlisted", view=view)
+        raise LakehouseQueryRejected(f"view '{view}' is not in the analytics allowlist")
     if not LAKEHOUSE_URL:
         return []
-    trimmed = sql.strip().upper()
-    if not trimmed.startswith("SELECT"):
-        logger.warning("lakehouse_query_rejected", reason="not a SELECT")
-        return []
-    for kw in FORBIDDEN_SQL_KEYWORDS:
-        if kw in trimmed:
-            logger.warning("lakehouse_query_rejected", keyword=kw)
-            return []
+
+    party_col = ALLOWED_LAKEHOUSE_VIEWS[view]
+    limit = max(1, min(int(limit), 1000))
+    # Single statement, fully server-constructed; party_id is passed as a
+    # JSON parameter (not interpolated) so no injection is possible.
+    sql = f"SELECT * FROM {view} WHERE {party_col} = $1 LIMIT {limit}"
     try:
-        resp = httpx.post(f"{LAKEHOUSE_URL}/query", json={"query": sql}, timeout=30.0)
+        resp = httpx.post(
+            f"{LAKEHOUSE_URL}/query",
+            json={"query": sql, "params": [party_id]},
+            timeout=30.0,
+        )
         result = resp.json()
         return result.get("data", [])
     except Exception as e:

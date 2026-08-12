@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 
 logger = structlog.get_logger()
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
+# SECURITY: no credential defaults — DATABASE_URL must come from the
+# environment (previously shipped postgresql://ngapp:ngapp123@localhost).
+DB_URL = os.getenv("DATABASE_URL", "").strip()
 
 router = APIRouter(prefix="/gotv-analytics/koh", tags=["koh_indicators"])
 
@@ -33,6 +35,9 @@ _koh_pool = None
 
 def _get_pool():
     global _koh_pool
+    if not DB_URL:
+        # Fail closed: data endpoints return 503 when the DB is not configured.
+        raise HTTPException(status_code=503, detail="DATABASE_URL is not configured")
     if _koh_pool is None:
         import psycopg2.pool
         _koh_pool = psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=DB_URL)
@@ -118,23 +123,45 @@ async def forecast_cpi(party_id: int = Query(...)):
     if not history:
         # Compute from current data
         current = compute_live_cpi(party_id)
+        if current is None:
+            # INTEGRITY: not enough measured components — report
+            # insufficient_data rather than a fabricated neutral CPI.
+            return {
+                "status": "insufficient_data",
+                "current_cpi": None,
+                "forecast_next_month": None,
+                "confidence_interval": None,
+                "trend": "unknown",
+                "drivers": [{"component": "insufficient_data", "impact": 0}],
+                "detail": "no CPI history and insufficient live components (pledges, canvass, endorsements)",
+            }
         return CPIForecast(
             current_cpi=current,
             forecast_next_month=current,
             confidence_interval=[max(0, current - 5), min(100, current + 5)],
             trend="stable",
-            drivers=[{"component": "insufficient_data", "impact": 0}]
+            drivers=[{"component": "single_observation_no_trend", "impact": 0}]
         )
 
     scores = [h["cpi_score"] for h in history if h["cpi_score"] is not None]
     if len(scores) < 2:
-        current = scores[0] if scores else 0
+        if not scores:
+            return {
+                "status": "insufficient_data",
+                "current_cpi": None,
+                "forecast_next_month": None,
+                "confidence_interval": None,
+                "trend": "unknown",
+                "drivers": [],
+                "detail": "CPI history rows contain no scores",
+            }
+        current = scores[0]
         return CPIForecast(
             current_cpi=current,
             forecast_next_month=current,
             confidence_interval=[max(0, current - 5), min(100, current + 5)],
             trend="stable",
-            drivers=[]
+            drivers=[{"component": "single_observation_no_trend", "impact": 0}]
         )
 
     # Linear trend
@@ -181,38 +208,52 @@ async def forecast_cpi(party_id: int = Query(...)):
     )
 
 
-def compute_live_cpi(party_id: int) -> float:
-    """Compute CPI from current data without relying on history table."""
-    # Ground mobilisation from canvass data
+def compute_live_cpi(party_id: int) -> Optional[float]:
+    """Compute CPI from current data without relying on the history table.
+
+    INTEGRITY: only MEASURED components contribute. Previously missing
+    components were silently filled with fabricated neutral constants
+    (favourability=50*0.25, digital_sentiment=50*0.15, share_of_voice=0*0.05),
+    presenting an invented number as a computed CPI. Now the weights of
+    unavailable components are dropped and the remaining weights renormalized;
+    if NO component is measurable, returns None (insufficient_data).
+    """
+    components: List[tuple] = []  # (score, weight)
+
+    # Voting intention proxy (pledge rate) — weight 0.30
+    pledge_data = query_one("""
+        SELECT COUNT(CASE WHEN status IN ('confirmed_day_of','fulfilled') THEN 1 END) * 100.0 /
+            NULLIF(COUNT(*), 0) AS rate, COUNT(*) AS n
+        FROM gotv_pledges WHERE party_id = %s
+    """, (party_id,))
+    if pledge_data and pledge_data.get("n"):
+        components.append(((pledge_data["rate"] or 0), 0.30))
+
+    # Ground mobilisation from canvass data — weight 0.15
     ground = query_one("""
         SELECT (COUNT(DISTINCT volunteer_id) * 100.0 / NULLIF(
             (SELECT COUNT(*) FROM gotv_territories WHERE party_id = %s), 1)) AS coverage
-        FROM gotv_canvass_logs WHERE party_id = %s 
+        FROM gotv_canvass_logs WHERE party_id = %s
         AND knocked_at > NOW() - INTERVAL '30 days'
     """, (party_id, party_id))
-    ground_score = min(100, ground["coverage"] or 0) if ground else 0
+    if ground and ground.get("coverage") is not None:
+        components.append((min(100, ground["coverage"] or 0), 0.15))
 
-    # Pledge rate as voting intention proxy
-    pledge_data = query_one("""
-        SELECT COUNT(CASE WHEN status IN ('confirmed_day_of','fulfilled') THEN 1 END) * 100.0 /
-            NULLIF(COUNT(*), 0) AS rate
-        FROM gotv_pledges WHERE party_id = %s
-    """, (party_id,))
-    vi = (pledge_data["rate"] or 0) if pledge_data else 0
-
-    # Endorsement index
+    # Endorsement index — weight 0.10
     endorse = query_one("""
         SELECT COUNT(*) AS total, COUNT(DISTINCT endorser_type) AS types
         FROM gotv_endorsements WHERE party_id = %s AND verified = true
     """, (party_id,))
-    endorse_score = 0
-    if endorse:
+    if endorse and (endorse.get("total") or 0) > 0:
         breadth = min((endorse["types"] or 0) / 10.0, 1.0)
         volume = min((endorse["total"] or 0) / 50.0, 1.0)
-        endorse_score = (volume * 0.6 + breadth * 0.4) * 100
+        components.append(((volume * 0.6 + breadth * 0.4) * 100, 0.10))
 
-    # CPI with defaults for missing sentiment/SOV
-    cpi = vi * 0.30 + 50 * 0.25 + 50 * 0.15 + ground_score * 0.15 + endorse_score * 0.10 + 0 * 0.05
+    if not components:
+        return None
+
+    total_weight = sum(w for _, w in components)
+    cpi = sum(score * w for score, w in components) / total_weight
     return min(100, max(0, cpi))
 
 
@@ -390,12 +431,16 @@ async def sentiment_forecast(party_id: int = Query(...), days: int = Query(defau
     """, (party_id,))
 
     if not daily_data:
+        # INTEGRITY: no sentiment observations — report insufficient_data
+        # rather than a fabricated neutral 50.0 presented as computed.
         return {
-            "current_sentiment": 50.0,
-            "forecast": 50.0,
-            "trend": "stable",
-            "crisis_risk": "low",
-            "daily_data": []
+            "status": "insufficient_data",
+            "current_sentiment": None,
+            "forecast": None,
+            "trend": "unknown",
+            "crisis_risk": "unknown",
+            "daily_data": [],
+            "detail": "no sentiment observations in the last 30 days",
         }
 
     # Compute daily sentiment scores
@@ -405,7 +450,7 @@ async def sentiment_forecast(party_id: int = Query(...), days: int = Query(defau
         pos_pct = (d["positive"] or 0) / total * 100
         scores.append(pos_pct)
 
-    current = scores[-1] if scores else 50
+    current = scores[-1]
     avg_7d = np.mean(scores[-7:]) if len(scores) >= 7 else np.mean(scores)
 
     # Simple linear forecast

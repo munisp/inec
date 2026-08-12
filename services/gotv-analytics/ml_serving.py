@@ -5,6 +5,7 @@ Supports: fraud detection, voter engagement scoring, GNN anomaly detection.
 Includes: model registry queries, monitoring, drift detection, A/B testing.
 """
 
+import hmac
 import json
 import os
 import sys
@@ -14,10 +15,27 @@ from typing import Optional
 
 import numpy as np
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = structlog.get_logger()
+
+
+def _verify_admin_key(request: Request) -> None:
+    """Require the admin key for privileged operations (e.g. model training).
+
+    SECURITY: 503 when GOTV_ANALYTICS_ADMIN_KEY is unconfigured — admin
+    operations fail closed rather than silently allowing any caller.
+    """
+    admin_key = os.getenv("GOTV_ANALYTICS_ADMIN_KEY", "").strip()
+    if not admin_key:
+        raise HTTPException(
+            status_code=503,
+            detail="GOTV_ANALYTICS_ADMIN_KEY not configured; admin operations are disabled",
+        )
+    provided = request.headers.get("x-admin-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), admin_key.encode()):
+        raise HTTPException(status_code=403, detail="invalid admin key")
 
 router = APIRouter(prefix="/ml", tags=["ml-serving"])
 
@@ -90,7 +108,14 @@ def _load_voter_model():
     model.eval()
 
     scaler = joblib.load(scaler_path) if scaler_path.exists() else None
-    target_norm = joblib.load(norm_path) if norm_path.exists() else {"mean": 50.0, "std": 15.0}
+    # INTEGRITY: the target normalization stats MUST come from the training
+    # pipeline artifact. Previously a fabricated mean=50/std=15 fallback was
+    # used, silently presenting arbitrary scores as model output. Without the
+    # artifact the model is unusable — fail closed.
+    if not norm_path.exists():
+        logger.warning("voter_model_target_norm_missing", path=str(norm_path))
+        return None, None, None
+    target_norm = joblib.load(norm_path)
     _voter_model = model
     _voter_scaler = scaler
     _voter_target_norm = target_norm
@@ -318,56 +343,90 @@ async def list_weights():
     return {"weights": weights, "total": len(weights)}
 
 
+def _train_models_blocking(model: str) -> dict:
+    """Synchronous training worker — run via asyncio.to_thread.
+
+    INTEGRITY: models trained here use the SYNTHETIC data generators, so they
+    are registered as STAGED and are NEVER promoted to production from this
+    endpoint (mirrors the ml/ trainers' trained_on contract: promotion
+    requires trained_on == "real").
+    """
+    from ml.training.gotv_ml_stack import (
+        generate_nigerian_election_data, generate_voter_engagement_data,
+        train_fraud_dnn, train_voter_scoring, train_gnn_fallback,
+        ProductionModelRegistry,
+    )
+    import time as _time
+
+    results = {}
+    registry = ProductionModelRegistry()
+
+    def _register_staged(name: str, meta: dict, weights: str) -> None:
+        mid = registry.register(name, f"1.{int(_time.time())}",
+                                meta["test_metrics"], weights)
+        # INTEGRITY: never auto-promote synthetically trained models.
+        trained_on = meta.get("trained_on", "SYNTHETIC_NOT_FOR_PRODUCTION")
+        if trained_on == "real":
+            logger.error("unexpected_real_provenance", model=name)
+        logger.warning("model_staged_not_promoted", model=name,
+                       model_id=mid, trained_on=trained_on)
+        results[name] = {
+            "metrics": meta["test_metrics"],
+            "model_id": mid,
+            "trained_on": trained_on,
+            "promoted": False,
+            "promotion_note": "synthetic training data is never auto-promoted to production",
+        }
+
+    if model in ("all", "fraud"):
+        data = generate_nigerian_election_data(50000)
+        meta = train_fraud_dnn(data, epochs=50)
+        _register_staged("fraud_dnn", meta, str(MODELS_DIR / "fraud_dnn.pt"))
+        global _fraud_model
+        _fraud_model = None
+
+    if model in ("all", "voter"):
+        data = generate_voter_engagement_data(100000)
+        meta = train_voter_scoring(data, epochs=50)
+        _register_staged("voter_scoring", meta, str(MODELS_DIR / "voter_scoring.pt"))
+        global _voter_model
+        _voter_model = None
+
+    if model in ("all", "gnn"):
+        data = generate_nigerian_election_data(50000)
+        meta = train_gnn_fallback(data, epochs=50)
+        _register_staged("gnn_election", meta, str(MODELS_DIR / "gnn_election.pt"))
+        global _gnn_model
+        _gnn_model = None
+
+    return results
+
+
 @router.post("/train")
-async def trigger_training(model: str = "all"):
-    """Trigger model training (runs synchronously for now)."""
+async def trigger_training(request: Request, model: str = "all"):
+    """Trigger model training (admin-only, runs off the event loop).
+
+    SECURITY: requires the admin key (GOTV_ANALYTICS_ADMIN_KEY) in addition
+    to the service API key enforced by middleware — 503 when unconfigured.
+    INTEGRITY: synthetic-trained models are registered as staged, never
+    promoted to production (promotion requires trained_on == "real").
+    """
+    # Admin auth (fail closed when unconfigured).
+    _verify_admin_key(request)
+
+    import asyncio
     try:
-        from ml.training.gotv_ml_stack import (
-            generate_nigerian_election_data, generate_voter_engagement_data,
-            train_fraud_dnn, train_voter_scoring, train_gnn_fallback,
-            ProductionModelRegistry,
-        )
-        import time as _time
-
-        results = {}
-        registry = ProductionModelRegistry()
-
-        if model in ("all", "fraud"):
-            data = generate_nigerian_election_data(50000)
-            meta = train_fraud_dnn(data, epochs=50)
-            mid = registry.register("fraud_dnn", f"1.{int(_time.time())}",
-                                    meta["test_metrics"], str(MODELS_DIR / "fraud_dnn.pt"))
-            if meta["test_metrics"].get("roc_auc", 0) > 0.85:
-                registry.promote(mid)
-            results["fraud_dnn"] = meta["test_metrics"]
-            # Invalidate cached model
-            global _fraud_model
-            _fraud_model = None
-
-        if model in ("all", "voter"):
-            data = generate_voter_engagement_data(100000)
-            meta = train_voter_scoring(data, epochs=50)
-            mid = registry.register("voter_scoring", f"1.{int(_time.time())}",
-                                    meta["test_metrics"], str(MODELS_DIR / "voter_scoring.pt"))
-            if meta["test_metrics"].get("r2", 0) > 0.5:
-                registry.promote(mid)
-            results["voter_scoring"] = meta["test_metrics"]
-            global _voter_model
-            _voter_model = None
-
-        if model in ("all", "gnn"):
-            data = generate_nigerian_election_data(50000)
-            meta = train_gnn_fallback(data, epochs=50)
-            mid = registry.register("gnn_election", f"1.{int(_time.time())}",
-                                    meta["test_metrics"], str(MODELS_DIR / "gnn_election.pt"))
-            if meta["test_metrics"].get("roc_auc", 0) > 0.85:
-                registry.promote(mid)
-            results["gnn_election"] = meta["test_metrics"]
-            global _gnn_model
-            _gnn_model = None
-
-        return {"status": "completed", "models_trained": list(results.keys()), "metrics": results}
-
+        results = await asyncio.to_thread(_train_models_blocking, model)
+        return {
+            "status": "completed",
+            "models_trained": list(results.keys()),
+            "metrics": {k: v["metrics"] for k, v in results.items()},
+            "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+            "promoted": {k: v["promoted"] for k, v in results.items()},
+            "note": "synthetic-trained models are staged, never auto-promoted to production",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("training_failed", error=str(e))
         raise HTTPException(500, f"Training failed: {e}")
