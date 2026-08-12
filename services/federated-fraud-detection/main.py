@@ -358,6 +358,7 @@ async def status():
         "min_clients_per_round": MIN_CLIENTS_PER_ROUND,
         "dp_noise_scale": DP_NOISE_SCALE,
         "dp_clip_norm": DP_CLIP_NORM,
+        "persistence": "postgresql" if _pg_pool is not None else "in_memory",
     }
 
 

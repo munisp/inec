@@ -157,6 +157,14 @@ class FacialEngine:
             except Exception:
                 self._insightface_app = None
 
+    def available(self) -> bool:
+        """True when the face/eye detection cascades loaded successfully."""
+        return (
+            not self._face_cascade.empty()
+            and not self._eye_cascade.empty()
+            and not self._profile_cascade.empty()
+        )
+
     def extract_template(self, image: np.ndarray) -> FacialTemplate:
         if len(image.shape) == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
