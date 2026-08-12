@@ -9,6 +9,28 @@ use std::collections::HashMap;
 
 // ─── Common types ───────────────────────────────────────────────────────
 
+/// A coordinate is valid only when finite and within geographic bounds.
+/// Extreme/NaN coordinates previously reached partial_cmp().unwrap() and
+/// panicked the worker.
+fn is_valid_coord(latitude: f64, longitude: f64) -> bool {
+    latitude.is_finite()
+        && longitude.is_finite()
+        && (-90.0..=90.0).contains(&latitude)
+        && (-180.0..=180.0).contains(&longitude)
+}
+
+/// 400 response when any point carries an out-of-range or non-finite coordinate.
+fn validate_points(points: &[PointInput]) -> Option<HttpResponse> {
+    if let Some(p) = points.iter().find(|p| !is_valid_coord(p.latitude, p.longitude)) {
+        return Some(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "invalid_coordinate",
+            "message": "latitude must be in [-90, 90] and longitude in [-180, 180] (finite values only)",
+            "offending_point": [p.longitude, p.latitude],
+        })));
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PointInput {
     pub longitude: f64,
@@ -71,6 +93,9 @@ fn default_segments() -> usize { 32 }
 
 pub async fn buffer_analysis(body: actix_web::web::Json<BufferRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
     let radius_deg = req.radius_km / 111.32; // approximate km to degrees
     let mut fc = FeatureCollection::new();
 
@@ -99,10 +124,11 @@ pub async fn buffer_analysis(body: actix_web::web::Json<BufferRequest>) -> HttpR
         });
     }
 
+    let feature_count = fc.features.len();
     let fc = fc
         .with_metadata("analysis", serde_json::json!("buffer"))
         .with_metadata("radius_km", serde_json::json!(req.radius_km))
-        .with_metadata("feature_count", serde_json::json!(fc.features.len()));
+        .with_metadata("feature_count", serde_json::json!(feature_count));
 
     HttpResponse::Ok()
         .content_type("application/geo+json")
@@ -122,6 +148,9 @@ fn default_bbox() -> [f64; 4] { [2.5, 4.0, 14.7, 14.0] } // Nigeria bounds
 
 pub async fn voronoi_analysis(body: actix_web::web::Json<VoronoiRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
     let mut fc = FeatureCollection::new();
 
     // For each point, compute its Voronoi cell using half-plane intersection
@@ -206,6 +235,9 @@ fn default_resolution() -> u8 { 5 }
 
 pub async fn h3_aggregation(body: actix_web::web::Json<H3Request>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
     let mut hex_map: HashMap<String, Vec<&PointInput>> = HashMap::new();
 
     // Group points by H3 cell
@@ -299,6 +331,9 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
 pub async fn dbscan_cluster(body: actix_web::web::Json<ClusterRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
     let n = req.points.len();
     let mut labels: Vec<i32> = vec![-1; n]; // -1 = noise
     let mut cluster_id: i32 = 0;
@@ -401,6 +436,9 @@ fn default_grid_size() -> usize { 20 }
 
 pub async fn kernel_density(body: actix_web::web::Json<DensityRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
 
     let bbox = req.bbox.unwrap_or_else(|| {
         if req.points.is_empty() { return [2.5, 4.0, 14.7, 14.0]; }
@@ -487,6 +525,15 @@ fn default_k() -> usize { 10 }
 
 pub async fn nearest_neighbors(body: actix_web::web::Json<NearestRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if !is_valid_coord(req.query_point.latitude, req.query_point.longitude) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "invalid_coordinate",
+            "message": "query_point latitude must be in [-90, 90] and longitude in [-180, 180]",
+        }));
+    }
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
     let q = &req.query_point;
 
     let mut distances: Vec<(usize, f64)> = req.points.iter().enumerate()
@@ -496,7 +543,7 @@ pub async fn nearest_neighbors(body: actix_web::web::Json<NearestRequest>) -> Ht
         })
         .collect();
 
-    distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    distances.sort_by(|a, b| a.1.total_cmp(&b.1));
     distances.truncate(req.k);
 
     let mut fc = FeatureCollection::new();
@@ -538,6 +585,9 @@ pub struct HullRequest {
 
 pub async fn convex_hull(body: actix_web::web::Json<HullRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = validate_points(&req.points) {
+        return resp;
+    }
 
     if req.points.len() < 3 {
         return HttpResponse::BadRequest().json(serde_json::json!({
@@ -552,7 +602,7 @@ pub async fn convex_hull(body: actix_web::web::Json<HullRequest>) -> HttpRespons
 
     // Find bottom-most point
     let start = pts.iter().enumerate()
-        .min_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap().then(a.1.0.partial_cmp(&b.1.0).unwrap()))
+        .min_by(|a, b| a.1.1.total_cmp(&b.1.1).then(a.1.0.total_cmp(&b.1.0)))
         .map(|(i, _)| i)
         .unwrap_or(0);
     pts.swap(0, start);
@@ -561,7 +611,7 @@ pub async fn convex_hull(body: actix_web::web::Json<HullRequest>) -> HttpRespons
     pts[1..].sort_by(|a, b| {
         let angle_a = (a.1 - pivot.1).atan2(a.0 - pivot.0);
         let angle_b = (b.1 - pivot.1).atan2(b.0 - pivot.0);
-        angle_a.partial_cmp(&angle_b).unwrap()
+        angle_a.total_cmp(&angle_b)
     });
 
     let mut hull: Vec<(f64, f64)> = Vec::new();
@@ -620,6 +670,9 @@ pub struct PointGroup {
 
 pub async fn centroid_analysis(body: actix_web::web::Json<CentroidRequest>) -> HttpResponse {
     let req = body.into_inner();
+    if let Some(resp) = req.groups.iter().find_map(|g| validate_points(&g.points)) {
+        return resp;
+    }
     let mut fc = FeatureCollection::new();
 
     for group in &req.groups {
