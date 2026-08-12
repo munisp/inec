@@ -529,6 +529,16 @@ services:
     - 127.0.0.1:8093:8090
     volumes:
     - lakehouse-data:/data
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8090/health')
+      timeout: 5s
 
   sedona-spatial:
     restart: unless-stopped
@@ -961,6 +971,16 @@ services:
       # without DATABASE_URL, keeping in-memory tallies out of production.
       - APP_ENV=${APP_ENV:-production}
       - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8201/api/v1/tally/health')
+      timeout: 5s
     deploy:
       resources:
         limits:
