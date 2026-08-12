@@ -41,7 +41,13 @@ async fn main() -> anyhow::Result<()> {
 
     // HTTP server for health/metrics
     let app = Router::new()
+        // /health is liveness only: the process is up. It deliberately says
+        // nothing about sink connectivity — that is /readyz's job.
         .route("/health", get(health))
+        .route("/readyz", get({
+            let e = engine.clone();
+            move || readyz_handler(e.clone())
+        }))
         .route("/metrics", get({
             let e = engine.clone();
             move || metrics_handler(e.clone())
@@ -66,6 +72,18 @@ async fn health() -> &'static str {
     "OK"
 }
 
+/// Readiness: 200 only when every sink is reachable (i.e. none is always-Err).
+async fn readyz_handler(engine: Arc<pipeline::Engine>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let (ready, body) = engine.readiness();
+    let status = if ready {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(body)).into_response()
+}
+
 async fn metrics_handler(engine: Arc<pipeline::Engine>) -> String {
     engine.prometheus_metrics()
 }
@@ -75,6 +93,12 @@ async fn stats_handler(engine: Arc<pipeline::Engine>) -> Json<serde_json::Value>
 }
 
 async fn shutdown_signal() {
-    signal::ctrl_c().await.expect("failed to listen for ctrl_c");
-    tracing::info!("shutting down hot-path engine");
+    // Kubernetes sends SIGTERM first; handle both SIGTERM and SIGINT.
+    let ctrl_c = signal::ctrl_c();
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+        .expect("failed to register SIGTERM handler");
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received SIGINT, shutting down hot-path engine"),
+        _ = sigterm.recv() => tracing::info!("received SIGTERM, shutting down hot-path engine"),
+    }
 }
