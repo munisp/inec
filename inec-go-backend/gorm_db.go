@@ -69,7 +69,14 @@ log.Printf("Failed to connect to database via GORM: %v", err)
 return
 }
 
-// Auto Migrate
+// Auto Migrate — DISABLED in production: schema is owned exclusively by the
+// embedded file migrations (migrations.go). GORM AutoMigrate races those
+// migrations and can silently diverge the schema, so it only runs in
+// non-production environments.
+if os.Getenv("APP_ENV") == "production" {
+log.Println("GORM AutoMigrate skipped in production (schema managed by embedded migrations)")
+return
+}
 err = gormDB.AutoMigrate(
 &User{},
 &Election{},

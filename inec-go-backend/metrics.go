@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/subtle"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -82,6 +84,25 @@ func initMetrics() {
 
 func metricsHandler() http.Handler {
 	return promhttp.Handler()
+}
+
+// metricsBearerGuard protects /metrics with a shared bearer token when
+// METRICS_BEARER_TOKEN is configured. When unset the endpoint remains open
+// for in-cluster scraping.
+func metricsBearerGuard(next http.Handler) http.Handler {
+	token := os.Getenv("METRICS_BEARER_TOKEN")
+	if token == "" {
+		return next
+	}
+	expected := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte(expected)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func metricsMiddleware(next http.Handler) http.Handler {

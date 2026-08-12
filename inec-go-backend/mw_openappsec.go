@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
 
@@ -393,9 +394,30 @@ func initOpenAppSecClient() OpenAppSecClient {
 }
 
 // WAF middleware for HTTP request inspection
+// wafInactiveRequests counts requests that passed through WITHOUT WAF
+// inspection because the WAF client is not configured — makes the
+// fail-open path visible instead of silent.
+var wafInactiveRequests = prometheus.NewCounter(
+	prometheus.CounterOpts{
+		Name: "inec_waf_inactive_requests_total",
+		Help: "Requests that bypassed WAF inspection because OpenAppSec is inactive",
+	},
+)
+
+var wafInactiveWarnOnce sync.Once
+
+func init() {
+	prometheus.MustRegister(wafInactiveRequests)
+}
+
 func wafMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mwHub == nil || mwHub.OpenAppSec == nil {
+			// Fail-open must be observable: warn (once) and count every bypass.
+			wafInactiveWarnOnce.Do(func() {
+				log.Warn().Msg("WAF inactive: requests are NOT being inspected (OpenAppSec client not configured)")
+			})
+			wafInactiveRequests.Inc()
 			next.ServeHTTP(w, r)
 			return
 		}
