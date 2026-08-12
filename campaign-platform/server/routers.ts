@@ -1,14 +1,143 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import {
+  publicProcedure,
+  protectedProcedure,
+  profileScopedProcedure,
+  assertProfileRole,
+  router,
+} from "./_core/trpc";
 import { notifyOwner } from "./_core/notification";
 import { broadcastWarRoomUpdate } from "./_core/index";
 import { createHeartbeatJob, deleteHeartbeatJob, listHeartbeatJobs } from "./_core/heartbeat";
 import { parse as parseCookie } from "cookie";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
+
+// ─── SECURITY helpers ────────────────────────────────────────────────────────
+// Resolve the owning profileId for procedures whose input only carries a row
+// `id` (deletes, status flips). Returns null when the row does not exist.
+async function profileIdForRow(
+  table: any,
+  id: number,
+): Promise<number | null> {
+  const conn = db.getDb();
+  if (!conn) return null; // SECURITY: fail closed — assertProfileRole will reject
+  const { eq } = await import("drizzle-orm");
+  const rows = await conn
+    .select({ profileId: table.profileId })
+    .from(table)
+    .where(eq(table.id, id))
+    .limit(1);
+  return (rows[0] as any)?.profileId ?? null;
+}
+
+// SECURITY: require the caller to hold at least `minRole` on the profile that
+// owns row `id` in `table`. Throws NOT_FOUND when the row does not exist so
+// callers cannot probe for other tenants' row ids.
+async function assertRowAccess(
+  user: Parameters<typeof assertProfileRole>[0],
+  table: any,
+  id: number,
+  minRole: "owner" | "manager" | "viewer",
+) {
+  const profileId = await profileIdForRow(table, id);
+  if (profileId == null) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Record not found" });
+  }
+  await assertProfileRole(user, profileId, minRole);
+  return profileId;
+}
+
+// SECURITY: require the caller to hold at least `minRole` on the profile that
+// owns petition `petitionId`. Throws NOT_FOUND for unknown/orphaned petitions
+// (petitions.profile_id is nullable in the schema — fail closed when null).
+async function assertPetitionAccess(
+  user: Parameters<typeof assertProfileRole>[0],
+  petitionId: number,
+  minRole: "owner" | "manager" | "viewer",
+) {
+  const petition = await db.getPetitionById(petitionId);
+  if (!petition || petition.profileId == null) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Petition not found" });
+  }
+  await assertProfileRole(user, petition.profileId, minRole);
+  return petition;
+}
+
+// SECURITY: fetch a campaign_members row by id for team management authz.
+// Throws NOT_FOUND so callers cannot probe other tenants' member ids.
+async function getMemberOrThrow(memberId: number) {
+  const conn = db.getDb();
+  if (!conn) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Member not found" });
+  }
+  const { campaignMembers } = await import("../drizzle/schema");
+  const { eq } = await import("drizzle-orm");
+  const rows = await conn
+    .select()
+    .from(campaignMembers)
+    .where(eq(campaignMembers.id, memberId))
+    .limit(1);
+  const member = rows[0];
+  if (!member) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Member not found" });
+  }
+  return member;
+}
+
+// SECURITY: lightweight in-memory dedup/rate-limit for public petition signing
+// (petitions.publicSign is intentionally unauthenticated, so it is abusable for
+// signature stuffing). NOTE: this is per-process state — it resets on restart
+// and is not shared across replicas (no Redis dependency in this stack). A
+// durable control (DB unique constraint on petition_id+phone) is the
+// recommended follow-up; see handoff notes.
+const PETITION_SIGN_IP_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const PETITION_SIGN_IP_LIMIT = 5; // max signatures per petition per IP per window
+const PETITION_SIGN_PHONE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h phone dedup
+const petitionSignLog = new Map<string, number[]>();
+
+function pruneTimestamps(list: number[], windowMs: number, now: number) {
+  return list.filter(t => now - t < windowMs);
+}
+
+function checkPublicSignAllowed(petitionId: number, ip: string, phone?: string) {
+  const now = Date.now();
+  // Opportunistic sweep so the map cannot grow unboundedly.
+  if (petitionSignLog.size > 10_000) {
+    petitionSignLog.forEach((v, k) => {
+      const kept = pruneTimestamps(v, PETITION_SIGN_PHONE_WINDOW_MS, now);
+      if (kept.length === 0) petitionSignLog.delete(k);
+      else petitionSignLog.set(k, kept);
+    });
+  }
+  if (phone) {
+    const phoneKey = `p:${petitionId}:ph:${phone}`;
+    const phoneHits = pruneTimestamps(petitionSignLog.get(phoneKey) ?? [], PETITION_SIGN_PHONE_WINDOW_MS, now);
+    if (phoneHits.length > 0) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: "This phone number has already signed this petition.",
+      });
+    }
+  }
+  const ipKey = `p:${petitionId}:ip:${ip}`;
+  const ipHits = pruneTimestamps(petitionSignLog.get(ipKey) ?? [], PETITION_SIGN_IP_WINDOW_MS, now);
+  if (ipHits.length >= PETITION_SIGN_IP_LIMIT) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: "Too many signatures from this network. Please try again later.",
+    });
+  }
+  ipHits.push(now);
+  petitionSignLog.set(ipKey, ipHits);
+  if (phone) {
+    petitionSignLog.set(`p:${petitionId}:ph:${phone}`, [now]);
+  }
+}
 
 export const appRouter = router({
   system: systemRouter,
@@ -41,18 +170,19 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const { id, ...data } = input;
-        // Ensure user owns this profile
-        const profile = await db.getProfileById(id);
-        if (!profile || profile.userId !== ctx.user.id) throw new Error("Forbidden");
+        // SECURITY: only the profile owner may update profile metadata
+        // (previously threw a bare Error("Forbidden") → HTTP 500 instead of 403).
+        await assertProfileRole(ctx.user, id, "owner");
         return db.updateProfile(id, data);
       }),
   }),
   // ─── Timeline ──────────────────────────────────────────────────────────────
   timeline: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getTimelineEvents(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -67,14 +197,21 @@ export const appRouter = router({
       .mutation(({ input }) => db.upsertTimelineEvent(input as any)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(({ input }) => db.deleteTimelineEvent(input.id)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: destructive op — resolve owning profile from the row id,
+        // require owner role (previously any authenticated user could delete).
+        const { timelineEvents } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, timelineEvents, input.id, "owner");
+        return db.deleteTimelineEvent(input.id);
+      }),
   }),
   // ─── Voter Registration ────────────────────────────────────────────────────
   voters: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getVoterRegistrations(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         fullName: z.string(),
@@ -82,11 +219,18 @@ export const appRouter = router({
         ward: z.string().optional(),
         lga: z.string().optional(),
         pollingUnit: z.string().optional(),
+        // FIX: drizzle column is voter_registrations.vin — the old zod key
+        // `vinNumber` matched nothing and was silently dropped.
+        vin: z.string().optional(),
+        // Accept the legacy client key as an alias for backwards compatibility.
         vinNumber: z.string().optional(),
         status: z.string().optional(),
       }))
-      .mutation(({ input }) => db.addVoterRegistration(input as any)),
-    bulkImport: protectedProcedure
+      .mutation(({ input }) => {
+        const { vinNumber, ...rest } = input;
+        return db.addVoterRegistration({ ...rest, vin: input.vin ?? vinNumber } as any);
+      }),
+    bulkImport: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         rows: z.array(z.object({
@@ -102,7 +246,8 @@ export const appRouter = router({
         let inserted = 0;
         for (const row of input.rows) {
           if (!row.fullName?.trim()) continue;
-          await db.addVoterRegistration({ profileId: input.profileId, fullName: row.fullName, vinNumber: row.vin, lga: row.lga, ward: row.ward, pollingUnit: row.pollingUnit, phone: row.phone } as any);
+          // FIX: pass `vin` (real column), not the non-existent `vinNumber`.
+          await db.addVoterRegistration({ profileId: input.profileId, fullName: row.fullName, vin: row.vin, lga: row.lga, ward: row.ward, pollingUnit: row.pollingUnit, phone: row.phone } as any);
           inserted++;
         }
         return { inserted };
@@ -110,10 +255,11 @@ export const appRouter = router({
   }),
   // ─── Polling Units ─────────────────────────────────────────────────────────
   pollingUnits: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getPollingUnits(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -129,7 +275,7 @@ export const appRouter = router({
         status: z.string().optional(),
       }))
       .mutation(({ input }) => db.upsertPollingUnit(input as any)),
-    bulkImport: protectedProcedure
+    bulkImport: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         rows: z.array(z.object({
@@ -154,10 +300,11 @@ export const appRouter = router({
   }),
   // ─── Volunteers ────────────────────────────────────────────────────────────
   volunteers: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getVolunteers(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         fullName: z.string(),
@@ -169,17 +316,31 @@ export const appRouter = router({
         role: z.string().optional(),
         status: z.string().optional(),
       }))
-      .mutation(({ input }) => db.addVolunteer(input as any)),
+      .mutation(({ input }) => {
+        // FIX: volunteers.skills is a TEXT column — join the client's string
+        // array instead of passing an array that drizzle silently drops.
+        const { skills, ...rest } = input;
+        return db.addVolunteer({
+          ...rest,
+          skills: skills?.length ? skills.join(", ") : undefined,
+        } as any);
+      }),
     updateStatus: protectedProcedure
       .input(z.object({ id: z.number(), status: z.string() }))
-      .mutation(({ input }) => db.updateVolunteerStatus(input.id, input.status as any)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: input has no profileId — resolve it from the volunteer row.
+        const { volunteers } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, volunteers, input.id, "manager");
+        return db.updateVolunteerStatus(input.id, input.status as any);
+      }),
   }),
   // ─── Press Releases ────────────────────────────────────────────────────────
   pressRelease: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads/AI-drafts, manager saves.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getPressReleases(input.profileId)),
-    save: protectedProcedure
+    save: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -188,14 +349,20 @@ export const appRouter = router({
         template: z.string().optional(),
         status: z.string().optional(),
       }))
-      .mutation(({ input }) => db.savePressRelease(input as any)),
-    aiDraft: protectedProcedure
+      .mutation(({ input }) => {
+        // FIX: the client sends `content`, but press_releases.body is NOT NULL —
+        // every save previously threw a DB constraint error. Map content→body.
+        const { content, ...rest } = input;
+        return db.savePressRelease({ ...rest, body: content } as any);
+      }),
+    aiDraft: profileScopedProcedure("viewer")
       .input(z.object({
         profileId: z.number(),
-        template: z.string(),
-        headline: z.string(),
-        keyPoints: z.string(),
-        tone: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        template: z.string().max(100),
+        headline: z.string().max(500),
+        keyPoints: z.string().max(2000),
+        tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
@@ -218,10 +385,11 @@ export const appRouter = router({
   }),
   // ─── Social Media ──────────────────────────────────────────────────────────
   socialMedia: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager saves.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getSocialPosts(input.profileId)),
-    save: protectedProcedure
+    save: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -231,12 +399,22 @@ export const appRouter = router({
         status: z.string().optional(),
         hashtags: z.array(z.string()).optional(),
       }))
-      .mutation(({ input }) => db.saveSocialPost(input as any)),
+      .mutation(({ input }) => {
+        // FIX: hashtags arrive as a string array; store as space-joined text.
+        // HANDOFF (db/schema agent): social_media_posts needs a `hashtags`
+        // text column — until it exists drizzle silently drops this key.
+        const { hashtags, ...rest } = input;
+        return db.saveSocialPost({
+          ...rest,
+          hashtags: hashtags?.length ? hashtags.join(" ") : undefined,
+        } as any);
+      }),
     aiGenerate: protectedProcedure
       .input(z.object({
-        platform: z.string(),
-        topic: z.string(),
-        tone: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        platform: z.string().max(50),
+        topic: z.string().max(500),
+        tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
@@ -257,10 +435,11 @@ export const appRouter = router({
   }),
   // ─── Compliance ────────────────────────────────────────────────────────────
   compliance: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getComplianceItems(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -275,30 +454,36 @@ export const appRouter = router({
   }),
   // ─── Opposition Research ───────────────────────────────────────────────────
   opposition: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getOppositionResearch(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
         opponentName: z.string(),
         party: z.string().optional(),
         threatLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
-        strengths: z.array(z.string()).optional(),
-        weaknesses: z.array(z.string()).optional(),
+        // FIX: opposition_research.strength / .weakness are TEXT columns and the
+        // client sends single strings — the old plural array keys
+        // (strengths/weaknesses) mapped to nothing and were silently dropped.
+        strength: z.string().optional(),
+        weakness: z.string().optional(),
+        // key_issues is a jsonb column — the array is correct there.
         keyIssues: z.array(z.string()).optional(),
         notes: z.string().optional(),
       }))
       .mutation(({ input }) => db.upsertOppositionEntry(input as any)),
     aiAnalyze: protectedProcedure
       .input(z.object({
-        opponentName: z.string(),
-        party: z.string().optional(),
-        strength: z.string().optional(),
-        weakness: z.string().optional(),
-        notes: z.string().optional(),
-        threatLevel: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        opponentName: z.string().max(200),
+        party: z.string().max(100).optional(),
+        strength: z.string().max(2000).optional(),
+        weakness: z.string().max(2000).optional(),
+        notes: z.string().max(2000).optional(),
+        threatLevel: z.string().max(20).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
@@ -316,10 +501,11 @@ export const appRouter = router({
   }),
   // ─── War Room ──────────────────────────────────────────────────────────────
   warRoom: router({
-    incidents: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    incidents: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getWarRoomIncidents(input.profileId)),
-    addIncident: protectedProcedure
+    addIncident: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         severity: z.enum(["low", "medium", "high", "critical"]),
@@ -328,7 +514,10 @@ export const appRouter = router({
         pollingUnit: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
-        const incident = await db.addWarRoomIncident(input as any);
+        // FIX: war_room_incidents has `pu_name`, not `polling_unit` — map the
+        // client key onto the real column instead of silently dropping it.
+        const { pollingUnit, ...rest } = input;
+        const incident = await db.addWarRoomIncident({ ...rest, puName: pollingUnit } as any);
         if (input.severity === "critical" || input.severity === "high") {
           try {
             await notifyOwner({
@@ -342,15 +531,19 @@ export const appRouter = router({
       }),
     updateIncidentStatus: protectedProcedure
       .input(z.object({ id: z.number(), status: z.string(), profileId: z.number().optional() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: profileId is optional here — never trust the caller-supplied
+        // value for authz; resolve the owning profile from the incident row.
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
         const result = await db.updateIncidentStatus(input.id, input.status as any);
-        if (input.profileId) broadcastWarRoomUpdate(input.profileId);
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
         return result;
       }),
-    agents: protectedProcedure
+    agents: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getFieldAgents(input.profileId)),
-    upsertAgent: protectedProcedure
+    upsertAgent: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -361,19 +554,35 @@ export const appRouter = router({
         status: z.string().optional(),
         lastCheckIn: z.string().optional(),
       }))
-      .mutation(({ input }) => db.upsertFieldAgent(input as any)),
+      .mutation(({ input }) => {
+        // FIX: field_agents columns are agent_status / assigned_pu /
+        // last_checkin — the old zod keys (status, pollingUnit, lastCheckIn)
+        // matched nothing and were silently dropped.
+        const { pollingUnit, status, lastCheckIn, ...rest } = input;
+        return db.upsertFieldAgent({
+          ...rest,
+          assignedPu: pollingUnit,
+          agentStatus: status,
+          // last_checkin is a timestamp column — coerce the client's string.
+          lastCheckin: lastCheckIn ? new Date(lastCheckIn) : undefined,
+        } as any);
+      }),
   }),
   // ─── Election Results ──────────────────────────────────────────────────────
   results: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getElectionResults(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         candidateName: z.string(),
         party: z.string(),
         lga: z.string().optional(),
+        // HANDOFF (db/schema agent): election_results needs a `ward`
+        // varchar(100) column — the router passes it through but drizzle
+        // silently drops it until the column exists.
         ward: z.string().optional(),
         votes: z.number(),
         reportedAt: z.string().optional(),
@@ -382,10 +591,11 @@ export const appRouter = router({
   }),
   // ─── Manifesto ─────────────────────────────────────────────────────────────
   manifesto: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getManifestoSections(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -398,35 +608,62 @@ export const appRouter = router({
       .mutation(({ input }) => db.upsertManifestoSection(input as any)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(({ input }) => db.deleteManifestoSection(input.id)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: destructive op — owner only, profile resolved from row id.
+        const { manifestoSections } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, manifestoSections, input.id, "owner");
+        return db.deleteManifestoSection(input.id);
+      }),
   }),
   // ─── Petitions ─────────────────────────────────────────────────────────────
   petitions: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager creates.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getPetitions(input.profileId)),
-    create: protectedProcedure
+    create: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
-        title: z.string(),
-        description: z.string().optional(),
+        title: z.string().max(400),
+        description: z.string().max(5000).optional(),
         targetSignatures: z.number().optional(),
       }))
       .mutation(({ input }) => db.createPetition(input as any)),
     signatures: protectedProcedure
       .input(z.object({ petitionId: z.number() }))
-      .query(({ input }) => db.getPetitionSignatures(input.petitionId)),
+      .query(async ({ ctx, input }) => {
+        // SECURITY: signer PII (names/phones) — restrict to members of the
+        // profile that owns the petition (previously any authenticated user).
+        await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
+        return db.getPetitionSignatures(input.petitionId);
+      }),
     signatureCount: protectedProcedure
       .input(z.object({ petitionId: z.number() }))
-      .query(({ input }) => db.getPetitionSignatureCount(input.petitionId)),
+      .query(async ({ ctx, input }) => {
+        // SECURITY: same scoping as `signatures` (aggregate of private data).
+        await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
+        return db.getPetitionSignatureCount(input.petitionId);
+      }),
     sign: protectedProcedure
       .input(z.object({
         petitionId: z.number(),
-        signerName: z.string(),
-        signerPhone: z.string().optional(),
-        signerLga: z.string().optional(),
+        signerName: z.string().max(200),
+        signerPhone: z.string().max(20).optional(),
+        signerLga: z.string().max(100).optional(),
       }))
-      .mutation(({ input }) => db.addPetitionSignature(input as any)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: only members of the owning campaign may record signatures
+        // through the authenticated path.
+        await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
+        // FIX: petition_signatures columns are phone/lga — signerPhone/signerLga
+        // matched nothing and were silently dropped.
+        return db.addPetitionSignature({
+          petitionId: input.petitionId,
+          signerName: input.signerName,
+          phone: input.signerPhone,
+          lga: input.signerLga,
+        } as any);
+      }),
     getPublic: publicProcedure
       .input(z.object({ petitionId: z.number() }))
       .query(async ({ input }) => {
@@ -438,21 +675,41 @@ export const appRouter = router({
     publicSign: publicProcedure
       .input(z.object({
         petitionId: z.number(),
-        signerName: z.string().min(2),
-        signerPhone: z.string().optional(),
-        signerLga: z.string().optional(),
-        signerEmail: z.string().email().optional(),
+        // SECURITY: hard length caps — this endpoint is unauthenticated, so
+        // bound the body size to prevent abuse.
+        signerName: z.string().min(2).max(200),
+        signerPhone: z.string().max(20).optional(),
+        signerLga: z.string().max(100).optional(),
+        // FIX: dropped `signerEmail` — petition_signatures has no email column
+        // (it was silently discarded). Zod strips unknown keys, so older
+        // clients sending it keep working.
       }))
-      .mutation(({ input }) => db.addPetitionSignature(input as any)),
+      .mutation(({ ctx, input }) => {
+        // SECURITY: in-memory dedup + per-IP rate limit against signature
+        // stuffing (see note at petitionSignLog — per-process only).
+        const fwd = ctx.req.headers["x-forwarded-for"];
+        const ip = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim()
+          || ctx.req.socket?.remoteAddress
+          || "unknown";
+        checkPublicSignAllowed(input.petitionId, ip, input.signerPhone);
+        return db.addPetitionSignature({
+          petitionId: input.petitionId,
+          signerName: input.signerName,
+          phone: input.signerPhone,
+          lga: input.signerLga,
+        } as any);
+      }),
   }),
   // ─── Diaspora ──────────────────────────────────────────────────────────────
   diaspora: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads/AI-drafts, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getDiasporaContacts(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
+        // Client sends `fullName`; the drizzle column is diaspora_contacts.name.
         fullName: z.string(),
         country: z.string().optional(),
         city: z.string().optional(),
@@ -460,19 +717,27 @@ export const appRouter = router({
         phone: z.string().optional(),
         email: z.string().optional(),
         status: z.string().optional(),
+        // FIX: accept pledgedAmount (diaspora_contacts.pledged_amount exists).
+        pledgedAmount: z.number().optional(),
         notes: z.string().optional(),
       }))
-      .mutation(({ input }) => db.addDiasporaContact(input as any)),
-    aiDraft: protectedProcedure
+      .mutation(({ input }) => {
+        // FIX: map fullName→name (the old key matched no column and the NOT
+        // NULL name column would reject the insert / drop the value).
+        const { fullName, ...rest } = input;
+        return db.addDiasporaContact({ ...rest, name: fullName } as any);
+      }),
+    aiDraft: profileScopedProcedure("viewer")
       .input(z.object({
         profileId: z.number(),
-        contactName: z.string(),
-        country: z.string(),
-        city: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        contactName: z.string().max(200),
+        country: z.string().max(100),
+        city: z.string().max(100).optional(),
         messageType: z.enum(["whatsapp", "email"]),
-        candidateName: z.string().optional(),
-        partyName: z.string().optional(),
-        keyMessage: z.string().optional(),
+        candidateName: z.string().max(200).optional(),
+        partyName: z.string().max(100).optional(),
+        keyMessage: z.string().max(2000).optional(),
       }))
       .mutation(async ({ input }) => {
         const systemPrompt = `You are a Nigerian political campaign communications specialist. Write personalised outreach messages for diaspora Nigerians. Be warm, specific, and compelling. Keep WhatsApp messages under 300 words and emails under 400 words.`;
@@ -494,10 +759,11 @@ Make it personal, specific to their location, and include a clear call to action
   }),
   // ─── Endorsements ──────────────────────────────────────────────────────────
   endorsements: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getEndorsements(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         endorserName: z.string(),
@@ -511,10 +777,11 @@ Make it personal, specific to their location, and include a clear call to action
   }),
   // ─── Fundraising ───────────────────────────────────────────────────────────
   fundraising: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getFundraisingTransactions(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         donorName: z.string().optional(),
@@ -528,10 +795,11 @@ Make it personal, specific to their location, and include a clear call to action
   }),
   // ─── Budget ────────────────────────────────────────────────────────────────
   budget: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getBudgetItems(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -545,14 +813,20 @@ Make it personal, specific to their location, and include a clear call to action
       .mutation(({ input }) => db.upsertBudgetItem(input as any)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(({ input }) => db.deleteBudgetItem(input.id)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: destructive op — owner only, profile resolved from row id.
+        const { budgetItems } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, budgetItems, input.id, "owner");
+        return db.deleteBudgetItem(input.id);
+      }),
   }),
   // ─── Media Monitoring ──────────────────────────────────────────────────────
   media: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getMediaItems(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         source: z.string(),
@@ -567,10 +841,13 @@ Make it personal, specific to their location, and include a clear call to action
       .mutation(({ input }) => db.addMediaItem(input as any)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: destructive op — owner only, profile resolved from row id
+        // (previously any authenticated user could delete any media item).
+        const { mediaItems } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, mediaItems, input.id, "owner");
         const dbConn = await db.getDb();
         if (!dbConn) return null;
-        const { mediaItems } = await import("../drizzle/schema");
         const { eq } = await import("drizzle-orm");
         await dbConn.delete(mediaItems).where(eq(mediaItems.id, input.id));
         return { success: true };
@@ -578,10 +855,11 @@ Make it personal, specific to their location, and include a clear call to action
   }),
   // ─── Debate Coach ──────────────────────────────────────────────────────────
   debate: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads/AI-prep, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getDebatePrepNotes(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -593,15 +871,16 @@ Make it personal, specific to their location, and include a clear call to action
         notes: z.string().optional(),
       }))
       .mutation(({ input }) => db.upsertDebatePrepNote(input as any)),
-    aiPrep: protectedProcedure
+    aiPrep: profileScopedProcedure("viewer")
       .input(z.object({
         profileId: z.number(),
-        topic: z.string(),
-        opponentName: z.string().optional(),
-        opponentWeaknesses: z.array(z.string()).optional(),
-        opponentStrengths: z.array(z.string()).optional(),
-        candidateName: z.string().optional(),
-        partyName: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        topic: z.string().max(500),
+        opponentName: z.string().max(200).optional(),
+        opponentWeaknesses: z.array(z.string().max(500)).max(10).optional(),
+        opponentStrengths: z.array(z.string().max(500)).max(10).optional(),
+        candidateName: z.string().max(200).optional(),
+        partyName: z.string().max(100).optional(),
       }))
       .mutation(async ({ input }) => {
         const systemPrompt = `You are an expert Nigerian political debate coach preparing a candidate for a gubernatorial/senatorial debate. 
@@ -632,10 +911,11 @@ Format with clear headers. Be specific to Nigerian political context.`;
   }),
   // ─── Debate Practice Scores ────────────────────────────────────────────────
   debateScores: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getDebatePracticeScores(input.profileId)),
-    add: protectedProcedure
+    add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         topic: z.string(),
@@ -647,10 +927,11 @@ Format with clear headers. Be specific to Nigerian political context.`;
   }),
   // ─── Stakeholder Contacts ──────────────────────────────────────────────────
   stakeholders: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getStakeholderContacts(input.profileId)),
-    upsert: protectedProcedure
+    upsert: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
         profileId: z.number(),
@@ -671,14 +952,20 @@ Format with clear headers. Be specific to Nigerian political context.`;
       .mutation(({ input }) => db.upsertStakeholderContact(input)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(({ input }) => db.deleteStakeholderContact(input.id)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: destructive op — owner only, profile resolved from row id.
+        const { stakeholderContacts } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, stakeholderContacts, input.id, "owner");
+        return db.deleteStakeholderContact(input.id);
+      }),
   }),
   // ─── Simulation ────────────────────────────────────────────────────────────
   simulation: router({
-    history: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager saves runs.
+    history: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getSimulationRuns(input.profileId)),
-    save: protectedProcedure
+    save: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         scenario: z.string().optional(),
@@ -706,8 +993,9 @@ Format with clear headers. Be specific to Nigerian political context.`;
       .mutation(({ input }) => db.saveSimulationRun(input as any)),
     narrative: protectedProcedure
       .input(z.object({
-        scenario: z.string(),
-        stateCode: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        scenario: z.string().max(100),
+        stateCode: z.string().max(10).optional(),
         projectedTurnout: z.number(),
         validVotesCast: z.number(),
         bvasFailureRate: z.number(),
@@ -719,7 +1007,7 @@ Format with clear headers. Be specific to Nigerian political context.`;
         monteCarloP50: z.number(),
         monteCarloP95: z.number(),
         modelConfidence: z.number(),
-        disruptions: z.array(z.string()),
+        disruptions: z.array(z.string().max(200)).max(20),
       }))
       .mutation(async ({ input }) => {
         const promptLines = [
@@ -747,10 +1035,11 @@ Format with clear headers. Be specific to Nigerian political context.`;
   }),
   // ─── Dashboard KPIs ───────────────────────────────────────────────────────
   dashboard: router({
-    kpis: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads.
+    kpis: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getDashboardKPIs(input.profileId)),
-    electionDate: protectedProcedure
+    electionDate: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(async ({ input }) => {
         const events = await db.getTimelineEvents(input.profileId);
@@ -763,17 +1052,20 @@ Format with clear headers. Be specific to Nigerian political context.`;
   // ─── Deadline Notifications ────────────────────────────────────────────────
   // ─── Campaign Team ─────────────────────────────────────────────────────────
   team: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — membership management is owner/manager only.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getCampaignMembers(input.profileId)),
-    myRole: protectedProcedure
+    myRole: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
-      .query(({ ctx, input }) => db.getMyRoleForProfile(input.profileId, ctx.user.id)),
-    invite: protectedProcedure
+      // The tenancy middleware already resolved (and verified) the caller's
+      // role — return it directly instead of a second, fail-open lookup.
+      .query(({ ctx }) => ctx.profileRole),
+    invite: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         email: z.string().email(),
-        name: z.string(),
+        name: z.string().max(200),
         role: z.enum(["manager", "viewer"]),
         origin: z.string().url().optional(),
       }))
@@ -804,10 +1096,36 @@ The invitee can use this link to join the campaign team.`,
         memberId: z.number(),
         role: z.enum(["manager", "viewer"]),
       }))
-      .mutation(({ input }) => db.updateMemberRole(input.memberId, input.role)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: previously any authenticated user could change any member's
+        // role. Require owner/manager on the member's own profile, and never
+        // allow demoting the profile owner.
+        const member = await getMemberOrThrow(input.memberId);
+        await assertProfileRole(ctx.user, member.profileId, "manager");
+        if (member.role === "owner") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "The profile owner's role cannot be changed",
+          });
+        }
+        return db.updateMemberRole(input.memberId, input.role);
+      }),
     remove: protectedProcedure
       .input(z.object({ memberId: z.number() }))
-      .mutation(({ input }) => db.removeCampaignMember(input.memberId)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: previously any authenticated user could remove any member
+        // (including the owner). Require owner/manager on the member's
+        // profile; the owner can never be removed.
+        const member = await getMemberOrThrow(input.memberId);
+        await assertProfileRole(ctx.user, member.profileId, "manager");
+        if (member.role === "owner") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "The profile owner cannot be removed from the campaign",
+          });
+        }
+        return db.removeCampaignMember(input.memberId);
+      }),
   }),
   notifications: router({
     // Get current heartbeat job status for deadline alerts
@@ -822,21 +1140,27 @@ The invitee can use this link to join the campaign team.`,
       }
     }),
     // Enable deadline alert notifications
-    enable: protectedProcedure
+    // SECURITY: tenancy enforced — only owner/manager may create cron jobs for
+    // a profile (the job payload carries that profileId).
+    enable: profileScopedProcedure("manager")
       .input(z.object({ profileId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
         const job = await createHeartbeatJob({
           name: `deadline-alerts-${input.profileId}-${ctx.user.id}`,
           cron: "0 0 8 * * *", // Daily 08:00 UTC
-          path: "/api/scheduled/deadline-alerts",
+          // FIX: the registered handler is /api/scheduled/deadline-check (see
+          // server/_core/index.ts); the old path matched nothing, so the cron
+          // would 404 every run.
+          path: "/api/scheduled/deadline-check",
           payload: { profileId: input.profileId },
           description: `Daily deadline alerts for profile ${input.profileId}`,
         }, sessionToken);
         return { taskUid: job.taskUid, nextExecutionAt: job.nextExecutionAt };
       }),
     // Disable deadline alert notifications
-    disable: protectedProcedure
+    // SECURITY: tenancy enforced — owner/manager only.
+    disable: profileScopedProcedure("manager")
       .input(z.object({ profileId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
@@ -848,7 +1172,8 @@ The invitee can use this link to join the campaign team.`,
         return { disabled: true };
       }),
     // Send a test notification immediately
-    testAlert: protectedProcedure
+    // SECURITY: tenancy enforced — reads the profile's deadlines.
+    testAlert: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .mutation(async ({ input }) => {
         const events = await db.getUpcomingDeadlines(input.profileId, 48);
@@ -869,12 +1194,13 @@ The invitee can use this link to join the campaign team.`,
   }),
   // ─── Manifesto AI ─────────────────────────────────────────────────────────
   manifestoAI: router({
-    draft: protectedProcedure
+    draft: profileScopedProcedure("viewer")
       .input(z.object({
         profileId: z.number(),
-        policyArea: z.string(),
-        brief: z.string(),
-        tone: z.string().optional(),
+        // SECURITY: LLM cost-abuse caps — bound all free-text prompt fields.
+        policyArea: z.string().max(200),
+        brief: z.string().max(2000),
+        tone: z.string().max(100).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
@@ -906,10 +1232,11 @@ Produce only the manifesto section text, no commentary.`;
   }),
   // ─── Volunteer Tasks ───────────────────────────────────────────────────────
   volunteerTasks: router({
-    list: protectedProcedure
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getVolunteerTasks(input.profileId)),
-    create: protectedProcedure
+    create: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         title: z.string(),
@@ -925,32 +1252,46 @@ Produce only the manifesto section text, no commentary.`;
         id: z.number(),
         status: z.enum(["pending", "in_progress", "completed", "cancelled"]),
       }))
-      .mutation(({ input }) => db.updateVolunteerTaskStatus(input.id, input.status)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: input has no profileId — resolve it from the task row.
+        const { volunteerTasks } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, volunteerTasks, input.id, "manager");
+        return db.updateVolunteerTaskStatus(input.id, input.status);
+      }),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(({ input }) => db.deleteVolunteerTask(input.id)),
+      .mutation(async ({ ctx, input }) => {
+        // SECURITY: destructive op — owner only, profile resolved from row id.
+        const { volunteerTasks } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, volunteerTasks, input.id, "owner");
+        return db.deleteVolunteerTask(input.id);
+      }),
   }),
   // ─── Candidate Website Publish ────────────────────────────────────────────
   // ─── Non-production fixture seed ───────────────────────────────────────────
   seed: router({
-    all: protectedProcedure
+    // SECURITY: destructive fixture write — tenancy enforced, owner only.
+    all: profileScopedProcedure("owner")
       .input(z.object({ profileId: z.number() }))
-      .mutation(async ({ ctx, input }) => {
+      .mutation(async ({ input }) => {
         if (!db.isFixtureSeedingAllowed()) {
-          throw new Error("Campaign fixture seeding is disabled in this runtime");
+          // SECURITY: proper TRPCError (was a bare Error → HTTP 500).
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Campaign fixture seeding is disabled in this runtime",
+          });
         }
-        const profile = await db.getProfileById(input.profileId);
-        if (!profile || profile.userId !== ctx.user.id) throw new Error("Forbidden");
         await db.seedProfileData(input.profileId);
         return { success: true, message: "Non-production fixture data seeded for an explicitly enabled test profile." };
       }),
   }),
   candidateWebsite: router({
-    publish: protectedProcedure
+    // SECURITY: tenancy enforced — manager publishes.
+    publish: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         htmlContent: z.string().max(500_000),
-        candidateName: z.string(),
+        candidateName: z.string().max(200),
       }))
       .mutation(async ({ input }) => {
         const { storagePut } = await import('./storage.js');
