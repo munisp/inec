@@ -155,14 +155,34 @@ func getSMSVerify(puCode string, electionID int) string {
 }
 
 func getSMSStatus(electionID int) string {
+	// INTEGRITY: never emit a fabricated "0/176K (0.0%)" status when the
+	// database is unreachable — report the status as unavailable instead.
+	if db == nil {
+		return "Election status unavailable: service temporarily down. Please try again later."
+	}
 	var name, status string
 	var totalPUs int
-	_ = db.QueryRow("SELECT name, status FROM elections WHERE id=?", electionID).Scan(&name, &status)
-	_ = db.QueryRow("SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
+	if err := db.QueryRow("SELECT title, status FROM elections WHERE id=?", electionID).Scan(&name, &status); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Sprintf("Election status unavailable: election %d not found.", electionID)
+		}
+		log.Error().Err(err).Int("election_id", electionID).Msg("sms status: election query failed")
+		return "Election status unavailable: service error. Please try again later."
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM polling_units").Scan(&totalPUs); err != nil {
+		log.Error().Err(err).Msg("sms status: polling unit count failed")
+		return "Election status unavailable: service error. Please try again later."
+	}
 
 	var submitted, finalized int
-	_ = db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=?", electionID).Scan(&submitted)
-	_ = db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='finalized'", electionID).Scan(&finalized)
+	if err := db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=?", electionID).Scan(&submitted); err != nil {
+		log.Error().Err(err).Int("election_id", electionID).Msg("sms status: results count failed")
+		return "Election status unavailable: service error. Please try again later."
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=? AND status='finalized'", electionID).Scan(&finalized); err != nil {
+		log.Error().Err(err).Int("election_id", electionID).Msg("sms status: finalized count failed")
+		return "Election status unavailable: service error. Please try again later."
+	}
 
 	pct := 0.0
 	if totalPUs > 0 {

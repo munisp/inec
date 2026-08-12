@@ -47,7 +47,9 @@ var kafkaClient *gotvKafkaClient
 func initKafka() {
 	brokers := os.Getenv("KAFKA_BROKERS")
 	if brokers == "" {
-		log.Info().Msg("GOTV Kafka: KAFKA_BROKERS not set, events will be logged only")
+		// INTEGRITY: with no broker, domain events are lost and audit events
+		// will fail loudly in publishEvent — this must be visible at startup.
+		log.Warn().Msg("GOTV Kafka: KAFKA_BROKERS not set — domain events will be dropped and audit events will FAIL until Kafka is configured")
 		return
 	}
 	bList := strings.Split(brokers, ",")
@@ -74,11 +76,19 @@ func initKafka() {
 	log.Info().Strs("brokers", bList).Msg("GOTV Kafka connected")
 }
 
-func publishEvent(topic, key string, payload interface{}) {
+// publishEvent publishes a domain event to Kafka. INTEGRITY: events must never
+// be silently dropped — when Kafka is unconfigured or a publish permanently
+// fails, the loss is logged at ERROR level, and audit topics (any topic
+// containing "audit", e.g. gotv.audit) additionally return an error so the
+// caller knows the audit event was lost.
+func publishEvent(topic, key string, payload interface{}) error {
 	data, _ := json.Marshal(payload)
 	if kafkaClient == nil {
-		log.Debug().Str("topic", topic).Str("key", key).RawJSON("data", data).Msg("GOTV event (no Kafka)")
-		return
+		log.Error().Str("topic", topic).Str("key", key).RawJSON("data", data).Msg("GOTV event NOT published: Kafka unconfigured")
+		if strings.Contains(topic, "audit") {
+			return fmt.Errorf("audit event lost: Kafka unconfigured (topic %s, key %s)", topic, key)
+		}
+		return nil
 	}
 	kafkaClient.mu.Lock()
 	w, ok := kafkaClient.writers[topic]
@@ -100,12 +110,16 @@ func publishEvent(topic, key string, payload interface{}) {
 		err := w.WriteMessages(ctx, kafka.Message{Key: []byte(key), Value: data})
 		cancel()
 		if err == nil {
-			return
+			return nil
 		}
 		lastErr = err
 		time.Sleep(time.Duration(1<<uint(attempt)) * 100 * time.Millisecond)
 	}
-	log.Warn().Err(lastErr).Str("topic", topic).Int("attempts", 3).Msg("GOTV Kafka publish failed after retries")
+	log.Error().Err(lastErr).Str("topic", topic).Str("key", key).Int("attempts", 3).Msg("GOTV event NOT published: Kafka publish failed after retries")
+	if strings.Contains(topic, "audit") {
+		return fmt.Errorf("audit event lost: Kafka publish failed (topic %s, key %s): %w", topic, key, lastErr)
+	}
+	return nil
 }
 
 // ─── Redis Integration ─────────────────────────────────────────────────────

@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -647,56 +646,6 @@ func main() {
 	log.Info().Str("signal", sig.String()).Msg("GOTV service shutting down")
 	watchdogCancel()
 	runShutdownSequence(srv)
-}
-
-// ─── Real-Time Ticker ──────────────────────────────────────────────────────
-
-// startRealtimeTicker broadcasts simulated volunteer movement & ride status
-// updates every 10 seconds so the map shows live activity.
-func startRealtimeTicker(db *sql.DB) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		if wsHub.ClientCount() == 0 {
-			continue
-		}
-		// Broadcast a volunteer.location event with current active volunteers
-		rows, err := db.Query(`
-			SELECT id, name, role, lat, lng, has_vehicle
-			FROM gotv_volunteers
-			WHERE active = true AND lat != 0
-			ORDER BY random() LIMIT 5`)
-		if err != nil {
-			continue
-		}
-		type VolUpdate struct {
-			ID         string  `json:"id"`
-			Name       string  `json:"name"`
-			Role       string  `json:"role"`
-			Lat        float64 `json:"lat"`
-			Lng        float64 `json:"lng"`
-			HasVehicle bool    `json:"has_vehicle"`
-		}
-		var updates []VolUpdate
-		for rows.Next() {
-			var v VolUpdate
-			rows.Scan(&v.ID, &v.Name, &v.Role, &v.Lat, &v.Lng, &v.HasVehicle)
-			// Simulate slight movement (±0.001 degree ~ 100m)
-			v.Lat += (rand.Float64() - 0.5) * 0.002
-			v.Lng += (rand.Float64() - 0.5) * 0.002
-			updates = append(updates, v)
-		}
-		rows.Close()
-		if len(updates) > 0 {
-			wsHub.Broadcast("volunteer.location", 0, updates)
-		}
-
-		// Broadcast ride status updates
-		wsHub.Broadcast("ride.status", 0, map[string]interface{}{
-			"pending": rand.Intn(10) + 20,
-			"active":  rand.Intn(30) + 40,
-		})
-	}
 }
 
 // ─── WebSocket Handler ─────────────────────────────────────────────────────

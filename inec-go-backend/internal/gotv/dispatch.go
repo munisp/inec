@@ -433,6 +433,14 @@ func estimateCost(channel string) int64 {
 
 // ── Gap #10: NCC DND Registry Check ──
 
+// maskPhone redacts a phone number for logs (PII minimization).
+func maskPhone(phone string) string {
+	if len(phone) <= 4 {
+		return "****"
+	}
+	return "****" + phone[len(phone)-4:]
+}
+
 func (d *DispatchEngine) isDND(phone string) bool {
 	d.dndMu.RLock()
 	cached, ok := d.dndCache[phone]
@@ -443,7 +451,11 @@ func (d *DispatchEngine) isDND(phone string) bool {
 
 	dndURL := dndRegistryURL
 	if dndURL == "" {
-		return false // DND check disabled
+		// SECURITY: fail closed — without the NCC DND registry we cannot verify
+		// this number is not DND-registered, so treat it as DND (block the send)
+		// rather than risk an unlawful SMS to a DND number.
+		log.Warn().Str("phone", maskPhone(phone)).Msg("dispatch: DND registry unconfigured, treating number as DND (fail-closed)")
+		return true
 	}
 
 	// Query NCC DND registry API
@@ -451,20 +463,28 @@ func (d *DispatchEngine) isDND(phone string) bool {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", dndURL+"?phone="+url.QueryEscape(phone), nil)
 	if err != nil {
-		return false
+		// SECURITY: fail closed on any registry error.
+		log.Warn().Err(err).Str("phone", maskPhone(phone)).Msg("dispatch: DND registry request build failed, treating as DND (fail-closed)")
+		return true
 	}
 	req.Header.Set("Authorization", "Bearer "+dndAPIKey)
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return false
+		// SECURITY: fail closed on any registry error.
+		log.Warn().Err(err).Str("phone", maskPhone(phone)).Msg("dispatch: DND registry unreachable, treating as DND (fail-closed)")
+		return true
 	}
 	defer resp.Body.Close()
 
 	var result struct {
 		IsDND bool `json:"is_dnd"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// SECURITY: fail closed on unparseable registry response.
+		log.Warn().Err(err).Str("phone", maskPhone(phone)).Msg("dispatch: DND registry response invalid, treating as DND (fail-closed)")
+		return true
+	}
 
 	d.dndMu.Lock()
 	d.dndCache[phone] = result.IsDND
