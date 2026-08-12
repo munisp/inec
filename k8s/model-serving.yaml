@@ -1,3 +1,8 @@
+# 2026-08-12 hardening: image registry and tag are placeholders — replace
+# ghcr.io/REPLACE_WITH_YOUR_ORG and REPLACE_WITH_RELEASE_TAG with your
+# registry and a pinned, immutable release tag before applying. Prefer the
+# helm/inec-platform chart (global.imageRegistry / global.tag) for the
+# backend/frontend/inference workloads.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,7 +26,7 @@ spec:
     spec:
       containers:
         - name: model-serving
-          image: ghcr.io/munisp/inec-model-serving:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/inec-model-serving:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 8501
           env:

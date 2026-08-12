@@ -1,3 +1,8 @@
+# 2026-08-12 hardening: image registry and tag are placeholders — replace
+# ghcr.io/REPLACE_WITH_YOUR_ORG and REPLACE_WITH_RELEASE_TAG with your
+# registry and a pinned, immutable release tag before applying. Prefer the
+# helm/inec-platform chart (global.imageRegistry / global.tag) for the
+# backend/frontend/inference workloads.
 # Service-level K8s deployments for GOTV platform microservices.
 # Each has: startup/liveness/readiness probes, preStop hooks,
 # terminationGracePeriodSeconds, resource limits, and KEDA-compatible labels.
@@ -33,7 +38,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: gotv-svc
-          image: ghcr.io/munisp/gotv-svc:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/gotv-svc:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 8100
               name: http
@@ -114,7 +119,7 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: gotv-engine
-          image: ghcr.io/munisp/gotv-engine:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/gotv-engine:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 8095
               name: http
@@ -198,7 +203,7 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: inference-engine
-          image: ghcr.io/munisp/inference-engine:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/inference-engine:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 8091
               name: http
@@ -264,7 +269,7 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: fluvio-stream
-          image: ghcr.io/munisp/fluvio-stream:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/fluvio-stream:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 9003
               name: http
@@ -337,7 +342,7 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: gotv-analytics
-          image: ghcr.io/munisp/gotv-analytics:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/gotv-analytics:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 8102
               name: http
@@ -401,7 +406,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: lakehouse-analytics
-          image: ghcr.io/munisp/lakehouse-analytics:latest
+          image: ghcr.io/REPLACE_WITH_YOUR_ORG/lakehouse-analytics:REPLACE_WITH_RELEASE_TAG
           ports:
             - containerPort: 8105
               name: http
