@@ -279,18 +279,6 @@ async def _init_state_store() -> None:
     log.info("state_store_loaded", plans=len(plan_rows), war_rooms=len(war_rows))
 
 
-async def _persist_plan(plan_id: str, data: Dict) -> None:
-    if _pg_pool is None:
-        return
-    async with _pg_pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO campaign_plans (plan_id, data, updated_at)
-               VALUES ($1, $2::jsonb, NOW())
-               ON CONFLICT (plan_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()""",
-            plan_id, json.dumps(data),
-        )
-
-
 async def _persist_war_room(candidate_id: str, data: Dict) -> None:
     if _pg_pool is None:
         return
