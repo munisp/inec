@@ -9,12 +9,13 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 
 use crate::pipeline::{Config, Transaction};
 
 pub struct OpenSearchBulkWriter {
+    client: reqwest::Client,
     urls: Vec<String>,
     batch_size: usize,
     workers: usize,
@@ -27,6 +28,7 @@ pub struct OpenSearchBulkWriter {
 impl OpenSearchBulkWriter {
     pub fn new(config: &Config) -> Self {
         Self {
+            client: reqwest::Client::new(),
             urls: config.os_urls.clone(),
             batch_size: config.os_batch_size,
             workers: config.os_workers,
@@ -78,13 +80,40 @@ impl OpenSearchBulkWriter {
             body.push('\n');
         }
 
-        // In production: POST to OpenSearch /_bulk endpoint
-        // let client = reqwest::Client::new();
-        // client.post(&format!("{}/_bulk", self.urls[0]))
-        //     .header("Content-Type", "application/x-ndjson")
-        //     .body(body)
-        //     .send()
-        //     .await?;
+        // SECURITY: previously this POST was commented out while the
+        // `indexed` counter was incremented — documents were reported as
+        // indexed without ever reaching OpenSearch. Now the real bulk POST
+        // is executed and ANY failure (transport, HTTP status, per-item
+        // errors) returns Err; counters only advance on confirmed success.
+        let url = format!("{}/_bulk", self.urls[0]);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-ndjson")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("opensearch bulk POST to {} failed: {}", url, e))?;
+
+        let status = resp.status();
+        let resp_body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "opensearch bulk index failed: HTTP {}: {}",
+                status,
+                resp_body
+            ));
+        }
+        let item_errors = serde_json::from_str::<serde_json::Value>(&resp_body)
+            .ok()
+            .and_then(|v| v.get("errors").and_then(|e| e.as_bool()))
+            .unwrap_or(false);
+        if item_errors {
+            return Err(anyhow!(
+                "opensearch bulk index reported item-level errors: {}",
+                resp_body
+            ));
+        }
 
         self.indexed.fetch_add(batch.len() as u64, Ordering::Relaxed);
         self.bulk_requests.fetch_add(1, Ordering::Relaxed);

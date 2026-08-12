@@ -9,7 +9,6 @@
 
 use crossbeam::channel::Sender;
 use serde_json;
-use std::time::Duration;
 
 use crate::pipeline::{Config, Transaction};
 
@@ -32,6 +31,13 @@ impl KafkaHotConsumer {
 
     /// Consume messages in batches, sending Vec<Transaction> to the pipeline channel.
     ///
+    /// SECURITY: The previous implementation was a "simulated consumer loop"
+    /// that never connected to Kafka, discarded the consumer configuration,
+    /// and spun forever doing zero real work while the service presented
+    /// itself as the election hot path. This binary now only consumes when
+    /// built with the `kafka` feature (real rdkafka StreamConsumer);
+    /// otherwise this returns Err and the service REFUSES TO START.
+    ///
     /// librdkafka consumer config optimized for throughput:
     /// - fetch.min.bytes = 1MB (wait for large fetches)
     /// - fetch.max.bytes = 50MB (large fetch batches)
@@ -39,9 +45,13 @@ impl KafkaHotConsumer {
     /// - enable.auto.commit = true (no manual commit overhead)
     /// - auto.commit.interval.ms = 1000 (batch commits)
     /// - partition.assignment.strategy = cooperative-sticky
-    pub async fn consume_batched(&self, config: &Config, sender: Sender<Vec<Transaction>>) {
-        // Configuration that would be passed to rdkafka::ClientConfig
-        let _consumer_config = ConsumerConfig {
+    #[cfg(feature = "kafka")]
+    pub async fn consume_batched(&self, _config: &Config, sender: Sender<Vec<Transaction>>) -> anyhow::Result<()> {
+        use rdkafka::config::ClientConfig;
+        use rdkafka::consumer::{Consumer, StreamConsumer};
+        use rdkafka::message::Message;
+
+        let cfg = ConsumerConfig {
             brokers: self.brokers.clone(),
             group_id: self.group_id.clone(),
             topics: self.topics.clone(),
@@ -55,29 +65,63 @@ impl KafkaHotConsumer {
             max_partition_fetch_bytes: 10_485_760, // 10MB per partition
         };
 
-        // Batch accumulation loop
-        let mut batch = Vec::with_capacity(self.batch_size);
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &cfg.brokers)
+            .set("group.id", &cfg.group_id)
+            .set("fetch.min.bytes", cfg.fetch_min_bytes.to_string())
+            .set("fetch.max.bytes", cfg.fetch_max_bytes.to_string())
+            .set("queued.max.messages.kbytes", cfg.queued_max_messages_kbytes.to_string())
+            .set("enable.auto.commit", "true")
+            .set("auto.commit.interval.ms", cfg.auto_commit_interval_ms.to_string())
+            .set("max.poll.interval.ms", cfg.max_poll_interval_ms.to_string())
+            .set("session.timeout.ms", cfg.session_timeout_ms.to_string())
+            .set("partition.assignment.strategy", &cfg.partition_assignment)
+            .set("max.partition.fetch.bytes", cfg.max_partition_fetch_bytes.to_string())
+            .create()?;
 
-        // Simulated consumer loop (in production, uses rdkafka StreamConsumer)
+        let topics: Vec<&str> = cfg.topics.iter().map(|t| t.as_str()).collect();
+        consumer.subscribe(&topics)?;
+
+        let mut batch: Vec<Transaction> = Vec::with_capacity(self.batch_size);
         loop {
-            // In production: poll rdkafka for messages
-            // Each message payload is borrowed (zero-copy from rdkafka buffer)
-            // Deserialize batch when full
-
-            if batch.len() >= self.batch_size {
-                if sender.send(std::mem::take(&mut batch)).is_err() {
-                    break; // channel closed
+            match consumer.recv().await {
+                Ok(msg) => {
+                    // Zero-copy: borrow the payload from the rdkafka buffer.
+                    if let Some(payload) = msg.payload() {
+                        if let Some(tx) = deserialize_zero_copy(payload) {
+                            batch.push(tx);
+                        }
+                    }
+                    if batch.len() >= self.batch_size {
+                        if sender.send(std::mem::take(&mut batch)).is_err() {
+                            break; // channel closed
+                        }
+                        batch = Vec::with_capacity(self.batch_size);
+                    }
                 }
-                batch = Vec::with_capacity(self.batch_size);
+                Err(e) => {
+                    // Transient broker errors: log loudly and retry.
+                    tracing::warn!("kafka receive error: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
             }
-
-            // Yield to avoid busy-spinning when no messages
-            tokio::time::sleep(Duration::from_micros(100)).await;
         }
+        Ok(())
+    }
+
+    /// Non-Kafka build: fail loudly instead of simulating consumption.
+    #[cfg(not(feature = "kafka"))]
+    pub async fn consume_batched(&self, _config: &Config, _sender: Sender<Vec<Transaction>>) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "kafka consumer unavailable: this binary was built WITHOUT the `kafka` feature (rdkafka); refusing to simulate election hot-path consumption"
+        ))
     }
 }
 
 /// rdkafka consumer configuration for maximum throughput.
+/// Only exercised when built with the `kafka` feature; kept here so the
+/// tuning parameters are documented and type-checked in one place.
+#[cfg_attr(not(feature = "kafka"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct ConsumerConfig {
     pub brokers: String,

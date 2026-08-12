@@ -32,29 +32,34 @@ impl AnomalyModel {
     }
 
     /// Run inference on a single feature vector. Returns anomaly probability [0,1].
-    pub fn predict(&self, features: &[f64]) -> f64 {
-        assert_eq!(features.len(), self.n_features, "Expected 17 features");
+    ///
+    /// SECURITY: previously any tensor/session/extraction failure silently
+    /// returned 0.0 — callers interpreted that as `is_anomaly: false`, so a
+    /// crashed model cleared suspicious results. Errors are now propagated;
+    /// this path never converts a failed model call into a synthetic score.
+    pub fn predict(&self, features: &[f64]) -> Result<f64> {
+        if features.len() != self.n_features {
+            bail!("expected {} anomaly features, received {}", self.n_features, features.len());
+        }
 
         let input: Vec<f32> = features.iter().map(|&x| x as f32).collect();
         let input_tensor = ort::value::Tensor::from_array(
             ([1_usize, self.n_features], input)
-        );
-        let input_tensor = match input_tensor {
-            Ok(t) => t,
-            Err(_) => return 0.0,
-        };
+        ).map_err(ort_err)?;
 
-        let mut session = self.session.lock().unwrap();
-        let outputs = match session.run(ort::inputs!["float_input" => input_tensor]) {
-            Ok(o) => o,
-            Err(_) => return 0.0,
-        };
+        let mut session = self.session.lock()
+            .map_err(|_| anyhow::anyhow!("anomaly model session lock poisoned"))?;
+        let outputs = session.run(ort::inputs!["float_input" => input_tensor]).map_err(ort_err)?;
 
         // XGBoost ONNX outputs: [labels, probabilities]
         if outputs.len() >= 2 {
             if let Ok((_shape, data)) = outputs[1].try_extract_tensor::<f32>() {
                 if data.len() >= 2 {
-                    return data[1] as f64; // p_anomaly
+                    let score = data[1] as f64; // p_anomaly
+                    if !score.is_finite() {
+                        bail!("anomaly model returned a non-finite probability");
+                    }
+                    return Ok(score);
                 }
             }
         }
@@ -62,15 +67,16 @@ impl AnomalyModel {
         // Fallback: return label
         if let Ok((_shape, data)) = outputs[0].try_extract_tensor::<i64>() {
             if !data.is_empty() {
-                return data[0] as f64;
+                return Ok(data[0] as f64);
             }
         }
 
-        0.0
+        bail!("anomaly model returned no usable outputs (expected [labels, probabilities])")
     }
 
     /// Batch predict on multiple polling units.
-    pub fn predict_batch(&self, batch_features: &[Vec<f64>]) -> Vec<f64> {
+    /// Fails loudly if any single inference fails — no synthetic 0.0 scores.
+    pub fn predict_batch(&self, batch_features: &[Vec<f64>]) -> Result<Vec<f64>> {
         batch_features.iter().map(|f| self.predict(f)).collect()
     }
 }

@@ -32,7 +32,11 @@ async fn main() -> anyhow::Result<()> {
     // Start all pipeline workers
     let engine_clone = engine.clone();
     tokio::spawn(async move {
-        engine_clone.run().await;
+        if let Err(e) = engine_clone.run().await {
+            // SECURITY: fail loudly — never run a half-simulated pipeline.
+            tracing::error!("hot-path pipeline failed: {e:#}; exiting");
+            std::process::exit(1);
+        }
     });
 
     // HTTP server for health/metrics

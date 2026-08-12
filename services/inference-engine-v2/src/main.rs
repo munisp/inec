@@ -31,6 +31,10 @@ use neo4j_client::Neo4jClient;
 
 // ── Application State ──
 
+/// The actual anomaly-model artifact served by this binary. The response
+/// label "xgboost-onnx-v1.0" describes this file (XGBoost, ONNX format).
+const ANOMALY_MODEL_FILE: &str = "anomaly_xgboost.onnx";
+
 struct AppState {
     anomaly_model: Option<AnomalyModel>,
     face_model: Option<FaceModel>,
@@ -43,7 +47,10 @@ impl AppState {
         let models_dir = std::env::var("MODELS_DIR")
             .unwrap_or_else(|_| "/app/models".to_string());
 
-        let anomaly_model = AnomalyModel::load(&format!("{}/anomaly_xgboost.onnx", models_dir))
+        // NOTE: the response label "xgboost-onnx-v1.0" below refers to THIS
+        // exact model artifact (XGBoost classifier exported to ONNX). If the
+        // artifact changes, the label must change with it.
+        let anomaly_model = AnomalyModel::load(&format!("{}/{}", models_dir, ANOMALY_MODEL_FILE))
             .map_err(|e| warn!("Anomaly model not loaded: {}", e))
             .ok();
 
@@ -264,7 +271,12 @@ async fn predict_anomaly(
         if req.total_valid_votes % 100 == 0 || req.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
     ];
 
-    let score = model.predict(&features);
+    // SECURITY: a failed model call must surface as 503, never as score 0.0
+    // (which callers would read as is_anomaly:false).
+    let score = model.predict(&features).map_err(|e| {
+        warn!("anomaly inference failed: {}", e);
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
     let elapsed = start.elapsed().as_micros() as u64;
 
     let mut risk_factors = Vec::new();
@@ -352,7 +364,11 @@ async fn batch_predict(
                     if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
                 ];
 
-                let score = model.predict(&features);
+                // SECURITY: propagate inference failure; never fabricate 0.0.
+                let score = model.predict(&features).map_err(|e| {
+                    warn!("batch anomaly inference failed: {}", e);
+                    StatusCode::SERVICE_UNAVAILABLE
+                })?;
                 let is_anomaly = score > 0.5;
                 chunk_results.push(AnomalyResponse {
                     anomaly_score: score,
@@ -363,7 +379,7 @@ async fn batch_predict(
                     inference_time_us: 0,
                 });
             }
-            chunk_results
+            Ok::<_, StatusCode>(chunk_results)
         }));
     }
 
@@ -371,7 +387,11 @@ async fn batch_predict(
     let mut results = Vec::with_capacity(req.polling_units.len());
     for handle in handles {
         match handle.await {
-            Ok(chunk_results) => results.extend(chunk_results),
+            Ok(Ok(chunk_results)) => results.extend(chunk_results),
+            Ok(Err(status)) => {
+                // Inference failed inside a chunk — surface 503 to the caller.
+                return Err(status);
+            }
             Err(e) => {
                 warn!("Batch task failed: {}", e);
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);

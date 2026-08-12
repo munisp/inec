@@ -205,7 +205,10 @@ pub fn partition_ward_territories(
 pub struct TurnoutPrediction {
     pub ward_code: String,
     pub predicted_turnout_pct: f64,
-    pub confidence: f64,
+    /// Heuristic quality score (0-1) reflecting data availability only —
+    /// SECURITY/LABELING: this is NOT a trained-model confidence. It was
+    /// previously a hardcoded 0.72/0.45 presented as model confidence.
+    pub heuristic_score: f64,
     pub risk_level: String, // high, medium, low
     pub factors: Vec<String>,
 }
@@ -255,12 +258,13 @@ pub fn predict_ward_turnout(
         "low".to_string()
     };
 
-    let confidence = if historical_turnout_pct > 0.0 { 0.72 } else { 0.45 };
+    // Heuristic data-availability score — NOT a trained-model confidence.
+    let heuristic_score = if historical_turnout_pct > 0.0 { 0.72 } else { 0.45 };
 
     TurnoutPrediction {
         ward_code: ward_code.to_string(),
         predicted_turnout_pct: predicted,
-        confidence,
+        heuristic_score,
         risk_level,
         factors,
     }

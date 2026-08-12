@@ -284,10 +284,17 @@ pub struct CrowdEstimate {
     pub confidence_high: u64,
     pub density_per_sqm: f64,
     pub model: String,
+    pub method: String,
+    pub confidence_interval: String,
 }
 
+/// Rough crowd-size heuristic: area × assumed density.
+///
+/// SECURITY/LABELING: This is NOT a computer-vision model. The CSRNet/ONNX
+/// inference path does not exist in this build. The ±15% band is a fixed
+/// arithmetic margin, NOT a statistically valid confidence interval, so it
+/// is labeled accordingly. Do not present these numbers as model output.
 pub fn estimate_crowd(area_sqm: f64, density_factor: f64) -> CrowdEstimate {
-    // In production: pass image through CSRNet ONNX model via inference engine
     let density = if density_factor > 0.0 { density_factor } else { 2.0 };
     let count = (area_sqm * density) as u64;
     let margin = (count as f64 * 0.15) as u64;
@@ -297,7 +304,9 @@ pub fn estimate_crowd(area_sqm: f64, density_factor: f64) -> CrowdEstimate {
         confidence_low: count.saturating_sub(margin),
         confidence_high: count + margin,
         density_per_sqm: (density * 10.0).round() / 10.0,
-        model: "density-area-v1".to_string(),
+        model: "density-area-heuristic".to_string(),
+        method: "heuristic".to_string(),
+        confidence_interval: "not_statistically_valid".to_string(),
     }
 }
 

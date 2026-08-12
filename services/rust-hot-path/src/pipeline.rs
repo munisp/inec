@@ -107,9 +107,9 @@ pub struct Engine {
     start_time: Instant,
 
     // Metrics
-    consumed: AtomicU64,
-    processed: AtomicU64,
-    errors: AtomicU64,
+    consumed: Arc<AtomicU64>,
+    processed: Arc<AtomicU64>,
+    errors: Arc<AtomicU64>,
 
     // Internal channels (lock-free MPMC)
     tx_sender: channel::Sender<Vec<Transaction>>,
@@ -118,44 +118,52 @@ pub struct Engine {
 
 impl Engine {
     pub async fn new(config: Arc<Config>) -> anyhow::Result<Self> {
+        // SECURITY: without the `kafka` feature there is no real consumer —
+        // the previous build "simulated" consumption while presenting as the
+        // election hot path. Refuse to start instead.
+        if !cfg!(feature = "kafka") {
+            anyhow::bail!(
+                "hot-path built WITHOUT the `kafka` feature (rdkafka): no real Kafka consumer available; refusing to start a simulated election pipeline. Rebuild with --features kafka"
+            );
+        }
+
         let (tx_sender, tx_receiver) = channel::bounded(config.channel_capacity);
 
         Ok(Self {
             config,
             start_time: Instant::now(),
-            consumed: AtomicU64::new(0),
-            processed: AtomicU64::new(0),
-            errors: AtomicU64::new(0),
+            consumed: Arc::new(AtomicU64::new(0)),
+            processed: Arc::new(AtomicU64::new(0)),
+            errors: Arc::new(AtomicU64::new(0)),
             tx_sender,
             tx_receiver,
         })
     }
 
     /// Run the full pipeline: consume → process → write
-    pub async fn run(&self) {
+    ///
+    /// Returns Err at startup if any real backend (Kafka, Redis cluster)
+    /// cannot be reached — silence is the bug, so we fail loudly.
+    pub async fn run(&self) -> anyhow::Result<()> {
         let config = self.config.clone();
 
         // Stage 1: Kafka consumers → internal channel
         let sender = self.tx_sender.clone();
-        let consumed = &self.consumed;
         let kafka = KafkaHotConsumer::new(&config);
         let kafka_handle = tokio::spawn({
             let config = config.clone();
             let sender = sender.clone();
             async move {
-                kafka.consume_batched(&config, sender).await;
+                kafka.consume_batched(&config, sender).await
             }
         });
 
         // Stage 2: Process batches from channel → fan-out to sinks
         let receiver = self.tx_receiver.clone();
-        let redis = Arc::new(RedisClusterPipeline::new(&config).await);
+        let redis = Arc::new(RedisClusterPipeline::new(&config).await?);
         let tb = Arc::new(TigerBeetleDirectClient::new(&config));
         let os = Arc::new(OpenSearchBulkWriter::new(&config));
         let fluvio = Arc::new(FluvioSmartProcessor::new(&config));
-
-        let processed = &self.processed;
-        let errors = &self.errors;
 
         // Spawn N processor workers
         let mut handles = Vec::new();
@@ -165,11 +173,16 @@ impl Engine {
             let tb = tb.clone();
             let os = os.clone();
             let fluvio = fluvio.clone();
+            let consumed = self.consumed.clone();
+            let processed = self.processed.clone();
+            let errors = self.errors.clone();
 
             handles.push(tokio::spawn(async move {
                 loop {
                     match rx.recv() {
                         Ok(batch) => {
+                            let batch_len = batch.len() as u64;
+                            consumed.fetch_add(batch_len, Ordering::Relaxed);
                             let batch_arc = Arc::new(batch);
 
                             // Fan-out to all sinks in parallel
@@ -180,11 +193,19 @@ impl Engine {
                                 fluvio.produce_batch(batch_arc.clone()),
                             );
 
-                            // Log any errors but don't stop processing
-                            if let Err(e) = r1 { tracing::warn!(worker_id, "redis error: {}", e); }
-                            if let Err(e) = r2 { tracing::warn!(worker_id, "tb error: {}", e); }
-                            if let Err(e) = r3 { tracing::warn!(worker_id, "os error: {}", e); }
-                            if let Err(e) = r4 { tracing::warn!(worker_id, "fluvio error: {}", e); }
+                            // Log any errors but don't stop processing;
+                            // every sink failure is counted loudly.
+                            let mut failed = false;
+                            if let Err(e) = r1 { failed = true; tracing::warn!(worker_id, "redis error: {}", e); }
+                            if let Err(e) = r2 { failed = true; tracing::warn!(worker_id, "tb error: {}", e); }
+                            if let Err(e) = r3 { failed = true; tracing::warn!(worker_id, "os error: {}", e); }
+                            if let Err(e) = r4 { failed = true; tracing::warn!(worker_id, "fluvio error: {}", e); }
+
+                            if failed {
+                                errors.fetch_add(batch_len, Ordering::Relaxed);
+                            } else {
+                                processed.fetch_add(batch_len, Ordering::Relaxed);
+                            }
                         }
                         Err(_) => break, // channel closed
                     }
@@ -192,11 +213,14 @@ impl Engine {
             }));
         }
 
-        // Wait for shutdown
-        let _ = kafka_handle.await;
+        // Wait for shutdown; propagate consumer failure loudly.
+        kafka_handle
+            .await
+            .map_err(|e| anyhow::anyhow!("kafka consumer task join error: {}", e))??;
         for h in handles {
             let _ = h.await;
         }
+        Ok(())
     }
 
     pub fn prometheus_metrics(&self) -> String {

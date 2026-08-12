@@ -32,22 +32,20 @@ impl FluvioSmartProcessor {
 
     /// Produce a batch of transactions to Fluvio topics.
     /// Uses batch produce API for maximum throughput.
+    ///
+    /// SECURITY: previously the producer calls were commented out while the
+    /// `produced` counter was incremented — records were reported as
+    /// produced without ever being sent. No Fluvio client crate is
+    /// available in this build (see Cargo.toml), so fail loudly.
     pub async fn produce_batch(&self, batch: Arc<Vec<Transaction>>) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
 
-        // In production:
-        // let producer = fluvio::TopicProducerPool::new(topic).await?;
-        // producer.send_all(records).await?;
-        //
-        // With SmartModule filter applied at broker:
-        // - Filter: only forward transactions matching certain criteria
-        // - Map: transform/enrich before storing
-        // - FilterMap: combine filter + map in one pass
-
-        self.produced.fetch_add(batch.len() as u64, Ordering::Relaxed);
-        Ok(())
+        Err(anyhow::anyhow!(
+            "fluvio client not available in this build; refusing to report {} record(s) as produced without producing them",
+            batch.len()
+        ))
     }
 
     pub fn stats(&self) -> u64 {
