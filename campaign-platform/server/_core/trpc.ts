@@ -136,13 +136,20 @@ export async function assertProfileRole(
  * (middleware runs before input parsing, so this is the caller-supplied value)
  * and rejects anyone without at least `minRole` on that profile.
  * Attach the resolved role to ctx as `profileRole`.
+ *
+ * NOTE: pre-parse middleware receives NO `input` option in tRPC v11 — it is
+ * only populated once an input parser has run (and this middleware runs
+ * before parsing by design). The caller-supplied value must come from
+ * `getRawInput()`; relying on `input` here made every profile-scoped
+ * procedure fail with BAD_REQUEST.
  */
 export function requireProfileRole(minRole: ProfileRole) {
-  return t.middleware(async ({ ctx, next, input }) => {
+  return t.middleware(async ({ ctx, next, getRawInput }) => {
     if (!ctx.user) {
       throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     }
-    const profileId = (input as { profileId?: unknown } | null | undefined)
+    const rawInput = await getRawInput();
+    const profileId = (rawInput as { profileId?: unknown } | null | undefined)
       ?.profileId;
     if (typeof profileId !== "number" || !Number.isInteger(profileId)) {
       throw new TRPCError({
