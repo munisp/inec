@@ -427,11 +427,14 @@ async def engine_speech(speech_type: str, name: str, office: str,
 # ── Request Models ────────────────────────────────────────────────────────────
 
 class EligibilityReq(BaseModel):
+    # INTEGRITY: facts must be explicitly provided. Previously has_school_cert
+    # and is_nigerian defaulted to True, turning missing data into a favourable
+    # compliance verdict. None means "not_assessed".
     candidate_id: int; office_type: str; state_code: str; party_code: str
-    age: int = Field(default=35, ge=18, le=100)
-    has_school_cert: bool = True; is_nigerian: bool = True
-    criminal_record: bool = False; dual_citizen: bool = False
-    years_in_party: int = Field(default=3, ge=0)
+    age: int = Field(..., ge=18, le=100)
+    has_school_cert: Optional[bool] = None; is_nigerian: Optional[bool] = None
+    criminal_record: Optional[bool] = None; dual_citizen: Optional[bool] = None
+    years_in_party: Optional[int] = Field(default=None, ge=0)
 
 class PlanCreateReq(BaseModel):
     candidate_id: int; election_id: int; office_type: str
@@ -486,6 +489,13 @@ class VolunteerGraphReq(BaseModel):
 @app.post("/api/v1/campaign/eligibility", tags=["Eligibility"])
 async def check_eligibility(req: EligibilityReq):
     """Full INEC eligibility check against the 1999 Constitution (as amended)."""
+    # INTEGRITY: unknown office types are rejected — never silently remapped
+    # to "house" requirements.
+    if req.office_type not in ELIGIBILITY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown office_type '{req.office_type}'; valid: {sorted(ELIGIBILITY)}",
+        )
     return engine_eligibility(req.candidate_id, req.office_type, req.state_code, req.party_code,
                                req.age, req.has_school_cert, req.is_nigerian,
                                req.criminal_record, req.dual_citizen, req.years_in_party)
@@ -597,7 +607,17 @@ async def volunteer_network(req: VolunteerGraphReq):
 
 @app.get("/api/v1/campaign/states", tags=["Reference Data"])
 async def list_states():
-    return {"states": STATES, "zones": ZONES}
+    # INTEGRITY: the voter counts and swing values in STATES/ZONES are
+    # editorial estimates, NOT official INEC register figures. Labeled so
+    # callers never treat them as authoritative reference data.
+    return {
+        "states": STATES,
+        "zones": ZONES,
+        "data_quality": "reference_estimates_unverified",
+        "source": "editorial",
+        "note": "Voter counts and swing values are unverified editorial estimates, "
+                "not official INEC figures. Do not use for planning decisions.",
+    }
 
 
 @app.get("/api/v1/campaign/offices", tags=["Reference Data"])
@@ -607,6 +627,12 @@ async def list_offices():
 
 @app.websocket("/ws/campaign")
 async def campaign_ws(ws: WebSocket):
+    # SECURITY: HTTP middleware does not cover WebSocket upgrades — enforce
+    # the same API key here (query token), failing closed when unconfigured.
+    token = ws.query_params.get("token", "")
+    if not CAMPAIGN_API_KEY or not _key_valid(token):
+        await ws.close(code=4401)
+        return
     await ws.accept()
     _ws_clients.append(ws)
     try:
