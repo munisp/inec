@@ -32,7 +32,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem('user');
     return stored ? JSON.parse(stored) : null;
   });
-  // Store token so we can pass it in Authorization headers.
+  // Token storage note: the primary session is the httpOnly cookie set by the
+  // backend (marker 'httponly-cookie'). The localStorage 'auth_token' JWT is
+  // kept ONLY as a documented fallback for non-browser clients and for Bearer
+  // headers on cross-origin dev setups — it is never written to IndexedDB or
+  // the service-worker offline queue.
   const [token, setToken] = useState<string | null>(() => {
     return localStorage.getItem('auth_token') || (localStorage.getItem('user') ? 'httponly-cookie' : null);
   });

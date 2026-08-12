@@ -41,7 +41,9 @@ export function OfflineBanner() {
       ) : (
         <>
           <WifiOff className="w-4 h-4" />
-          <span>You are offline — changes will sync when reconnected</span>
+          {/* Align with actual coverage: only observer + results writes are
+              queued by the service worker; other changes are NOT saved. */}
+          <span>You are offline — only observer and result submissions are queued for sync</span>
         </>
       )}
     </div>

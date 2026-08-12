@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAuthStore } from '../store/auth';
+import { useAuth } from '../lib/auth';
 import { useStakeholderStore, ROLE_FEATURE_MATRIX, StakeholderRole } from '../store/stakeholder';
 
 const WORKFLOW_NAMES: Record<string, Record<string, string>> = {
@@ -25,7 +25,7 @@ const WORKFLOW_NAMES: Record<string, Record<string, string>> = {
 };
 
 export default function StakeholderWorkflowPage() {
-  const { user } = useAuthStore();
+  const { user } = useAuth();
   const { getWorkflowSteps, startWorkflow, completeStep, completeWorkflow, resetWorkflow, completedWorkflows } = useStakeholderStore();
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
   const [workflowSteps, setWorkflowSteps] = useState<{ id: string; name: string; status: string }[]>([]);

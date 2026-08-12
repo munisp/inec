@@ -57,10 +57,15 @@ self.addEventListener('fetch', (event) => {
       fetch(event.request.clone()).catch(async () => {
         // Queue the request for later
         const body = await event.request.clone().text();
+        // SECURITY: never persist credentials into IndexedDB — queued
+        // requests replay with the ambient httpOnly cookie session, so the
+        // Authorization header is stripped before storage.
+        const queuedHeaders = Object.fromEntries(event.request.headers.entries());
+        delete queuedHeaders['authorization'];
         const queueItem = {
           url: event.request.url,
           method: 'POST',
-          headers: Object.fromEntries(event.request.headers.entries()),
+          headers: queuedHeaders,
           body,
           timestamp: Date.now(),
         };
@@ -155,17 +160,6 @@ self.addEventListener('message', (event) => {
 
 // ── Offline Queue Helpers ──
 
-async function queueOfflineRequest(request) {
-  const db = await openIndexedDB();
-  const tx = db.transaction('offline-queue', 'readwrite');
-  tx.objectStore('offline-queue').add(request);
-  await tx.complete;
-
-  if (self.registration.sync) {
-    await self.registration.sync.register('offline-sync');
-  }
-}
-
 async function replayQueue() {
   const db = await openOfflineDB();
   const tx = db.transaction('queue', 'readonly');
@@ -253,10 +247,9 @@ async function refreshCriticalData() {
       if (response.ok) {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(endpoint, response.clone());
-        console.log('[SW] Refreshed:', endpoint);
       }
-    } catch (err) {
-      console.warn('[SW] Failed to refresh:', endpoint, err);
+    } catch {
+      // Best-effort background refresh — failures are expected offline.
     }
   }
 }

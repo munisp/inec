@@ -41,9 +41,10 @@ export default function TVDashboardPage() {
     }
     const load = () => {
       const apiUrl = import.meta.env.VITE_API_URL ?? '';
-      const token = localStorage.getItem('token') || localStorage.getItem('inec_token') || '';
+      // Public endpoint — the 'token'/'inec_token' localStorage keys are never
+      // written by any auth flow, so no Authorization header is attached.
       fetch(`${apiUrl}/public/tv-dashboard?election_id=${electionId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'include',
       })
         .then(r => r.ok ? r.json() : Promise.reject(r.status))
         .then((payload) => {
