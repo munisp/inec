@@ -1,11 +1,12 @@
 /**
  * Real-Time Sentiment Feed
- * Live approval trend ticker showing candidate sentiment by geopolitical zone
- * Simulates polling from the campaign planning sentiment endpoint
- * Falls back to simulated data when backend is unavailable
+ * Live approval trend ticker showing candidate sentiment by geopolitical zone.
+ * Polls the campaign planning sentiment endpoint. If no backend is configured
+ * or the endpoint is unreachable, an explicit "unavailable" state is shown —
+ * sentiment figures are NEVER simulated.
  */
 import { useState, useEffect, useCallback, useRef } from "react";
-import { TrendingUp, TrendingDown, Minus, Radio, RefreshCw } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, Radio, RefreshCw, AlertTriangle } from "lucide-react";
 
 interface ZoneSentiment {
   zone: string;
@@ -15,34 +16,6 @@ interface ZoneSentiment {
   trend: "up" | "down" | "flat";
   sampleSize: number;
   lastUpdated: Date;
-}
-
-const ZONES = [
-  { zone: "North West",  code: "NW", base: 52 },
-  { zone: "North East",  code: "NE", base: 48 },
-  { zone: "North Central", code: "NC", base: 44 },
-  { zone: "South West",  code: "SW", base: 61 },
-  { zone: "South East",  code: "SE", base: 57 },
-  { zone: "South South", code: "SS", base: 53 },
-];
-
-function generateSentiment(candidateName: string, office: string): ZoneSentiment[] {
-  // Deterministic seed from candidate name + current minute for stable-but-changing values
-  const seed = candidateName.length + office.length + Math.floor(Date.now() / 60000);
-  return ZONES.map((z, i) => {
-    const noise = ((seed * (i + 7) * 13) % 17) - 8;  // -8 to +8
-    const approval = Math.max(20, Math.min(85, z.base + noise));
-    const delta = ((seed * (i + 3) * 7) % 9) - 4;    // -4 to +4
-    return {
-      zone: z.zone,
-      code: z.code,
-      approval,
-      delta,
-      trend: delta > 1 ? "up" : delta < -1 ? "down" : "flat",
-      sampleSize: 800 + ((seed * (i + 2)) % 400),
-      lastUpdated: new Date(),
-    };
-  });
 }
 
 function approvalColor(pct: number): string {
@@ -61,6 +34,7 @@ interface Props {
 export default function SentimentFeed({ candidateName, office, stateName, compact = false }: Props) {
   const [data, setData] = useState<ZoneSentiment[]>([]);
   const [loading, setLoading] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -81,17 +55,20 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
           const json = await res.json();
           if (json.zones) {
             setData(json.zones);
+            setUnavailable(false);
             setLastRefresh(new Date());
+            setLoading(false);
             return;
           }
         }
       }
     } catch {
-      // Backend unavailable — fall through to simulation
+      // Backend unavailable — show the explicit unavailable state below.
     }
-    // Simulated sentiment (production-quality simulation with realistic variance)
-    setData(generateSentiment(candidateName, office));
-    setLastRefresh(new Date());
+    // No live sentiment source is connected. Never fabricate sentiment figures.
+    setData([]);
+    setUnavailable(true);
+    setLastRefresh(null);
     setLoading(false);
   }, [candidateName, office, stateName]);
 
@@ -116,6 +93,22 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
 
   if (compact) {
     // Compact mode: single-line ticker for sidebar
+    if (unavailable) {
+      return (
+        <div
+          className="rounded border px-3 py-2 flex items-center gap-3"
+          style={{ background: "oklch(0.155 0.008 240)", borderColor: "oklch(0.22 0.01 240)" }}
+        >
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <AlertTriangle className="w-3 h-3" style={{ color: "oklch(0.75 0.18 80)" }} />
+            <span className="text-xs font-bold" style={{ color: "oklch(0.55 0.01 240)" }}>SENTIMENT</span>
+          </div>
+          <span className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>
+            Unavailable — no live source connected
+          </span>
+        </div>
+      );
+    }
     return (
       <div
         className="rounded border px-3 py-2 flex items-center gap-3"
@@ -151,7 +144,11 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Radio className="w-4 h-4 animate-pulse" style={{ color: "oklch(0.65 0.18 145)" }} />
+          {unavailable ? (
+            <AlertTriangle className="w-4 h-4" style={{ color: "oklch(0.75 0.18 80)" }} />
+          ) : (
+            <Radio className="w-4 h-4 animate-pulse" style={{ color: "oklch(0.65 0.18 145)" }} />
+          )}
           <span className="text-sm font-bold" style={{ color: "oklch(0.88 0.005 240)" }}>
             Live Sentiment Tracker
           </span>
@@ -179,6 +176,21 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
         </div>
       </div>
 
+      {unavailable ? (
+        <div
+          className="rounded border p-4 text-center"
+          style={{ background: "oklch(0.155 0.008 240)", borderColor: "oklch(0.75 0.18 80)" }}
+        >
+          <AlertTriangle className="w-5 h-5 mx-auto mb-2" style={{ color: "oklch(0.75 0.18 80)" }} />
+          <div className="text-sm font-bold mb-1" style={{ color: "oklch(0.88 0.005 240)" }}>
+            Sentiment data unavailable — no live source connected
+          </div>
+          <div className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>
+            No simulated sentiment is shown. Connect a sentiment backend (VITE_CAMPAIGN_API_URL) to populate this panel.
+          </div>
+        </div>
+      ) : (
+      <>
       {/* National average */}
       {nationalAvg !== null && (
         <div
@@ -232,6 +244,8 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
         <div className="text-xs text-center" style={{ color: "oklch(0.35 0.01 240)" }}>
           Last updated {lastRefresh.toLocaleTimeString("en-NG")} · {autoRefresh ? "Auto-refresh every 90s" : "Manual refresh"}
         </div>
+      )}
+      </>
       )}
     </div>
   );

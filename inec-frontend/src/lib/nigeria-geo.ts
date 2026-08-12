@@ -1,3 +1,10 @@
+/**
+ * Approximate geographic center coordinates for each Nigerian state/FCT code.
+ * These are reference centroids used for map centering and point markers only;
+ * they are NOT state boundaries. Official boundary geometry is not bundled
+ * with this build, so states must be rendered as center-point markers rather
+ * than polygons.
+ */
 export const NIGERIA_STATE_COORDS: Record<string, { lat: number; lng: number }> = {
   AB: { lat: 5.45, lng: 7.52 },
   AD: { lat: 9.33, lng: 12.40 },
@@ -38,7 +45,13 @@ export const NIGERIA_STATE_COORDS: Record<string, { lat: number; lng: number }> 
   ZA: { lat: 12.17, lng: 6.66 },
 };
 
-export function generateStateBoundaryGeoJSON(
+/**
+ * Builds a Point FeatureCollection placing each state at its approximate
+ * center coordinate. Deliberately does NOT generate polygon geometry: official
+ * state boundary data is not bundled in this build, and fabricating shapes
+ * would misrepresent real boundaries. Consume this with a circle/marker layer.
+ */
+export function generateStateMarkerGeoJSON(
   states: Array<{
     code: string;
     name: string;
@@ -52,17 +65,6 @@ export function generateStateBoundaryGeoJSON(
   const features = states.map((state) => {
     const center = NIGERIA_STATE_COORDS[state.code];
     if (!center) return null;
-
-    const r = state.code === 'LA' ? 0.25 : state.code === 'FC' ? 0.3 : 0.55;
-    const sides = 6;
-    const coords = [];
-    for (let i = 0; i <= sides; i++) {
-      const angle = (Math.PI * 2 * i) / sides - Math.PI / 6;
-      coords.push([
-        center.lng + r * Math.cos(angle) * (0.9 + Math.random() * 0.2),
-        center.lat + r * Math.sin(angle) * (0.9 + Math.random() * 0.2),
-      ]);
-    }
 
     return {
       type: 'Feature' as const,
@@ -79,8 +81,8 @@ export function generateStateBoundaryGeoJSON(
         leading_votes: state.leading_party?.total_votes || 0,
       },
       geometry: {
-        type: 'Polygon' as const,
-        coordinates: [coords],
+        type: 'Point' as const,
+        coordinates: [center.lng, center.lat],
       },
     };
   });

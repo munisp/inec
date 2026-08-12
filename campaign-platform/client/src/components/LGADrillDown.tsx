@@ -1,6 +1,8 @@
 /**
  * LGA Drill-Down Component
- * Shows ward-level community leaders for a selected state and LGA
+ * Engagement checklist of stakeholder ROLES to identify for a selected state
+ * and LGA. This is a planning checklist — it is not a database of real
+ * individuals, and no actual persons are looked up or displayed.
  */
 import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
@@ -21,7 +23,8 @@ const STATE_LGAS: Record<string, string[]> = {
   BOR:  ["Abadam", "Askira/Uba", "Bama", "Bayo", "Biu", "Chibok", "Damboa", "Dikwa", "Gubio", "Guzamala", "Gwoza", "Hawul", "Jere", "Kaga", "Kala/Balge", "Konduga", "Kukawa", "Kwaya Kusar", "Mafa", "Magumeri", "Maiduguri", "Marte", "Mobbar", "Monguno", "Ngala", "Nganzai", "Shani"],
 };
 
-// Generate representative ward-level leaders for a given LGA
+// Build the engagement checklist of stakeholder roles to identify for a given
+// LGA. These are generic role templates (not real individuals).
 function generateLGALeaders(state: string, lga: string): LGALeader[] {
   const roles = [
     { role: "LGA Chairman", category: "Government", influence: "High" as const, contact: "Official LGA Secretariat" },
@@ -87,7 +90,7 @@ export default function LGADrillDown({ stateCode, stateName }: Props) {
     <div className="flex flex-col gap-4">
       <div>
         <div className="text-sm font-bold mb-1" style={{ color: "oklch(0.88 0.005 240)" }}>LGA Drill-Down — {stateName}</div>
-        <div className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>{lgas.length} LGAs · Select an LGA to view ward-level community leaders</div>
+        <div className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>{lgas.length} LGAs · Select an LGA to view the engagement checklist of stakeholder roles to identify</div>
       </div>
 
       {/* LGA selector */}
@@ -136,7 +139,7 @@ export default function LGADrillDown({ stateCode, stateName }: Props) {
         <MapPin className="w-5 h-5 flex-shrink-0" style={{ color: "oklch(0.65 0.18 145)" }} />
         <div>
           <div className="text-sm font-bold" style={{ color: "oklch(0.88 0.005 240)" }}>{selectedLGA} LGA — {stateName}</div>
-          <div className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>{filtered.length} key community leaders identified</div>
+          <div className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>{filtered.length} roles to identify in this LGA — engagement checklist, not a contacts database</div>
         </div>
       </div>
 

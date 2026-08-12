@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -31,40 +32,32 @@ export default function GOTVBlockchain() {
   const [status, setStatus] = useState<ChainStatus | null>(null);
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [anchoring, setAnchoring] = useState(false);
   const [anchorResult, setAnchorResult] = useState<Record<string, unknown> | null>(null);
 
+  const load = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [statusRes, blocksRes] = await Promise.all([
+        api.get('/gotv/blockchain/status'),
+        api.get('/gotv/blockchain/blocks'),
+      ]);
+      setStatus(statusRes.data);
+      setBlocks(blocksRes.data.blocks || []);
+    } catch (err) {
+      // Never fabricate a chain on failure: show the unavailable state instead.
+      setStatus(null);
+      setBlocks([]);
+      setLoadError(err instanceof Error ? err.message : 'blockchain-source-unavailable');
+    }
+    setLoading(false);
+  };
+
   useEffect(() => {
-    const load = async () => {
-      try {
-        const [statusRes, blocksRes] = await Promise.all([
-          api.get('/gotv/blockchain/status'),
-          api.get('/gotv/blockchain/blocks'),
-        ]);
-        setStatus(statusRes.data);
-        setBlocks(blocksRes.data.blocks || []);
-      } catch {
-        // Seed demo data
-        setStatus({
-          total_blocks: 24,
-          total_transactions: 156,
-          verified_tx: 148,
-          merkle_anchors: 18,
-          latest_block_hash: 'a3f8c2d1e5b94706...',
-          latest_block_time: '2026-06-12T22:30:00Z',
-          chain_integrity: true,
-        });
-        setBlocks([
-          { block_number: 24, prev_hash: '7e2c1b4a9d3f8506...', merkle_root: 'f1d2e3c4b5a69780...', block_hash: 'a3f8c2d1e5b94706...', block_type: 'pledges', tx_count: 42, timestamp: '2026-06-12T22:30:00Z' },
-          { block_number: 23, prev_hash: '6d1b0a3e8c2f7495...', merkle_root: 'e0c1d2b3a4958670...', block_hash: '7e2c1b4a9d3f8506...', block_type: 'volunteers', tx_count: 18, timestamp: '2026-06-12T20:15:00Z' },
-          { block_number: 22, prev_hash: '5c0a9b2d7e1f6384...', merkle_root: 'd9b0c1a2e3847560...', block_hash: '6d1b0a3e8c2f7495...', block_type: 'contacts', tx_count: 65, timestamp: '2026-06-12T18:00:00Z' },
-          { block_number: 21, prev_hash: '4b9a8c1d6e0f5273...', merkle_root: 'c8a9b0d1e2736450...', block_hash: '5c0a9b2d7e1f6384...', block_type: 'pledges', tx_count: 31, timestamp: '2026-06-11T16:45:00Z' },
-          { block_number: 20, prev_hash: '3a8b7c0d5e9f4162...', merkle_root: 'b7a8c9d0e1625340...', block_hash: '4b9a8c1d6e0f5273...', block_type: 'pledges', tx_count: 28, timestamp: '2026-06-10T14:30:00Z' },
-        ]);
-      }
-      setLoading(false);
-    };
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleAnchor = async (anchorType: string) => {
@@ -86,6 +79,17 @@ export default function GOTVBlockchain() {
   };
 
   if (loading) return <div className="text-center py-12 text-muted-foreground">Loading blockchain...</div>;
+
+  if (loadError || !status) {
+    return (
+      <AuthoritativeDataUnavailable
+        title="Blockchain status is unavailable"
+        description="The GOTV blockchain service did not return a verified chain status. No simulated blocks, counters, or integrity results are shown."
+        error={loadError || 'blockchain-source-unavailable'}
+        onRetry={load}
+      />
+    );
+  }
 
   const blockTypeChart = (() => {
     const counts: Record<string, number> = {};

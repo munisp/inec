@@ -96,7 +96,9 @@ export async function fetchPollingUnitsGeoJSON(
 }
 
 /**
- * Fetch state-level data as polygon GeoJSON (approximate boundaries from centroids)
+ * Fetch state-level data as point GeoJSON at approximate state centers.
+ * Official state boundary geometry is not bundled in this build, so no
+ * polygon geometry is emitted; consumers must render markers, not fills.
  */
 export async function fetchStatesGeoJSON(electionId: number): Promise<StateCollection> {
   try {
@@ -119,19 +121,12 @@ export async function fetchStatesGeoJSON(electionId: number): Promise<StateColle
           const scores = s.party_scores || [];
           const leading = scores.length > 0
             ? scores.reduce((a, b) => (a.total_votes ?? a.votes ?? 0) > (b.total_votes ?? b.votes ?? 0) ? a : b) : null;
-          const d = 0.5; // approximate polygon size
 
           return {
             type: 'Feature' as const,
             geometry: {
-              type: 'Polygon' as const,
-              coordinates: [[
-                [coords.lng - d, coords.lat - d],
-                [coords.lng + d, coords.lat - d],
-                [coords.lng + d, coords.lat + d],
-                [coords.lng - d, coords.lat + d],
-                [coords.lng - d, coords.lat - d],
-              ]],
+              type: 'Point' as const,
+              coordinates: [coords.lng, coords.lat],
             },
             properties: {
               code: s.code,
