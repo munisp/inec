@@ -13,7 +13,7 @@ use axum::{
     middleware as axum_mw,
     response::IntoResponse,
     routing::{get, post},
-    Router,
+    Extension, Router,
     body::Body,
 };
 use geo::HaversineDistance;
@@ -286,6 +286,40 @@ struct StateCoverage {
 
 // ─── Internal API Key Auth ─────────────────────────────────────────────────
 
+/// Party identity derived from the presented API key in multi-tenant mode.
+/// Inserted as a request extension by internal_api_key_auth.
+#[derive(Clone)]
+struct PartyKey(i64);
+
+/// Multi-tenancy: GOTV_ENGINE_PARTY_KEYS is a JSON object mapping
+/// {"<api-key>": <party_id>}. When set, the map is authoritative — every
+/// request must present a key from the map and the derived party is enforced
+/// against any party_id in the request (403 on mismatch). When unset, the
+/// single GOTV_ENGINE_API_KEY mode is the documented SINGLE-TENANT fallback:
+/// one shared key, party_id trusted from the request body.
+fn party_keys() -> Option<HashMap<String, i64>> {
+    std::env::var("GOTV_ENGINE_PARTY_KEYS")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Reject a request whose party_id disagrees with the key-derived party.
+fn enforce_party(party: &Option<PartyKey>, requested_party: i64) -> Result<(), axum::response::Response> {
+    if let Some(PartyKey(p)) = party {
+        if *p != requested_party {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "party_mismatch",
+                    "message": "API key is not authorized for the requested party_id"
+                })),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
 async fn internal_api_key_auth(
     req: Request<Body>,
     next: axum_mw::Next,
@@ -308,9 +342,13 @@ async fn internal_api_key_auth(
             .into_response();
     }
 
-    let has_key = req.headers()
+    let presented_key = req.headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string());
+
+    let has_key = presented_key
+        .as_deref()
         .map(|v| v == expected_key)
         .unwrap_or(false);
 
@@ -325,28 +363,130 @@ async fn internal_api_key_auth(
         .unwrap_or(false);
 
     if has_dapr || has_key {
+        let mut req = req;
+        // Multi-tenant mode: when GOTV_ENGINE_PARTY_KEYS is set, the presented
+        // key must be bound to a party; the party travels as an extension and
+        // handlers reject mismatched party_ids with 403.
+        if let Some(keys) = party_keys() {
+            match presented_key.as_deref().and_then(|k| keys.get(k)) {
+                Some(party_id) => {
+                    req.extensions_mut().insert(PartyKey(*party_id));
+                }
+                None => {
+                    // A dapr-token-authenticated service call carries no party
+                    // binding; leave the extension absent (handlers then apply
+                    // no per-party restriction for service accounts). A request
+                    // authenticated ONLY with an unknown x-api-key is rejected.
+                    if !has_dapr {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({"error": "x-api-key not authorized for any party"})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
         return next.run(req).await;
     }
 
     (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response()
 }
 
+// ─── Rate Limiting ─────────────────────────────────────────────────────────
+
+/// Sliding-window rate limiter (~120 requests/minute per API key).
+/// Runs AFTER authentication so the limiter key is the caller identity.
+async fn rate_limit(
+    axum::extract::State(limiter): axum::extract::State<Arc<platform::SlidingWindowLimiter>>,
+    req: Request<Body>,
+    next: axum_mw::Next,
+) -> axum::response::Response {
+    let key = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "anonymous".to_string());
+
+    if !limiter.allow(&key) {
+        warn!(key_prefix = &key[..key.len().min(8)], "rate limit exceeded");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "rate_limit_exceeded", "limit": "120 requests/minute"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// Maximum items accepted in bulk registration/match payloads.
+const MAX_BULK_ITEMS: usize = 10_000;
+
+/// CORS policy driven by CORS_ORIGINS (comma-separated). Default deny: when
+/// unset, no cross-origin requests are permitted (replaces permissive CORS).
+fn cors_layer() -> CorsLayer {
+    use axum::http::{header, Method};
+    let origins_str = std::env::var("CORS_ORIGINS").unwrap_or_default();
+    let origins: Vec<header::HeaderValue> = origins_str
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    if origins.is_empty() {
+        CorsLayer::new()
+    } else {
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                header::HeaderName::from_static("x-api-key"),
+            ])
+    }
+}
+
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
-async fn health() -> impl IntoResponse {
+async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Report persistence honestly: a persistence layer that is enabled but
+    // accumulating write failures is DEGRADED — responses claimed "persistent"
+    // while writes were being discarded.
+    let enabled = state.persistence.is_enabled();
+    let failures = state.persistence.write_failures();
+    let persistence = if !enabled {
+        "disabled"
+    } else if failures > 0 {
+        "degraded"
+    } else {
+        "ok"
+    };
     Json(serde_json::json!({
         "service": "gotv-engine",
         "status": "healthy",
         "version": "1.0.0",
         "language": "rust",
+        "persistence": persistence,
+        "persistence_write_failures": failures,
         "capabilities": ["ride_matching", "route_optimization", "proximity_search", "coverage_analysis"]
     }))
 }
 
 async fn register_volunteers(
     State(state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Json(req): Json<RegisterVolunteersRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
+        return resp;
+    }
+    if req.volunteers.len() > MAX_BULK_ITEMS {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "too_many_volunteers", "max": MAX_BULK_ITEMS})),
+        )
+            .into_response();
+    }
     let count = req.volunteers.len();
     // Collect positions to persist (id, lat, lng) before consuming req.
     let positions: Vec<(String, f64, f64)> = req
@@ -385,13 +525,20 @@ async fn register_volunteers(
         "party_id": req.party_id,
         // INTEGRITY: report honestly whether state survives a restart.
         "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
-    })))
+    }))).into_response()
 }
 
 async fn register_polling_units(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterPUsRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if req.polling_units.len() > MAX_BULK_ITEMS {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "too_many_polling_units", "max": MAX_BULK_ITEMS})),
+        )
+            .into_response();
+    }
     let count = req.polling_units.len();
     let mut pus = state.polling_units.write().unwrap();
     for pu in req.polling_units {
@@ -399,13 +546,17 @@ async fn register_polling_units(
     }
     info!(count = count, "Registered polling units");
 
-    (StatusCode::OK, Json(serde_json::json!({"registered": count})))
+    (StatusCode::OK, Json(serde_json::json!({"registered": count}))).into_response()
 }
 
 async fn match_ride(
     State(state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Json(req): Json<MatchRideRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
+        return resp;
+    }
     let max_dist = req.max_distance_km.unwrap_or(10.0);
     let require_vehicle = req.require_vehicle.unwrap_or(true);
 
@@ -463,7 +614,7 @@ async fn match_ride(
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "no_available_volunteers", "message": "No volunteers found within range"})),
-        );
+        ).into_response();
     }
 
     // Middleware: publish match event to Kafka + Fluvio (no locks held)
@@ -495,13 +646,24 @@ async fn match_ride(
         "polling_unit": req.polling_unit_code,
         // INTEGRITY: report honestly whether the match was persisted.
         "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
-    })))
+    }))).into_response()
 }
 
 async fn bulk_match_rides(
     State(state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Json(req): Json<BulkMatchRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
+        return resp;
+    }
+    if req.requests.len() > MAX_BULK_ITEMS {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": "too_many_requests", "max": MAX_BULK_ITEMS})),
+        )
+            .into_response();
+    }
     let tree = state.rtree.read().unwrap();
     let mut assigned: HashMap<String, bool> = HashMap::new();
     let mut results = Vec::new();
@@ -563,13 +725,17 @@ async fn bulk_match_rides(
         "unmatched": req.requests.len() - matched_count,
         // INTEGRITY: bulk matches are computed in memory; report persistence honestly.
         "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
-    }))
+    })).into_response()
 }
 
 async fn optimize_route(
     State(_state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Json(req): Json<RouteOptRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
+        return resp;
+    }
     // Nearest-neighbor TSP heuristic for canvasser route optimization
     let mut remaining: Vec<(usize, LatLng)> = req
         .pickup_points
@@ -618,7 +784,7 @@ async fn optimize_route(
         estimated_time_minutes: (total_distance / 25.0 * 60.0).round(), // ~25 km/h with stops
     };
 
-    Json(serde_json::json!(route))
+    Json(serde_json::json!(route)).into_response()
 }
 
 async fn proximity_polling_units(
@@ -660,8 +826,12 @@ async fn proximity_polling_units(
 
 async fn coverage_analysis(
     State(state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Path(party_id): Path<i64>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), party_id) {
+        return resp;
+    }
     // PERFORMANCE/DoS: cap the number of polling units processed per call.
     // Coverage check uses the R-tree spatial index: O(PU log V) instead of
     // the previous O(PU x V) brute-force scan.
@@ -765,7 +935,7 @@ async fn coverage_analysis(
         coverage_status: coverage_status.to_string(),
         coverage_by_state,
         uncovered_pus: uncovered,
-    })
+    }).into_response()
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -801,8 +971,12 @@ struct TerritoryPartitionRequest {
 
 async fn partition_territories(
     State(state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Json(req): Json<TerritoryPartitionRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
+        return resp;
+    }
     let vols = state.volunteers.read().unwrap();
     let party_vols = vols.get(&req.party_id);
 
@@ -828,7 +1002,7 @@ async fn partition_territories(
         "territories": territories,
         "total_volunteers": vol_positions.len(),
         "total_contacts": contact_locs.len(),
-    })))
+    }))).into_response()
 }
 
 // ─── V2: Predictive Turnout ────────────────────────────────────────────────
@@ -869,8 +1043,12 @@ struct IsochroneRequest {
 
 async fn calculate_isochrone(
     State(state): State<Arc<AppState>>,
+    party: Option<Extension<PartyKey>>,
     Json(req): Json<IsochroneRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
+        return resp;
+    }
     let vols = state.volunteers.read().unwrap();
     let party_vols = vols.get(&req.party_id);
 
@@ -895,6 +1073,7 @@ async fn calculate_isochrone(
         }
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "volunteer not found"}))),
     }
+    .into_response()
 }
 
 // ─── V2: Geofence Check ───────────────────────────────────────────────────
@@ -1113,8 +1292,14 @@ async fn main() {
         .route("/gotv-engine/crypto/shuffle", post(shuffle_handler))
         .route("/gotv-engine/crypto/merkle-tree", post(merkle_tree_handler))
         .route("/gotv-engine/verify-keys", post(verify_keys_handler))
+        // Runs after auth (layers execute outermost-last): the limiter key is
+        // the authenticated x-api-key identity. ~120 requests/minute per key.
+        .layer(axum_mw::from_fn_with_state(
+            Arc::new(platform::SlidingWindowLimiter::new(120, 60)),
+            rate_limit,
+        ))
         .layer(axum_mw::from_fn(internal_api_key_auth))
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer())
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
