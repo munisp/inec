@@ -21,21 +21,24 @@ import (
 var jwtSecret []byte
 
 func init() {
+	// SECURITY: refuse to boot with a missing/short HMAC key anywhere except an
+	// explicit INEC_ENV=development. Previously this only logged an error and
+	// proceeded with an empty key, silently forging/accepting tokens in prod.
 	s := os.Getenv("JWT_SECRET")
+	dev := os.Getenv("INEC_ENV") == "development"
 	if s == "" {
-		if os.Getenv("INEC_ENV") == "development" || os.Getenv("INEC_ENV") == "" {
-			log.Warn().Msg("JWT_SECRET not set — generating ephemeral key (dev mode only)")
-			b := make([]byte, 32)
-			if _, err := rand.Read(b); err != nil {
-				log.Error().Err(err).Msg("failed to generate random JWT secret")
-			}
-			s = base64.RawURLEncoding.EncodeToString(b)
-		} else {
-			log.Error().Msg("JWT_SECRET environment variable is required in production (set INEC_ENV=development to allow ephemeral keys)")
+		if !dev {
+			log.Fatal().Msg("JWT_SECRET environment variable is required (set INEC_ENV=development to allow ephemeral dev keys)")
 		}
+		log.Warn().Msg("JWT_SECRET not set — generating ephemeral key (INEC_ENV=development only)")
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			log.Fatal().Err(err).Msg("failed to generate random JWT secret")
+		}
+		s = base64.RawURLEncoding.EncodeToString(b)
 	}
-	if len(s) < 32 {
-		log.Error().Msg("JWT_SECRET must be at least 32 characters")
+	if len(s) < 32 && !dev {
+		log.Fatal().Msg("JWT_SECRET must be at least 32 characters")
 	}
 	jwtSecret = []byte(s)
 }
@@ -94,6 +97,10 @@ func createAccessToken(claims map[string]interface{}) (string, error) {
 	for k, v := range claims {
 		mc[k] = v
 	}
+	// jti enables server-side revocation (logout / blacklist).
+	if _, ok := mc["jti"]; !ok {
+		mc["jti"] = generateJTI()
+	}
 	mc["exp"] = time.Now().Add(1 * time.Hour).Unix()
 	mc["type"] = "access"
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, mc)
@@ -104,6 +111,9 @@ func createRefreshToken(claims map[string]interface{}) (string, error) {
 	mc := jwt.MapClaims{}
 	for k, v := range claims {
 		mc[k] = v
+	}
+	if _, ok := mc["jti"]; !ok {
+		mc["jti"] = generateJTI()
 	}
 	mc["exp"] = time.Now().Add(7 * 24 * time.Hour).Unix()
 	mc["type"] = "refresh"
@@ -158,8 +168,3 @@ func requireRole(r *http.Request, roles ...string) (jwt.MapClaims, error) {
 	return nil, fmt.Errorf("insufficient permissions")
 }
 
-
-// Added for rate limiting fix
-func checkRateLimit(ip string) bool {
-	return true
-}

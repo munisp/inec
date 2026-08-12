@@ -199,8 +199,11 @@ func handleNotificationDispatch(w http.ResponseWriter, r *http.Request) {
 	channelsJSON, _ := json.Marshal(req.Channels)
 	recipientsJSON, _ := json.Marshal(req.Recipients)
 	resultsJSON, _ := json.Marshal(results)
-	dbExecCtx(r.Context(), `INSERT INTO push_notifications (title, body, recipients, channel, priority, election_id, status, sent_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
-		req.Title, req.Body, string(recipientsJSON), string(channelsJSON), req.Priority, req.ElectionID, string(resultsJSON))
+	if _, err := dbExecCtx(r.Context(), `INSERT INTO push_notifications (title, body, recipients, channel, priority, election_id, status, sent_at) VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
+		req.Title, req.Body, string(recipientsJSON), string(channelsJSON), req.Priority, req.ElectionID, string(resultsJSON)); err != nil {
+		writeError(w, 500, "failed to persist notification record")
+		return
+	}
 
 	totalSent, totalFailed := 0, 0
 	for _, res := range results {
@@ -513,8 +516,11 @@ func handleEscalationConfig(w http.ResponseWriter, r *http.Request) {
 		if cooldownSec == 0 {
 			cooldownSec = 300
 		}
-		dbExecCtx(r.Context(), `INSERT OR REPLACE INTO escalation_rules (name, condition, level, action, cooldown_seconds) VALUES (?,?,?,?,?)`,
-			rule.Name, rule.Condition, rule.Level, rule.Action, cooldownSec)
+		if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO escalation_rules (name, condition, level, action, cooldown_seconds) VALUES (?,?,?,?,?)`,
+			rule.Name, rule.Condition, rule.Level, rule.Action, cooldownSec); err != nil {
+			writeError(w, 500, "failed to persist escalation rules")
+			return
+		}
 	}
 	writeJSON(w, 200, M{"status": "updated", "count": len(rules)})
 }
@@ -539,7 +545,10 @@ func handleLoadShedding(w http.ResponseWriter, r *http.Request) {
 	}
 	cmdCenter.loadShedLevel = body.Level
 	// Persist to DB
-	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO command_center_config (key, value, updated_at) VALUES ('load_shedding_level', ?, CURRENT_TIMESTAMP)`, strconv.Itoa(body.Level))
+	if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO command_center_config (key, value, updated_at) VALUES ('load_shedding_level', ?, CURRENT_TIMESTAMP)`, strconv.Itoa(body.Level)); err != nil {
+		writeError(w, 500, "failed to persist load shedding level")
+		return
+	}
 	if mwHub != nil && mwHub.Kafka != nil {
 		mwHub.Kafka.Produce(r.Context(), KafkaMessage{Topic: "command-center.load-shedding", Key: "level", Value: M{"level": body.Level}, Timestamp: time.Now()})
 	}
@@ -606,7 +615,10 @@ func handleMFASetupTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secretBytes)
-	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_totp (user_id, secret, verified) VALUES (?,?,0)`, userID, secret)
+	if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_totp (user_id, secret, verified) VALUES (?,?,0)`, userID, secret); err != nil {
+		writeError(w, 500, "failed to store MFA secret")
+		return
+	}
 
 	row, _ := querySingleRowCtx(r.Context(), `SELECT username FROM users WHERE id=?`, userID)
 	username := "officer"
@@ -635,8 +647,14 @@ func handleMFAVerifyTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "invalid TOTP code")
 		return
 	}
-	dbExecCtx(r.Context(), `UPDATE mfa_totp SET verified=1 WHERE user_id=?`, userID)
-	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_settings (user_id, totp_enabled, updated_at) VALUES (?,1,CURRENT_TIMESTAMP)`, userID)
+	if _, err := dbExecCtx(r.Context(), `UPDATE mfa_totp SET verified=1 WHERE user_id=?`, userID); err != nil {
+		writeError(w, 500, "failed to enable TOTP")
+		return
+	}
+	if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_settings (user_id, totp_enabled, updated_at) VALUES (?,1,CURRENT_TIMESTAMP)`, userID); err != nil {
+		writeError(w, 500, "failed to update MFA settings")
+		return
+	}
 	writeJSON(w, 200, M{"status": "totp_enabled"})
 }
 
@@ -667,7 +685,10 @@ func handleMFAChallenge(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 401, "invalid SMS OTP")
 			return
 		}
-		dbExecCtx(r.Context(), `UPDATE mfa_sms_otp SET used=1 WHERE user_id=? AND code=?`, body.UserID, body.Code)
+		if _, err := dbExecCtx(r.Context(), `UPDATE mfa_sms_otp SET used=1 WHERE user_id=? AND code=?`, body.UserID, body.Code); err != nil {
+			writeError(w, 500, "failed to consume SMS OTP")
+			return
+		}
 	default:
 		writeError(w, 400, "method must be totp or sms")
 		return
@@ -699,8 +720,11 @@ func handleMFASendSMS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := fmt.Sprintf("%06d", (int(codeBytes[0])<<16|int(codeBytes[1])<<8|int(codeBytes[2]))%1000000)
-	dbExecCtx(r.Context(), `INSERT INTO mfa_sms_otp (user_id, phone, code, expires_at) VALUES (?,?,?,?)`,
-		body.UserID, phone, code, time.Now().Add(5*time.Minute))
+	if _, err := dbExecCtx(r.Context(), `INSERT INTO mfa_sms_otp (user_id, phone, code, expires_at) VALUES (?,?,?,?)`,
+		body.UserID, phone, code, time.Now().Add(5*time.Minute)); err != nil {
+		writeError(w, 500, "failed to store SMS OTP")
+		return
+	}
 	if mwHub != nil && mwHub.Dapr != nil {
 		mwHub.Dapr.PublishEvent(r.Context(), "sms-gateway", "send", map[string]string{"to": phone, "message": "INEC MFA code: " + code})
 	}
@@ -732,9 +756,15 @@ func handleMFAWebAuthnRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid request")
 		return
 	}
-	dbExecCtx(r.Context(), `INSERT INTO mfa_webauthn (user_id, credential_id, public_key, device_name) VALUES (?,?,?,?)`,
-		userID, body.CredentialID, body.PublicKey, body.DeviceName)
-	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_settings (user_id, webauthn_enabled, updated_at) VALUES (?,1,CURRENT_TIMESTAMP)`, userID)
+	if _, err := dbExecCtx(r.Context(), `INSERT INTO mfa_webauthn (user_id, credential_id, public_key, device_name) VALUES (?,?,?,?)`,
+		userID, body.CredentialID, body.PublicKey, body.DeviceName); err != nil {
+		writeError(w, 500, "failed to register WebAuthn credential")
+		return
+	}
+	if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO mfa_settings (user_id, webauthn_enabled, updated_at) VALUES (?,1,CURRENT_TIMESTAMP)`, userID); err != nil {
+		writeError(w, 500, "failed to update MFA settings")
+		return
+	}
 	writeJSON(w, 200, M{"status": "registered", "device": body.DeviceName})
 }
 
@@ -831,8 +861,11 @@ func handleSignResult(w http.ResponseWriter, r *http.Request) {
 	sigData := fmt.Sprintf("%s:%s:%d:%s", resultHash, prevHash, time.Now().Unix(), body.OfficerKey)
 	sigHash := sha256.Sum256([]byte(sigData))
 	sig := hex.EncodeToString(sigHash[:])
-	dbExecCtx(r.Context(), `INSERT OR REPLACE INTO result_signatures (result_id, officer_pubkey, signature, prev_hash, result_hash, chain_position) VALUES (?,?,?,?,?,?)`,
-		body.ResultID, body.OfficerKey, sig, prevHash, resultHash, chainPos)
+	if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO result_signatures (result_id, officer_pubkey, signature, prev_hash, result_hash, chain_position) VALUES (?,?,?,?,?,?)`,
+		body.ResultID, body.OfficerKey, sig, prevHash, resultHash, chainPos); err != nil {
+		writeError(w, 500, "failed to persist result signature")
+		return
+	}
 	if mwHub != nil && mwHub.Kafka != nil {
 		mwHub.Kafka.Produce(r.Context(), KafkaMessage{Topic: "result-chain.signed", Key: fmt.Sprint(body.ResultID), Value: M{"result_id": body.ResultID, "hash": resultHash, "chain_position": chainPos}, Timestamp: time.Now()})
 	}

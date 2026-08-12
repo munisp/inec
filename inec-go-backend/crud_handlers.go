@@ -155,14 +155,20 @@ func handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	args = append(args, id)
 	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id=$" + strconv.Itoa(argIdx)
-	dbExecCtx(r.Context(), query, args...)
+	if _, err := dbExecCtx(r.Context(), query, args...); err != nil {
+		writeError(w, 500, "failed to update user")
+		return
+	}
 	auditWrite("USER_UPDATED", "user", id, r, map[string]interface{}{"fields": sets})
 	writeJSON(w, 200, M{"message": "User updated"})
 }
 
 func handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	dbExecCtx(r.Context(), "DELETE FROM users WHERE id=$1", id)
+	if _, err := dbExecCtx(r.Context(), "DELETE FROM users WHERE id=$1", id); err != nil {
+		writeError(w, 500, "failed to delete user")
+		return
+	}
 	auditWrite("USER_DELETED", "user", id, r, nil)
 	writeJSON(w, 200, M{"message": "User deleted"})
 }
@@ -178,7 +184,10 @@ func handleDeleteElection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "Cannot delete election with existing results. Delete results first.")
 		return
 	}
-	dbExecCtx(r.Context(), "DELETE FROM elections WHERE id=$1", id)
+	if _, err := dbExecCtx(r.Context(), "DELETE FROM elections WHERE id=$1", id); err != nil {
+		writeError(w, 500, "failed to delete election")
+		return
+	}
 	auditWrite("ELECTION_DELETED", "election", id, r, nil)
 	writeJSON(w, 200, M{"message": "Election deleted"})
 }

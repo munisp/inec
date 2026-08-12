@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog/log"
 )
 
 type contextKey string
@@ -68,6 +70,18 @@ func jwtAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Refresh tokens must never authenticate API requests.
+		if tokenType, _ := claims["type"].(string); tokenType != "access" {
+			writeJSON(w, 401, M{"error": "access token required"})
+			return
+		}
+
+		// Reject revoked tokens (logout / session revocation by jti).
+		if jti, _ := claims["jti"].(string); jti != "" && blacklist.isBlacklisted(jti) {
+			writeJSON(w, 401, M{"error": "token has been revoked"})
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), userContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -79,26 +93,56 @@ func getUserFromContext(r *http.Request) (jwt.MapClaims, bool) {
 	return claims, ok
 }
 
-// corsProductionMiddleware replaces the wildcard CORS with configurable origins.
+// corsProductionMiddleware implements a strict origin allow-list driven by
+// CORS_ORIGINS (comma-separated). SECURITY:
+//   - unset CORS_ORIGINS => empty allow-list (all cross-origin requests denied);
+//   - APP_ENV=production with an empty allow-list is a fatal startup error;
+//   - Access-Control-Allow-Credentials:true is NEVER sent with a wildcard origin.
 func corsProductionMiddleware(next http.Handler) http.Handler {
-	allowedOrigins := strings.Split(envOrDefault("CORS_ORIGINS", "*"), ",")
+	raw := strings.TrimSpace(os.Getenv("CORS_ORIGINS"))
+	var allowedOrigins []string
+	wildcard := false
+	if raw == "" {
+		if os.Getenv("APP_ENV") == "production" {
+			log.Fatal().Msg("CORS_ORIGINS must be set in production (explicit origin allow-list required)")
+		}
+		log.Warn().Msg("CORS_ORIGINS not set — cross-origin requests will be denied")
+	} else {
+		for _, o := range strings.Split(raw, ",") {
+			o = strings.TrimSpace(o)
+			if o == "*" {
+				wildcard = true
+				continue
+			}
+			if o != "" {
+				allowedOrigins = append(allowedOrigins, o)
+			}
+		}
+	}
+	if wildcard {
+		log.Warn().Msg("CORS allow-list contains wildcard — credentials will not be allowed")
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		allowed := false
-
-		for _, ao := range allowedOrigins {
-			ao = strings.TrimSpace(ao)
-			if ao == "*" || ao == origin {
-				allowed = true
-				break
+		if origin != "" {
+			allowed := false
+			for _, ao := range allowedOrigins {
+				if ao == origin {
+					allowed = true
+					break
+				}
 			}
-		}
-
-		if allowed && origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Vary", "Origin")
+			switch {
+			case allowed:
+				// Explicitly listed origin: credentials permitted.
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Vary", "Origin")
+			case wildcard:
+				// Wildcard (dev only): reflect via "*" and NEVER allow credentials.
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			}
 		}
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
