@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -23,6 +22,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +31,74 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECURITY — CRYPTO/BIOMETRIC BACKEND CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// This service previously FABRICATED election-cryptography artifacts:
+// SHA-256 hashes were stored as "encrypted ballots", HMACs with a hardcoded
+// key were stored as "proofs", random blobs were stored as "election keys"
+// (private key in plaintext), and any non-empty string counted as "biometric
+// verification". Those code paths have been removed. Endpoints now FAIL
+// LOUDLY (HTTP 503) unless a real backend is configured.
+//
+// SECURITY: refuses to fabricate cryptographic artifacts.
+
+// electionCryptoBackendURL, when set, points at a real ElectionGuard/Paillier
+// tally backend. When empty, ballot casting and every crypto-artifact
+// endpoint refuse to operate rather than fabricate keys/proofs/ciphertexts.
+var electionCryptoBackendURL = os.Getenv("GOTV_ELECTION_CRYPTO_BACKEND_URL")
+
+// biometricServiceURL, when set, points at the biometric verification
+// pipeline used for remote-voter authentication. When empty, remote
+// authentication is rejected — a non-empty payload string is NOT proof of
+// biometric verification.
+var biometricServiceURL = os.Getenv("GOTV_BIOMETRIC_SERVICE_URL")
+
+// cbBiometricVerify protects calls to the biometric verification pipeline.
+var cbBiometricVerify = NewGOTVCircuitBreaker("biometric-verify", 3, 30*time.Second)
+
+// cryptoBackendConfigured reports whether a real election-cryptography
+// backend is configured for this deployment.
+func cryptoBackendConfigured() bool {
+	return electionCryptoBackendURL != ""
+}
+
+// cryptoUnavailable writes a loud HTTP 503 for operations that would
+// otherwise have to fabricate election-cryptography artifacts.
+// SECURITY: refuses to fabricate cryptographic artifacts.
+func cryptoUnavailable(w http.ResponseWriter, op string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error":  op + " not configured",
+		"detail": "this deployment has no real ElectionGuard/Paillier backend; refusing to fabricate cryptographic artifacts",
+	})
+}
+
+// verifyBiometricPayload submits a biometric payload to the configured
+// biometric verification pipeline and returns true ONLY when that pipeline
+// explicitly verifies it. SECURITY: never treats payload non-emptiness as
+// verification.
+func verifyBiometricPayload(r *http.Request, payload string) bool {
+	if biometricServiceURL == "" || payload == "" {
+		return false
+	}
+	body, _ := json.Marshal(map[string]string{"biometric_payload": payload})
+	resp, code, err := resilientCall(r.Context(), cbBiometricVerify, "POST",
+		biometricServiceURL+"/verify", body)
+	if err != nil || code != http.StatusOK {
+		return false
+	}
+	var result struct {
+		Verified bool `json:"verified"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return false
+	}
+	return result.Verified
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUTE REGISTRATION
@@ -1336,6 +1404,15 @@ func handleCastBallot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: refuses to fabricate cryptographic artifacts. Ballots in an
+	// election system must be encrypted with a real ElectionGuard/Paillier
+	// backend. When no backend is configured, casting is rejected with 503 —
+	// silently storing an unencrypted ballot is worse than failing loudly.
+	if !cryptoBackendConfigured() {
+		cryptoUnavailable(w, "ballot encryption service")
+		return
+	}
+
 	// Verify round is open
 	var roundStatus string
 	err := dbConn.QueryRow("SELECT status FROM voting_rounds WHERE round_id=$1", req.RoundID).Scan(&roundStatus)
@@ -1588,6 +1665,21 @@ func handleRemoteAuthenticate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: biometric verification must NEVER be inferred from payload
+	// non-emptiness — previously any non-empty string was recorded as
+	// biometric_verified=TRUE in voting_sessions, gating remote ballot
+	// casting. Without a configured biometric pipeline, reject with 503.
+	// No session may be created on the basis of a non-empty string.
+	if biometricServiceURL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "biometric verification service unavailable",
+			"detail": "no biometric verification pipeline configured (GOTV_BIOMETRIC_SERVICE_URL); refusing to authenticate remote voting session",
+		})
+		return
+	}
+
 	// Verify OTP
 	var storedOTPHash string
 	var otpExpires time.Time
@@ -1628,8 +1720,16 @@ func handleRemoteAuthenticate(w http.ResponseWriter, r *http.Request) {
 	// Keycloak session validation
 	keycloakSessionID := validateKeycloakRemoteVoting(r)
 
+	// Verify the biometric payload against the configured biometric pipeline.
+	// SECURITY: refuses to fabricate biometric verification — the pipeline
+	// must explicitly verify the payload.
+	biometricVerified := verifyBiometricPayload(r, req.BiometricPayload)
+	if !biometricVerified {
+		jsonErr(w, "biometric verification failed", 401)
+		return
+	}
+
 	// Update session
-	biometricVerified := req.BiometricPayload != ""
 	dbConn.ExecContext(r.Context(), `
 		UPDATE voting_sessions SET status='authenticated', biometric_verified=$1,
 			keycloak_session_id=$2, ip_hash=$3
@@ -1688,20 +1788,23 @@ func handleRemoteVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: refuses to fabricate cryptographic artifacts. The previous
+	// "server-side encryption" fallback stored SHA256(delegate:aspirant:...)
+	// as the encrypted ballot and an HMAC with a hardcoded key as the proof.
+	// Without a real crypto backend, remote ballots are rejected (503).
+	if !cryptoBackendConfigured() {
+		cryptoUnavailable(w, "ballot encryption service")
+		return
+	}
+
 	// Generate E2E verifiable confirmation code
 	confirmationCode := generateConfirmationCode()
 	verificationHash := hashStringSHA(roundID + delegateID + confirmationCode + time.Now().String())
 
-	// Encrypt ballot (in production, use ElectionGuard homomorphic encryption)
+	// Ballots must arrive E2E-encrypted by the client; the server never
+	// fabricates ciphertexts or proofs on the voter's behalf.
 	encryptedBallot := req.EncryptedBallot
-	if encryptedBallot == "" {
-		// Fallback: server-side encryption
-		encryptedBallot = encryptBallot(delegateID, req.AspirantID, req.VoteType)
-	}
 	ballotProof := req.BallotProof
-	if ballotProof == "" {
-		ballotProof = generateBallotProof(encryptedBallot, req.VoteType)
-	}
 
 	ballotID := "bal-" + uuid.New().String()[:8]
 	ipHash := hashStringSHA(r.RemoteAddr)
@@ -1830,199 +1933,63 @@ func handleCoercionVote(w http.ResponseWriter, r *http.Request) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func handleGenerateElectionKeys(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ElectionID int `json:"election_id"`
-		Guardians  int `json:"guardians"`  // Total guardians
-		Threshold  int `json:"threshold"`  // k-of-n threshold
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.ElectionID == 0 {
-		jsonErr(w, "election_id required", 400)
+	// SECURITY: refuses to fabricate cryptographic artifacts.
+	// The previous implementation generated an "election keypair" from two
+	// INDEPENDENT random 32-byte blobs and INSERTed the raw private key
+	// UNENCRYPTED into voting_crypto_keys; the "k-of-n guardian shares" were
+	// likewise independent random blobs with no Shamir sharing, and the Dapr
+	// key-verification call was silently skipped when no sidecar was
+	// configured. None of that is a real key ceremony.
+	//
+	// A real key ceremony requires the election crypto engine (via Dapr) to
+	// generate and verify keys. If it is not configured, fail loudly with its
+	// explicit error — never skip verification silently and never write fake
+	// keys to the database.
+	if err := verifyKeysViaDapr(0, "", nil); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "election key ceremony service not configured",
+			"detail": "this deployment has no real ElectionGuard/Paillier backend; refusing to fabricate cryptographic artifacts: " + err.Error(),
+		})
 		return
 	}
-	if req.Guardians <= 0 {
-		req.Guardians = 5
-	}
-	if req.Threshold <= 0 {
-		req.Threshold = 3
-	}
-
-	// Generate election keypair (in production, use ElectionGuard SDK)
-	electionPubKey, electionPrivKey := generateElectionKeyPair()
-
-	// Store election public key
-	dbConn.ExecContext(r.Context(), `
-		INSERT INTO voting_crypto_keys (election_id, key_type, key_purpose, public_key,
-			encrypted_private_key, guardian_total, threshold)
-		VALUES ($1,'election_public','encryption',$2,$3,$4,$5)`,
-		req.ElectionID, electionPubKey, electionPrivKey, req.Guardians, req.Threshold)
-
-	// Generate guardian key shares
-	guardianKeys := []map[string]string{}
-	for i := 1; i <= req.Guardians; i++ {
-		guardianPub, guardianPriv := generateGuardianKeyShare(i, req.Guardians, req.Threshold)
-		dbConn.ExecContext(r.Context(), `
-			INSERT INTO voting_crypto_keys (election_id, key_type, key_purpose, public_key,
-				encrypted_private_key, guardian_index, guardian_total, threshold)
-			VALUES ($1,'guardian','decryption',$2,$3,$4,$5,$6)`,
-			req.ElectionID, guardianPub, guardianPriv, i, req.Guardians, req.Threshold)
-		guardianKeys = append(guardianKeys, map[string]string{
-			"guardian_index": strconv.Itoa(i), "public_key": guardianPub,
-		})
-	}
-
-	// Call Rust crypto service via Dapr for key verification
-	verifyKeysViaDapr(req.ElectionID, electionPubKey, guardianKeys)
-
-	publishKafkaEvent("primaries.crypto.keys_generated", map[string]interface{}{
-		"election_id": req.ElectionID, "guardians": req.Guardians, "threshold": req.Threshold,
-	})
-
-	jsonResp(w, map[string]interface{}{
-		"election_public_key": electionPubKey,
-		"guardians":           req.Guardians,
-		"threshold":           req.Threshold,
-		"guardian_keys":       guardianKeys,
-	})
+	// Even with a Dapr sidecar present, this service has no real key-ceremony
+	// implementation — do not fall back to fabricated keys.
+	cryptoUnavailable(w, "election key ceremony service")
 }
 
 func handleEncryptedTally(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RoundID string `json:"round_id"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-
-	// Get all encrypted ballots for this round
-	rows, err := dbConn.QueryContext(r.Context(), `
-		SELECT aspirant_id, COUNT(*) FROM ballots
-		WHERE round_id=$1 AND is_decoy=FALSE AND vote_type='for'
-		GROUP BY aspirant_id`, req.RoundID)
-	if err != nil {
-		jsonErr(w, "query failed", 500)
-		return
-	}
-	defer rows.Close()
-
-	var tallies []map[string]interface{}
-	for rows.Next() {
-		var aspID string
-		var count int
-		rows.Scan(&aspID, &count)
-
-		// Create encrypted tally (simulated homomorphic aggregation)
-		encryptedCount := homomorphicEncrypt(count)
-		proof := generateDecryptionProof(encryptedCount, count)
-
-		dbConn.ExecContext(r.Context(), `
-			INSERT INTO encrypted_tallies (round_id, aspirant_id, encrypted_count, decrypted_count, proof_of_decryption)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (round_id, aspirant_id) DO UPDATE SET encrypted_count=$3, decrypted_count=$4, proof_of_decryption=$5`,
-			req.RoundID, aspID, encryptedCount, count, proof)
-
-		tallies = append(tallies, map[string]interface{}{
-			"aspirant_id":     aspID,
-			"encrypted_count": encryptedCount,
-			"proof":           proof,
-		})
-	}
-
-	jsonResp(w, map[string]interface{}{"round_id": req.RoundID, "encrypted_tallies": tallies})
+	// SECURITY: refuses to fabricate cryptographic artifacts.
+	// The previous implementation stored SHA256("enc:count:ts") as the
+	// "encrypted count", SHA256("proof:...") as the "proof of decryption",
+	// and the PLAINTEXT count right alongside them in encrypted_tallies —
+	// no homomorphic encryption of any kind. There is no real
+	// ElectionGuard/Paillier backend in this deployment, so this endpoint
+	// fails loudly and NEVER writes fake tallies or proofs to the database.
+	cryptoUnavailable(w, "cryptographic tally service")
 }
 
 func handleMixNetShuffle(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RoundID      string `json:"round_id"`
-		ShuffleIndex int    `json:"shuffle_index"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-
-	// Get all encrypted ballots for this round
-	rows, err := dbConn.QueryContext(r.Context(), `
-		SELECT ballot_id, encrypted_ballot FROM ballots
-		WHERE round_id=$1 AND is_remote=TRUE AND is_decoy=FALSE
-		ORDER BY ballot_id`, req.RoundID)
-	if err != nil {
-		jsonErr(w, "query failed", 500)
-		return
-	}
-	defer rows.Close()
-
-	var inputBallots []string
-	for rows.Next() {
-		var bID, enc string
-		rows.Scan(&bID, &enc)
-		inputBallots = append(inputBallots, enc)
-	}
-
-	// Perform shuffle (call Rust service via Dapr for real mix-net)
-	shuffled, proof := performMixNetShuffle(inputBallots)
-
-	inputJSON, _ := json.Marshal(inputBallots)
-	outputJSON, _ := json.Marshal(shuffled)
-
-	dbConn.ExecContext(r.Context(), `
-		INSERT INTO shuffle_records (round_id, shuffle_index, input_ciphertexts,
-			output_ciphertexts, proof_of_shuffle)
-		VALUES ($1,$2,$3,$4,$5)`,
-		req.RoundID, req.ShuffleIndex, string(inputJSON), string(outputJSON), proof)
-
-	jsonResp(w, map[string]interface{}{
-		"round_id":       req.RoundID,
-		"shuffle_index":  req.ShuffleIndex,
-		"input_count":    len(inputBallots),
-		"output_count":   len(shuffled),
-		"proof_of_shuffle": proof,
-	})
+	// SECURITY: refuses to fabricate cryptographic artifacts.
+	// The previous implementation "re-encrypted" ballots as SHA256(ballot:i)
+	// and stored a hash of a timestamp as the "proof of shuffle" in
+	// shuffle_records — no mix-net, no re-encryption, no proof. There is no
+	// real mix-net backend in this deployment, so this endpoint fails loudly
+	// and NEVER writes fake shuffle records to the database.
+	cryptoUnavailable(w, "mix-net shuffle service")
 }
 
 func handleThresholdDecrypt(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RoundID          string            `json:"round_id"`
-		GuardianDecryptions map[string]string `json:"guardian_decryptions"` // index → partial decryption
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-
-	// Verify we have enough guardian decryptions (threshold)
-	var threshold int
-	dbConn.QueryRow(`SELECT threshold FROM voting_crypto_keys
-		WHERE election_id=(SELECT election_id FROM voting_rounds WHERE round_id=$1)
-		AND key_type='election_public' LIMIT 1`, req.RoundID).Scan(&threshold)
-
-	if len(req.GuardianDecryptions) < threshold {
-		jsonErr(w, fmt.Sprintf("need %d guardian decryptions, got %d", threshold, len(req.GuardianDecryptions)), 400)
-		return
-	}
-
-	// Get encrypted tallies and "decrypt" with guardian shares
-	rows, err := dbConn.QueryContext(r.Context(), `
-		SELECT aspirant_id, encrypted_count, decrypted_count FROM encrypted_tallies WHERE round_id=$1`, req.RoundID)
-	if err != nil {
-		jsonErr(w, "query failed", 500)
-		return
-	}
-	defer rows.Close()
-
-	decryptionsJSON, _ := json.Marshal(req.GuardianDecryptions)
-	var results []map[string]interface{}
-	for rows.Next() {
-		var aspID, encCount string
-		var decCount int
-		rows.Scan(&aspID, &encCount, &decCount)
-
-		proof := generateDecryptionProof(encCount, decCount)
-		dbConn.ExecContext(r.Context(), `
-			UPDATE encrypted_tallies SET partial_decryptions=$1, verified=TRUE, proof_of_decryption=$2
-			WHERE round_id=$3 AND aspirant_id=$4`,
-			string(decryptionsJSON), proof, req.RoundID, aspID)
-
-		results = append(results, map[string]interface{}{
-			"aspirant_id": aspID, "decrypted_count": decCount, "proof": proof, "verified": true,
-		})
-	}
-
-	jsonResp(w, map[string]interface{}{
-		"round_id": req.RoundID, "threshold_met": true, "decrypted_tallies": results,
-	})
+	// SECURITY: refuses to fabricate cryptographic artifacts.
+	// The previous implementation accepted arbitrary caller-supplied
+	// "guardian_decryptions" strings, merely COUNTED them against a
+	// threshold, returned the plaintext decrypted_count already sitting in
+	// the database, and marked rows verified=TRUE with a hash masquerading
+	// as a proof of decryption. No threshold decryption ever occurred.
+	// There is no real ElectionGuard guardian backend in this deployment, so
+	// this endpoint fails loudly and NEVER marks fabricated tallies verified.
+	cryptoUnavailable(w, "threshold decryption service")
 }
 
 func handleCryptoAuditTrail(w http.ResponseWriter, r *http.Request) {
@@ -2054,6 +2021,12 @@ func handleCryptoAuditTrail(w http.ResponseWriter, r *http.Request) {
 		JOIN voting_rounds vr ON b.round_id = vr.round_id
 		WHERE vr.election_id=$1 AND b.is_decoy=TRUE`, electionID).Scan(&decoyBallots)
 
+	// SECURITY: refuses to fabricate cryptographic artifacts. This handler
+	// previously returned a hardcoded "integrity":"verified" with no
+	// verification of any kind. The row counts below are real database
+	// counts, but with no crypto backend there is no chain/Merkle proof
+	// verification of keys, shuffles, or tallies — integrity is reported as
+	// "unknown", never "verified" without an actual check.
 	jsonResp(w, map[string]interface{}{
 		"election_id":     electionID,
 		"crypto_keys":     keyCount,
@@ -2061,7 +2034,8 @@ func handleCryptoAuditTrail(w http.ResponseWriter, r *http.Request) {
 		"total_ballots":   totalBallots,
 		"remote_ballots":  remoteBallots,
 		"decoy_ballots":   decoyBallots,
-		"integrity":       "verified",
+		"integrity":       "unknown",
+		"warning":         "no cryptographic backend configured; integrity of crypto keys, shuffle records and encrypted tallies cannot be verified. Any artifacts produced before this fix were fabricated by a mock implementation and MUST NOT be trusted.",
 	})
 }
 
@@ -2411,82 +2385,36 @@ func recordTBTransfer(transferType string, amountKobo int64, entityID, userID st
 	return tid
 }
 
-func verifyKeysViaDapr(electionID int, pubKey string, guardianKeys []map[string]string) {
+// verifyKeysViaDapr asks the Rust election-crypto engine (via the Dapr
+// sidecar) to verify generated election keys.
+// SECURITY: refuses to silently skip verification — returns an explicit
+// error when no Dapr sidecar/crypto engine is configured so that key
+// generation MUST fail loudly instead of proceeding unverified.
+func verifyKeysViaDapr(electionID int, pubKey string, guardianKeys []map[string]string) error {
 	if daprPort == "" {
-		return
+		return fmt.Errorf("no Dapr sidecar configured (DAPR_HTTP_PORT unset): election key verification service unavailable")
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"election_id": electionID, "public_key": pubKey, "guardians": guardianKeys,
 	})
 	daprBase := "http://localhost:" + daprPort
-	resilientCall(context.Background(), cbRustEngine, "POST",
-		daprBase+"/v1.0/invoke/gotv-engine/method/verify-keys", payload) //nolint:errcheck
-}
-
-// Cryptographic helpers (simplified — production would use ElectionGuard SDK)
-
-func generateElectionKeyPair() (string, string) {
-	pubBytes := make([]byte, 32)
-	privBytes := make([]byte, 32)
-	rand.Read(pubBytes)
-	rand.Read(privBytes)
-	return hex.EncodeToString(pubBytes), hex.EncodeToString(privBytes)
-}
-
-func generateGuardianKeyShare(index, total, threshold int) (string, string) {
-	pub := make([]byte, 32)
-	priv := make([]byte, 32)
-	rand.Read(pub)
-	rand.Read(priv)
-	return fmt.Sprintf("guardian_%d_%s", index, hex.EncodeToString(pub)[:16]),
-		hex.EncodeToString(priv)
-}
-
-func encryptBallot(delegateID, aspirantID, voteType string) string {
-	data := delegateID + ":" + aspirantID + ":" + voteType + ":" + time.Now().String()
-	h := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(h[:])
-}
-
-func generateBallotProof(encryptedBallot, voteType string) string {
-	data := encryptedBallot + ":" + voteType
-	mac := hmac.New(sha256.New, []byte("election-proof-key"))
-	mac.Write([]byte(data))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-func homomorphicEncrypt(count int) string {
-	data := fmt.Sprintf("enc:%d:%d", count, time.Now().UnixNano())
-	h := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(h[:])
-}
-
-func generateDecryptionProof(encryptedCount string, decryptedCount int) string {
-	data := fmt.Sprintf("proof:%s:%d", encryptedCount, decryptedCount)
-	h := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(h[:])
-}
-
-func performMixNetShuffle(ballots []string) ([]string, string) {
-	shuffled := make([]string, len(ballots))
-	copy(shuffled, ballots)
-	// Fisher-Yates shuffle
-	for i := len(shuffled) - 1; i > 0; i-- {
-		jBig, _ := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
-		j := int(jBig.Int64())
-		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	_, _, err := resilientCall(context.Background(), cbRustEngine, "POST",
+		daprBase+"/v1.0/invoke/gotv-engine/method/verify-keys", payload)
+	if err != nil {
+		return fmt.Errorf("election key verification via crypto engine failed: %w", err)
 	}
-	// Re-encrypt each ballot (simulated)
-	for i, b := range shuffled {
-		h := sha256.Sum256([]byte(b + fmt.Sprintf(":%d", i)))
-		shuffled[i] = hex.EncodeToString(h[:])
-	}
-
-	// Generate proof of correct shuffle
-	proofData := fmt.Sprintf("shuffle_proof:%d:%d", len(ballots), time.Now().UnixNano())
-	proofHash := sha256.Sum256([]byte(proofData))
-	return shuffled, hex.EncodeToString(proofHash[:])
+	return nil
 }
+
+// NOTE: the former "cryptographic helpers" (generateElectionKeyPair,
+// generateGuardianKeyShare, encryptBallot, generateBallotProof,
+// homomorphicEncrypt, generateDecryptionProof, performMixNetShuffle) were
+// removed. They fabricated keys, ciphertexts and proofs out of SHA-256/HMAC
+// hashes and random blobs — including an HMAC with the hardcoded key
+// "election-proof-key" — which is forgeable by anyone with the source.
+// SECURITY: refuses to fabricate cryptographic artifacts; a real
+// ElectionGuard/Paillier backend must be integrated before these operations
+// can be offered again.
 
 // Suppress unused import warnings
 var (
