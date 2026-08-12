@@ -145,8 +145,10 @@ export default function MapPage() {
   }
 
   async function loadSpatialStats(stateCode?: string) {
+    // Election scope is resolved, never hardcoded.
+    if (!resolvedElectionId) return;
     try {
-      const data = await api.getGeoSpatialStats(1, stateCode);
+      const data = await api.getGeoSpatialStats(resolvedElectionId, stateCode);
       setSpatialStats(data);
     } catch (e) { logger.error(e); }
   }

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { SESSION_EXPIRED_EVENT } from '@/lib/api';
 
 interface User {
   id: number;
@@ -51,6 +52,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setUser(null);
   };
+
+  // End the session when the API layer reports an unrecoverable 401:
+  // clear state and route to /login carrying the current path for return.
+  useEffect(() => {
+    const onSessionExpired = () => {
+      const returnTo = window.location.hash.replace(/^#\/?/, '') || 'dashboard';
+      logout();
+      window.location.hash = `/login?returnTo=${encodeURIComponent(returnTo)}`;
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Verify session is still valid on mount
   useEffect(() => {

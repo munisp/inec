@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useAuth } from '@/lib/auth';
+import { canAccessPage } from '@/lib/page-roles';
 import { useI18n } from '@/lib/i18n';
 import { useTheme } from '@/components/ThemeProvider';
 import { Button } from '@/components/ui/button';
@@ -94,6 +95,9 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
 
   const ThemeIcon = resolved === 'dark' ? Moon : Sun;
 
+  // Hide pages the current role cannot open (mirrors the render guard in App).
+  const visibleNavItems = NAV_ITEMS.filter((item) => canAccessPage(item.path, user?.role));
+
   const NavContent = ({ navigationRef }: { navigationRef: RefObject<HTMLElement | null> }) => (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 p-4 border-b border-zinc-200 dark:border-zinc-700">
@@ -108,9 +112,9 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
         </div>
       </div>
       <nav ref={navigationRef} className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain p-2 scrollbar-thin [scrollbar-gutter:stable]" aria-label="Main navigation">
-        {NAV_ITEMS.map((item: typeof NAV_ITEMS[number], index) => {
+        {visibleNavItems.map((item: typeof NAV_ITEMS[number], index) => {
           const isActive = currentPage === item.path;
-          const showSection = Boolean(item.section && item.section !== NAV_ITEMS[index - 1]?.section);
+          const showSection = Boolean(item.section && item.section !== visibleNavItems[index - 1]?.section);
           return (
             <div key={item.path}>
               {showSection && (

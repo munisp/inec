@@ -10,6 +10,7 @@ import { AccessibilityProvider } from '@/components/AccessibilityProvider';
 import Layout from '@/components/Layout';
 import LoginPage from '@/pages/LoginPage';
 import { DashboardSkeleton } from '@/components/Skeleton';
+import { canAccessPage } from '@/lib/page-roles';
 
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
 const ElectionsPage = lazy(() => import('@/pages/ElectionsPage'));
@@ -89,7 +90,7 @@ function pageFromLocation() {
 }
 
 function AppContent() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const [currentPage, setCurrentPage] = useState(pageFromLocation);
 
   useEffect(() => {
@@ -105,7 +106,11 @@ function AppContent() {
       return;
     }
     if (!hashPage || hashPage === 'login') {
-      window.location.hash = '/dashboard';
+      // Honor the return path captured when an expired session bounced the
+      // user to /login.
+      const m = window.location.hash.match(/[?&]returnTo=([^&]+)/);
+      const target = m ? decodeURIComponent(m[1]) : '';
+      window.location.hash = target && target !== 'login' ? `/${target}` : '/dashboard';
     }
   }, [isAuthenticated]);
 
@@ -177,7 +182,20 @@ function AppContent() {
       <ErrorBoundary key={currentPage}>
         <PageTransition page={currentPage}>
           <Suspense fallback={<DashboardSkeleton />}>
-            {pages[currentPage] || (
+            {pages[currentPage] && !canAccessPage(currentPage, user?.role) ? (
+              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+                <h1 className="text-6xl font-bold text-gray-300 dark:text-gray-600">403</h1>
+                <p className="mt-4 text-lg text-gray-600 dark:text-gray-400">
+                  You don&apos;t have permission to access this page.
+                </p>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-500">
+                  Contact an administrator if you believe this is a mistake.
+                </p>
+                <button onClick={() => navigate('dashboard')} className="mt-6 px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 transition">
+                  Back to Dashboard
+                </button>
+              </div>
+            ) : pages[currentPage] || (
               <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
                 <h1 className="text-6xl font-bold text-gray-300 dark:text-gray-600">404</h1>
                 <p className="mt-4 text-lg text-gray-600 dark:text-gray-400">Page not found</p>
