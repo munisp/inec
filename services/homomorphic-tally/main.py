@@ -412,13 +412,18 @@ async def decrypt_final_tally(req: DecryptRequest):
     # Simple auth check (production: threshold multi-sig)
     # SECURITY: the token has NO default. The previous hardcoded fallback
     # ("inec-tally-secret") let anyone decrypt any election tally.
-    expected_token = os.getenv("TALLY_DECRYPT_TOKEN")
-    if not expected_token:
+    # KEY ROTATION: comma-separated tokens; any constant-time match authorizes.
+    expected_tokens = [
+        t.strip() for t in os.getenv("TALLY_DECRYPT_TOKEN", "").split(",") if t.strip()
+    ]
+    if not expected_tokens:
         raise HTTPException(
             status_code=503,
             detail="tally decryption token not configured (set TALLY_DECRYPT_TOKEN)",
         )
-    if not secrets.compare_digest(req.authorization_token, expected_token):
+    if not any(
+        secrets.compare_digest(req.authorization_token, token) for token in expected_tokens
+    ):
         raise HTTPException(status_code=403, detail="Unauthorized decryption attempt")
 
     election_id = req.election_id
