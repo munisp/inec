@@ -21,9 +21,13 @@ _pool: Optional[asyncpg.Pool] = None
 async def init_pool() -> asyncpg.Pool:
     """Initialize the PostgreSQL connection pool."""
     global _pool
-    database_url = os.getenv(
-        "DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp"
-    )
+    # SECURITY: no hardcoded DSN fallback — DATABASE_URL is mandatory and the
+    # service fails fast at startup when it is unset.
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is required for biometric audit persistence; refusing to start"
+        )
     _pool = await asyncpg.create_pool(
         database_url,
         min_size=5,

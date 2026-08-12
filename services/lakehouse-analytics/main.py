@@ -28,7 +28,6 @@ log = structlog.get_logger()
 
 # --- Configuration ---
 
-POSTGRES_URL = os.getenv("DATABASE_URL", "postgresql://ngapp:ngapp123@localhost:5432/ngapp")
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", "/tmp/inec_lakehouse.duckdb")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8088")
 
@@ -413,6 +412,35 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# SECURITY: /sync, /analytics/* and /ai/* were previously unauthenticated.
+# The service FAILS CLOSED when LAKEHOUSE_API_KEY is unset (503 on all
+# non-public routes). Public routes: /health and /dapr/subscribe only —
+# /dapr/events/* is additionally guarded by require_dapr_ingress.
+LAKEHOUSE_API_KEY = os.getenv("LAKEHOUSE_API_KEY", "").strip()
+_PUBLIC_PATHS = ("/health", "/dapr/subscribe")
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """Require the service API key on all non-public endpoints (fail closed)."""
+    from fastapi.responses import JSONResponse
+    import hmac
+
+    if request.url.path in _PUBLIC_PATHS:
+        return await call_next(request)
+    if not LAKEHOUSE_API_KEY:
+        log.error("api_key_not_configured", detail="LAKEHOUSE_API_KEY unset")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "LAKEHOUSE_API_KEY not configured; refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    provided = bearer or request.headers.get("x-api-key", "")
+    if not provided or not hmac.compare_digest(provided.encode(), LAKEHOUSE_API_KEY.encode()):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
+
 
 async def sync_from_postgres():
     """Pull latest results from the Go backend into DuckDB."""
@@ -565,4 +593,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", "8090"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
