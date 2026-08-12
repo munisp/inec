@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Bootstrap APISIX integration state for the INEC platform.
 
+LEGACY / REFERENCE ONLY (2026-08-12): APISIX runs in standalone data-plane
+mode (config/apisix/) with no etcd; this script's Admin-API bootstrapping no
+longer applies to the current deployment. Retained for reference only.
+
 APISIX is deployed in traditional mode (config.yaml -> deployment.etcd), so
 routes live in etcd and must be pushed through the Admin API — the standalone
 conf/apisix.yaml file is ignored in this mode. This script waits for the
