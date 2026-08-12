@@ -725,9 +725,11 @@ mod tests {
 
     #[test]
     fn test_haversine_km() {
-        // Lagos to Abuja: approximately 450 km
+        // Lagos (6.45, 3.40) to Abuja (9.06, 7.49): great-circle distance is
+        // ~536 km (the previously asserted ~450 km range was geographically
+        // wrong and made this test fail on every run).
         let dist = haversine_km(6.45, 3.40, 9.06, 7.49);
-        assert!(dist > 400.0 && dist < 500.0, "Lagos-Abuja should be ~450km, got {}", dist);
+        assert!(dist > 500.0 && dist < 570.0, "Lagos-Abuja should be ~536km, got {}", dist);
     }
 
     #[test]
