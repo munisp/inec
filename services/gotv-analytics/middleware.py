@@ -102,9 +102,32 @@ def cache_invalidate(pattern: str) -> None:
 
 OPENSEARCH_URL = os.getenv("OPENSEARCH_URL")
 
+# SECURITY: the index name used to be caller-controlled and interpolated into
+# the request path — an OpenSearch path-injection vector. It must match a
+# strict pattern AND an explicit allowlist.
+_ALLOWED_OPENSEARCH_INDICES = frozenset({"gotv-contacts", "gotv-outreach"})
+
+
+class IndexNotAllowedError(ValueError):
+    """Raised when a caller requests a non-allowlisted OpenSearch index."""
+
+
+def _validate_opensearch_index(index: str) -> str:
+    import re
+
+    if (
+        not isinstance(index, str)
+        or not re.fullmatch(r"[a-z0-9-]{1,64}", index)
+        or index not in _ALLOWED_OPENSEARCH_INDICES
+    ):
+        logger.warning("opensearch_index_rejected", index=str(index)[:64])
+        raise IndexNotAllowedError(f"index '{index}' is not allowed")
+    return index
+
 
 def search_opensearch(index: str, query: str, party_id: int, size: int = 50) -> list[dict]:
     """Search documents in OpenSearch."""
+    index = _validate_opensearch_index(index)
     if not OPENSEARCH_URL:
         return []
     try:
@@ -129,6 +152,7 @@ def search_opensearch(index: str, query: str, party_id: int, size: int = 50) -> 
 
 def aggregate_opensearch(index: str, party_id: int, field: str) -> dict:
     """Run an aggregation query on OpenSearch."""
+    index = _validate_opensearch_index(index)
     if not OPENSEARCH_URL:
         return {}
     try:
@@ -291,6 +315,27 @@ def start_workflow(workflow_id: str, workflow_type: str, params: dict) -> bool:
 
 # ─── Middleware Status ──────────────────────────────────────────────────────
 
+def _check_postgres() -> bool:
+    """Real PostgreSQL connectivity probe (SELECT 1) — never a hardcoded True."""
+    dsn = os.getenv("DATABASE_URL", "").strip()
+    if not dsn:
+        return False
+    try:
+        import psycopg2
+
+        conn = psycopg2.connect(dsn, connect_timeout=3)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            cur.close()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
 def middleware_status() -> dict:
     """Report connectivity status of all middleware services."""
     redis_ok = _get_redis() is not None
@@ -302,7 +347,7 @@ def middleware_status() -> dict:
         "dapr": bool(DAPR_HTTP_PORT),
         "fluvio": bool(FLUVIO_URL),
         "temporal": bool(TEMPORAL_URL),
-        "postgresql": True,
+        "postgresql": _check_postgres(),
     }
     connected = sum(1 for v in status.values() if v)
     return {
