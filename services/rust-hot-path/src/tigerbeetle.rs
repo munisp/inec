@@ -180,14 +180,16 @@ impl TigerBeetleDirectClient {
         Ok(id)
     }
 
-    async fn submit_batch(&self, _transfers: &[TBTransfer]) -> Result<()> {
-        // In production: uses TigerBeetle native client
-        // tb_client.create_transfers(transfers).await?;
-        //
-        // The native protocol sends transfers as fixed-size binary structs
-        // directly over TCP — no JSON serialization overhead.
-        // Each transfer is exactly 128 bytes, so a batch of 8190 = ~1MB.
-        Ok(())
+    async fn submit_batch(&self, transfers: &[TBTransfer]) -> Result<()> {
+        // SECURITY: previously a silent no-op returning Ok(()) — the
+        // transfers_submitted counter was incremented while ballots were
+        // dropped from the audit ledger. No TigerBeetle client crate is
+        // available in this build (see Cargo.toml), so fail loudly: callers
+        // MUST know the ledger write did not happen.
+        Err(anyhow::anyhow!(
+            "tigerbeetle client not available in this build; refusing to silently drop {} audit-ledger transfer(s)",
+            transfers.len()
+        ))
     }
 
     pub fn stats(&self) -> (u64, u64) {

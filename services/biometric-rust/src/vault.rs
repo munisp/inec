@@ -36,6 +36,8 @@ pub enum VaultError {
     IntegrityCheckFailed,
     #[error("database error: {0}")]
     DatabaseError(String),
+    #[error("vault configuration error: {0}")]
+    ConfigurationError(String),
 }
 
 impl From<sqlx::Error> for VaultError {
@@ -113,10 +115,65 @@ pub struct BiometricVault {
 
 impl BiometricVault {
     /// Create vault backed by PostgreSQL.
+    ///
+    /// SECURITY: previously the master key was freshly random on EVERY start,
+    /// which silently made every previously wrapped key (and therefore every
+    /// stored biometric template) permanently undecryptable after a restart.
+    /// The master key is now loaded from the BIOMETRIC_MASTER_KEY environment
+    /// variable (hex-encoded 32 bytes). A random ephemeral key is only
+    /// allowed in explicit dev environments; otherwise startup is refused.
     pub async fn new(pool: PgPool) -> Result<Self, VaultError> {
-        let mut master_key = [0u8; 32];
-        OsRng.fill_bytes(&mut master_key);
+        let master_key = Self::load_master_key()?;
+        Self::init(pool, master_key).await
+    }
 
+    /// Load the vault master key from configuration.
+    fn load_master_key() -> Result<[u8; 32], VaultError> {
+        match std::env::var("BIOMETRIC_MASTER_KEY") {
+            Ok(hex_key) => {
+                let bytes = hex::decode(hex_key.trim()).map_err(|e| {
+                    VaultError::ConfigurationError(format!(
+                        "BIOMETRIC_MASTER_KEY is not valid hex: {}",
+                        e
+                    ))
+                })?;
+                let key: [u8; 32] = bytes.try_into().map_err(|b: Vec<u8>| {
+                    VaultError::ConfigurationError(format!(
+                        "BIOMETRIC_MASTER_KEY must decode to exactly 32 bytes, got {}",
+                        b.len()
+                    ))
+                })?;
+                Ok(key)
+            }
+            Err(_) => {
+                let env = std::env::var("APP_ENV")
+                    .or_else(|_| std::env::var("ENVIRONMENT"))
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if matches!(env.as_str(), "dev" | "development" | "local" | "test") {
+                    // Dev-only convenience: ephemeral key, loudly flagged.
+                    tracing::warn!(
+                        "SECURITY WARNING: BIOMETRIC_MASTER_KEY is not set — generating an \
+                         EPHEMERAL random master key. All keys wrapped in previous runs are now \
+                         PERMANENTLY UNDECRYPTABLE. Never run production without BIOMETRIC_MASTER_KEY."
+                    );
+                    let mut master_key = [0u8; 32];
+                    OsRng.fill_bytes(&mut master_key);
+                    Ok(master_key)
+                } else {
+                    Err(VaultError::ConfigurationError(
+                        "BIOMETRIC_MASTER_KEY is not set and APP_ENV/ENVIRONMENT is not a dev \
+                         environment; refusing to start with an ephemeral master key because it \
+                         would permanently destroy access to previously wrapped keys"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Shared initialization for `new` and `from_master_key`.
+    async fn init(pool: PgPool, master_key: [u8; 32]) -> Result<Self, VaultError> {
         let vault = Self { pool, master_key };
 
         // Generate initial encryption key if none exists
@@ -135,19 +192,7 @@ impl BiometricVault {
 
     /// Create vault with a specific master key (for deterministic testing/recovery).
     pub async fn from_master_key(pool: PgPool, master_key: [u8; 32]) -> Result<Self, VaultError> {
-        let vault = Self { pool, master_key };
-
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM vault_keys WHERE purpose = 'template_encryption' AND is_active = TRUE AND is_revoked = FALSE"
-        )
-            .fetch_one(&vault.pool)
-            .await?;
-
-        if count.0 == 0 {
-            vault.generate_key(KeyPurpose::TemplateEncryption, "system").await?;
-        }
-
-        Ok(vault)
+        Self::init(pool, master_key).await
     }
 
     /// Generate a new encryption key and persist to PostgreSQL.

@@ -55,7 +55,7 @@ async fn main() {
 
     let vault = BiometricVault::new(pool.clone())
         .await
-        .expect("failed to initialize vault");
+        .expect("failed to initialize vault — set BIOMETRIC_MASTER_KEY (hex-encoded 32 bytes) in non-dev environments");
 
     let cancelable = CancelableBiometrics::new(pool);
 

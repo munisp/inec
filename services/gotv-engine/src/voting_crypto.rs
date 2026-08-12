@@ -85,263 +85,142 @@ pub struct TallyResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CRYPTO BACKEND AVAILABILITY
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Error returned by every election-cryptography operation in this build.
+///
+/// SECURITY: This build ships WITHOUT a real election cryptography backend
+/// (no ElGamal, no threshold/Shamir secret sharing, no mix-net, no
+/// Chaum-Pedersen / zero-knowledge proofs). Previously these functions
+/// fabricated cryptographic artifacts out of SHA-256 hashes and echoed
+/// caller-supplied tallies back as "decrypted" results. That is silent
+/// mockware and is unacceptable for an election platform. Every operation
+/// below now fails loudly with this error; HTTP handlers map it to 503.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VotingCryptoError {
+    pub operation: String,
+    pub message: String,
+}
+
+impl VotingCryptoError {
+    pub fn unavailable(operation: &str) -> Self {
+        VotingCryptoError {
+            operation: operation.to_string(),
+            message: format!(
+                "{}: voting crypto backend not implemented in this build; refusing to fabricate cryptographic artifacts",
+                operation
+            ),
+        }
+    }
+
+    pub fn invalid_input(operation: &str, detail: &str) -> Self {
+        VotingCryptoError {
+            operation: operation.to_string(),
+            message: format!("{}: {}", operation, detail),
+        }
+    }
+}
+
+impl std::fmt::Display for VotingCryptoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for VotingCryptoError {}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ELECTION KEY GENERATION (ElectionGuard-style threshold encryption)
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn generate_election_keys(election_id: i64, guardians: usize, threshold: usize) -> (ElectionKeyPair, Vec<GuardianKeyShare>) {
-    let mut rng = rand::thread_rng();
-
-    // Generate election-level keypair
-    let priv_bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-    let pub_bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-
-    let election_key = ElectionKeyPair {
-        election_id,
-        public_key: hex::encode(&pub_bytes),
-        private_key_encrypted: hex::encode(&priv_bytes),
-        guardian_count: guardians,
-        threshold,
-    };
-
-    // Generate guardian key shares using Shamir's secret sharing (simplified)
-    let mut shares = Vec::new();
-    for i in 1..=guardians {
-        let share_bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-        let verify_bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-
-        // Polynomial evaluation for Shamir's secret sharing
-        let mut share_value = priv_bytes.clone();
-        for (j, byte) in share_value.iter_mut().enumerate() {
-            *byte = byte.wrapping_add((i as u8).wrapping_mul(share_bytes[j % share_bytes.len()]));
-        }
-
-        shares.push(GuardianKeyShare {
-            index: i,
-            public_key: hex::encode(&share_value),
-            verification_key: hex::encode(&verify_bytes),
-            encrypted_share: hex::encode(&share_bytes),
-        });
-    }
-
-    (election_key, shares)
+/// SECURITY: Previously this generated a "public key" that was NOT derived
+/// from the private key and "Shamir shares" via bytewise wrapping_add —
+/// neither operation is cryptographically valid. Without a real
+/// threshold-encryption backend this function refuses to fabricate keys.
+pub fn generate_election_keys(_election_id: i64, _guardians: usize, _threshold: usize) -> Result<(ElectionKeyPair, Vec<GuardianKeyShare>), VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("generate_election_keys"))
 }
 
-pub fn verify_guardian_share(share: &GuardianKeyShare, election_pub_key: &str) -> bool {
-    // Verify the share is consistent with the election public key
-    !share.public_key.is_empty() && !election_pub_key.is_empty() && share.index > 0
+/// SECURITY: Previously returned true for any non-empty share. No real
+/// share-verification backend exists in this build, so verification fails
+/// loudly instead of rubber-stamping invalid guardian shares.
+pub fn verify_guardian_share(_share: &GuardianKeyShare, _election_pub_key: &str) -> Result<bool, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("verify_guardian_share"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BALLOT ENCRYPTION (Exponential ElGamal)
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn encrypt_ballot(delegate_id: &str, aspirant_id: &str, vote_type: &str, election_pub_key: &str) -> EncryptedBallot {
-    let mut rng = rand::thread_rng();
-
-    // Construct plaintext ballot
-    let plaintext = format!("{}:{}:{}", delegate_id, aspirant_id, vote_type);
-    let nonce: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
-
-    // ElGamal encryption (simplified — production uses actual group operations)
-    let mut hasher = Sha256::new();
-    hasher.update(plaintext.as_bytes());
-    hasher.update(&nonce);
-    hasher.update(election_pub_key.as_bytes());
-    let ciphertext = hex::encode(hasher.finalize());
-
-    // Generate Chaum-Pedersen proof of valid ballot
-    let proof = generate_ballot_proof(&ciphertext, vote_type, &nonce);
-
-    // Generate confirmation code
-    let mut conf_hasher = Sha256::new();
-    conf_hasher.update(ciphertext.as_bytes());
-    conf_hasher.update(delegate_id.as_bytes());
-    let confirmation = hex::encode(&conf_hasher.finalize()[..6]).to_uppercase();
-
-    EncryptedBallot {
-        ballot_id: format!("bal-{}", &hex::encode(&nonce)[..8]),
-        delegate_id: delegate_id.to_string(),
-        ciphertext,
-        proof,
-        confirmation_code: confirmation,
-    }
+/// SECURITY: The previous "ElGamal encryption" was SHA256(plaintext||nonce||pubkey)
+/// — a hash, not encryption — and the "Chaum-Pedersen proof" was a chain of
+/// SHA-256 hashes that verified trivially. No real ballot-encryption backend
+/// is configured in this build, so this refuses to fabricate ciphertexts.
+pub fn encrypt_ballot(_delegate_id: &str, _aspirant_id: &str, _vote_type: &str, _election_pub_key: &str) -> Result<EncryptedBallot, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("encrypt_ballot"))
 }
 
-fn generate_ballot_proof(ciphertext: &str, vote_type: &str, nonce: &[u8]) -> BallotProof {
-    // Chaum-Pedersen proof that the ballot encrypts a valid selection
-    let mut hasher = Sha256::new();
-    hasher.update(b"commitment:");
-    hasher.update(ciphertext.as_bytes());
-    hasher.update(nonce);
-    let commitment = hex::encode(hasher.finalize());
-
-    let mut hasher2 = Sha256::new();
-    hasher2.update(b"challenge:");
-    hasher2.update(commitment.as_bytes());
-    hasher2.update(vote_type.as_bytes());
-    let challenge = hex::encode(hasher2.finalize());
-
-    let mut hasher3 = Sha256::new();
-    hasher3.update(b"response:");
-    hasher3.update(challenge.as_bytes());
-    hasher3.update(nonce);
-    let response = hex::encode(hasher3.finalize());
-
-    BallotProof { commitment, challenge, response }
-}
-
-pub fn verify_ballot_proof(ballot: &EncryptedBallot) -> bool {
-    // Verify the Chaum-Pedersen proof
-    !ballot.proof.commitment.is_empty()
-        && !ballot.proof.challenge.is_empty()
-        && !ballot.proof.response.is_empty()
-        && ballot.proof.commitment.len() == 64
+/// SECURITY: Previously only checked that proof fields were non-empty,
+/// which is always true — any ballot "verified". Without a real proof
+/// backend, verification fails loudly rather than returning a false valid.
+pub fn verify_ballot_proof(_ballot: &EncryptedBallot) -> Result<bool, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("verify_ballot_proof"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MIX-NET SHUFFLE (Re-encryption with Zero-Knowledge Proof)
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn mix_net_shuffle(encrypted_ballots: &[String]) -> (Vec<String>, ShuffleProof) {
-    let mut rng = rand::thread_rng();
-    let n = encrypted_ballots.len();
-
-    // Generate random permutation
-    let mut indices: Vec<usize> = (0..n).collect();
-    for i in (1..n).rev() {
-        let j = rng.gen_range(0..=i);
-        indices.swap(i, j);
-    }
-
-    // Apply permutation and re-encrypt
-    let mut shuffled = Vec::with_capacity(n);
-    for &idx in &indices {
-        let reencryption_nonce: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
-        let mut hasher = Sha256::new();
-        hasher.update(encrypted_ballots[idx].as_bytes());
-        hasher.update(&reencryption_nonce);
-        shuffled.push(hex::encode(hasher.finalize()));
-    }
-
-    // Generate zero-knowledge proof of correct shuffle
-    // (Wikstrom/Groth proof simplified)
-    let input_hash = compute_list_hash(encrypted_ballots);
-    let output_hash = compute_list_hash(&shuffled);
-
-    let mut perm_hasher = Sha256::new();
-    for &idx in &indices {
-        perm_hasher.update(idx.to_be_bytes());
-    }
-    let permutation_commitment = hex::encode(perm_hasher.finalize());
-
-    // Proof elements: one per ballot showing re-encryption relationship
-    let proof_elements: Vec<String> = (0..n).map(|i| {
-        let mut h = Sha256::new();
-        h.update(encrypted_ballots[indices[i]].as_bytes());
-        h.update(shuffled[i].as_bytes());
-        h.update(permutation_commitment.as_bytes());
-        hex::encode(h.finalize())
-    }).collect();
-
-    let proof = ShuffleProof {
-        input_hash,
-        output_hash,
-        permutation_commitment,
-        proof_elements,
-    };
-
-    (shuffled, proof)
+/// SECURITY: The previous "re-encryption" was SHA256(input||nonce), which
+/// irreversibly DESTROYS the ballot ciphertext, and the shuffle "proof"
+/// verified by comparing caller-supplied list hashes — any shuffle passed
+/// with verified:true. No mix-net backend exists in this build; refuse.
+pub fn mix_net_shuffle(_encrypted_ballots: &[String]) -> Result<(Vec<String>, ShuffleProof), VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("mix_net_shuffle"))
 }
 
-pub fn verify_shuffle_proof(input: &[String], output: &[String], proof: &ShuffleProof) -> bool {
-    // Verify the shuffle proof
-    let computed_input_hash = compute_list_hash(input);
-    let computed_output_hash = compute_list_hash(output);
-
-    proof.input_hash == computed_input_hash
-        && proof.output_hash == computed_output_hash
-        && input.len() == output.len()
-        && proof.proof_elements.len() == input.len()
-}
-
-fn compute_list_hash(items: &[String]) -> String {
-    let mut hasher = Sha256::new();
-    for item in items {
-        hasher.update(item.as_bytes());
-    }
-    hex::encode(hasher.finalize())
+/// SECURITY: Previously any caller-supplied input/output hash pair passed.
+/// Without a real shuffle-proof backend, verification fails loudly.
+pub fn verify_shuffle_proof(_input: &[String], _output: &[String], _proof: &ShuffleProof) -> Result<bool, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("verify_shuffle_proof"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HOMOMORPHIC TALLYING
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn homomorphic_tally(encrypted_ballots: &[String], aspirant_ids: &[String]) -> HashMap<String, String> {
-    // Aggregate encrypted ballots per aspirant using homomorphic addition
-    let mut tallies: HashMap<String, String> = HashMap::new();
-
-    for aspirant_id in aspirant_ids {
-        let mut hasher = Sha256::new();
-        hasher.update(b"tally:");
-        hasher.update(aspirant_id.as_bytes());
-        // In real ElGamal, this would be multiplication of ciphertexts
-        for ballot in encrypted_ballots {
-            hasher.update(ballot.as_bytes());
-        }
-        tallies.insert(aspirant_id.clone(), hex::encode(hasher.finalize()));
-    }
-
-    tallies
+/// SECURITY: The previous "homomorphic tally" hashed "tally:"||aspirant||
+/// all-ballots, producing an identical digest for every aspirant regardless
+/// of votes. That is a fabricated tally. No homomorphic-encryption backend
+/// exists in this build; refuse.
+pub fn homomorphic_tally(_encrypted_ballots: &[String], _aspirant_ids: &[String]) -> Result<HashMap<String, String>, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("homomorphic_tally"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // THRESHOLD DECRYPTION
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn create_decryption_share(encrypted_tally: &str, guardian_share: &GuardianKeyShare) -> DecryptionShare {
-    let mut hasher = Sha256::new();
-    hasher.update(b"partial_decrypt:");
-    hasher.update(encrypted_tally.as_bytes());
-    hasher.update(guardian_share.encrypted_share.as_bytes());
-    let partial = hex::encode(hasher.finalize());
-
-    let mut proof_hasher = Sha256::new();
-    proof_hasher.update(b"decrypt_proof:");
-    proof_hasher.update(partial.as_bytes());
-    proof_hasher.update(guardian_share.verification_key.as_bytes());
-    let proof = hex::encode(proof_hasher.finalize());
-
-    DecryptionShare {
-        guardian_index: guardian_share.index,
-        partial_decryption: partial,
-        proof,
-    }
+/// SECURITY: The previous partial decryption was SHA256("partial_decrypt:"||tally||share)
+/// — a hash, not a threshold-decryption share. No backend; refuse.
+pub fn create_decryption_share(_encrypted_tally: &str, _guardian_share: &GuardianKeyShare) -> Result<DecryptionShare, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("create_decryption_share"))
 }
 
-pub fn combine_decryption_shares(shares: &[DecryptionShare], threshold: usize, actual_count: u64) -> TallyResult {
-    // Lagrange interpolation to combine k-of-n shares
+/// SECURITY: Previously this echoed the CALLER-SUPPLIED `actual_count` back
+/// as the "decrypted" tally with a SHA-256 "proof_of_decryption", and
+/// PANICKED on insufficient shares (API-driven DoS). Both are removed:
+/// insufficient shares returns Err, and without a real threshold-decryption
+/// backend this refuses to fabricate a tally.
+pub fn combine_decryption_shares(shares: &[DecryptionShare], threshold: usize, _actual_count: u64) -> Result<TallyResult, VotingCryptoError> {
     if shares.len() < threshold {
-        panic!("Not enough shares: need {} got {}", threshold, shares.len());
+        return Err(VotingCryptoError::invalid_input(
+            "combine_decryption_shares",
+            &format!("not enough shares: need {} got {}", threshold, shares.len()),
+        ));
     }
-
-    let mut combined_hasher = Sha256::new();
-    for share in shares.iter().take(threshold) {
-        combined_hasher.update(share.partial_decryption.as_bytes());
-    }
-    let combined = hex::encode(combined_hasher.finalize());
-
-    let mut proof_hasher = Sha256::new();
-    proof_hasher.update(b"combined_proof:");
-    proof_hasher.update(combined.as_bytes());
-    proof_hasher.update(actual_count.to_be_bytes());
-
-    TallyResult {
-        aspirant_id: String::new(),
-        encrypted_count: combined.clone(),
-        decrypted_count: actual_count,
-        proof_of_decryption: hex::encode(proof_hasher.finalize()),
-        guardian_shares: shares.to_vec(),
-    }
+    Err(VotingCryptoError::unavailable("combine_decryption_shares: threshold decryption not available — refusing to fabricate tally"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -535,34 +414,27 @@ pub struct VerifyKeyResponse {
 }
 
 // Actix-web handler functions (registered in main.rs)
-pub fn handle_encrypt_ballot(req: EncryptBallotRequest) -> EncryptBallotResponse {
-    let ballot = encrypt_ballot(
-        &req.delegate_id,
-        &req.aspirant_id,
-        &req.vote_type,
-        &req.election_pub_key,
-    );
-    let valid = verify_ballot_proof(&ballot);
-    EncryptBallotResponse { ballot, valid }
+// SECURITY: every handler that depends on a real crypto backend returns
+// Err(VotingCryptoError); the HTTP layer maps this to 503 with a JSON error.
+pub fn handle_encrypt_ballot(_req: EncryptBallotRequest) -> Result<EncryptBallotResponse, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("encrypt-ballot endpoint: ballot encryption backend not configured"))
 }
 
-pub fn handle_shuffle(req: ShuffleRequest) -> ShuffleResponse {
-    let (shuffled, proof) = mix_net_shuffle(&req.encrypted_ballots);
-    let verified = verify_shuffle_proof(&req.encrypted_ballots, &shuffled, &proof);
-    ShuffleResponse { shuffled, proof, verified }
+pub fn handle_shuffle(_req: ShuffleRequest) -> Result<ShuffleResponse, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable("shuffle endpoint: mix-net backend not configured"))
 }
 
 pub fn handle_merkle_tree(req: MerkleTreeRequest) -> MerkleTreeResponse {
+    // Merkle ballot trees are a genuine SHA-256 hash-tree construction and
+    // remain functional; they do not depend on the unavailable crypto backend.
     let (root, proofs) = build_ballot_merkle_tree(&req.ballot_hashes);
     MerkleTreeResponse { root, proof_count: proofs.len() }
 }
 
-pub fn handle_verify_keys(req: VerifyKeyRequest) -> VerifyKeyResponse {
-    VerifyKeyResponse {
-        election_id: req.election_id,
-        valid: !req.public_key.is_empty(),
-        guardian_count: req.guardians.len(),
-    }
+pub fn handle_verify_keys(_req: VerifyKeyRequest) -> Result<VerifyKeyResponse, VotingCryptoError> {
+    // SECURITY: previously valid = !public_key.is_empty(). Without a real
+    // key-verification backend, refuse rather than rubber-stamping keys.
+    Err(VotingCryptoError::unavailable("verify-keys endpoint: key verification backend not configured"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -574,35 +446,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_election_keys() {
-        let (key, shares) = generate_election_keys(1, 5, 3);
-        assert_eq!(key.election_id, 1);
-        assert_eq!(key.guardian_count, 5);
-        assert_eq!(key.threshold, 3);
-        assert_eq!(shares.len(), 5);
-        for (i, share) in shares.iter().enumerate() {
-            assert_eq!(share.index, i + 1);
-            assert!(!share.public_key.is_empty());
-        }
+    fn test_generate_election_keys_refuses_to_fabricate() {
+        // SECURITY: no threshold-crypto backend in this build — must fail loudly.
+        let err = generate_election_keys(1, 5, 3).unwrap_err();
+        assert!(err.message.contains("not implemented"));
     }
 
     #[test]
-    fn test_encrypt_and_verify_ballot() {
-        let ballot = encrypt_ballot("del-001", "asp-001", "for", "test_pub_key");
-        assert!(verify_ballot_proof(&ballot));
-        assert_eq!(ballot.delegate_id, "del-001");
-        assert!(!ballot.ciphertext.is_empty());
-        assert!(!ballot.confirmation_code.is_empty());
+    fn test_encrypt_and_verify_ballot_refuse() {
+        let err = encrypt_ballot("del-001", "asp-001", "for", "test_pub_key").unwrap_err();
+        assert!(err.message.contains("not implemented"));
+
+        let ballot = EncryptedBallot {
+            ballot_id: "bal-x".to_string(),
+            delegate_id: "del-001".to_string(),
+            ciphertext: "00".repeat(32),
+            proof: BallotProof {
+                commitment: "00".repeat(32),
+                challenge: "00".repeat(32),
+                response: "00".repeat(32),
+            },
+            confirmation_code: "ABC123".to_string(),
+        };
+        // SECURITY: verification must never trivially return true.
+        assert!(verify_ballot_proof(&ballot).is_err());
     }
 
     #[test]
-    fn test_mix_net_shuffle() {
+    fn test_mix_net_shuffle_refuses() {
         let ballots: Vec<String> = (0..10).map(|i| format!("ballot_{}", i)).collect();
-        let (shuffled, proof) = mix_net_shuffle(&ballots);
-        assert_eq!(shuffled.len(), ballots.len());
-        assert!(verify_shuffle_proof(&ballots, &shuffled, &proof));
-        // Shuffled should be different from input (probabilistic)
-        assert_ne!(shuffled, ballots);
+        assert!(mix_net_shuffle(&ballots).is_err());
+        let proof = ShuffleProof {
+            input_hash: "a".to_string(),
+            output_hash: "b".to_string(),
+            permutation_commitment: "c".to_string(),
+            proof_elements: vec![],
+        };
+        assert!(verify_shuffle_proof(&ballots, &ballots, &proof).is_err());
     }
 
     #[test]
@@ -626,18 +506,21 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_decryption() {
-        let (_key, shares) = generate_election_keys(1, 5, 3);
-        let encrypted_tally = "test_encrypted_tally";
+    fn test_threshold_decryption_refuses_and_never_panics() {
+        // SECURITY: insufficient shares returns Err (previously panic! = DoS).
+        let shares: Vec<DecryptionShare> = vec![];
+        let err = combine_decryption_shares(&shares, 3, 42).unwrap_err();
+        assert!(err.message.contains("not enough shares"));
 
-        let decryption_shares: Vec<DecryptionShare> = shares.iter()
-            .take(3)
-            .map(|s| create_decryption_share(encrypted_tally, s))
-            .collect();
-
-        let result = combine_decryption_shares(&decryption_shares, 3, 42);
-        assert_eq!(result.decrypted_count, 42);
-        assert!(!result.proof_of_decryption.is_empty());
+        let share = DecryptionShare {
+            guardian_index: 1,
+            partial_decryption: "00".repeat(32),
+            proof: "00".repeat(32),
+        };
+        let shares = vec![share.clone(), share.clone(), share];
+        // SECURITY: caller-supplied actual_count must never be echoed as a tally.
+        let err = combine_decryption_shares(&shares, 3, 42).unwrap_err();
+        assert!(err.message.contains("refusing to fabricate tally"));
     }
 
     #[test]
@@ -656,43 +539,52 @@ mod tests {
     }
 
     #[test]
-    fn test_guardian_share_verification() {
-        let (_key, shares) = generate_election_keys(1, 3, 2);
-        for share in &shares {
-            assert!(verify_guardian_share(share, &_key.public_key));
-        }
+    fn test_guardian_share_verification_refuses() {
+        let share = GuardianKeyShare {
+            index: 1,
+            public_key: "00".repeat(32),
+            verification_key: "00".repeat(32),
+            encrypted_share: "00".repeat(32),
+        };
+        // SECURITY: previously returned true for any non-empty share.
+        assert!(verify_guardian_share(&share, "any_key").is_err());
     }
 
     #[test]
-    fn test_homomorphic_tally() {
+    fn test_homomorphic_tally_refuses() {
         let ballots: Vec<String> = (0..5).map(|i| format!("enc_ballot_{}", i)).collect();
         let aspirants = vec!["asp-001".to_string(), "asp-002".to_string()];
-        let tallies = homomorphic_tally(&ballots, &aspirants);
-        assert_eq!(tallies.len(), 2);
-        assert!(tallies.contains_key("asp-001"));
-        assert!(tallies.contains_key("asp-002"));
+        // SECURITY: previously produced identical fake tallies per aspirant.
+        assert!(homomorphic_tally(&ballots, &aspirants).is_err());
     }
 
     #[test]
-    fn test_handle_encrypt_ballot() {
+    fn test_handle_encrypt_ballot_refuses() {
         let req = EncryptBallotRequest {
             delegate_id: "del-test".to_string(),
             aspirant_id: "asp-test".to_string(),
             vote_type: "for".to_string(),
             election_pub_key: "test_key".to_string(),
         };
-        let resp = handle_encrypt_ballot(req);
-        assert!(resp.valid);
-        assert!(!resp.ballot.ciphertext.is_empty());
+        assert!(handle_encrypt_ballot(req).is_err());
     }
 
     #[test]
-    fn test_handle_shuffle() {
+    fn test_handle_shuffle_refuses() {
         let req = ShuffleRequest {
             encrypted_ballots: (0..5).map(|i| format!("b{}", i)).collect(),
         };
-        let resp = handle_shuffle(req);
-        assert!(resp.verified);
-        assert_eq!(resp.shuffled.len(), 5);
+        assert!(handle_shuffle(req).is_err());
+    }
+
+    #[test]
+    fn test_handle_verify_keys_refuses() {
+        let req = VerifyKeyRequest {
+            election_id: 1,
+            public_key: "00".repeat(32),
+            guardians: vec![],
+        };
+        // SECURITY: previously valid = !public_key.is_empty().
+        assert!(handle_verify_keys(req).is_err());
     }
 }

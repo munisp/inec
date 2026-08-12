@@ -284,17 +284,37 @@ async fn internal_api_key_auth(
     if req.uri().path() == "/health" {
         return next.run(req).await;
     }
-    // Accept dapr-api-token or GOTV_ENGINE_API_KEY
+    // SECURITY: fail closed. Previously, when GOTV_ENGINE_API_KEY was unset
+    // ALL requests were allowed (auth silently disabled), and ANY request
+    // bearing ANY dapr-api-token header value passed unauthenticated.
     let expected_key = std::env::var("GOTV_ENGINE_API_KEY").unwrap_or_default();
-    let has_dapr = req.headers().get("dapr-api-token").is_some();
+    if expected_key.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "GOTV_ENGINE_API_KEY not configured; refusing to serve unauthenticated requests"
+            })),
+        )
+            .into_response();
+    }
+
     let has_key = req.headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .map(|v| !expected_key.is_empty() && v == expected_key)
+        .map(|v| v == expected_key)
         .unwrap_or(false);
 
-    // In dev mode (no key configured), allow all requests
-    if expected_key.is_empty() || has_dapr || has_key {
+    // The dapr-api-token header must match the configured Dapr API token
+    // (DAPR_API_TOKEN, falling back to the service key) — mere presence of
+    // the header is NOT authentication.
+    let dapr_expected = std::env::var("DAPR_API_TOKEN").unwrap_or_else(|_| expected_key.clone());
+    let has_dapr = req.headers()
+        .get("dapr-api-token")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !dapr_expected.is_empty() && v == dapr_expected)
+        .unwrap_or(false);
+
+    if has_dapr || has_key {
         return next.run(req).await;
     }
 
@@ -939,18 +959,32 @@ async fn main() {
     }
 
     // ── Voting Crypto Handlers ────────────────────────────────────────────
+    // SECURITY: crypto backend is not implemented in this build; handlers
+    // return 503 with a JSON error instead of fabricated artifacts.
+    fn crypto_unavailable(e: voting_crypto::VotingCryptoError) -> axum::response::Response {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response()
+    }
+
     async fn encrypt_ballot_handler(
         Json(req): Json<voting_crypto::EncryptBallotRequest>,
-    ) -> impl IntoResponse {
-        let resp = voting_crypto::handle_encrypt_ballot(req);
-        Json(serde_json::json!(resp))
+    ) -> axum::response::Response {
+        match voting_crypto::handle_encrypt_ballot(req) {
+            Ok(resp) => Json(serde_json::json!(resp)).into_response(),
+            Err(e) => crypto_unavailable(e),
+        }
     }
 
     async fn shuffle_handler(
         Json(req): Json<voting_crypto::ShuffleRequest>,
-    ) -> impl IntoResponse {
-        let resp = voting_crypto::handle_shuffle(req);
-        Json(serde_json::json!(resp))
+    ) -> axum::response::Response {
+        match voting_crypto::handle_shuffle(req) {
+            Ok(resp) => Json(serde_json::json!(resp)).into_response(),
+            Err(e) => crypto_unavailable(e),
+        }
     }
 
     async fn merkle_tree_handler(
@@ -962,9 +996,11 @@ async fn main() {
 
     async fn verify_keys_handler(
         Json(req): Json<voting_crypto::VerifyKeyRequest>,
-    ) -> impl IntoResponse {
-        let resp = voting_crypto::handle_verify_keys(req);
-        Json(serde_json::json!(resp))
+    ) -> axum::response::Response {
+        match voting_crypto::handle_verify_keys(req) {
+            Ok(resp) => Json(serde_json::json!(resp)).into_response(),
+            Err(e) => crypto_unavailable(e),
+        }
     }
 
     let app = Router::new()
