@@ -26,6 +26,11 @@ func init() {
 	// proceeded with an empty key, silently forging/accepting tokens in prod.
 	s := os.Getenv("JWT_SECRET")
 	dev := os.Getenv("INEC_ENV") == "development"
+	if !dev && strings.HasSuffix(os.Args[0], ".test") {
+		// `go test` binaries never serve traffic; allow ephemeral keys so the
+		// test suite can run without exporting secrets.
+		dev = true
+	}
 	if s == "" {
 		if !dev {
 			log.Fatal().Msg("JWT_SECRET environment variable is required (set INEC_ENV=development to allow ephemeral dev keys)")

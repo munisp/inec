@@ -411,8 +411,12 @@ func logAuditCtx(ctx context.Context, action, entityType, entityID string, userI
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
 	detailsJSON, _ := json.Marshal(details)
-	dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
-		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev)
+	// Audit failures must be loud, not silent — the chain is a security control.
+	if _, err := dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
+		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev); err != nil {
+		log.Error().Err(err).Str("action", action).Str("entity_type", entityType).Str("entity_id", entityID).
+			Msg("SECURITY: audit log write failed")
+	}
 }
 
 func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
