@@ -27,14 +27,21 @@ def _verify_admin_key(request: Request) -> None:
     SECURITY: 503 when GOTV_ANALYTICS_ADMIN_KEY is unconfigured — admin
     operations fail closed rather than silently allowing any caller.
     """
-    admin_key = os.getenv("GOTV_ANALYTICS_ADMIN_KEY", "").strip()
-    if not admin_key:
+    # KEY ROTATION: comma-separated admin keys; any constant-time match passes.
+    admin_keys = [
+        k.strip()
+        for k in os.getenv("GOTV_ANALYTICS_ADMIN_KEY", "").split(",")
+        if k.strip()
+    ]
+    if not admin_keys:
         raise HTTPException(
             status_code=503,
             detail="GOTV_ANALYTICS_ADMIN_KEY not configured; admin operations are disabled",
         )
     provided = request.headers.get("x-admin-key", "")
-    if not provided or not hmac.compare_digest(provided.encode(), admin_key.encode()):
+    if not provided or not any(
+        hmac.compare_digest(provided.encode(), key.encode()) for key in admin_keys
+    ):
         raise HTTPException(status_code=403, detail="invalid admin key")
 
 router = APIRouter(prefix="/ml", tags=["ml-serving"])
