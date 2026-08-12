@@ -190,7 +190,7 @@ type ProductionHSM struct {
 // Staging and production must always provide a real 256-bit master key.
 func allowEphemeralHSMKey() bool {
 	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		return false
 	}
 	if env == "test" || env == "e2e" || env == "development" || env == "dev" || env == "local" {

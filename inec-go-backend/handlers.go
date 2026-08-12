@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -93,7 +92,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	refresh, _ := createRefreshToken(claims)
 
 	// Set httpOnly cookies for XSS-resistant auth
-	secure := os.Getenv("APP_ENV") == "production" || os.Getenv("APP_ENV") == "staging"
+	secure := isProductionLike()
 	sameSite := http.SameSiteLaxMode
 	if secure {
 		sameSite = http.SameSiteStrictMode

@@ -174,7 +174,7 @@ func (d *localDaprClient) Close() error {
 
 func isExplicitNonProductionDaprEnvironment() bool {
 	env := strings.ToLower(strings.TrimSpace(envOrDefault("APP_ENV", "")))
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		return false
 	}
 	switch env {

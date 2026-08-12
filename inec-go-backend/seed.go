@@ -153,7 +153,7 @@ var wardNames = []string{"Ward I", "Ward II", "Ward III", "Ward IV", "Ward V", "
 // including when a generic CI environment flag is present.
 func shouldSeedE2EFixtures() bool {
 	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		return false
 	}
 	if env == "test" || env == "e2e" {

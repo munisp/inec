@@ -95,7 +95,7 @@ func operationalSettlementStatus(err error) int {
 }
 
 func initOperationalSettlementSchema(database *sql.DB) {
-	if usePostgres || strings.EqualFold(os.Getenv("APP_ENV"), "production") {
+	if usePostgres || isProduction() {
 		// Migration 000025 is authoritative in PostgreSQL production.
 		return
 	}

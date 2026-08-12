@@ -2,14 +2,12 @@ package main
 
 import (
 	"database/sql"
-	"os"
 
 	"github.com/rs/zerolog/log"
 )
 
 func initDB(db *sql.DB) {
-	env := os.Getenv("APP_ENV")
-	if env == "production" {
+	if isProduction() {
 		log.Info().Msg("Production mode: schema managed by migrations only (skipping initDB auto-create)")
 		validateSchemaExists(db)
 		return

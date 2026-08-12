@@ -66,7 +66,7 @@ type integrityVerificationResponse struct {
 func initEvidenceIntegritySchema() {
 	// Production PostgreSQL is managed by migrations. The local/test schema keeps
 	// the same logical shape while remaining compatible with SQLite test fixtures.
-	if usePostgres || os.Getenv("APP_ENV") == "production" {
+	if usePostgres || isProduction() {
 		return
 	}
 
@@ -220,11 +220,11 @@ func initEvidenceIntegritySchema() {
 
 func integritySigningRequired() bool {
 	return strings.EqualFold(os.Getenv("INTEGRITY_SIGNING_REQUIRED"), "true") ||
-		strings.EqualFold(os.Getenv("APP_ENV"), "production")
+		isProduction()
 }
 
 func integrityPolicyRequired() bool {
-	return integritySigningRequired() || strings.EqualFold(os.Getenv("APP_ENV"), "staging")
+	return integritySigningRequired() || isProductionLike()
 }
 
 type integritySignerHealthStatus struct {

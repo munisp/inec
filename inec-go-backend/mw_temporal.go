@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -287,8 +286,7 @@ func initTemporalClient() TemporalClient {
 		}
 		log.Warn().Msg("Temporal unreachable, falling back to embedded")
 	}
-	env := os.Getenv("APP_ENV")
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		log.Fatal().Msg("Temporal is REQUIRED in production/staging for durable workflow orchestration. Set TEMPORAL_URL")
 	}
 	log.Warn().Msg("Temporal using embedded local workflow engine (DEV ONLY)")

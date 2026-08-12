@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -312,8 +311,7 @@ func initAPISIXClient() APISIXClient {
 		}
 		log.Warn().Msg("APISIX unreachable, falling back to embedded")
 	}
-	env := os.Getenv("APP_ENV")
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		log.Fatal().Msg("APISIX is REQUIRED in production/staging for API gateway. Set APISIX_ADMIN_URL")
 	}
 	log.Warn().Msg("APISIX using embedded gateway config (DEV ONLY)")

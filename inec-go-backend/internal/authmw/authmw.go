@@ -151,19 +151,28 @@ func RequireRole(w http.ResponseWriter, r *http.Request, roles ...string) (jwt.M
 	return nil, false
 }
 
+// isProductionEnv reports whether the process is configured for production.
+// Both APP_ENV (deployment environment) and INEC_ENV (monolith environment)
+// are honored so neither naming convention can accidentally bypass a
+// fail-closed guard (mirrors gotv.IsProductionEnv semantics).
+func isProductionEnv() bool {
+	return os.Getenv("APP_ENV") == "production" || os.Getenv("INEC_ENV") == "production"
+}
+
 // CORS returns middleware implementing a strict origin allow-list driven by
 // the CORS_ORIGINS environment variable (comma-separated).
 //
 // SECURITY:
 //   - When CORS_ORIGINS is unset the allow-list is EMPTY (deny all cross-origin).
-//   - APP_ENV=production with an empty allow-list is a fatal startup error.
+//   - Production (APP_ENV/INEC_ENV=production) with an empty allow-list is a
+//     fatal startup error.
 //   - Access-Control-Allow-Credentials:true is NEVER sent with a wildcard origin.
 func CORS() func(http.Handler) http.Handler {
 	raw := strings.TrimSpace(os.Getenv("CORS_ORIGINS"))
 	var origins []string
 	wildcard := false
 	if raw == "" {
-		if os.Getenv("APP_ENV") == "production" {
+		if isProductionEnv() {
 			log.Fatal().Msg("CORS_ORIGINS must be set in production (explicit origin allow-list required)")
 		}
 		log.Warn().Msg("CORS_ORIGINS not set — cross-origin requests will be denied")

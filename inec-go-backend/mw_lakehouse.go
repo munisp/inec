@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -530,8 +529,7 @@ func initLakehouseClient() LakehouseClient {
 		}
 		log.Warn().Msg("Lakehouse unreachable, falling back to embedded")
 	}
-	env := os.Getenv("APP_ENV")
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		log.Fatal().Msg("Lakehouse is REQUIRED in production/staging for analytics. Set LAKEHOUSE_URL")
 	}
 	log.Warn().Msg("Lakehouse using embedded PostgreSQL analytics (DEV ONLY)")

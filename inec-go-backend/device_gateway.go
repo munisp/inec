@@ -173,7 +173,7 @@ func initDeviceGatewaySchema(database *sql.DB) {
 }
 
 func externalDeviceGatewayRequired() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") || envBool("BVAS_DEVICE_GATEWAY_REQUIRED", false)
+	return isProduction() || envBool("BVAS_DEVICE_GATEWAY_REQUIRED", false)
 }
 
 func deviceGatewayRequiredService(name string, connected bool) error {

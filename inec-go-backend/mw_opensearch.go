@@ -382,8 +382,7 @@ func initOpenSearchClient() OpenSearchClient {
 		}
 		log.Warn().Str("url", baseURL).Msg("OpenSearch unreachable, falling back to embedded")
 	}
-	env := os.Getenv("APP_ENV")
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		log.Fatal().Msg("OpenSearch is REQUIRED in production/staging for log aggregation and search. Set OPENSEARCH_URL")
 	}
 	log.Warn().Msg("OpenSearch using embedded DB-backed implementation (DEV ONLY)")

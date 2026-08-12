@@ -541,8 +541,7 @@ type BiometricVault struct {
 func NewBiometricVault(database *sql.DB) *BiometricVault {
 	keyHex := os.Getenv("BIOMETRIC_VAULT_MASTER_KEY")
 	if keyHex == "" {
-		env := os.Getenv("APP_ENV")
-		if env == "production" || env == "staging" {
+		if isProductionLike() {
 			log.Fatal().Msg("BIOMETRIC_VAULT_MASTER_KEY must be set in production/staging (64-char hex string from HSM/KMS)")
 		}
 		// Dev-only: deterministic key for local development

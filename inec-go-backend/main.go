@@ -45,7 +45,7 @@ var (
 				// SECURITY: wildcard WebSocket origins are never allowed in
 				// production; in other environments they are only honored as
 				// an explicit dev-mode choice.
-				if os.Getenv("APP_ENV") == "production" {
+				if isProduction() {
 					return false
 				}
 				return true // explicitly allow all (dev mode)
@@ -67,6 +67,27 @@ var (
 	rateLimiter = newRateLimiter()
 )
 
+// isProduction reports whether the process is configured for production.
+// Both APP_ENV (deployment environment) and INEC_ENV (monolith environment)
+// are honored so neither naming convention can accidentally bypass a
+// fail-closed guard (mirrors gotv.IsProductionEnv semantics). Every
+// production-gated check in the monolith must use this helper.
+func isProduction() bool {
+	return os.Getenv("APP_ENV") == "production" || os.Getenv("INEC_ENV") == "production"
+}
+
+// isProductionLike reports whether the environment must behave like
+// production (production or staging) for fail-closed defaults. Both APP_ENV
+// and INEC_ENV are honored, as in isProduction.
+func isProductionLike() bool {
+	for _, v := range []string{os.Getenv("APP_ENV"), os.Getenv("INEC_ENV")} {
+		if v == "production" || v == "staging" {
+			return true
+		}
+	}
+	return false
+}
+
 // validateConfig fails fast in production when required environment variables
 // are missing, instead of booting into an insecure half-configured state.
 // The list is kept in sync with every variable labeled REQUIRED-IN-PROD in
@@ -74,7 +95,7 @@ var (
 // GOTV_MOBILE_JWT_SECRET are additionally enforced by gotv-svc's own startup
 // checks, which honor both APP_ENV and INEC_ENV).
 func validateConfig() {
-	if os.Getenv("APP_ENV") != "production" {
+	if !isProduction() {
 		return
 	}
 	required := []string{
@@ -1018,7 +1039,7 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 
 func writeError(w http.ResponseWriter, code int, detail string) {
 	// In production, suppress internal error details from 500 responses
-	if code >= 500 && os.Getenv("APP_ENV") == "production" {
+	if code >= 500 && isProduction() {
 		log.Error().Int("code", code).Str("detail", detail).Msg("internal error")
 		writeJSON(w, code, M{"detail": "internal server error"})
 		return

@@ -73,7 +73,7 @@ return
 // embedded file migrations (migrations.go). GORM AutoMigrate races those
 // migrations and can silently diverge the schema, so it only runs in
 // non-production environments.
-if os.Getenv("APP_ENV") == "production" {
+if isProduction() {
 log.Println("GORM AutoMigrate skipped in production (schema managed by embedded migrations)")
 return
 }

@@ -98,7 +98,7 @@ func metricsHandler() http.Handler {
 func metricsBearerGuard(next http.Handler) http.Handler {
 	token := os.Getenv("METRICS_BEARER_TOKEN")
 	if token == "" {
-		if os.Getenv("APP_ENV") == "production" {
+		if isProduction() {
 			log.Fatal().Msg("METRICS_BEARER_TOKEN must be set in production — refusing to expose unauthenticated /metrics")
 		}
 		log.Warn().Msg("METRICS_BEARER_TOKEN not set — /metrics is UNAUTHENTICATED (allowed outside production only)")

@@ -345,7 +345,7 @@ func calculateFabricAnchorID(anchor fabricEvidenceAnchor) (string, error) {
 }
 
 func initFabricAnchorSchema() {
-	if usePostgres || strings.EqualFold(os.Getenv("APP_ENV"), "production") {
+	if usePostgres || isProduction() {
 		return
 	}
 	schema := `

@@ -99,7 +99,7 @@ func getUserFromContext(r *http.Request) (jwt.MapClaims, bool) {
 // refuses to boot with that combination, and authenticateStreamRequest
 // additionally refuses query tokens whenever APP_ENV=production).
 func streamDevMode() bool {
-	if os.Getenv("APP_ENV") == "production" || os.Getenv("INEC_ENV") == "production" {
+	if isProduction() {
 		return false
 	}
 	return os.Getenv("GOTV_DEV_MODE") == "true"
@@ -169,7 +169,7 @@ func corsProductionMiddleware(next http.Handler) http.Handler {
 	var allowedOrigins []string
 	wildcard := false
 	if raw == "" {
-		if os.Getenv("APP_ENV") == "production" {
+		if isProduction() {
 			log.Fatal().Msg("CORS_ORIGINS must be set in production (explicit origin allow-list required)")
 		}
 		log.Warn().Msg("CORS_ORIGINS not set — cross-origin requests will be denied")

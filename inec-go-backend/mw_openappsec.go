@@ -385,8 +385,7 @@ func initOpenAppSecClient() OpenAppSecClient {
 		log.Info().Msg("OpenAppSec enforcement is attached to APISIX gateway")
 		return gatewayAttachedWAF{}
 	}
-	env := os.Getenv("APP_ENV")
-	if env == "production" || env == "staging" {
+	if isProductionLike() {
 		log.Fatal().Msg("OpenAppSec APISIX gateway attachment is required in production/staging; set OPENAPPSEC_GATEWAY_ENFORCED=true")
 	}
 	log.Warn().Msg("OpenAppSec gateway attachment is disabled; using development-only local WAF")
