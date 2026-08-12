@@ -10,10 +10,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // AuthConfig holds authentication configuration.
@@ -27,6 +30,12 @@ type AuthMiddleware struct {
 	db     *sql.DB
 	config AuthConfig
 	client *http.Client
+	// gatewaySecret is the shared secret (env GOTV_GATEWAY_SECRET) that the
+	// API gateway MUST present before X-Party-ID/X-Internal-Service trust
+	// headers are honored. SECURITY: when empty, those trust headers are
+	// rejected outright (fail closed) — otherwise any direct client could
+	// impersonate any party by setting two headers.
+	gatewaySecret string
 	// Rate limiter: party_id -> (count, window_start)
 	rateMap map[int]*rateEntry
 	rateMu  sync.RWMutex
@@ -39,11 +48,17 @@ type rateEntry struct {
 
 // NewAuthMiddleware creates auth middleware with JWT + API key support.
 func NewAuthMiddleware(db *sql.DB, config AuthConfig) *AuthMiddleware {
+	gwSecret := os.Getenv("GOTV_GATEWAY_SECRET")
+	if gwSecret == "" {
+		// SECURITY: startup warning — gateway trust headers fail closed.
+		log.Warn().Msg("GOTV auth: GOTV_GATEWAY_SECRET is not set — X-Party-ID/X-Internal-Service gateway trust headers will be REJECTED (fail closed). Set a strong shared secret on the gateway and this service to enable inter-service trust.")
+	}
 	return &AuthMiddleware{
-		db:      db,
-		config:  config,
-		client:  &http.Client{Timeout: 5 * time.Second},
-		rateMap: make(map[int]*rateEntry),
+		db:            db,
+		config:        config,
+		client:        &http.Client{Timeout: 5 * time.Second},
+		gatewaySecret: gwSecret,
+		rateMap:       make(map[int]*rateEntry),
 	}
 }
 
@@ -100,6 +115,20 @@ func (am *AuthMiddleware) authenticate(r *http.Request) (int, string, error) {
 	// Method 3: X-Party-ID from gateway (inter-service trust)
 	if pid := r.Header.Get("X-Party-ID"); pid != "" {
 		if r.Header.Get("X-Internal-Service") == "gateway" {
+			// SECURITY: trust headers are spoofable by any direct client.
+			// They are honored ONLY when the caller also proves possession of
+			// the gateway shared secret (GOTV_GATEWAY_SECRET) via the
+			// X-Gateway-Secret header, compared in constant time. When the
+			// secret is not configured on this service, fail CLOSED — never
+			// trust caller-supplied identity headers.
+			if am.gatewaySecret == "" {
+				return 0, "", fmt.Errorf("unauthorized: gateway trust headers rejected (GOTV_GATEWAY_SECRET not configured)")
+			}
+			provided := r.Header.Get("X-Gateway-Secret")
+			if provided == "" ||
+				subtle.ConstantTimeCompare([]byte(provided), []byte(am.gatewaySecret)) != 1 {
+				return 0, "", fmt.Errorf("unauthorized: invalid gateway secret")
+			}
 			partyID, err := strconv.Atoi(pid)
 			if err != nil {
 				return 0, "", fmt.Errorf("invalid party_id")

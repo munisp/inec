@@ -267,8 +267,11 @@ func stopGRPCServer() {
 // JWT Validation Middleware — real Keycloak OIDC token validation
 // ═══════════════════════════════════════════════════════════════════════════
 
-// jwtValidationMiddleware validates Bearer tokens against Keycloak
-// and falls back to X-GOTV-Party-Code in dev mode.
+// jwtValidationMiddleware validates Bearer tokens against Keycloak.
+// SECURITY: the X-GOTV-Party-Code header fallback is a DEV-ONLY escape hatch
+// (devModeEnabled, i.e. --dev / GOTV_DEV_MODE=true). It exists solely for
+// local development when no Keycloak is running; in production a bare header
+// authenticates NOBODY, and a failed Keycloak token validation is a hard 401.
 func jwtValidationMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip for public endpoints
@@ -295,14 +298,23 @@ func jwtValidationMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			// Token validation failed, but Keycloak might be down
+			// SECURITY: when Keycloak is configured, a failed token validation
+			// is TERMINAL (401) — we must never fall through to any header-based
+			// fallback, or any request bearing a garbage token plus a party-code
+			// header would authenticate (full auth bypass + party impersonation).
 			if keycloakURL != "" {
-				log.Warn().Err(err).Msg("JWT validation failed")
+				log.Warn().Err(err).Msg("JWT validation failed — rejecting (no fallback when Keycloak is configured)")
+				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				return
 			}
+			log.Warn().Err(err).Msg("JWT validation failed (Keycloak not configured)")
 		}
 
-		// Fallback: party code header (dev mode or when Keycloak is down)
-		if r.Header.Get("X-GOTV-Party-Code") != "" {
+		// SECURITY: the X-GOTV-Party-Code header fallback is a DEV-ONLY escape
+		// hatch (devModeEnabled). A bare header is proof of nothing — in
+		// production it MUST NOT authenticate anyone, otherwise any client can
+		// impersonate any party by setting one header.
+		if devModeEnabled && r.Header.Get("X-GOTV-Party-Code") != "" {
 			next.ServeHTTP(w, r)
 			return
 		}

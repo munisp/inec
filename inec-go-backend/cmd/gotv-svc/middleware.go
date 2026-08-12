@@ -386,7 +386,11 @@ var permifyURL string
 func initPermify() {
 	permifyURL = os.Getenv("PERMIFY_URL")
 	if permifyURL == "" {
-		log.Info().Msg("GOTV Permify: PERMIFY_URL not set, all permissions allowed in dev mode")
+		// SECURITY: startup warning — with no authorization backend, every
+		// fine-grained permission check fails CLOSED (denied). Deployments that
+		// rely on Permify for party_admin > coordinator > canvasser ReBAC must
+		// set PERMIFY_URL.
+		log.Warn().Msg("GOTV Permify: PERMIFY_URL not set — all Permify permission checks will be DENIED (fail closed)")
 		return
 	}
 	// Write GOTV authorization schema
@@ -402,9 +406,17 @@ func initPermify() {
 	log.Info().Str("url", permifyURL).Msg("GOTV Permify configured")
 }
 
+// checkPermission asks Permify whether userID may perform permission on an
+// object. SECURITY: fail CLOSED — when Permify is unconfigured or the check
+// call errors, the permission is DENIED (with an ERROR log). A fail-open
+// authorization check is not an authorization check: any Permify outage would
+// otherwise silently grant mutating permissions to every caller.
 func checkPermission(userID, permission, objectType, objectID string) bool {
 	if permifyURL == "" {
-		return true // dev mode: all allowed
+		log.Error().Str("user", userID).Str("permission", permission).
+			Str("object", objectType+"/"+objectID).
+			Msg("SECURITY: Permify unconfigured — permission DENIED (fail closed)")
+		return false
 	}
 	body := fmt.Sprintf(`{
 		"metadata": {"schema_version": ""},
@@ -416,7 +428,9 @@ func checkPermission(userID, permission, objectType, objectID string) bool {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := mwHTTPClient.Do(req)
 	if err != nil {
-		return true // fail-open in case of Permify outage
+		log.Error().Err(err).Str("user", userID).Str("permission", permission).
+			Msg("SECURITY: Permify check failed — permission DENIED (fail closed)")
+		return false
 	}
 	defer resp.Body.Close()
 	var result struct {

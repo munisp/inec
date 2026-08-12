@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -26,10 +27,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
+	"github.com/rs/zerolog/log"
+
+	gotv "inec-go-backend/internal/gotv"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -49,6 +55,13 @@ import (
 // tally backend. When empty, ballot casting and every crypto-artifact
 // endpoint refuse to operate rather than fabricate keys/proofs/ciphertexts.
 var electionCryptoBackendURL = os.Getenv("GOTV_ELECTION_CRYPTO_BACKEND_URL")
+
+// quorumThresholdFraction is the fraction of registered delegates that must
+// be accredited for quorum. SECURITY/INTEGRITY: this is the single source of
+// truth — the constitutional value enforced at round-open (50%). Every
+// quorum computation (round open, dashboard, quorum check, snapshots) MUST
+// use this constant instead of a local literal.
+const quorumThresholdFraction = 0.50
 
 // biometricServiceURL, when set, points at the biometric verification
 // pipeline used for remote-voter authentication. When empty, remote
@@ -98,6 +111,214 @@ func verifyBiometricPayload(r *http.Request, payload string) bool {
 		return false
 	}
 	return result.Verified
+}
+
+// cbElectionCrypto protects calls to the election-cryptography backend.
+var cbElectionCrypto = NewGOTVCircuitBreaker("election-crypto", 3, 30*time.Second)
+
+// cbAnchorService protects calls to the external blockchain anchor service.
+var cbAnchorService = NewGOTVCircuitBreaker("anchor-service", 3, 30*time.Second)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ELECTION CRYPTO BACKEND — MINIMAL CONTRACT (documented, shape-verified)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// SECURITY: ballot custody. A vote choice (aspirant_id) must NEVER be stored
+// in cleartext next to the voter's identity (delegate_id) in this service's
+// database. When GOTV_ELECTION_CRYPTO_BACKEND_URL is configured, this service
+// DELEGATES custody of the plaintext choice to the crypto backend, which is
+// the only component that may keep the aspirant linkage (inside its own
+// trust domain, e.g. under an ElectionGuard/Paillier tally key).
+//
+// Contract (JSON over HTTPS):
+//
+//	POST {backend}/encrypt
+//	  request:  {"round_id","ballot_id","vote_type","aspirant_id" (optional)}
+//	  response: 200 {"ciphertext":"<non-empty>","proof":"<optional>",
+//	                 "ballot_ref":"<opaque backend handle>"}
+//	  The backend encrypts the choice and returns ONLY ciphertext + an opaque
+//	  ballot_ref. The response MUST NOT echo the plaintext choice.
+//
+//	POST {backend}/verify-proof
+//	  request:  {"round_id","ciphertext","proof"}
+//	  response: 200 {"valid":true|false,"ballot_ref":"<opaque handle>"}
+//	  Used when the client submits its own E2E-encrypted ballot: the backend
+//	  verifies the zero-knowledge proof BEFORE anything is stored.
+//
+//	POST {backend}/tally
+//	  request:  {"round_id","ballot_refs":[...]}
+//	  response: 200 {"results":[{"aspirant_id","votes"}]}
+//	  Aggregate tally inside the backend's domain; cleartext per-ballot
+//	  choices are never returned to (or stored by) this service.
+//
+// On ANY backend call failure the calling handler returns 503 and performs
+// NO database mutation — a failed encryption must never degrade into a
+// cleartext insert.
+
+// encryptBallotViaBackend submits a plaintext vote choice to the crypto
+// backend and returns (ciphertext, proof, ballotRef). The plaintext choice
+// stays in the backend's domain; this service stores only the ciphertext.
+func encryptBallotViaBackend(ctx context.Context, roundID, ballotID, voteType, aspirantID string) (string, string, string, error) {
+	if electionCryptoBackendURL == "" {
+		return "", "", "", fmt.Errorf("election crypto backend not configured (GOTV_ELECTION_CRYPTO_BACKEND_URL)")
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"round_id":    roundID,
+		"ballot_id":   ballotID,
+		"vote_type":   voteType,
+		"aspirant_id": aspirantID,
+	})
+	respBody, code, err := resilientCall(ctx, cbElectionCrypto, "POST",
+		electionCryptoBackendURL+"/encrypt", payload)
+	if err != nil || code != http.StatusOK {
+		return "", "", "", fmt.Errorf("crypto backend /encrypt failed (code=%d): %v", code, err)
+	}
+	// Verify the response shape: ciphertext MUST be present and the plaintext
+	// choice MUST NOT be echoed back.
+	var result struct {
+		Ciphertext string `json:"ciphertext"`
+		Proof      string `json:"proof"`
+		BallotRef  string `json:"ballot_ref"`
+		AspirantID string `json:"aspirant_id"` // must stay empty
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", "", "", fmt.Errorf("crypto backend /encrypt returned malformed response: %w", err)
+	}
+	if result.Ciphertext == "" {
+		return "", "", "", fmt.Errorf("crypto backend /encrypt returned empty ciphertext")
+	}
+	if result.AspirantID != "" {
+		return "", "", "", fmt.Errorf("crypto backend /encrypt response leaked the plaintext choice — refusing storage")
+	}
+	return result.Ciphertext, result.Proof, result.BallotRef, nil
+}
+
+// verifyBallotProofViaBackend asks the crypto backend to verify a
+// client-supplied E2E-encrypted ballot's zero-knowledge proof BEFORE storage.
+func verifyBallotProofViaBackend(ctx context.Context, roundID, ciphertext, proof string) (string, error) {
+	if electionCryptoBackendURL == "" {
+		return "", fmt.Errorf("election crypto backend not configured (GOTV_ELECTION_CRYPTO_BACKEND_URL)")
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"round_id":   roundID,
+		"ciphertext": ciphertext,
+		"proof":      proof,
+	})
+	respBody, code, err := resilientCall(ctx, cbElectionCrypto, "POST",
+		electionCryptoBackendURL+"/verify-proof", payload)
+	if err != nil || code != http.StatusOK {
+		return "", fmt.Errorf("crypto backend /verify-proof failed (code=%d): %v", code, err)
+	}
+	var result struct {
+		Valid     bool   `json:"valid"`
+		BallotRef string `json:"ballot_ref"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("crypto backend /verify-proof returned malformed response: %w", err)
+	}
+	if !result.Valid {
+		return "", fmt.Errorf("ballot proof rejected by crypto backend")
+	}
+	return result.BallotRef, nil
+}
+
+// tallyBallotsViaBackend delegates aggregation of backend-custodied ballots
+// to the crypto backend (which holds the only copy of the vote choices).
+func tallyBallotsViaBackend(ctx context.Context, roundID string, ballotRefs []string) (map[string]int, error) {
+	if electionCryptoBackendURL == "" {
+		return nil, fmt.Errorf("election crypto backend not configured (GOTV_ELECTION_CRYPTO_BACKEND_URL)")
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"round_id":    roundID,
+		"ballot_refs": ballotRefs,
+	})
+	respBody, code, err := resilientCall(ctx, cbElectionCrypto, "POST",
+		electionCryptoBackendURL+"/tally", payload)
+	if err != nil || code != http.StatusOK {
+		return nil, fmt.Errorf("crypto backend /tally failed (code=%d): %v", code, err)
+	}
+	var result struct {
+		Results []struct {
+			AspirantID string `json:"aspirant_id"`
+			Votes      int    `json:"votes"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("crypto backend /tally returned malformed response: %w", err)
+	}
+	out := make(map[string]int, len(result.Results))
+	for _, r := range result.Results {
+		if r.AspirantID == "" {
+			return nil, fmt.Errorf("crypto backend /tally returned result without aspirant_id")
+		}
+		out[r.AspirantID] += r.Votes
+	}
+	return out, nil
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SCHEMA HARDENING COLUMNS (idempotent, additive only)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// SECURITY: ballots.ballot_ref stores the crypto backend's opaque handle for
+// a custodied ballot (in place of cleartext aspirant_id next to delegate_id);
+// delegates.duress_code_hash stores the SHA-256 of a per-delegate duress
+// ("panic") credential registered at credential issuance for coercion
+// resistance. Both columns are additive and nullable — existing deployments
+// keep working; deployments that need them get them on first use.
+var ensureHardeningColumnsOnce sync.Once
+var ensureHardeningColumnsErr error
+
+func ensureHardeningColumns(ctx context.Context) error {
+	ensureHardeningColumnsOnce.Do(func() {
+		stmts := []string{
+			`ALTER TABLE ballots ADD COLUMN IF NOT EXISTS ballot_ref TEXT`,
+			`ALTER TABLE delegates ADD COLUMN IF NOT EXISTS duress_code_hash TEXT`,
+		}
+		for _, s := range stmts {
+			if _, err := dbConn.ExecContext(ctx, s); err != nil {
+				ensureHardeningColumnsErr = err
+				log.Error().Err(err).Str("stmt", s).Msg("SECURITY: failed to ensure hardening column")
+				return
+			}
+		}
+	})
+	return ensureHardeningColumnsErr
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTY SCOPING — cross-party isolation for primaries mutations
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// SECURITY: the elections table has no party linkage; a party's ownership of
+// a primary election is derived from its registered delegates/aspirants
+// (both carry party_code). Every mutating round/dispute handler MUST enforce
+// the caller's party_code, otherwise any party user can close/tally/certify
+// another party's rounds or resolve their disputes.
+
+// partyOwnsElection reports whether the caller's party has delegates or
+// aspirants registered for the given election.
+func partyOwnsElection(ctx context.Context, electionID int, partyCode string) bool {
+	var n int
+	if err := dbConn.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM delegates WHERE election_id=$1 AND party_code=$2
+			UNION ALL
+			SELECT 1 FROM aspirants WHERE election_id=$1 AND party_code=$2
+		) owned`, electionID, partyCode).Scan(&n); err != nil {
+		log.Error().Err(err).Int("election_id", electionID).Msg("party ownership check failed — denying (fail closed)")
+		return false
+	}
+	return n > 0
+}
+
+// partyOwnsRound resolves the round's election and checks party ownership.
+func partyOwnsRound(ctx context.Context, roundID, partyCode string) (electionID int, owned bool) {
+	if err := dbConn.QueryRowContext(ctx,
+		"SELECT election_id FROM voting_rounds WHERE round_id=$1", roundID).Scan(&electionID); err != nil {
+		return 0, false
+	}
+	return electionID, partyOwnsElection(ctx, electionID, partyCode)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -207,10 +428,10 @@ func handleListAspirants(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var (
 			aspID, partyCode, name, position, screenStatus string
-			elecID, endorsements, votes                     int
-			gender, stateOrigin                             sql.NullString
-			depositPaid, isWinner                           bool
-			createdAt                                       time.Time
+			elecID, endorsements, votes                    int
+			gender, stateOrigin                            sql.NullString
+			depositPaid, isWinner                          bool
+			createdAt                                      time.Time
 		)
 		if err := rows.Scan(&aspID, &elecID, &partyCode, &name, &position,
 			&gender, &stateOrigin, &screenStatus, &depositPaid, &endorsements,
@@ -218,19 +439,19 @@ func handleListAspirants(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		aspirants = append(aspirants, map[string]interface{}{
-			"aspirant_id":      aspID,
-			"election_id":      elecID,
-			"party_code":       partyCode,
-			"full_name":        name,
-			"position_sought":  position,
-			"gender":           nullVal(gender),
-			"state_of_origin":  nullVal(stateOrigin),
-			"screening_status": screenStatus,
-			"deposit_paid":     depositPaid,
+			"aspirant_id":       aspID,
+			"election_id":       elecID,
+			"party_code":        partyCode,
+			"full_name":         name,
+			"position_sought":   position,
+			"gender":            nullVal(gender),
+			"state_of_origin":   nullVal(stateOrigin),
+			"screening_status":  screenStatus,
+			"deposit_paid":      depositPaid,
 			"endorsement_count": endorsements,
-			"delegate_votes":   votes,
-			"is_winner":        isWinner,
-			"created_at":       createdAt,
+			"delegate_votes":    votes,
+			"is_winner":         isWinner,
+			"created_at":        createdAt,
 		})
 	}
 	if aspirants == nil {
@@ -248,16 +469,16 @@ func handleListAspirants(w http.ResponseWriter, r *http.Request) {
 func handleCreateAspirant(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	var req struct {
-		ElectionID    int    `json:"election_id"`
-		FullName      string `json:"full_name"`
+		ElectionID     int    `json:"election_id"`
+		FullName       string `json:"full_name"`
 		PositionSought string `json:"position_sought"`
-		Gender        string `json:"gender"`
-		StateOfOrigin string `json:"state_of_origin"`
-		LGAOfOrigin   string `json:"lga_of_origin"`
-		NIN           string `json:"nin_number"`
-		DateOfBirth   string `json:"date_of_birth"`
-		PhotoURL      string `json:"photo_url"`
-		ManifestoURL  string `json:"manifesto_url"`
+		Gender         string `json:"gender"`
+		StateOfOrigin  string `json:"state_of_origin"`
+		LGAOfOrigin    string `json:"lga_of_origin"`
+		NIN            string `json:"nin_number"`
+		DateOfBirth    string `json:"date_of_birth"`
+		PhotoURL       string `json:"photo_url"`
+		ManifestoURL   string `json:"manifesto_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid json", 400)
@@ -321,8 +542,8 @@ func handleGetAspirant(w http.ResponseWriter, r *http.Request) {
 
 	var asp struct {
 		AspID, Name, Position, Status string
-		ElecID, Endorsements, Votes    int
-		DepositPaid, IsWinner          bool
+		ElecID, Endorsements, Votes   int
+		DepositPaid, IsWinner         bool
 	}
 	err := dbConn.QueryRowContext(r.Context(), `
 		SELECT aspirant_id, full_name, position_sought, screening_status,
@@ -344,9 +565,15 @@ func handleGetAspirant(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUpdateAspirant(w http.ResponseWriter, r *http.Request) {
-	pid, _ := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
 	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// Authorization: aspirant updates are a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "update_aspirant") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
 
 	var req map[string]interface{}
 	json.NewDecoder(r.Body).Decode(&req)
@@ -404,6 +631,12 @@ func handleScreenAspirant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Authorization: screening decisions are a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "screen_aspirant") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
+
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE aspirants SET screening_status=$1, screening_notes=$2, screening_date=NOW(),
 			updated_at=NOW()
@@ -434,9 +667,15 @@ func handleScreenAspirant(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWithdrawAspirant(w http.ResponseWriter, r *http.Request) {
-	pid, _ := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
 	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// Authorization: withdrawing an aspirant is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "withdraw_aspirant") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE aspirants SET screening_status='withdrawn', withdrawn_at=NOW(), updated_at=NOW()
@@ -469,8 +708,37 @@ func handleAspirantDeposit(w http.ResponseWriter, r *http.Request) {
 
 	partyCode := fmt.Sprintf("party_%d", pid)
 
-	// Record TigerBeetle transfer for deposit
-	tbTransferID := recordTBTransfer("aspirant_deposit", req.AmountKobo, id, user)
+	// Authorization: recording a deposit is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "record_deposit") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
+
+	// SECURITY/INTEGRITY: a deposit is marked paid ONLY on real ledger
+	// confirmation. With no payment ledger configured there is no proof of
+	// payment — fail loudly (503) and leave deposit_paid=FALSE rather than
+	// take the caller's word. The previous code stored a fabricated
+	// "tb-<random>" transfer id when TigerBeetle was unconfigured.
+	if gotvLedger == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "payment ledger unavailable",
+			"detail": "no TigerBeetle ledger configured; refusing to mark a deposit paid without ledger confirmation",
+		})
+		return
+	}
+	tbTransferID, err := recordTBTransfer("aspirant_deposit", req.AmountKobo, id, user)
+	if err != nil || tbTransferID == "" {
+		log.Error().Err(err).Str("aspirant_id", id).Msg("deposit ledger transfer failed — deposit NOT marked paid")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "payment ledger unavailable",
+			"detail": "ledger transfer could not be confirmed; deposit remains unpaid",
+		})
+		return
+	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE aspirants SET deposit_paid=TRUE, deposit_amount_kobo=$1, deposit_tb_transfer_id=$2,
@@ -541,11 +809,11 @@ func handleListDelegates(w http.ResponseWriter, r *http.Request) {
 	var delegates []map[string]interface{}
 	for rows.Next() {
 		var (
-			delID, name, dtype, accStatus         string
-			elecID, weight                         int
-			stCode, lgaCode, wCode, credNum        sql.NullString
-			credVerified, hasVoted                 bool
-			createdAt                              time.Time
+			delID, name, dtype, accStatus   string
+			elecID, weight                  int
+			stCode, lgaCode, wCode, credNum sql.NullString
+			credVerified, hasVoted          bool
+			createdAt                       time.Time
 		)
 		if err := rows.Scan(&delID, &elecID, &name, &dtype, &stCode, &lgaCode,
 			&wCode, &credNum, &credVerified, &accStatus, &hasVoted, &weight, &createdAt); err != nil {
@@ -605,6 +873,12 @@ func handleCreateDelegate(w http.ResponseWriter, r *http.Request) {
 		req.VotingWeight = 1
 	}
 
+	// Authorization: delegate registration is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "create_delegate") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
+
 	delegateID := "del-" + uuid.New().String()[:8]
 	partyCode := fmt.Sprintf("party_%d", pid)
 
@@ -639,7 +913,7 @@ func handleCreateDelegate(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBulkCreateDelegates(w http.ResponseWriter, r *http.Request) {
-	pid, _ := getParty(r)
+	pid, user := getParty(r)
 	var req struct {
 		ElectionID int `json:"election_id"`
 		Delegates  []struct {
@@ -654,6 +928,12 @@ func handleBulkCreateDelegates(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.ElectionID == 0 || len(req.Delegates) == 0 {
 		jsonErr(w, "election_id and delegates array required", 400)
+		return
+	}
+
+	// Authorization: bulk delegate registration is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "bulk_create_delegates") {
+		jsonErr(w, "insufficient permissions", 403)
 		return
 	}
 
@@ -690,8 +970,8 @@ func handleGetDelegate(w http.ResponseWriter, r *http.Request) {
 
 	var del struct {
 		DelID, Name, DType, AccStatus string
-		ElecID, Weight                 int
-		CredVerified, HasVoted         bool
+		ElecID, Weight                int
+		CredVerified, HasVoted        bool
 	}
 	err := dbConn.QueryRowContext(r.Context(), `
 		SELECT delegate_id, full_name, delegate_type, accreditation_status,
@@ -716,13 +996,38 @@ func handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	partyCode := fmt.Sprintf("party_%d", pid)
 
+	// Authorization: credential issuance is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "issue_credential") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
+
+	// Optional per-delegate duress ("panic") credential for coercion
+	// resistance. Only the SHA-256 hash is stored; the code itself is given
+	// to the delegate out-of-band and is never persisted or logged.
+	var req struct {
+		DuressCode string `json:"duress_code"`
+	}
+	json.NewDecoder(r.Body).Decode(&req) // body optional
+	var duressHash interface{}
+	if req.DuressCode != "" {
+		if err := ensureHardeningColumns(r.Context()); err != nil {
+			log.Error().Err(err).Msg("duress credential column unavailable")
+			jsonErr(w, "duress credential storage unavailable", 503)
+			return
+		}
+		h := hashStringSHA(req.DuressCode)
+		duressHash = h
+	}
+
 	credNumber := fmt.Sprintf("CRED-%s-%s", strings.ToUpper(uuid.New().String()[:4]), strings.ToUpper(uuid.New().String()[:4]))
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE delegates SET credential_number=$1, accreditation_status='credential_issued',
+			duress_code_hash=COALESCE($4, duress_code_hash),
 			updated_at=NOW()
 		WHERE delegate_id=$2 AND party_code=$3 AND accreditation_status='registered'`,
-		credNumber, id, partyCode)
+		credNumber, id, partyCode, duressHash)
 	if err != nil {
 		jsonErr(w, "credential issue failed", 500)
 		return
@@ -753,15 +1058,51 @@ func handleAccreditDelegate(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// Validate via Keycloak session
-	keycloakValid := validateKeycloakDelegateSession(r)
+	// Authorization: accrediting delegates is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "accredit_delegate") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
 
+	// SECURITY: when Keycloak is configured, the delegate's session token
+	// MUST validate — previously the result was only logged ("cosmetic"
+	// check) and the token was never even forwarded.
+	if keycloakURL != "" && !validateKeycloakDelegateSession(r) {
+		jsonErr(w, "delegate Keycloak session validation failed", 403)
+		return
+	}
+	keycloakValid := true // gated above: true here means "validated or Keycloak not configured"
+
+	// SECURITY: a caller-supplied biometric_hash is NOT verification. When a
+	// biometric payload is presented it MUST be verified through the
+	// configured biometric pipeline (same as handleRemoteAuthenticate); with
+	// no pipeline configured we refuse (503) rather than store an unverified
+	// hash and set credential_verified=TRUE.
+	if req.BiometricHash != "" {
+		if biometricServiceURL == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":  "biometric verification service unavailable",
+				"detail": "no biometric verification pipeline configured (GOTV_BIOMETRIC_SERVICE_URL); refusing to accredit on an unverified biometric",
+			})
+			return
+		}
+		if !verifyBiometricPayload(r, req.BiometricHash) {
+			jsonErr(w, "biometric verification failed", 401)
+			return
+		}
+	}
+
+	// SECURITY: accreditation requires the credential_issued state — a
+	// merely 'registered' delegate has NO credential and must not be
+	// accredited (or marked credential_verified) on the caller's word.
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE delegates SET accreditation_status='accredited', accredited_at=NOW(),
 			credential_verified=TRUE, credential_verified_at=NOW(),
 			biometric_hash=$1, device_id=$2, floor_access=TRUE, check_in_at=NOW(),
 			updated_at=NOW()
-		WHERE delegate_id=$3 AND party_code=$4 AND accreditation_status IN ('credential_issued','registered')`,
+		WHERE delegate_id=$3 AND party_code=$4 AND accreditation_status='credential_issued'`,
 		nullStr(req.BiometricHash), nullStr(req.DeviceID), id, partyCode)
 	if err != nil {
 		jsonErr(w, "accreditation failed", 500)
@@ -769,7 +1110,7 @@ func handleAccreditDelegate(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		jsonErr(w, "delegate not found or already accredited", 404)
+		jsonErr(w, "delegate not found, already accredited, or has no issued credential", 404)
 		return
 	}
 
@@ -800,6 +1141,12 @@ func handleRevokeDelegate(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// Authorization: revoking a delegate is a privileged mutation.
+	if !checkPrimaryPermission(pid, user, "revoke_delegate") {
+		jsonErr(w, "insufficient permissions", 403)
+		return
+	}
+
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE delegates SET accreditation_status='revoked', floor_access=FALSE, updated_at=NOW()
 		WHERE delegate_id=$1 AND party_code=$2 AND accreditation_status='accredited'`,
@@ -828,10 +1175,22 @@ func handleDelegateCheckin(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	partyCode := fmt.Sprintf("party_%d", pid)
 
-	dbConn.ExecContext(r.Context(), `
+	// INTEGRITY: check rows affected — previously this returned
+	// checked_in:true even when no delegate matched (0 rows updated), a
+	// phantom check-in that inflates quorum snapshots.
+	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE delegates SET check_in_at=NOW(), floor_access=TRUE, updated_at=NOW()
 		WHERE delegate_id=$1 AND party_code=$2 AND accreditation_status='accredited'`,
 		id, partyCode)
+	if err != nil {
+		jsonErr(w, "check-in failed", 500)
+		return
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		jsonErr(w, "delegate not found or not accredited", 404)
+		return
+	}
 
 	var elecID int
 	dbConn.QueryRow("SELECT election_id FROM delegates WHERE delegate_id=$1", id).Scan(&elecID)
@@ -940,8 +1299,9 @@ func handleConventionDashboard(w http.ResponseWriter, r *http.Request) {
 		dbConn.QueryRow("SELECT COUNT(*) FROM aspirants WHERE party_code=$1 AND election_id=$2 AND screening_status='cleared' AND deleted_at IS NULL", partyCode, electionID).Scan(&clearedAspirants)
 	}
 
-	// Quorum calculation
-	quorumThreshold := 0.6667 // 2/3
+	// Quorum calculation — single source of truth: quorumThresholdFraction
+	// (the constitutional value enforced at round-open).
+	quorumThreshold := quorumThresholdFraction
 	quorumMet := float64(accredited)/math.Max(float64(totalDelegates), 1) >= quorumThreshold
 
 	// Active round info
@@ -976,19 +1336,19 @@ func handleConventionDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"election_id":        electionID,
-		"total_delegates":    totalDelegates,
-		"accredited":         accredited,
-		"has_voted":          hasVoted,
-		"turnout_pct":        math.Round(float64(hasVoted)/math.Max(float64(accredited), 1)*10000) / 100,
-		"total_aspirants":    totalAspirants,
-		"cleared_aspirants":  clearedAspirants,
-		"quorum_threshold":   quorumThreshold * 100,
-		"quorum_present_pct": math.Round(float64(accredited)/math.Max(float64(totalDelegates), 1)*10000) / 100,
-		"quorum_met":         quorumMet,
-		"active_round":       nullVal(activeRound),
+		"election_id":         electionID,
+		"total_delegates":     totalDelegates,
+		"accredited":          accredited,
+		"has_voted":           hasVoted,
+		"turnout_pct":         math.Round(float64(hasVoted)/math.Max(float64(accredited), 1)*10000) / 100,
+		"total_aspirants":     totalAspirants,
+		"cleared_aspirants":   clearedAspirants,
+		"quorum_threshold":    quorumThreshold * 100,
+		"quorum_present_pct":  math.Round(float64(accredited)/math.Max(float64(totalDelegates), 1)*10000) / 100,
+		"quorum_met":          quorumMet,
+		"active_round":        nullVal(activeRound),
 		"active_round_number": nullValInt64(activeRoundNum),
-		"state_breakdown":    stateBreakdown,
+		"state_breakdown":     stateBreakdown,
 	}
 
 	cacheSet(r.Context(), cacheKey, result, 10*time.Second)
@@ -1005,7 +1365,7 @@ func handleQuorumCheck(w http.ResponseWriter, r *http.Request) {
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2 AND accreditation_status='accredited'", partyCode, electionID).Scan(&accredited)
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2 AND floor_access=TRUE", partyCode, electionID).Scan(&present)
 
-	threshold := 66.67
+	threshold := quorumThresholdFraction * 100
 	quorumMet := float64(accredited)/math.Max(float64(total), 1)*100 >= threshold
 
 	jsonResp(w, map[string]interface{}{
@@ -1122,27 +1482,38 @@ func handleCreateRound(w http.ResponseWriter, r *http.Request) {
 func handleOpenRound(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// SECURITY: cross-party scoping — the round's election must belong to the
+	// caller's party before any mutation.
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party round-open attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
 
 	// Verify quorum before opening
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
-
-	partyCode := fmt.Sprintf("party_%d", pid)
 	var total, accredited int
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2", partyCode, elecID).Scan(&total)
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE party_code=$1 AND election_id=$2 AND accreditation_status='accredited'", partyCode, elecID).Scan(&accredited)
 
 	quorumPct := float64(accredited) / math.Max(float64(total), 1) * 100
-	if quorumPct < 50.0 {
-		jsonErr(w, fmt.Sprintf("quorum not met: %.1f%% (need 50%%)", quorumPct), 400)
+	if quorumPct < quorumThresholdFraction*100 {
+		jsonErr(w, fmt.Sprintf("quorum not met: %.1f%% (need %.0f%%)", quorumPct, quorumThresholdFraction*100), 400)
 		return
 	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='open', opened_at=NOW(),
 			quorum_required=$1, quorum_present=$2, quorum_met=TRUE
-		WHERE round_id=$3 AND status='pending'`,
-		total, accredited, id)
+		WHERE round_id=$3 AND status='pending'
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$4)`,
+		total, accredited, id, partyCode)
 	if err != nil {
 		jsonErr(w, "open round failed", 500)
 		return
@@ -1172,12 +1543,27 @@ func handleOpenRound(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCloseRound(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// SECURITY: cross-party scoping — the round's election must belong to the
+	// caller's party (enforced again inside the UPDATE for TOCTOU safety).
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party round-close attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='closed', closed_at=NOW()
-		WHERE round_id=$1 AND status IN ('open','voting')`, id)
+		WHERE round_id=$1 AND status IN ('open','voting')
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$2)`, id, partyCode)
 	if err != nil {
 		jsonErr(w, "close round failed", 500)
 		return
@@ -1188,9 +1574,6 @@ func handleCloseRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
-
 	publishKafkaEvent("primaries.round.closed", map[string]interface{}{"round_id": id})
 
 	logConventionEvent(r.Context(), elecID, "round_closed", user, "round", id, nil)
@@ -1199,43 +1582,116 @@ func handleCloseRound(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleTallyRound(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
 
-	// Count ballots per aspirant
+	// SECURITY: cross-party scoping — tallying writes aspirants.delegate_votes
+	// and is_winner, so the round's election MUST belong to the caller's
+	// party; otherwise any party user could rewrite another party's results.
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party tally attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
+
+	// Count cleartext (legacy, in-person pre-custody-fix) ballots per aspirant.
+	// Backend-custodied ballots (aspirant_id IS NULL) never join here.
 	rows, err := dbConn.QueryContext(r.Context(), `
 		SELECT b.aspirant_id, a.full_name, COUNT(*) as votes
 		FROM ballots b
 		JOIN aspirants a ON a.aspirant_id = b.aspirant_id
 		WHERE b.round_id=$1 AND b.vote_type='for' AND b.is_decoy=FALSE AND b.tallied=FALSE
+		AND a.party_code=$2
 		GROUP BY b.aspirant_id, a.full_name
-		ORDER BY votes DESC`, id)
+		ORDER BY votes DESC`, id, partyCode)
 	if err != nil {
 		jsonErr(w, "tally query failed", 500)
 		return
 	}
-	defer rows.Close()
 
+	voteCounts := map[string]int{}
+	names := map[string]string{}
 	var totalVotes int
+	for rows.Next() {
+		var aspID, name string
+		var votes int
+		rows.Scan(&aspID, &name, &votes)
+		voteCounts[aspID] += votes
+		names[aspID] = name
+		totalVotes += votes
+	}
+	rows.Close()
+
+	// SECURITY: backend-custodied ballots (encrypted, aspirant linkage held
+	// by the crypto backend) can ONLY be tallied by that backend — this
+	// service must never see their cleartext choices. On backend failure →
+	// 503 and NO tally records are written.
+	var custodiedRefs []string
+	refRows, err := dbConn.QueryContext(r.Context(), `
+		SELECT ballot_ref FROM ballots
+		WHERE round_id=$1 AND is_decoy=FALSE AND tallied=FALSE AND ballot_ref IS NOT NULL`, id)
+	if err != nil {
+		jsonErr(w, "tally query failed", 500)
+		return
+	}
+	for refRows.Next() {
+		var ref string
+		refRows.Scan(&ref)
+		custodiedRefs = append(custodiedRefs, ref)
+	}
+	refRows.Close()
+	if len(custodiedRefs) > 0 {
+		backendCounts, err := tallyBallotsViaBackend(r.Context(), id, custodiedRefs)
+		if err != nil {
+			log.Error().Err(err).Str("round_id", id).Msg("crypto backend tally failed — no tally written")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error":  "cryptographic tally service unavailable",
+				"detail": "backend-custodied ballots could not be tallied; refusing to publish a partial tally",
+			})
+			return
+		}
+		for aspID, votes := range backendCounts {
+			// Only count aspirants of the caller's party.
+			var name string
+			if err := dbConn.QueryRowContext(r.Context(),
+				"SELECT full_name FROM aspirants WHERE aspirant_id=$1 AND party_code=$2",
+				aspID, partyCode).Scan(&name); err != nil {
+				log.Warn().Str("aspirant_id", aspID).Msg("backend tally returned unknown/other-party aspirant — skipped")
+				continue
+			}
+			voteCounts[aspID] += votes
+			names[aspID] = name
+			totalVotes += votes
+		}
+	}
+
 	type tallyEntry struct {
 		AspirantID string
 		Name       string
 		Votes      int
 	}
 	var tallies []tallyEntry
-	for rows.Next() {
-		var t tallyEntry
-		rows.Scan(&t.AspirantID, &t.Name, &t.Votes)
-		totalVotes += t.Votes
-		tallies = append(tallies, t)
+	for aspID, votes := range voteCounts {
+		tallies = append(tallies, tallyEntry{AspirantID: aspID, Name: names[aspID], Votes: votes})
 	}
+	sort.Slice(tallies, func(i, j int) bool { return tallies[i].Votes > tallies[j].Votes })
 
-	// Also count abstentions and spoiled
+	// Also count abstentions and spoiled — INTEGRITY: filtered to
+	// tallied=FALSE just like the 'for' count, otherwise a re-tally
+	// double-counts them.
 	var abstentions, spoiled int
-	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='abstain' AND is_decoy=FALSE", id).Scan(&abstentions)
-	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='spoiled' AND is_decoy=FALSE", id).Scan(&spoiled)
+	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='abstain' AND is_decoy=FALSE AND tallied=FALSE", id).Scan(&abstentions)
+	dbConn.QueryRow("SELECT COUNT(*) FROM ballots WHERE round_id=$1 AND vote_type='spoiled' AND is_decoy=FALSE AND tallied=FALSE", id).Scan(&spoiled)
 
-	// Insert/update tally records
+	// Insert/update tally records (party-scoped aspirant updates only)
 	for rank, t := range tallies {
 		pct := 0.0
 		if totalVotes > 0 {
@@ -1249,27 +1705,27 @@ func handleTallyRound(w http.ResponseWriter, r *http.Request) {
 				votes_received=$3, vote_percentage=$4, rank_position=$5, is_winner=$6`,
 			id, t.AspirantID, t.Votes, pct, rank+1, isWinner)
 
-		// Update aspirant's total delegate votes
-		dbConn.ExecContext(r.Context(), "UPDATE aspirants SET delegate_votes=$1, is_winner=$2 WHERE aspirant_id=$3",
-			t.Votes, isWinner, t.AspirantID)
+		// Update aspirant's total delegate votes — SECURITY: party-scoped so a
+		// tally can never rewrite another party's aspirant rows.
+		dbConn.ExecContext(r.Context(), "UPDATE aspirants SET delegate_votes=$1, is_winner=$2 WHERE aspirant_id=$3 AND party_code=$4",
+			t.Votes, isWinner, t.AspirantID, partyCode)
 	}
 
 	// Mark ballots as tallied
 	dbConn.ExecContext(r.Context(), "UPDATE ballots SET tallied=TRUE, tallied_at=NOW() WHERE round_id=$1", id)
 
-	// Update round stats
+	// Update round stats (party-ownership re-enforced in the WHERE clause)
 	totalCast := totalVotes + abstentions + spoiled
 	dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='tallying',
 			total_votes_cast=$1, total_valid_votes=$2, total_invalid_votes=$3
-		WHERE round_id=$4`, totalCast, totalVotes, spoiled, id)
+		WHERE round_id=$4
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$5)`,
+		totalCast, totalVotes, spoiled, id, partyCode)
 
 	// Build Merkle root of all ballot hashes
 	merkleRoot := buildBallotMerkleRoot(r.Context(), id)
 	dbConn.ExecContext(r.Context(), "UPDATE voting_rounds SET merkle_root=$1 WHERE round_id=$2", merkleRoot, id)
-
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
 
 	// Build result
 	var results []map[string]interface{}
@@ -1305,23 +1761,57 @@ func handleTallyRound(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCertifyRound(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
+
+	// SECURITY: cross-party scoping — certification is final and must never
+	// be applied to another party's round.
+	elecID, owned := partyOwnsRound(r.Context(), id, partyCode)
+	if elecID == 0 {
+		jsonErr(w, "round not found", 404)
+		return
+	}
+	if !owned {
+		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party certify attempt rejected")
+		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
+
+	// INTEGRITY: certification requires a REAL chain anchor for the tallied
+	// results. The previous implementation stored hashStringSHA(id+timestamp)
+	// as "blockchain_hash" — a locally minted hash masquerading as a chain
+	// attestation. Never mint local hashes labeled blockchain: either an
+	// external anchor service (GOTV_ANCHOR_SERVICE_URL) or the in-binary
+	// hash-chained Merkle anchor client (gotvBlockchain) must produce the
+	// attestation, otherwise certification fails loudly (503) and the round
+	// is NOT certified.
+	var merkleRoot string
+	dbConn.QueryRowContext(r.Context(),
+		"SELECT COALESCE(merkle_root,'') FROM voting_rounds WHERE round_id=$1", id).Scan(&merkleRoot)
+	blockchainHash, anchorErr := anchorCertifiedResults(r.Context(), pid, id, elecID, merkleRoot)
+	if anchorErr != nil {
+		log.Error().Err(anchorErr).Str("round_id", id).Msg("blockchain anchoring failed — round NOT certified")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "blockchain anchoring not configured",
+			"detail": anchorErr.Error(),
+		})
+		return
+	}
 
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='certified', certified_at=NOW()
-		WHERE round_id=$1 AND status='tallying'`, id)
+		WHERE round_id=$1 AND status='tallying'
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=voting_rounds.election_id AND d.party_code=$2)`, id, partyCode)
 	if err != nil || func() int64 { n, _ := res.RowsAffected(); return n }() == 0 {
 		jsonErr(w, "certify failed or round not in tallying state", 400)
 		return
 	}
 
-	// Record blockchain hash for certified results
-	blockchainHash := hashStringSHA(id + time.Now().String())
+	// Store the real anchor reference (block hash / anchor tx id).
 	dbConn.ExecContext(r.Context(), "UPDATE voting_rounds SET blockchain_hash=$1 WHERE round_id=$2", blockchainHash, id)
-
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM voting_rounds WHERE round_id=$1", id).Scan(&elecID)
 
 	publishKafkaEvent("primaries.round.certified", map[string]interface{}{
 		"round_id": id, "blockchain_hash": blockchainHash,
@@ -1332,6 +1822,63 @@ func handleCertifyRound(w http.ResponseWriter, r *http.Request) {
 	})
 
 	jsonResp(w, map[string]interface{}{"certified": true, "blockchain_hash": blockchainHash})
+}
+
+// anchorCertifiedResults produces a real chain attestation for a certified
+// round. Order of preference:
+//  1. External anchor service (GOTV_ANCHOR_SERVICE_URL) — POST /anchor with
+//     the round's Merkle root; expects {"anchor_tx_id"|"tx_id"|"hash"}.
+//  2. The in-binary hash-chained Merkle anchor client (gotvBlockchain) —
+//     each anchor is a block linked to the previous block's hash, with
+//     inclusion proofs; NOT a bare local hash.
+//
+// INTEGRITY: returns an error when neither path is available — callers must
+// fail loudly instead of minting a local hash labeled "blockchain".
+func anchorCertifiedResults(ctx context.Context, partyID int, roundID string, electionID int, merkleRoot string) (string, error) {
+	if anchorURL := os.Getenv("GOTV_ANCHOR_SERVICE_URL"); anchorURL != "" {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"round_id": roundID, "election_id": electionID,
+			"party_id": partyID, "merkle_root": merkleRoot,
+		})
+		respBody, code, err := resilientCall(ctx, cbAnchorService, "POST", anchorURL+"/anchor", payload)
+		if err != nil || code != http.StatusOK {
+			return "", fmt.Errorf("anchor service call failed (code=%d): %v", code, err)
+		}
+		var result struct {
+			AnchorTxID string `json:"anchor_tx_id"`
+			TxID       string `json:"tx_id"`
+			Hash       string `json:"hash"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return "", fmt.Errorf("anchor service returned malformed response: %w", err)
+		}
+		ref := result.AnchorTxID
+		if ref == "" {
+			ref = result.TxID
+		}
+		if ref == "" {
+			ref = result.Hash
+		}
+		if ref == "" {
+			return "", fmt.Errorf("anchor service returned no transaction reference")
+		}
+		return ref, nil
+	}
+	if gotvBlockchain != nil {
+		leaves := []string{merkleRoot}
+		if merkleRoot == "" {
+			leaves = []string{roundID}
+		}
+		res, err := gotvBlockchain.AnchorMerkleRoot(ctx, partyID, "primary_certification", leaves)
+		if err != nil {
+			return "", fmt.Errorf("local Merkle anchor failed: %w", err)
+		}
+		if res.BlockHash == "" {
+			return "", fmt.Errorf("local Merkle anchor returned empty block hash")
+		}
+		return res.BlockHash, nil
+	}
+	return "", fmt.Errorf("no blockchain anchor path available (GOTV_ANCHOR_SERVICE_URL unset and local anchor client not initialized)")
 }
 
 func handleRoundResults(w http.ResponseWriter, r *http.Request) {
@@ -1449,14 +1996,38 @@ func handleCastBallot(w http.ResponseWriter, r *http.Request) {
 	verificationHash := hashStringSHA(req.RoundID + req.DelegateID + confirmationCode)
 
 	ballotID := "bal-" + uuid.New().String()[:8]
-	aspirantID := nullStr(req.AspirantID)
 
+	// SECURITY: ballot custody. The vote choice is submitted to the crypto
+	// backend, which returns ONLY ciphertext + an opaque ballot_ref; the
+	// aspirant linkage stays in the backend's trust domain. On backend
+	// failure we return 503 and insert NOTHING — never degrade to a
+	// cleartext aspirant_id stored next to delegate_id.
+	if err := ensureHardeningColumns(r.Context()); err != nil {
+		log.Error().Err(err).Msg("ballot custody columns unavailable")
+		cryptoUnavailable(w, "ballot custody storage")
+		return
+	}
+	ciphertext, proof, ballotRef, err := encryptBallotViaBackend(r.Context(),
+		req.RoundID, ballotID, req.VoteType, req.AspirantID)
+	if err != nil {
+		log.Error().Err(err).Str("round_id", req.RoundID).Msg("ballot encryption backend call failed — no ballot stored")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "ballot encryption service unavailable",
+			"detail": "the election crypto backend could not encrypt this ballot; refusing to store a cleartext vote choice",
+		})
+		return
+	}
+
+	// aspirant_id is intentionally NOT stored on this row: the cleartext vote
+	// choice must never sit next to the voter's identity in this database.
 	_, err = dbConn.ExecContext(r.Context(), `
 		INSERT INTO ballots (ballot_id, round_id, delegate_id, aspirant_id, vote_type,
-			confirmation_code, verification_hash, is_remote)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,FALSE)`,
-		ballotID, req.RoundID, req.DelegateID, aspirantID, req.VoteType,
-		confirmationCode, verificationHash)
+			confirmation_code, verification_hash, is_remote, encrypted_ballot, ballot_proof, ballot_ref)
+		VALUES ($1,$2,$3,NULL,$4,$5,$6,FALSE,$7,$8,$9)`,
+		ballotID, req.RoundID, req.DelegateID, req.VoteType,
+		confirmationCode, verificationHash, ciphertext, nullStr(proof), nullStr(ballotRef))
 	if err != nil {
 		jsonErr(w, "ballot cast failed: "+err.Error(), 500)
 		return
@@ -1471,8 +2042,13 @@ func handleCastBallot(w http.ResponseWriter, r *http.Request) {
 	dbConn.ExecContext(r.Context(), `
 		UPDATE voting_rounds SET status='voting' WHERE round_id=$1 AND status='open'`, req.RoundID)
 
-	// Record TigerBeetle audit transfer
-	tbID := recordTBTransfer("ballot_cast", 100, ballotID, user) // 1 naira audit token
+	// Record TigerBeetle audit transfer (best-effort audit — a missing ledger
+	// must not block a ballot that was already encrypted and stored, but the
+	// gap is logged loudly).
+	tbID, tbErr := recordTBTransfer("ballot_cast", 100, ballotID, user) // 1 naira audit token
+	if tbErr != nil {
+		log.Error().Err(tbErr).Str("ballot_id", ballotID).Msg("ballot audit transfer not recorded")
+	}
 
 	publishKafkaEvent("primaries.ballot.cast", map[string]interface{}{
 		"ballot_id": ballotID, "round_id": req.RoundID, "vote_type": req.VoteType,
@@ -1507,25 +2083,30 @@ func handleVerifyBallot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var ballotID, roundID, voteType string
+	// SECURITY: a receipt lookup returns inclusion/tally status ONLY. It must
+	// NEVER return the vote choice (vote_type) — anyone holding a
+	// confirmation code (e.g. a vote buyer demanding a receipt) could
+	// otherwise verify HOW the voter voted, which enables vote buying and
+	// coercion.
+	var ballotID, roundID string
 	var castAt time.Time
 	var tallied bool
 	err := dbConn.QueryRow(`
-		SELECT ballot_id, round_id, vote_type, cast_at, tallied
+		SELECT ballot_id, round_id, cast_at, tallied
 		FROM ballots WHERE confirmation_code=$1`, code).
-		Scan(&ballotID, &roundID, &voteType, &castAt, &tallied)
+		Scan(&ballotID, &roundID, &castAt, &tallied)
 	if err != nil {
 		jsonErr(w, "ballot not found", 404)
 		return
 	}
 
 	jsonResp(w, map[string]interface{}{
-		"ballot_id":  ballotID,
-		"round_id":   roundID,
-		"vote_type":  voteType,
-		"cast_at":    castAt,
-		"tallied":    tallied,
-		"verified":   true,
+		"ballot_id": ballotID,
+		"round_id":  roundID,
+		"cast_at":   castAt,
+		"tallied":   tallied,
+		"included":  true,
+		"verified":  true,
 	})
 }
 
@@ -1596,7 +2177,7 @@ func handleRegisterVotingDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCreateVotingSession(w http.ResponseWriter, r *http.Request) {
-	_, _ = getParty(r)
+	pid, user := getParty(r)
 	var req struct {
 		DelegateID string `json:"delegate_id"`
 		RoundID    string `json:"round_id"`
@@ -1608,9 +2189,34 @@ func handleCreateVotingSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: the delegate must exist, be ACCREDITED, and belong to the
+	// CALLER'S party. Previously any authenticated user could mint a voting
+	// session (and receive the OTP!) for ANY delegate_id — a complete
+	// remote-voting takeover primitive.
+	partyCode := fmt.Sprintf("party_%d", pid)
+	var delegateParty, accStatus string
+	var phoneHash sql.NullString
+	err := dbConn.QueryRowContext(r.Context(), `
+		SELECT party_code, accreditation_status, phone_hash FROM delegates WHERE delegate_id=$1`,
+		req.DelegateID).Scan(&delegateParty, &accStatus, &phoneHash)
+	if err != nil {
+		jsonErr(w, "delegate not found", 404)
+		return
+	}
+	if delegateParty != partyCode {
+		log.Warn().Str("delegate_id", req.DelegateID).Str("caller_party", partyCode).
+			Msg("SECURITY: cross-party voting session attempt rejected")
+		jsonErr(w, "delegate does not belong to your party", 403)
+		return
+	}
+	if accStatus != "accredited" {
+		jsonErr(w, "delegate is not accredited", 403)
+		return
+	}
+
 	// Verify round is open for remote voting
 	var roundStatus, votingMethod string
-	err := dbConn.QueryRow("SELECT status, voting_method FROM voting_rounds WHERE round_id=$1", req.RoundID).
+	err = dbConn.QueryRow("SELECT status, voting_method FROM voting_rounds WHERE round_id=$1", req.RoundID).
 		Scan(&roundStatus, &votingMethod)
 	if err != nil || (roundStatus != "open" && roundStatus != "voting") {
 		jsonErr(w, "voting round is not open", 400)
@@ -1627,6 +2233,10 @@ func handleCreateVotingSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := "vs-" + uuid.New().String()[:8]
 	expiresAt := time.Now().Add(10 * time.Minute)
 
+	// NOTE: the voting_sessions.status CHECK constraint does not include
+	// 'pending_delivery', so an undelivered OTP keeps status 'pending'; the
+	// 202 response's delivery:"pending" field carries the delivery state and
+	// the failure is logged at ERROR for ops follow-up.
 	_, err = dbConn.ExecContext(r.Context(), `
 		INSERT INTO voting_sessions (session_id, delegate_id, round_id, device_id,
 			otp_hash, otp_expires_at, status, expires_at)
@@ -1641,22 +2251,94 @@ func handleCreateVotingSession(w http.ResponseWriter, r *http.Request) {
 	// Store OTP in Redis (expires in 10 min)
 	cacheSet(r.Context(), "voting_otp:"+sessionID, otp, 10*time.Minute)
 
+	// SECURITY: the OTP is NEVER returned in the API response. It is
+	// delivered to the delegate's registered phone via the SMS/WhatsApp
+	// sender; when no sender is configured (or delivery fails) the session
+	// stays pending and we return 202 delivery:"pending". The plaintext OTP
+	// is logged only at DEBUG level and only in dev mode.
+	delivered := deliverVotingSessionOTP(r.Context(), pid, phoneHash, otp)
+	if !delivered {
+		log.Error().Str("session_id", sessionID).Str("delegate_id", req.DelegateID).
+			Msg("voting session OTP could not be delivered (no SMS/WhatsApp sender configured or delivery failed) — session pending delivery")
+		if devModeEnabled {
+			log.Debug().Str("session_id", sessionID).Str("otp", otp).Msg("DEV ONLY: voting session OTP")
+		}
+	}
+
 	publishKafkaEvent("primaries.remote.session_created", map[string]interface{}{
-		"session_id": sessionID, "delegate_id": req.DelegateID,
+		"session_id": sessionID, "delegate_id": req.DelegateID, "actor": user,
 	})
 
+	if !delivered {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"session_id": sessionID,
+			"delivery":   "pending",
+			"expires_at": expiresAt,
+		})
+		return
+	}
 	jsonResp(w, map[string]interface{}{
 		"session_id": sessionID,
-		"otp":        otp, // In production, send via SMS/WhatsApp
+		"delivery":   "sent",
 		"expires_at": expiresAt,
 	})
 }
 
+// deliverVotingSessionOTP sends the voting OTP to the delegate's registered
+// phone via the configured SMS/WhatsApp sender. The delegate's phone number
+// is resolved from the party's contact registry (phone_hash match) and
+// decrypted in memory only for the send. Returns false when no sender is
+// configured, the phone cannot be resolved, or the send fails — callers MUST
+// treat false as "pending delivery", never as a reason to expose the OTP.
+func deliverVotingSessionOTP(ctx context.Context, partyID int, phoneHash sql.NullString, otp string) bool {
+	if !phoneHash.Valid || phoneHash.String == "" || svc == nil {
+		return false
+	}
+	var encPhone string
+	if err := dbConn.QueryRowContext(ctx, `
+		SELECT phone_encrypted FROM gotv_contacts
+		WHERE party_id=$1 AND phone_hash=$2 AND opted_out=FALSE`,
+		partyID, phoneHash.String).Scan(&encPhone); err != nil {
+		return false
+	}
+	phone, err := svc.Decrypt(encPhone)
+	if err != nil || phone == "" {
+		return false
+	}
+	text := "Your INEC primary-election voting code is " + otp + ". It expires in 10 minutes. Never share it."
+	// Prefer SMS (Africa's Talking), fall back to WhatsApp.
+	if smsKey := os.Getenv("AFRICASTALKING_API_KEY"); smsKey != "" {
+		adapter := gotv.NewSMSAdapter("africastalking",
+			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER"))
+		res := adapter.Send(ctx, gotv.OutboundMessage{
+			PartyID: partyID, Phone: phone, Template: text, Channel: "sms",
+		})
+		if res.Status != "failed" {
+			return true
+		}
+		log.Warn().Str("error", res.Error).Msg("OTP SMS delivery failed, trying WhatsApp")
+	}
+	if waToken := os.Getenv("WHATSAPP_TOKEN"); waToken != "" {
+		adapter := gotv.NewWhatsAppAdapter(
+			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID"))
+		res := adapter.Send(ctx, gotv.OutboundMessage{
+			PartyID: partyID, Phone: phone, Template: text, Channel: "whatsapp",
+		})
+		if res.Status != "failed" {
+			return true
+		}
+		log.Warn().Str("error", res.Error).Msg("OTP WhatsApp delivery failed")
+	}
+	return false
+}
+
 func handleRemoteAuthenticate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID        string `json:"session_id"`
-		OTP              string `json:"otp"`
-		BiometricPayload string `json:"biometric_payload"`
+		SessionID         string `json:"session_id"`
+		OTP               string `json:"otp"`
+		BiometricPayload  string `json:"biometric_payload"`
 		DeviceFingerprint string `json:"device_fingerprint"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
@@ -1749,11 +2431,11 @@ func handleRemoteAuthenticate(w http.ResponseWriter, r *http.Request) {
 
 func handleRemoteVote(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SessionID      string `json:"session_id"`
-		AspirantID     string `json:"aspirant_id"`
-		VoteType       string `json:"vote_type"`
+		SessionID       string `json:"session_id"`
+		AspirantID      string `json:"aspirant_id"`
+		VoteType        string `json:"vote_type"`
 		EncryptedBallot string `json:"encrypted_ballot"`
-		BallotProof    string `json:"ballot_proof"`
+		BallotProof     string `json:"ballot_proof"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.SessionID == "" {
@@ -1805,17 +2487,48 @@ func handleRemoteVote(w http.ResponseWriter, r *http.Request) {
 	// fabricates ciphertexts or proofs on the voter's behalf.
 	encryptedBallot := req.EncryptedBallot
 	ballotProof := req.BallotProof
+	if encryptedBallot == "" {
+		jsonErr(w, "encrypted_ballot required — the server does not accept cleartext vote choices", 400)
+		return
+	}
+
+	// SECURITY: the client-supplied ciphertext/proof was previously stored
+	// UNVERIFIED (and the cleartext aspirant_id right next to delegate_id).
+	// The crypto backend MUST verify the proof first; on call failure → 503
+	// with NO insert, and on proof rejection → 400. Only the backend's
+	// opaque ballot_ref is stored, never the cleartext choice.
+	if err := ensureHardeningColumns(r.Context()); err != nil {
+		log.Error().Err(err).Msg("ballot custody columns unavailable")
+		cryptoUnavailable(w, "ballot custody storage")
+		return
+	}
+	ballotRef, err := verifyBallotProofViaBackend(r.Context(), roundID, encryptedBallot, ballotProof)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		msg := "ballot proof verification service unavailable"
+		if strings.Contains(err.Error(), "rejected") {
+			status = http.StatusBadRequest
+			msg = "ballot proof verification failed"
+		}
+		log.Error().Err(err).Str("round_id", roundID).Msg("remote ballot proof verification failed — no ballot stored")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+		return
+	}
 
 	ballotID := "bal-" + uuid.New().String()[:8]
 	ipHash := hashStringSHA(r.RemoteAddr)
 
+	// aspirant_id is intentionally NOT stored on this row (ballot custody —
+	// see handleCastBallot).
 	_, err = dbConn.ExecContext(r.Context(), `
 		INSERT INTO ballots (ballot_id, round_id, delegate_id, aspirant_id, vote_type,
 			is_remote, device_fingerprint, ip_hash, encrypted_ballot, ballot_proof,
-			confirmation_code, verification_hash)
-		VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$8,$9,$10,$11)`,
-		ballotID, roundID, delegateID, nullStr(req.AspirantID), req.VoteType,
-		nullStr(""), ipHash, encryptedBallot, ballotProof, confirmationCode, verificationHash)
+			confirmation_code, verification_hash, ballot_ref)
+		VALUES ($1,$2,$3,NULL,$4,TRUE,$5,$6,$7,$8,$9,$10,$11)`,
+		ballotID, roundID, delegateID, req.VoteType,
+		nullStr(""), ipHash, encryptedBallot, ballotProof, confirmationCode, verificationHash, nullStr(ballotRef))
 	if err != nil {
 		jsonErr(w, "remote vote failed: "+err.Error(), 500)
 		return
@@ -1828,8 +2541,11 @@ func handleRemoteVote(w http.ResponseWriter, r *http.Request) {
 	// Mark session as voted
 	dbConn.ExecContext(r.Context(), "UPDATE voting_sessions SET status='voted', completed_at=NOW() WHERE session_id=$1", req.SessionID)
 
-	// TigerBeetle audit transfer
-	tbID := recordTBTransfer("remote_ballot_cast", 100, ballotID, delegateID)
+	// TigerBeetle audit transfer (best-effort — see handleCastBallot)
+	tbID, tbErr := recordTBTransfer("remote_ballot_cast", 100, ballotID, delegateID)
+	if tbErr != nil {
+		log.Error().Err(tbErr).Str("ballot_id", ballotID).Msg("remote ballot audit transfer not recorded")
+	}
 
 	publishKafkaEvent("primaries.remote.vote_cast", map[string]interface{}{
 		"ballot_id": ballotID, "round_id": roundID, "is_remote": true,
@@ -1858,7 +2574,11 @@ func handleRemoteVerifyBallot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := "SELECT ballot_id, round_id, vote_type, is_remote, cast_at, tallied FROM ballots WHERE "
+	// SECURITY: receipt lookups return inclusion/tally status ONLY — never
+	// the vote choice (vote_type). This endpoint is PUBLIC by design (E2E
+	// verifiability); returning vote_type to anyone holding a confirmation
+	// code or verification hash would enable vote buying and coercion.
+	query := "SELECT ballot_id, round_id, is_remote, cast_at, tallied FROM ballots WHERE "
 	var arg string
 	if code != "" {
 		query += "confirmation_code=$1"
@@ -1868,24 +2588,24 @@ func handleRemoteVerifyBallot(w http.ResponseWriter, r *http.Request) {
 		arg = hash
 	}
 
-	var ballotID, roundID, voteType string
+	var ballotID, roundID string
 	var isRemote, tallied bool
 	var castAt time.Time
-	err := dbConn.QueryRow(query, arg).Scan(&ballotID, &roundID, &voteType, &isRemote, &castAt, &tallied)
+	err := dbConn.QueryRow(query, arg).Scan(&ballotID, &roundID, &isRemote, &castAt, &tallied)
 	if err != nil {
 		jsonErr(w, "ballot not found — vote may not have been recorded", 404)
 		return
 	}
 
 	jsonResp(w, map[string]interface{}{
-		"verified":   true,
-		"ballot_id":  ballotID,
-		"round_id":   roundID,
-		"vote_type":  voteType,
-		"is_remote":  isRemote,
-		"cast_at":    castAt,
-		"tallied":    tallied,
-		"message":    "Your vote was recorded and will be counted",
+		"verified":  true,
+		"included":  true,
+		"ballot_id": ballotID,
+		"round_id":  roundID,
+		"is_remote": isRemote,
+		"cast_at":   castAt,
+		"tallied":   tallied,
+		"message":   "Your vote was recorded and will be counted",
 	})
 }
 
@@ -1902,22 +2622,100 @@ func handleCoercionVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// This creates a ballot that looks real but is flagged as decoy
-	var delegateID, roundID string
-	dbConn.QueryRow("SELECT delegate_id, round_id FROM voting_sessions WHERE session_id=$1", req.SessionID).
-		Scan(&delegateID, &roundID)
+	// SECURITY: same crypto gate as every other ballot path — without a real
+	// crypto backend we refuse to operate rather than store cleartext
+	// (decoy) vote choices.
+	if !cryptoBackendConfigured() {
+		cryptoUnavailable(w, "ballot encryption service")
+		return
+	}
+
+	// SECURITY: the session must be fully AUTHENTICATED (OTP + biometric +
+	// device binding via handleRemoteAuthenticate). Previously ANY caller
+	// could plant decoy ballots under ANY session_id.
+	var sessionStatus, delegateID, roundID string
+	err := dbConn.QueryRow("SELECT status, delegate_id, round_id FROM voting_sessions WHERE session_id=$1", req.SessionID).
+		Scan(&sessionStatus, &delegateID, &roundID)
+	if err != nil {
+		jsonErr(w, "session not found", 404)
+		return
+	}
+	if sessionStatus != "authenticated" {
+		jsonErr(w, "session not authenticated", 403)
+		return
+	}
+
+	// SECURITY: verify the panic code against the per-delegate duress
+	// credential registered at credential issuance (delegates.duress_code_hash).
+	// The code is compared in constant time against the stored SHA-256 hash;
+	// an unregistered or wrong code is a hard 403 — never silently accepted.
+	if err := ensureHardeningColumns(r.Context()); err != nil {
+		log.Error().Err(err).Msg("duress credential column unavailable")
+		cryptoUnavailable(w, "duress credential storage")
+		return
+	}
+	var duressHash sql.NullString
+	if err := dbConn.QueryRowContext(r.Context(),
+		"SELECT duress_code_hash FROM delegates WHERE delegate_id=$1", delegateID).Scan(&duressHash); err != nil {
+		jsonErr(w, "delegate not found", 404)
+		return
+	}
+	if !duressHash.Valid || duressHash.String == "" {
+		jsonErr(w, "no duress credential registered for this delegate", 403)
+		return
+	}
+	providedHash := hashStringSHA(req.PanicCode)
+	if subtle.ConstantTimeCompare([]byte(providedHash), []byte(duressHash.String)) != 1 {
+		log.Warn().Str("delegate_id", delegateID).Msg("duress code mismatch — coercion vote rejected")
+		jsonErr(w, "invalid panic code", 403)
+		return
+	}
+
+	voteType := req.VoteType
+	if voteType == "" {
+		voteType = "for"
+	}
 
 	confirmationCode := generateConfirmationCode()
 	ballotID := "bal-" + uuid.New().String()[:8]
 
-	// Insert decoy ballot — looks identical to real ballot but is_decoy=TRUE
-	dbConn.ExecContext(r.Context(), `
+	// SECURITY: ballot custody — encrypt the decoy choice through the crypto
+	// backend exactly like a real ballot (decoys must be indistinguishable).
+	// On backend failure → 503, NO insert.
+	ciphertext, proof, ballotRef, err := encryptBallotViaBackend(r.Context(),
+		roundID, ballotID, voteType, req.AspirantID)
+	if err != nil {
+		log.Error().Err(err).Str("round_id", roundID).Msg("decoy ballot encryption failed — no ballot stored")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "ballot encryption service unavailable",
+			"detail": "the election crypto backend could not encrypt this ballot; refusing to store a cleartext vote choice",
+		})
+		return
+	}
+
+	// Insert decoy ballot — looks identical to real ballot but is_decoy=TRUE.
+	// aspirant_id is intentionally NULL (custody stays with the backend).
+	res, err := dbConn.ExecContext(r.Context(), `
 		INSERT INTO ballots (ballot_id, round_id, delegate_id, aspirant_id, vote_type,
-			is_remote, is_decoy, confirmation_code, verification_hash)
-		VALUES ($1,$2,$3,$4,$5,TRUE,TRUE,$6,$7)`,
-		ballotID, roundID, delegateID, nullStr(req.AspirantID),
-		func() string { if req.VoteType == "" { return "for" }; return req.VoteType }(),
-		confirmationCode, hashStringSHA(ballotID+confirmationCode))
+			is_remote, is_decoy, confirmation_code, verification_hash,
+			encrypted_ballot, ballot_proof, ballot_ref)
+		VALUES ($1,$2,$3,NULL,$4,TRUE,TRUE,$5,$6,$7,$8,$9)`,
+		ballotID, roundID, delegateID, voteType,
+		confirmationCode, hashStringSHA(ballotID+confirmationCode),
+		ciphertext, nullStr(proof), nullStr(ballotRef))
+	if err != nil {
+		jsonErr(w, "coercion vote failed: "+err.Error(), 500)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		jsonErr(w, "coercion vote failed", 500)
+		return
+	}
+
+	log.Warn().Str("delegate_id", delegateID).Str("round_id", roundID).
+		Msg("SECURITY: duress code used — decoy ballot cast; flag for post-election review")
 
 	// Response looks identical to real vote — coercer cannot distinguish
 	jsonResp(w, map[string]interface{}{
@@ -2084,12 +2882,12 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 	_, user := getParty(r)
 	var req struct {
-		ElectionID  int      `json:"election_id"`
-		RoundID     string   `json:"round_id"`
-		FiledBy     string   `json:"filed_by"`
-		FiledByType string   `json:"filed_by_type"`
-		DisputeType string   `json:"dispute_type"`
-		Description string   `json:"description"`
+		ElectionID   int      `json:"election_id"`
+		RoundID      string   `json:"round_id"`
+		FiledBy      string   `json:"filed_by"`
+		FiledByType  string   `json:"filed_by_type"`
+		DisputeType  string   `json:"dispute_type"`
+		Description  string   `json:"description"`
 		EvidenceURLs []string `json:"evidence_urls"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
@@ -2100,17 +2898,26 @@ func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 	if req.FiledByType == "" {
 		req.FiledByType = "delegate"
 	}
-	if req.FiledBy == "" {
+	// SECURITY: filed_by comes from the AUTHENTICATED identity, never from
+	// the request body — a caller-supplied filed_by lets anyone file disputes
+	// in another delegate's/aspirant's name. (In dev mode the identity
+	// header may be empty; only then is the body value used.)
+	if user != "" {
 		req.FiledBy = user
+	} else if req.FiledBy == "" {
+		req.FiledBy = "unknown"
 	}
 
 	disputeID := "pdisp-" + uuid.New().String()[:8]
+	// SECURITY: store evidence URLs via pq.Array — the previous raw string
+	// join built a Postgres array literal that corrupted (or injected)
+	// entries containing commas/quotes/braces.
 	_, err := dbConn.ExecContext(r.Context(), `
 		INSERT INTO primary_disputes (dispute_id, election_id, round_id, filed_by, filed_by_type,
 			dispute_type, description, evidence_urls)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		disputeID, req.ElectionID, nullStr(req.RoundID), req.FiledBy, req.FiledByType,
-		req.DisputeType, req.Description, fmt.Sprintf("{%s}", strings.Join(req.EvidenceURLs, ",")))
+		req.DisputeType, req.Description, pq.Array(req.EvidenceURLs))
 	if err != nil {
 		jsonErr(w, "file dispute failed: "+err.Error(), 500)
 		return
@@ -2128,8 +2935,9 @@ func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
-	_, user := getParty(r)
+	pid, user := getParty(r)
 	id := mux.Vars(r)["id"]
+	partyCode := fmt.Sprintf("party_%d", pid)
 
 	var req struct {
 		Status     string `json:"status"` // upheld, dismissed
@@ -2137,10 +2945,25 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// SECURITY: cross-party scoping — the dispute's election must belong to
+	// the caller's party (re-enforced inside the UPDATE for TOCTOU safety).
+	var elecID int
+	if err := dbConn.QueryRowContext(r.Context(),
+		"SELECT election_id FROM primary_disputes WHERE dispute_id=$1", id).Scan(&elecID); err != nil {
+		jsonErr(w, "dispute not found", 404)
+		return
+	}
+	if !partyOwnsElection(r.Context(), elecID, partyCode) {
+		log.Warn().Str("dispute_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party dispute-resolution attempt rejected")
+		jsonErr(w, "dispute does not belong to your party", 403)
+		return
+	}
+
 	res, err := dbConn.ExecContext(r.Context(), `
 		UPDATE primary_disputes SET status=$1, resolution=$2, resolved_at=NOW()
-		WHERE dispute_id=$3 AND status IN ('filed','under_review','hearing_scheduled')`,
-		req.Status, req.Resolution, id)
+		WHERE dispute_id=$3 AND status IN ('filed','under_review','hearing_scheduled')
+		AND EXISTS (SELECT 1 FROM delegates d WHERE d.election_id=primary_disputes.election_id AND d.party_code=$4)`,
+		req.Status, req.Resolution, id, partyCode)
 	if err != nil {
 		jsonErr(w, "resolve failed", 500)
 		return
@@ -2150,9 +2973,6 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "dispute not found or already resolved", 404)
 		return
 	}
-
-	var elecID int
-	dbConn.QueryRow("SELECT election_id FROM primary_disputes WHERE dispute_id=$1", id).Scan(&elecID)
 	logConventionEvent(r.Context(), elecID, "dispute_resolved", user, "dispute", id, map[string]interface{}{
 		"status": req.Status, "resolution": req.Resolution,
 	})
@@ -2293,7 +3113,7 @@ func updateQuorumSnapshot(ctx context.Context, electionID int) {
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE election_id=$1 AND accreditation_status='accredited'", electionID).Scan(&accredited)
 	dbConn.QueryRow("SELECT COUNT(*) FROM delegates WHERE election_id=$1 AND floor_access=TRUE", electionID).Scan(&present)
 
-	quorumMet := float64(accredited)/math.Max(float64(total), 1) >= 0.6667
+	quorumMet := float64(accredited)/math.Max(float64(total), 1) >= quorumThresholdFraction
 	dbConn.ExecContext(ctx, `
 		INSERT INTO quorum_snapshots (election_id, total_registered, total_accredited, total_present, quorum_met)
 		VALUES ($1,$2,$3,$4,$5)`, electionID, total, accredited, present, quorumMet)
@@ -2310,24 +3130,50 @@ func logConventionEvent(ctx context.Context, electionID int, eventType, actorID,
 // Middleware integration helpers
 
 func checkPrimaryPermission(partyID int, user, permission string) bool {
-	// Check via Permify if configured
+	// Check via Permify if configured (fail-closed inside checkPermission).
 	if permifyURL != "" {
 		return checkPermission(user, permission, "party", fmt.Sprintf("%d", partyID))
 	}
-	return true // Dev mode — allow all
+	// SECURITY: with no authorization backend the "allow all" path is a
+	// DEV-ONLY escape hatch. In production (devModeEnabled=false) a missing
+	// Permify configuration must DENY mutating operations, never silently
+	// authorize them.
+	if !devModeEnabled {
+		log.Error().Str("user", user).Str("permission", permission).Int("party_id", partyID).
+			Msg("SECURITY: Permify unconfigured and not in dev mode — primary permission DENIED (fail closed)")
+		return false
+	}
+	return true // Dev mode only — allow all
 }
 
+// validateKeycloakDelegateSession forwards the caller's Bearer token to
+// Keycloak's userinfo endpoint and returns true ONLY on HTTP 200.
+// SECURITY: the previous version never forwarded the token and treated any
+// non-empty response as valid — a cosmetic check. Callers that gate on this
+// must do so only when keycloakURL != "" (dev mode without Keycloak returns
+// true so local development still works).
 func validateKeycloakDelegateSession(r *http.Request) bool {
 	if keycloakURL == "" {
 		return true
 	}
-	token := r.Header.Get("Authorization")
-	if token == "" {
+	authHeader := r.Header.Get("Authorization")
+	if len(authHeader) <= 7 || authHeader[:7] != "Bearer " {
 		return false
 	}
-	// Validate against Keycloak userinfo
-	resp, _, err := resilientCall(r.Context(), cbKeycloak, "GET", keycloakURL+"/realms/inec/protocol/openid-connect/userinfo", nil)
-	return err == nil && len(resp) > 0
+	// Validate against Keycloak userinfo WITH the caller's token forwarded.
+	req, err := http.NewRequestWithContext(r.Context(), "GET",
+		keycloakURL+"/realms/"+keycloakRealm+"/protocol/openid-connect/userinfo", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", authHeader)
+	resp, err := mwHTTPClient.Do(req)
+	if err != nil {
+		log.Warn().Err(err).Msg("Keycloak delegate session validation call failed")
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func validateKeycloakRemoteVoting(r *http.Request) string {
@@ -2366,9 +3212,15 @@ func indexInOpenSearch(index, id string, doc map[string]interface{}) {
 		fmt.Sprintf("%s/%s/_doc/%s", opensearchURL, index, id), payload) //nolint:errcheck
 }
 
-func recordTBTransfer(transferType string, amountKobo int64, entityID, userID string) string {
+// recordTBTransfer records an audit/payment transfer in the TigerBeetle
+// ledger. INTEGRITY: when the ledger is not configured it returns an ERROR —
+// the previous behavior returned a fabricated "tb-<random>" id that was then
+// stored as deposit_tb_transfer_id, i.e. proof of a payment that never
+// happened. Callers decide whether the transfer is critical (deposits: fail
+// with 503) or best-effort audit (ballot casts: log and continue).
+func recordTBTransfer(transferType string, amountKobo int64, entityID, userID string) (string, error) {
 	if gotvLedger == nil {
-		return "tb-" + uuid.New().String()[:8]
+		return "", fmt.Errorf("payment ledger unavailable: TigerBeetle not configured")
 	}
 	transferCode := 0
 	switch transferType {
@@ -2380,9 +3232,15 @@ func recordTBTransfer(transferType string, amountKobo int64, entityID, userID st
 		transferCode = 10
 	}
 	idemKey := fmt.Sprintf("%s:%s:%d", transferType, entityID, time.Now().UnixNano())
-	tid, _ := gotvLedger.CreateTransferWithRetry(context.Background(), "operations", "escrow",
+	tid, err := gotvLedger.CreateTransferWithRetry(context.Background(), "operations", "escrow",
 		amountKobo, transferCode, transferType, idemKey)
-	return tid
+	if err != nil {
+		return "", fmt.Errorf("ledger transfer failed: %w", err)
+	}
+	if tid == "" {
+		return "", fmt.Errorf("ledger transfer returned empty transfer id")
+	}
+	return tid, nil
 }
 
 // verifyKeysViaDapr asks the Rust election-crypto engine (via the Dapr
