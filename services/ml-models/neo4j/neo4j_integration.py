@@ -5,7 +5,8 @@ duplicate detection, network analysis, and election fraud investigation.
 
 Usage:
     from neo4j_integration import Neo4jElectionGraph
-    graph = Neo4jElectionGraph(uri="bolt://localhost:7687", user="neo4j", password="password")
+    graph = Neo4jElectionGraph(uri="bolt://localhost:7687", user="neo4j",
+                               password=os.environ["NEO4J_PASSWORD"])
     graph.connect()
     graph.create_voter(voter_id="V001", name="John Doe", nin="12345678901")
     graph.find_relationships(voter_id="V001", depth=2)
@@ -46,12 +47,21 @@ class Neo4jElectionGraph:
         self,
         uri: str = "bolt://localhost:7687",
         user: str = "neo4j",
-        password: str = "password",
+        password: Optional[str] = None,
         database: str = "neo4j",
     ):
+        # SECURITY: no default password. The password must be passed explicitly
+        # or provided via the NEO4J_PASSWORD environment variable — the old
+        # default ("password") silently connected with a guessable credential.
+        resolved_password = password if password is not None else os.getenv("NEO4J_PASSWORD", "")
+        if not resolved_password:
+            raise ValueError(
+                "Neo4j password is required: pass password= explicitly or set the "
+                "NEO4J_PASSWORD environment variable (no default is provided)"
+            )
         self.uri = uri
         self.user = user
-        self.password = password
+        self.password = resolved_password
         self.database = database
         self.driver = None
         self.connected = False
