@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"inec-go-backend/internal/authmw"
 	"inec-go-backend/internal/biometric"
 
 	"github.com/gorilla/mux"
@@ -69,11 +70,10 @@ func main() {
 	svc := biometric.NewService(db, cfg)
 
 	r := mux.NewRouter()
-	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"service": "biometric-svc", "status": "healthy", "version": "1.0.0",
-		})
-	}).Methods(http.MethodGet)
+	// JWT authentication on all routes except /health.
+	r.Use(authmw.Middleware("/health"))
+	// Health — pings the database, 503 when unreachable
+	r.HandleFunc("/health", authmw.HealthHandler(db, "biometric-svc")).Methods(http.MethodGet)
 	r.HandleFunc("/biometric/verify", verify(svc)).Methods(http.MethodPost)
 	r.HandleFunc("/biometric/enroll", enroll(svc)).Methods(http.MethodPost)
 	r.HandleFunc("/biometric/liveness", liveness(inferenceURL)).Methods(http.MethodPost)

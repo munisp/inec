@@ -18,10 +18,10 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
+	"inec-go-backend/internal/authmw"
 	"inec-go-backend/internal/election"
 	"inec-go-backend/internal/eventbus"
 
@@ -40,7 +40,7 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	if *dbURL == "" {
-		*dbURL = "postgres://ngapp:ngapp123@localhost:5432/ngapp?sslmode=disable"
+		log.Fatal().Msg("DATABASE_URL environment variable is required")
 	}
 
 	db, err := sql.Open("postgres", *dbURL)
@@ -56,15 +56,13 @@ func main() {
 	bus := eventbus.NewLocal()
 
 	r := mux.NewRouter()
-	r.Use(corsMiddleware)
+	r.Use(authmw.CORS())
 	r.Use(requestIDMiddleware)
+	// JWT authentication on all routes except /health.
+	r.Use(authmw.Middleware("/health"))
 
-	// Health
-	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service": "election-svc", "status": "healthy", "version": "1.0.0",
-		})
-	}).Methods("GET")
+	// Health — pings the database, 503 when unreachable
+	r.HandleFunc("/health", authmw.HealthHandler(db, "election-svc")).Methods("GET")
 
 	// Elections CRUD
 	r.HandleFunc("/elections", listElections(svc)).Methods("GET")
@@ -128,16 +126,26 @@ func getElection(svc *election.Service) http.HandlerFunc {
 
 func transitionElection(svc *election.Service, bus *eventbus.LocalBus) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Only admins and collation officers may drive election FSM transitions.
+		claims, ok := authmw.RequireRole(w, r, "admin", "collation_officer")
+		if !ok {
+			return
+		}
+		// The actor is derived from verified JWT claims — NEVER from the body.
+		userID := authmw.UserID(claims)
+		if userID == 0 {
+			http.Error(w, "invalid user in token", 401)
+			return
+		}
 		id, _ := strconv.Atoi(mux.Vars(r)["id"])
 		var req struct {
 			TargetState string `json:"target_state"`
-			UserID      int    `json:"user_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid body", 400)
 			return
 		}
-		if err := svc.Transition(r.Context(), id, election.State(req.TargetState), req.UserID); err != nil {
+		if err := svc.Transition(r.Context(), id, election.State(req.TargetState), userID); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
@@ -188,35 +196,6 @@ func collation(svc *election.Service) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(summary)
 	}
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	allowed := os.Getenv("CORS_ORIGINS")
-	if allowed == "" {
-		allowed = "*"
-	}
-	origins := strings.Split(allowed, ",")
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if allowed == "*" {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
-			for _, o := range origins {
-				if strings.TrimSpace(o) == origin {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					break
-				}
-			}
-		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(204)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func requestIDMiddleware(next http.Handler) http.Handler {
