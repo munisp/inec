@@ -96,6 +96,12 @@ export default function LoginScreen() {
   };
 
   // DEV-only demo credential fill — never shipped in production builds.
+  // The credentials live in lib/demoAccounts.ts and are pulled in through a
+  // __DEV__-guarded require so Metro's production DCE removes both the module
+  // and the strings from release bundles (R4-41). Never import it statically.
+  const demoAccounts: typeof import('../lib/demoAccounts').DEMO_ACCOUNTS | null = __DEV__
+    ? require('../lib/demoAccounts').DEMO_ACCOUNTS
+    : null;
   const quickFill = __DEV__
     ? (user: string, pass: string) => {
         Haptics.selectionAsync();
@@ -200,28 +206,18 @@ export default function LoginScreen() {
             )}
           </TouchableOpacity>
 
-          {/* Demo quick-access accounts are a DEV-only convenience; they must
-              never render in production builds. */}
-          {__DEV__ && quickFill && (
+          {/* Demo quick-access accounts are a DEV-only convenience; the
+              credential module is dead-code-eliminated from release builds. */}
+          {__DEV__ && quickFill && demoAccounts && (
           <View style={styles.quickAccess}>
-            <TouchableOpacity style={styles.quickButton} onPress={() => quickFill('observer', 'observer123')}>
-              <View style={[styles.quickIcon, { backgroundColor: '#dbeafe' }]}>
-                <Ionicons name="eye-outline" size={16} color="#2563eb" />
+            {demoAccounts.map((a) => (
+            <TouchableOpacity key={a.username} style={styles.quickButton} onPress={() => quickFill(a.username, a.password)}>
+              <View style={[styles.quickIcon, { backgroundColor: a.bg }]}>
+                <Ionicons name={a.icon} size={16} color={a.color} />
               </View>
-              <Text style={styles.quickText}>Observer</Text>
+              <Text style={styles.quickText}>{a.label}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.quickButton} onPress={() => quickFill('admin', 'admin123')}>
-              <View style={[styles.quickIcon, { backgroundColor: '#dcfce7' }]}>
-                <Ionicons name="shield-outline" size={16} color="#166534" />
-              </View>
-              <Text style={styles.quickText}>Admin</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.quickButton} onPress={() => quickFill('officer1', 'officer123')}>
-              <View style={[styles.quickIcon, { backgroundColor: '#fef3c7' }]}>
-                <Ionicons name="person-outline" size={16} color="#d97706" />
-              </View>
-              <Text style={styles.quickText}>Officer</Text>
-            </TouchableOpacity>
+            ))}
           </View>
           )}
 

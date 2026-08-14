@@ -850,7 +850,7 @@ mod tests {
         let template_data = b"test_template";
 
         let encrypted = vault
-            .encrypt_template("VIN002", "facial", template_data, "test")
+            .encrypt_template("VIN002", "face", template_data, "test")
             .await
             .unwrap();
         let old_key_id = encrypted.key_id.clone();

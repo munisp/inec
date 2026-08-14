@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_vault_audit_voter ON vault_audit_log (voter_vin) 
 CREATE TABLE IF NOT EXISTS cancelable_transforms (
     transform_id    TEXT PRIMARY KEY,
     voter_vin       TEXT NOT NULL,
-    modality        TEXT NOT NULL,
+    modality        TEXT NOT NULL CHECK (modality IN ('fingerprint', 'face', 'iris')),
     transform_type  TEXT NOT NULL CHECK (transform_type IN ('BioHashing', 'RandomProjection', 'BloomFilter')),
     version         INTEGER NOT NULL DEFAULT 1,
     is_revoked      BOOLEAN NOT NULL DEFAULT FALSE,

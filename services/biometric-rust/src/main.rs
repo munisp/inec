@@ -366,6 +366,25 @@ async fn vault_stats(state: Arc<AppState>) -> impl IntoResponse {
     }
 }
 
+/// Canonical biometric modality vocabulary — must match the CHECK constraint in
+/// migrations/001_biometric_tables.sql (vault_templates, cancelable_transforms).
+/// Validated at the HTTP boundary so bad vocabulary is a 400, not a DB 500.
+const VALID_MODALITIES: [&str; 3] = ["fingerprint", "face", "iris"];
+
+fn modality_allowed(m: &str) -> bool {
+    VALID_MODALITIES.contains(&m)
+}
+
+fn invalid_modality_response(m: &str) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": format!("invalid modality {:?}: must be one of {:?}", m, VALID_MODALITIES)
+        })),
+    )
+        .into_response()
+}
+
 async fn vault_encrypt(
     state: Arc<AppState>,
     Extension(actor): Extension<VaultActor>,
@@ -381,6 +400,9 @@ async fn vault_encrypt(
                 .into_response()
         }
     };
+    if !modality_allowed(&req.modality) {
+        return invalid_modality_response(&req.modality);
+    }
 
     match state
         .vault
@@ -487,11 +509,22 @@ async fn cancelable_create(
     state: Arc<AppState>,
     Json(req): Json<CreateTransformRequest>,
 ) -> impl IntoResponse {
+    if !modality_allowed(&req.modality) {
+        return invalid_modality_response(&req.modality);
+    }
     let tt = match req.transform_type.as_str() {
         "biohashing" => TransformType::BioHashing,
         "random_projection" => TransformType::RandomProjection,
         "bloom_filter" => TransformType::BloomFilter,
-        _ => TransformType::BioHashing,
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("invalid transform_type {:?}: must be biohashing|random_projection|bloom_filter", other)
+                })),
+            )
+                .into_response()
+        }
     };
 
     match state

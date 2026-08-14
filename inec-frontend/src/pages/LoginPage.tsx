@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -6,7 +6,15 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Vote } from 'lucide-react';
-import DemoQuickAccess from '@/components/DemoQuickAccess';
+
+// R4-41: demo credentials must not exist in the production bundle at all.
+// A static import (or an unconditional lazy()) would still ship DEMO_ACCOUNTS
+// in dist/ even though rendering is gated. Guarding the lazy() call itself
+// behind import.meta.env.DEV lets Rollup treeshake the entire module — and its
+// credential strings — out of production builds (verified by grepping dist).
+const DemoQuickAccess = import.meta.env.DEV
+  ? lazy(() => import('@/components/DemoQuickAccess'))
+  : null;
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -78,9 +86,13 @@ export default function LoginPage() {
               </Button>
             </form>
 
-            {/* Demo quick-login accounts are a DEV-only convenience; they must
-                never render in production builds (R4-41). */}
-            <DemoQuickAccess enabled={import.meta.env.DEV} onQuickLogin={quickLogin} />
+            {/* Demo quick-login accounts are a DEV-only convenience; the whole
+                module is treeshaken out of production builds (R4-41). */}
+            {DemoQuickAccess && (
+              <Suspense fallback={null}>
+                <DemoQuickAccess enabled onQuickLogin={quickLogin} />
+              </Suspense>
+            )}
           </CardContent>
         </Card>
 

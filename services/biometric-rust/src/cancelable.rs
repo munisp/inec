@@ -324,7 +324,7 @@ mod tests {
         };
         let cb = CancelableBiometrics::new(pool);
         let tid = cb
-            .create_transform("VIN001", "facial", TransformType::BioHashing)
+            .create_transform("VIN001", "face", TransformType::BioHashing)
             .await
             .unwrap();
 
