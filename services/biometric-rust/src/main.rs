@@ -29,8 +29,8 @@ use tracing_subscriber::EnvFilter;
 
 use cancelable::{CancelableBiometrics, TransformType};
 use matching::{
-    fuse_scores, match_face_embeddings, match_fingerprint_minutiae, match_iris_codes,
-    FusionMethod, IdentifyThresholds, MatchDecision,
+    fuse_scores, match_face_embeddings, match_fingerprint_minutiae, match_iris_codes, FusionMethod,
+    IdentifyThresholds, MatchDecision,
 };
 use vault::BiometricVault;
 
@@ -64,44 +64,71 @@ async fn main() {
     let state = Arc::new(AppState { vault, cancelable });
 
     let app = Router::new()
-        .route("/health", get({
-            let s = state.clone();
-            move || health(s)
-        }))
+        .route(
+            "/health",
+            get({
+                let s = state.clone();
+                move || health(s)
+            }),
+        )
         // Vault endpoints
-        .route("/vault/stats", get({
-            let s = state.clone();
-            move || vault_stats(s)
-        }))
-        .route("/vault/encrypt", post({
-            let s = state.clone();
-            move |actor, body| vault_encrypt(s, actor, body)
-        }))
-        .route("/vault/decrypt", post({
-            let s = state.clone();
-            move |actor, body| vault_decrypt(s, actor, body)
-        }))
-        .route("/vault/rotate-key", post({
-            let s = state.clone();
-            move |actor, body| vault_rotate_key(s, actor, body)
-        }))
-        .route("/vault/audit", get({
-            let s = state.clone();
-            move || vault_audit(s)
-        }))
+        .route(
+            "/vault/stats",
+            get({
+                let s = state.clone();
+                move || vault_stats(s)
+            }),
+        )
+        .route(
+            "/vault/encrypt",
+            post({
+                let s = state.clone();
+                move |actor, body| vault_encrypt(s, actor, body)
+            }),
+        )
+        .route(
+            "/vault/decrypt",
+            post({
+                let s = state.clone();
+                move |actor, body| vault_decrypt(s, actor, body)
+            }),
+        )
+        .route(
+            "/vault/rotate-key",
+            post({
+                let s = state.clone();
+                move |actor, body| vault_rotate_key(s, actor, body)
+            }),
+        )
+        .route(
+            "/vault/audit",
+            get({
+                let s = state.clone();
+                move || vault_audit(s)
+            }),
+        )
         // Cancelable biometrics
-        .route("/cancelable/create", post({
-            let s = state.clone();
-            move |body| cancelable_create(s, body)
-        }))
-        .route("/cancelable/apply", post({
-            let s = state.clone();
-            move |body| cancelable_apply(s, body)
-        }))
-        .route("/cancelable/revoke", post({
-            let s = state.clone();
-            move |body| cancelable_revoke(s, body)
-        }))
+        .route(
+            "/cancelable/create",
+            post({
+                let s = state.clone();
+                move |body| cancelable_create(s, body)
+            }),
+        )
+        .route(
+            "/cancelable/apply",
+            post({
+                let s = state.clone();
+                move |body| cancelable_apply(s, body)
+            }),
+        )
+        .route(
+            "/cancelable/revoke",
+            post({
+                let s = state.clone();
+                move |body| cancelable_revoke(s, body)
+            }),
+        )
         .route("/cancelable/compare", post(cancelable_compare))
         // Matching endpoints
         .route("/match/fingerprint", post(match_fingerprint))
@@ -113,7 +140,10 @@ async fn main() {
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8091".to_string());
     let addr = format!("0.0.0.0:{}", port);
-    tracing::info!("biometric vault service listening on {} (PostgreSQL persistence)", addr);
+    tracing::info!(
+        "biometric vault service listening on {} (PostgreSQL persistence)",
+        addr
+    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
 
@@ -328,7 +358,11 @@ struct RotateKeyRequest {
 async fn vault_stats(state: Arc<AppState>) -> impl IntoResponse {
     match state.vault.get_stats().await {
         Ok(stats) => Json(stats).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -339,10 +373,20 @@ async fn vault_encrypt(
 ) -> impl IntoResponse {
     let data = match base64::engine::general_purpose::STANDARD.decode(&req.template_data) {
         Ok(d) => d,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
-    match state.vault.encrypt_template(&req.voter_vin, &req.modality, &data, &actor.0).await {
+    match state
+        .vault
+        .encrypt_template(&req.voter_vin, &req.modality, &data, &actor.0)
+        .await
+    {
         Ok(encrypted) => Json(serde_json::json!({
             "template_id": encrypted.template_id,
             "voter_vin": encrypted.voter_vin,
@@ -350,8 +394,13 @@ async fn vault_encrypt(
             "key_id": encrypted.key_id,
             "ciphertext_len": encrypted.ciphertext.len(),
             "created_at": encrypted.created_at.to_rfc3339(),
-        })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -360,12 +409,21 @@ async fn vault_decrypt(
     Extension(actor): Extension<VaultActor>,
     Json(req): Json<DecryptRequest>,
 ) -> impl IntoResponse {
-    match state.vault.decrypt_template(&req.template_id, &actor.0).await {
+    match state
+        .vault
+        .decrypt_template(&req.template_id, &actor.0)
+        .await
+    {
         Ok(plaintext) => Json(serde_json::json!({
             "template_data": base64::engine::general_purpose::STANDARD.encode(&plaintext),
             "size_bytes": plaintext.len(),
-        })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -378,15 +436,24 @@ async fn vault_rotate_key(
         Ok(new_id) => Json(serde_json::json!({
             "old_key_id": req.key_id,
             "new_key_id": new_id,
-        })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
 async fn vault_audit(state: Arc<AppState>) -> impl IntoResponse {
     match state.vault.get_audit_log(100).await {
         Ok(entries) => Json(serde_json::json!({ "entries": entries })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -427,9 +494,17 @@ async fn cancelable_create(
         _ => TransformType::BioHashing,
     };
 
-    match state.cancelable.create_transform(&req.voter_vin, &req.modality, tt).await {
+    match state
+        .cancelable
+        .create_transform(&req.voter_vin, &req.modality, tt)
+        .await
+    {
         Ok(id) => Json(serde_json::json!({ "transform_id": id })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -437,12 +512,21 @@ async fn cancelable_apply(
     state: Arc<AppState>,
     Json(req): Json<ApplyTransformRequest>,
 ) -> impl IntoResponse {
-    match state.cancelable.apply_biohash(&req.transform_id, &req.features).await {
+    match state
+        .cancelable
+        .apply_biohash(&req.transform_id, &req.features)
+        .await
+    {
         Ok(hash) => Json(serde_json::json!({
             "biohash": base64::engine::general_purpose::STANDARD.encode(&hash),
             "bits": hash.len() * 8,
-        })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -452,13 +536,21 @@ async fn cancelable_revoke(
 ) -> impl IntoResponse {
     match state.cancelable.revoke_transform(&req.transform_id).await {
         Ok(()) => Json(serde_json::json!({"status": "revoked"})).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
 async fn cancelable_compare(Json(req): Json<CompareHashRequest>) -> impl IntoResponse {
-    let h1 = base64::engine::general_purpose::STANDARD.decode(&req.hash1).unwrap_or_default();
-    let h2 = base64::engine::general_purpose::STANDARD.decode(&req.hash2).unwrap_or_default();
+    let h1 = base64::engine::general_purpose::STANDARD
+        .decode(&req.hash1)
+        .unwrap_or_default();
+    let h2 = base64::engine::general_purpose::STANDARD
+        .decode(&req.hash2)
+        .unwrap_or_default();
     let distance = CancelableBiometrics::compare_biohash(&h1, &h2);
     Json(serde_json::json!({
         "hamming_distance": distance,
@@ -471,7 +563,7 @@ async fn cancelable_compare(Json(req): Json<CompareHashRequest>) -> impl IntoRes
 
 #[derive(Deserialize)]
 struct FingerprintMatchRequest {
-    probe: Vec<[f64; 4]>,   // [x, y, angle, type]
+    probe: Vec<[f64; 4]>, // [x, y, angle, type]
     gallery: Vec<[f64; 4]>,
     threshold: Option<f64>,
 }
@@ -485,10 +577,10 @@ struct FaceMatchRequest {
 
 #[derive(Deserialize)]
 struct IrisMatchRequest {
-    probe_code: String,    // base64
-    gallery_code: String,  // base64
-    probe_mask: String,    // base64
-    gallery_mask: String,  // base64
+    probe_code: String,   // base64
+    gallery_code: String, // base64
+    probe_mask: String,   // base64
+    gallery_mask: String, // base64
     threshold: Option<f64>,
 }
 
@@ -506,8 +598,16 @@ struct ScoreInput {
 }
 
 async fn match_fingerprint(Json(req): Json<FingerprintMatchRequest>) -> impl IntoResponse {
-    let probe: Vec<(i32, i32, f64, u8)> = req.probe.iter().map(|m| (m[0] as i32, m[1] as i32, m[2], m[3] as u8)).collect();
-    let gallery: Vec<(i32, i32, f64, u8)> = req.gallery.iter().map(|m| (m[0] as i32, m[1] as i32, m[2], m[3] as u8)).collect();
+    let probe: Vec<(i32, i32, f64, u8)> = req
+        .probe
+        .iter()
+        .map(|m| (m[0] as i32, m[1] as i32, m[2], m[3] as u8))
+        .collect();
+    let gallery: Vec<(i32, i32, f64, u8)> = req
+        .gallery
+        .iter()
+        .map(|m| (m[0] as i32, m[1] as i32, m[2], m[3] as u8))
+        .collect();
     let threshold = req.threshold.unwrap_or(0.40);
 
     let result = match_fingerprint_minutiae(&probe, &gallery, threshold);
@@ -563,16 +663,24 @@ async fn match_fuse(Json(req): Json<FuseRequest>) -> impl IntoResponse {
         w
     });
 
-    let scores: Vec<matching::MatchScore> = req.scores.iter().map(|s| matching::MatchScore {
-        probe_id: String::new(),
-        gallery_id: String::new(),
-        modality: s.modality.clone(),
-        score: s.score,
-        normalized_score: s.score,
-        decision: if s.score >= 0.45 { MatchDecision::Match } else { MatchDecision::NoMatch },
-        algorithm: "external".into(),
-        latency_us: 0,
-    }).collect();
+    let scores: Vec<matching::MatchScore> = req
+        .scores
+        .iter()
+        .map(|s| matching::MatchScore {
+            probe_id: String::new(),
+            gallery_id: String::new(),
+            modality: s.modality.clone(),
+            score: s.score,
+            normalized_score: s.score,
+            decision: if s.score >= 0.45 {
+                MatchDecision::Match
+            } else {
+                MatchDecision::NoMatch
+            },
+            algorithm: "external".into(),
+            latency_us: 0,
+        })
+        .collect();
 
     let fused = fuse_scores(&scores, &weights, method);
     Json(serde_json::json!({
@@ -624,10 +732,7 @@ mod auth_tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
         // /health stays public even when unconfigured.
-        assert_eq!(
-            status_for(test_app(), &[], "/health").await,
-            StatusCode::OK
-        );
+        assert_eq!(status_for(test_app(), &[], "/health").await, StatusCode::OK);
 
         // 2. Token configured (VAULT_API_TOKEN alias) but none presented -> 401.
         std::env::set_var("VAULT_API_TOKEN", "s3cret-vault-token");
@@ -653,7 +758,12 @@ mod auth_tests {
 
         // 4. Correct token -> pass, via both header forms.
         assert_eq!(
-            status_for(test_app(), &[("x-api-key", "s3cret-vault-token")], "/vault/stats").await,
+            status_for(
+                test_app(),
+                &[("x-api-key", "s3cret-vault-token")],
+                "/vault/stats"
+            )
+            .await,
             StatusCode::OK
         );
         assert_eq!(

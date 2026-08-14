@@ -184,7 +184,9 @@ impl BiometricVault {
             .await?;
 
         if count.0 == 0 {
-            vault.generate_key(KeyPurpose::TemplateEncryption, "system").await?;
+            vault
+                .generate_key(KeyPurpose::TemplateEncryption, "system")
+                .await?;
         }
 
         Ok(vault)
@@ -196,7 +198,11 @@ impl BiometricVault {
     }
 
     /// Generate a new encryption key and persist to PostgreSQL.
-    pub async fn generate_key(&self, purpose: KeyPurpose, actor: &str) -> Result<String, VaultError> {
+    pub async fn generate_key(
+        &self,
+        purpose: KeyPurpose,
+        actor: &str,
+    ) -> Result<String, VaultError> {
         let key_id = format!("key-{}", Uuid::new_v4());
 
         // Derive key material using HKDF
@@ -223,7 +229,8 @@ impl BiometricVault {
 
         key_material.zeroize();
 
-        self.log_audit("generate_key", Some(&key_id), None, None, actor, true, None).await;
+        self.log_audit("generate_key", Some(&key_id), None, None, actor, true, None)
+            .await;
         Ok(key_id)
     }
 
@@ -248,10 +255,13 @@ impl BiometricVault {
         let aad = format!("{}:{}", voter_vin, modality).into_bytes();
 
         let ciphertext = cipher
-            .encrypt(nonce, aes_gcm::aead::Payload {
-                msg: template_data,
-                aad: &aad,
-            })
+            .encrypt(
+                nonce,
+                aes_gcm::aead::Payload {
+                    msg: template_data,
+                    aad: &aad,
+                },
+            )
             .map_err(|e| VaultError::EncryptionFailed(e.to_string()))?;
 
         // HMAC over ciphertext for integrity
@@ -300,7 +310,8 @@ impl BiometricVault {
             actor,
             true,
             None,
-        ).await;
+        )
+        .await;
 
         Ok(encrypted)
     }
@@ -314,12 +325,12 @@ impl BiometricVault {
         // Load template from PostgreSQL
         let row = sqlx::query_as::<_, (String, String, String, Vec<u8>, Vec<u8>, String)>(
             "SELECT voter_vin, modality, key_id, ciphertext, nonce, integrity_hash
-             FROM vault_templates WHERE template_id = $1"
+             FROM vault_templates WHERE template_id = $1",
         )
-            .bind(template_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| VaultError::TemplateNotFound(template_id.to_string()))?;
+        .bind(template_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| VaultError::TemplateNotFound(template_id.to_string()))?;
 
         let (voter_vin, modality, key_id, ciphertext, nonce_vec, integrity_hash) = row;
 
@@ -335,7 +346,8 @@ impl BiometricVault {
                 actor,
                 false,
                 Some("key_revoked"),
-            ).await;
+            )
+            .await;
             return Err(VaultError::KeyRevoked(key_id));
         }
 
@@ -350,23 +362,28 @@ impl BiometricVault {
                 actor,
                 false,
                 Some("integrity_check_failed"),
-            ).await;
+            )
+            .await;
             return Err(VaultError::IntegrityCheckFailed);
         }
 
         let cipher = Aes256Gcm::new_from_slice(&key.key_material)
             .map_err(|e| VaultError::DecryptionFailed(e.to_string()))?;
 
-        let nonce_arr: [u8; 12] = nonce_vec.try_into()
+        let nonce_arr: [u8; 12] = nonce_vec
+            .try_into()
             .map_err(|_| VaultError::DecryptionFailed("invalid nonce length".to_string()))?;
         let nonce = Nonce::from_slice(&nonce_arr);
         let aad = format!("{}:{}", voter_vin, modality).into_bytes();
 
         let plaintext = cipher
-            .decrypt(nonce, aes_gcm::aead::Payload {
-                msg: &ciphertext,
-                aad: &aad,
-            })
+            .decrypt(
+                nonce,
+                aes_gcm::aead::Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
             .map_err(|e| VaultError::DecryptionFailed(e.to_string()))?;
 
         self.log_audit(
@@ -377,7 +394,8 @@ impl BiometricVault {
             actor,
             true,
             None,
-        ).await;
+        )
+        .await;
 
         Ok(plaintext)
     }
@@ -396,7 +414,9 @@ impl BiometricVault {
             return Err(VaultError::KeyRevoked(key_id.to_string()));
         }
 
-        let new_key_id = self.generate_key(KeyPurpose::TemplateEncryption, actor).await?;
+        let new_key_id = self
+            .generate_key(KeyPurpose::TemplateEncryption, actor)
+            .await?;
         let new_key = self.load_key(&new_key_id).await?;
 
         // Mark old key as rotated
@@ -417,12 +437,12 @@ impl BiometricVault {
             let page: Vec<(String, String, String, Vec<u8>, Vec<u8>, String)> = sqlx::query_as(
                 "SELECT template_id, voter_vin, modality, ciphertext, nonce, integrity_hash
                  FROM vault_templates WHERE key_id = $1
-                 ORDER BY template_id LIMIT $2"
+                 ORDER BY template_id LIMIT $2",
             )
-                .bind(key_id)
-                .bind(PAGE_SIZE)
-                .fetch_all(&self.pool)
-                .await?;
+            .bind(key_id)
+            .bind(PAGE_SIZE)
+            .fetch_all(&self.pool)
+            .await?;
 
             if page.is_empty() {
                 break;
@@ -435,11 +455,11 @@ impl BiometricVault {
 
                 // Lock the row and skip if a concurrent rotation already moved it.
                 let current: Option<(String,)> = sqlx::query_as(
-                    "SELECT key_id FROM vault_templates WHERE template_id = $1 FOR UPDATE"
+                    "SELECT key_id FROM vault_templates WHERE template_id = $1 FOR UPDATE",
                 )
-                    .bind(tid)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+                .bind(tid)
+                .fetch_optional(&mut *tx)
+                .await?;
                 match current {
                     Some((current_key,)) if current_key == key_id => {}
                     _ => {
@@ -466,7 +486,13 @@ impl BiometricVault {
                 let aad = format!("{}:{}", voter_vin, modality).into_bytes();
 
                 let new_ciphertext = cipher
-                    .encrypt(nonce, aes_gcm::aead::Payload { msg: &plaintext, aad: &aad })
+                    .encrypt(
+                        nonce,
+                        aes_gcm::aead::Payload {
+                            msg: &plaintext,
+                            aad: &aad,
+                        },
+                    )
                     .map_err(|e| VaultError::EncryptionFailed(e.to_string()))?;
 
                 let new_integrity = self.compute_hmac_hex(&new_key.key_material, &new_ciphertext);
@@ -496,7 +522,8 @@ impl BiometricVault {
                 actor,
                 true,
                 Some(&format!("templates_processed={}", processed)),
-            ).await;
+            )
+            .await;
         }
 
         self.log_audit(
@@ -506,8 +533,12 @@ impl BiometricVault {
             None,
             actor,
             true,
-            Some(&format!("new_key_id={} templates_processed={}", new_key_id, processed)),
-        ).await;
+            Some(&format!(
+                "new_key_id={} templates_processed={}",
+                new_key_id, processed
+            )),
+        )
+        .await;
         Ok(new_key_id)
     }
 
@@ -537,7 +568,13 @@ impl BiometricVault {
         let aad = format!("{}:{}", voter_vin, modality).into_bytes();
 
         cipher
-            .decrypt(nonce, aes_gcm::aead::Payload { msg: ciphertext, aad: &aad })
+            .decrypt(
+                nonce,
+                aes_gcm::aead::Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
             .map_err(|e| VaultError::DecryptionFailed(e.to_string()))
     }
 
@@ -550,7 +587,8 @@ impl BiometricVault {
             .execute(&self.pool)
             .await?;
 
-        self.log_audit("revoke_key", Some(key_id), None, None, actor, true, None).await;
+        self.log_audit("revoke_key", Some(key_id), None, None, actor, true, None)
+            .await;
         Ok(())
     }
 
@@ -568,10 +606,10 @@ impl BiometricVault {
                 COUNT(*) FILTER (WHERE is_active = TRUE AND is_revoked = FALSE),
                 COUNT(*) FILTER (WHERE is_active = FALSE AND is_revoked = FALSE),
                 COUNT(*) FILTER (WHERE is_revoked = TRUE)
-             FROM vault_keys"
+             FROM vault_keys",
         )
-            .fetch_one(&self.pool)
-            .await?;
+        .fetch_one(&self.pool)
+        .await?;
 
         let template_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vault_templates")
             .fetch_one(&self.pool)
@@ -604,17 +642,20 @@ impl BiometricVault {
             .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.into_iter().map(|r| AuditEntry {
-            id: r.0,
-            operation: r.1,
-            key_id: r.2,
-            voter_vin: r.3,
-            modality: r.4,
-            actor: r.5,
-            success: r.6,
-            error_detail: r.7,
-            timestamp: r.8,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| AuditEntry {
+                id: r.0,
+                operation: r.1,
+                key_id: r.2,
+                voter_vin: r.3,
+                modality: r.4,
+                actor: r.5,
+                success: r.6,
+                error_detail: r.7,
+                timestamp: r.8,
+            })
+            .collect())
     }
 
     // ─── Private helpers ────────────────────────────────────────
@@ -624,12 +665,14 @@ impl BiometricVault {
             "SELECT key_id, encrypted_key, key_version, created_at
              FROM vault_keys
              WHERE purpose = $1 AND is_active = TRUE AND is_revoked = FALSE
-             ORDER BY created_at DESC LIMIT 1"
+             ORDER BY created_at DESC LIMIT 1",
         )
-            .bind(purpose.as_str())
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| VaultError::KeyNotFound(format!("no active key for {}", purpose.as_str())))?;
+        .bind(purpose.as_str())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            VaultError::KeyNotFound(format!("no active key for {}", purpose.as_str()))
+        })?;
 
         let key_material = self.unwrap_key_material(&row.1)?;
 
@@ -699,7 +742,9 @@ impl BiometricVault {
     /// Unwrap key material from storage.
     fn unwrap_key_material(&self, wrapped: &[u8]) -> Result<Vec<u8>, VaultError> {
         if wrapped.len() < 12 {
-            return Err(VaultError::DecryptionFailed("wrapped key too short".to_string()));
+            return Err(VaultError::DecryptionFailed(
+                "wrapped key too short".to_string(),
+            ));
         }
 
         let (nonce_bytes, ciphertext) = wrapped.split_at(12);
@@ -787,7 +832,10 @@ mod tests {
         assert_eq!(encrypted.voter_vin, "VIN001");
         assert_eq!(encrypted.modality, "fingerprint");
 
-        let decrypted = vault.decrypt_template(&encrypted.template_id, "test").await.unwrap();
+        let decrypted = vault
+            .decrypt_template(&encrypted.template_id, "test")
+            .await
+            .unwrap();
         assert_eq!(decrypted, template_data);
     }
 
@@ -810,7 +858,10 @@ mod tests {
         let new_key_id = vault.rotate_key(&old_key_id, "test").await.unwrap();
         assert_ne!(old_key_id, new_key_id);
 
-        let decrypted = vault.decrypt_template(&encrypted.template_id, "test").await.unwrap();
+        let decrypted = vault
+            .decrypt_template(&encrypted.template_id, "test")
+            .await
+            .unwrap();
         assert_eq!(decrypted, template_data);
     }
 
@@ -840,26 +891,33 @@ mod tests {
             .await
             .unwrap();
         let old_key = t1.key_id.clone();
-        assert_eq!(old_key, t2.key_id, "both templates must start on the same key");
+        assert_eq!(
+            old_key, t2.key_id,
+            "both templates must start on the same key"
+        );
 
         // Snapshot t2's integrity hash, then corrupt it to force a mid-loop
         // decrypt failure inside that template's transaction.
-        let (saved_hash,): (String,) = sqlx::query_as(
-            "SELECT integrity_hash FROM vault_templates WHERE template_id = $1",
+        let (saved_hash,): (String,) =
+            sqlx::query_as("SELECT integrity_hash FROM vault_templates WHERE template_id = $1")
+                .bind(&t2.template_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query(
+            "UPDATE vault_templates SET integrity_hash = 'corrupted' WHERE template_id = $1",
         )
         .bind(&t2.template_id)
-        .fetch_one(&pool)
+        .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("UPDATE vault_templates SET integrity_hash = 'corrupted' WHERE template_id = $1")
-            .bind(&t2.template_id)
-            .execute(&pool)
-            .await
-            .unwrap();
 
         // Rotation must fail on the corrupted template.
         let outcome = vault.rotate_key(&old_key, "test").await;
-        assert!(outcome.is_err(), "rotation must fail loudly on undecryptable template");
+        assert!(
+            outcome.is_err(),
+            "rotation must fail loudly on undecryptable template"
+        );
 
         // The corrupted template's transaction rolled back: its row still
         // points at the old key with the (corrupted) ciphertext untouched —
@@ -871,13 +929,19 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(t2_key, old_key, "failed template must roll back to the old key");
+        assert_eq!(
+            t2_key, old_key,
+            "failed template must roll back to the old key"
+        );
         assert_eq!(t2_hash, "corrupted");
 
         // The uncorrupted template is consistent regardless of processing
         // order: it decrypts to the original plaintext under whichever key
         // its (committed or never-started) transaction left it on.
-        let p1 = vault.decrypt_template(&t1.template_id, "test").await.unwrap();
+        let p1 = vault
+            .decrypt_template(&t1.template_id, "test")
+            .await
+            .unwrap();
         assert_eq!(p1, b"template-a");
 
         // Heal the corruption and re-run: rotation resumes and completes.
@@ -890,19 +954,24 @@ mod tests {
         let new_key = vault.rotate_key(&old_key, "test").await.unwrap();
         assert_ne!(new_key, old_key);
 
-        let p1 = vault.decrypt_template(&t1.template_id, "test").await.unwrap();
-        let p2 = vault.decrypt_template(&t2.template_id, "test").await.unwrap();
+        let p1 = vault
+            .decrypt_template(&t1.template_id, "test")
+            .await
+            .unwrap();
+        let p2 = vault
+            .decrypt_template(&t2.template_id, "test")
+            .await
+            .unwrap();
         assert_eq!(p1, b"template-a");
         assert_eq!(p2, b"template-b");
 
         // No template remains on the old key after a successful rotation.
-        let (remaining,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM vault_templates WHERE key_id = $1",
-        )
-        .bind(&old_key)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (remaining,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM vault_templates WHERE key_id = $1")
+                .bind(&old_key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(remaining, 0);
     }
 
@@ -935,7 +1004,9 @@ mod tests {
             return;
         };
         let vault = BiometricVault::new(pool).await.unwrap();
-        let _ = vault.encrypt_template("VIN005", "fingerprint", b"data", "officer1").await;
+        let _ = vault
+            .encrypt_template("VIN005", "fingerprint", b"data", "officer1")
+            .await;
 
         let audit = vault.get_audit_log(10).await.unwrap();
         assert!(!audit.is_empty());

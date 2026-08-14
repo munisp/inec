@@ -66,7 +66,10 @@ async fn api_key_auth(
     next: Next<BoxBody>,
 ) -> Result<ServiceResponse<BoxBody>, Error> {
     if req.path() == "/health" {
-        return next.call(req).await.map(ServiceResponse::map_into_boxed_body);
+        return next
+            .call(req)
+            .await
+            .map(ServiceResponse::map_into_boxed_body);
     }
 
     let expected_keys = configured_api_keys("GEOLIBRE_API_KEY");
@@ -95,7 +98,9 @@ async fn api_key_auth(
         ));
     }
 
-    next.call(req).await.map(ServiceResponse::map_into_boxed_body)
+    next.call(req)
+        .await
+        .map(ServiceResponse::map_into_boxed_body)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -155,7 +160,7 @@ async fn main() -> std::io::Result<()> {
                     .route("/density", web::post().to(spatial::kernel_density))
                     .route("/nearest", web::post().to(spatial::nearest_neighbors))
                     .route("/convex-hull", web::post().to(spatial::convex_hull))
-                    .route("/centroid", web::post().to(spatial::centroid_analysis))
+                    .route("/centroid", web::post().to(spatial::centroid_analysis)),
             )
     })
     .bind("0.0.0.0:8770")?

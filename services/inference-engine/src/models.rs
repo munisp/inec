@@ -87,7 +87,9 @@ impl AnomalyModel {
         }
         let count = batch_features.len();
         if count == 0 {
-            return Err(anyhow!("anomaly batch must contain at least one feature vector"));
+            return Err(anyhow!(
+                "anomaly batch must contain at least one feature vector"
+            ));
         }
         let flat: Vec<f32> = batch_features
             .iter()
@@ -134,7 +136,11 @@ impl FaceModel {
         assert_eq!(a.len(), self.embedding_dim);
         assert_eq!(b.len(), self.embedding_dim);
 
-        let dot: f32 = a.iter().zip(b.iter()).map(|(left, right)| left * right).sum();
+        let dot: f32 = a
+            .iter()
+            .zip(b.iter())
+            .map(|(left, right)| left * right)
+            .sum();
         let norm_a: f32 = a.iter().map(|value| value * value).sum::<f32>().sqrt();
         let norm_b: f32 = b.iter().map(|value| value * value).sum::<f32>().sqrt();
 
@@ -224,14 +230,17 @@ impl LivenessModel {
             .run(ort::inputs![tensor])
             .map_err(|error| anyhow!("liveness model inference failed: {error}"))?;
 
-        let depth_quality = if let Ok((_shape, depth_values)) = outputs[0].try_extract_tensor::<f32>() {
-            if depth_values.is_empty() {
-                return Err(anyhow!("liveness model returned an empty depth map"));
-            }
-            depth_values.iter().sum::<f32>() / depth_values.len() as f32
-        } else {
-            return Err(anyhow!("liveness model did not return a readable depth map"));
-        };
+        let depth_quality =
+            if let Ok((_shape, depth_values)) = outputs[0].try_extract_tensor::<f32>() {
+                if depth_values.is_empty() {
+                    return Err(anyhow!("liveness model returned an empty depth map"));
+                }
+                depth_values.iter().sum::<f32>() / depth_values.len() as f32
+            } else {
+                return Err(anyhow!(
+                    "liveness model did not return a readable depth map"
+                ));
+            };
         let liveness = if outputs.len() > 1 {
             if let Ok((_shape, scores)) = outputs[1].try_extract_tensor::<f32>() {
                 *scores

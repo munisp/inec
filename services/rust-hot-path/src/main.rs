@@ -7,17 +7,17 @@
 //! - Arrow columnar batching for analytical writes
 //! - DashMap for concurrent state (no mutex contention)
 
+mod fluvio_smart;
 mod kafka_consumer;
+mod metrics;
+mod opensearch;
+mod pipeline;
 mod redis_cluster;
 mod tigerbeetle;
-mod opensearch;
-mod fluvio_smart;
-mod pipeline;
-mod metrics;
 mod wal;
 
+use axum::{routing::get, Json, Router};
 use std::sync::Arc;
-use axum::{Router, routing::get, Json};
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
 
@@ -45,18 +45,27 @@ async fn main() -> anyhow::Result<()> {
         // /health is liveness only: the process is up. It deliberately says
         // nothing about sink connectivity — that is /readyz's job.
         .route("/health", get(health))
-        .route("/readyz", get({
-            let e = engine.clone();
-            move || readyz_handler(e.clone())
-        }))
-        .route("/metrics", get({
-            let e = engine.clone();
-            move || metrics_handler(e.clone())
-        }))
-        .route("/stats", get({
-            let e = engine.clone();
-            move || stats_handler(e.clone())
-        }));
+        .route(
+            "/readyz",
+            get({
+                let e = engine.clone();
+                move || readyz_handler(e.clone())
+            }),
+        )
+        .route(
+            "/metrics",
+            get({
+                let e = engine.clone();
+                move || metrics_handler(e.clone())
+            }),
+        )
+        .route(
+            "/stats",
+            get({
+                let e = engine.clone();
+                move || stats_handler(e.clone())
+            }),
+        );
 
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("hot-path engine listening on {}", addr);

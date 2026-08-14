@@ -7,10 +7,10 @@
 //! - Parallel bulk workers (8 workers × 5000 docs)
 //! - Async refresh interval (30s during bulk, 1s normally)
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::pipeline::{Config, Transaction};
 
@@ -115,7 +115,8 @@ impl OpenSearchBulkWriter {
             ));
         }
 
-        self.indexed.fetch_add(batch.len() as u64, Ordering::Relaxed);
+        self.indexed
+            .fetch_add(batch.len() as u64, Ordering::Relaxed);
         self.bulk_requests.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

@@ -8,7 +8,6 @@
 //!
 //! Designed for CPU inference with <10ms latency per request.
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use axum::{
     extract::{Json, Request, State},
     http::StatusCode,
@@ -17,6 +16,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ndarray::Array1;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -119,8 +119,7 @@ struct AppState {
 
 impl AppState {
     async fn new() -> Self {
-        let models_dir = std::env::var("MODELS_DIR")
-            .unwrap_or_else(|_| "/app/models".to_string());
+        let models_dir = std::env::var("MODELS_DIR").unwrap_or_else(|_| "/app/models".to_string());
 
         // NOTE: the response label "xgboost-onnx-v1.0" below refers to THIS
         // exact model artifact (XGBoost classifier exported to ONNX). If the
@@ -137,14 +136,20 @@ impl AppState {
             .map_err(|e| warn!("Face model not loaded: {}", e))
             .ok();
 
-        let neo4j = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            Neo4jClient::connect(),
-        ).await {
-            Ok(Ok(client)) => Some(client),
-            Ok(Err(e)) => { warn!("Neo4j not connected: {}", e); None }
-            Err(_) => { warn!("Neo4j connection timed out after 10s"); None }
-        };
+        let neo4j =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), Neo4jClient::connect())
+                .await
+            {
+                Ok(Ok(client)) => Some(client),
+                Ok(Err(e)) => {
+                    warn!("Neo4j not connected: {}", e);
+                    None
+                }
+                Err(_) => {
+                    warn!("Neo4j connection timed out after 10s");
+                    None
+                }
+            };
 
         info!(
             anomaly = anomaly_model.is_some(),
@@ -154,7 +159,12 @@ impl AppState {
             "Inference engine initialized"
         );
 
-        Self { anomaly_model, face_model, liveness_model, neo4j }
+        Self {
+            anomaly_model,
+            face_model,
+            liveness_model,
+            neo4j,
+        }
     }
 }
 
@@ -178,8 +188,12 @@ struct AnomalyRequest {
     benford_deviation: f64,
 }
 
-fn default_delay() -> f64 { 3.0 }
-fn default_turnout() -> f64 { 0.55 }
+fn default_delay() -> f64 {
+    3.0
+}
+fn default_turnout() -> f64 {
+    0.55
+}
 
 #[derive(Serialize)]
 struct AnomalyResponse {
@@ -207,25 +221,25 @@ struct FaceCompareRequest {
 
 #[derive(Serialize)]
 struct FaceCompareResponse {
-	similarity: f32,
-	verified: bool,
-	threshold: f32,
-	inference_time_us: u64,
+    similarity: f32,
+    verified: bool,
+    threshold: f32,
+    inference_time_us: u64,
 }
 
 #[derive(Deserialize)]
 struct LivenessRequest {
-	image_base64: String,
-	threshold: Option<f32>,
+    image_base64: String,
+    threshold: Option<f32>,
 }
 
 #[derive(Serialize)]
 struct LivenessResponse {
-	liveness_score: f32,
-	liveness_pass: bool,
-	threshold: f32,
-	model: String,
-	inference_time_us: u64,
+    liveness_score: f32,
+    liveness_pass: bool,
+    threshold: f32,
+    model: String,
+    inference_time_us: u64,
 }
 
 #[derive(Deserialize)]
@@ -322,7 +336,9 @@ async fn predict_anomaly(
     let start = std::time::Instant::now();
     let s = state.read().await;
 
-    let model = s.anomaly_model.as_ref()
+    let model = s
+        .anomaly_model
+        .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let turnout = req.accredited_voters as f64 / req.registered_voters.max(1) as f64;
@@ -336,14 +352,23 @@ async fn predict_anomaly(
         req.party_b_votes as f64,
         req.party_a_votes as f64 / req.total_valid_votes.max(1) as f64,
         req.party_b_votes as f64 / req.total_valid_votes.max(1) as f64,
-        (req.party_a_votes as f64 - req.party_b_votes as f64).abs() / req.total_valid_votes.max(1) as f64,
+        (req.party_a_votes as f64 - req.party_b_votes as f64).abs()
+            / req.total_valid_votes.max(1) as f64,
         req.benford_deviation,
         req.submission_delay_hours,
         req.regional_mean_turnout,
         turnout - req.regional_mean_turnout,
         req.rejected_votes as f64 / req.accredited_voters.max(1) as f64,
-        if req.total_valid_votes > req.accredited_voters { 1.0 } else { 0.0 },
-        if req.total_valid_votes % 100 == 0 || req.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
+        if req.total_valid_votes > req.accredited_voters {
+            1.0
+        } else {
+            0.0
+        },
+        if req.total_valid_votes % 100 == 0 || req.total_valid_votes % 50 == 0 {
+            1.0
+        } else {
+            0.0
+        },
     ];
 
     // SECURITY: a failed model call must surface as 503, never as score 0.0
@@ -357,7 +382,9 @@ async fn predict_anomaly(
     let mut risk_factors = Vec::new();
     if turnout > 0.9 {
         risk_factors.push(RiskFactor {
-            factor: "high_turnout".into(), value: turnout, severity: "high".into()
+            factor: "high_turnout".into(),
+            value: turnout,
+            severity: "high".into(),
         });
     }
     if req.total_valid_votes > req.accredited_voters {
@@ -369,7 +396,9 @@ async fn predict_anomaly(
     }
     if req.benford_deviation > 0.05 {
         risk_factors.push(RiskFactor {
-            factor: "benford_violation".into(), value: req.benford_deviation, severity: "medium".into()
+            factor: "benford_violation".into(),
+            value: req.benford_deviation,
+            severity: "medium".into(),
         });
     }
 
@@ -404,7 +433,8 @@ async fn batch_predict(
 
     // Process polling units in parallel using tokio tasks, chunked to limit concurrency
     let chunk_size = 100;
-    let chunks: Vec<Vec<AnomalyRequest>> = req.polling_units
+    let chunks: Vec<Vec<AnomalyRequest>> = req
+        .polling_units
         .chunks(chunk_size)
         .map(|c| c.to_vec())
         .collect();
@@ -416,7 +446,9 @@ async fn batch_predict(
             let s = state_clone.read().await;
             // Model may be unavailable (ORT_DYLIB_PATH unset / load failure) —
             // surface 503 instead of panicking the spawned task.
-            let model = s.anomaly_model.as_ref()
+            let model = s
+                .anomaly_model
+                .as_ref()
                 .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
             let mut chunk_results = Vec::with_capacity(chunk.len());
 
@@ -432,14 +464,23 @@ async fn batch_predict(
                     pu.party_b_votes as f64,
                     pu.party_a_votes as f64 / pu.total_valid_votes.max(1) as f64,
                     pu.party_b_votes as f64 / pu.total_valid_votes.max(1) as f64,
-                    (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs() / pu.total_valid_votes.max(1) as f64,
+                    (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs()
+                        / pu.total_valid_votes.max(1) as f64,
                     pu.benford_deviation,
                     pu.submission_delay_hours,
                     pu.regional_mean_turnout,
                     turnout - pu.regional_mean_turnout,
                     pu.rejected_votes as f64 / pu.accredited_voters.max(1) as f64,
-                    if pu.total_valid_votes > pu.accredited_voters { 1.0 } else { 0.0 },
-                    if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
+                    if pu.total_valid_votes > pu.accredited_voters {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ];
 
                 // SECURITY: propagate inference failure; never fabricate 0.0.
@@ -494,7 +535,9 @@ async fn compare_faces(
     let start = std::time::Instant::now();
     let s = state.read().await;
 
-    let _face_model = s.face_model.as_ref()
+    let _face_model = s
+        .face_model
+        .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     if req.embedding_a.len() != 512 || req.embedding_b.len() != 512 {
@@ -532,9 +575,7 @@ fn haversine_m(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     r * c
 }
 
-async fn detect_gps_spoof(
-    Json(req): Json<GpsSpoofRequest>,
-) -> Json<GpsSpoofResponse> {
+async fn detect_gps_spoof(Json(req): Json<GpsSpoofRequest>) -> Json<GpsSpoofResponse> {
     let start = std::time::Instant::now();
     let mut indicators = Vec::new();
     let mut spoof_score: f64 = 0.0;
@@ -618,7 +659,10 @@ async fn detect_gps_spoof(
                 check: "geofence".into(),
                 result: "FAIL".into(),
                 severity: "high".into(),
-                detail: format!("Device is {:.0}m from expected location (radius: {:.0}m)", dist, radius),
+                detail: format!(
+                    "Device is {:.0}m from expected location (radius: {:.0}m)",
+                    dist, radius
+                ),
             });
             spoof_score += 0.5;
         }
@@ -628,7 +672,8 @@ async fn detect_gps_spoof(
     if let Some(ref samples) = req.jitter_samples {
         if samples.len() >= 3 {
             let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-            let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / samples.len() as f64;
+            let variance =
+                samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / samples.len() as f64;
             let std_dev = variance.sqrt();
 
             if std_dev < 0.0001 {
@@ -636,7 +681,10 @@ async fn detect_gps_spoof(
                     check: "jitter".into(),
                     result: "FAIL".into(),
                     severity: "high".into(),
-                    detail: format!("GPS jitter std_dev={:.6} suggests emulated/static GPS", std_dev),
+                    detail: format!(
+                        "GPS jitter std_dev={:.6} suggests emulated/static GPS",
+                        std_dev
+                    ),
                 });
                 spoof_score += 0.4;
             }
@@ -659,44 +707,53 @@ async fn detect_gps_spoof(
 }
 
 fn decode_liveness_face_crop(image_base64: &str) -> Result<Vec<f32>, StatusCode> {
-	let encoded = image_base64.split_once(',').map(|(_, data)| data).unwrap_or(image_base64);
-	let image_bytes = BASE64_STANDARD.decode(encoded).map_err(|_| StatusCode::BAD_REQUEST)?;
-	let decoded = image::load_from_memory(&image_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
-	let grayscale = decoded.to_luma8();
-	let resized = image::imageops::resize(&grayscale, 128, 128, image::imageops::FilterType::Triangle);
-	let mut tensor = Vec::with_capacity(128 * 128);
-	for pixel in resized.pixels() {
-		tensor.push(pixel[0] as f32 / 255.0);
-	}
-	Ok(tensor)
+    let encoded = image_base64
+        .split_once(',')
+        .map(|(_, data)| data)
+        .unwrap_or(image_base64);
+    let image_bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let decoded = image::load_from_memory(&image_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let grayscale = decoded.to_luma8();
+    let resized =
+        image::imageops::resize(&grayscale, 128, 128, image::imageops::FilterType::Triangle);
+    let mut tensor = Vec::with_capacity(128 * 128);
+    for pixel in resized.pixels() {
+        tensor.push(pixel[0] as f32 / 255.0);
+    }
+    Ok(tensor)
 }
 
 async fn predict_liveness(
-	State(state): State<SharedState>,
-	Json(req): Json<LivenessRequest>,
+    State(state): State<SharedState>,
+    Json(req): Json<LivenessRequest>,
 ) -> Result<Json<LivenessResponse>, StatusCode> {
-	let start = std::time::Instant::now();
-	let face_crop = decode_liveness_face_crop(&req.image_base64)?;
-	let threshold = req.threshold.unwrap_or(0.85);
-	if !(0.0..=1.0).contains(&threshold) {
-		return Err(StatusCode::BAD_REQUEST);
-	}
-	let state = state.read().await;
-	let model = state.liveness_model.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-	let liveness_score = model.predict(&face_crop).map_err(|error| {
-		warn!(%error, "liveness ONNX inference failed");
-		StatusCode::UNPROCESSABLE_ENTITY
-	})?;
-	if !liveness_score.is_finite() {
-		return Err(StatusCode::INTERNAL_SERVER_ERROR);
-	}
-	Ok(Json(LivenessResponse {
-		liveness_score,
-		liveness_pass: liveness_score >= threshold,
-		threshold,
-		model: "CDCN ONNX CPU classifier".to_string(),
-		inference_time_us: start.elapsed().as_micros() as u64,
-	}))
+    let start = std::time::Instant::now();
+    let face_crop = decode_liveness_face_crop(&req.image_base64)?;
+    let threshold = req.threshold.unwrap_or(0.85);
+    if !(0.0..=1.0).contains(&threshold) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let state = state.read().await;
+    let model = state
+        .liveness_model
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let liveness_score = model.predict(&face_crop).map_err(|error| {
+        warn!(%error, "liveness ONNX inference failed");
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+    if !liveness_score.is_finite() {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    Ok(Json(LivenessResponse {
+        liveness_score,
+        liveness_pass: liveness_score >= threshold,
+        threshold,
+        model: "CDCN ONNX CPU classifier".to_string(),
+        inference_time_us: start.elapsed().as_micros() as u64,
+    }))
 }
 
 async fn query_graph(
@@ -704,11 +761,12 @@ async fn query_graph(
     Json(req): Json<GraphQueryRequest>,
 ) -> Result<Json<GraphQueryResponse>, StatusCode> {
     let s = state.read().await;
-    let neo4j = s.neo4j.as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let neo4j = s.neo4j.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let hops = req.hops.unwrap_or(2).min(5); // cap at 5 to prevent graph traversal explosion
-    let result = neo4j.get_neighborhood(&req.pu_code, hops).await
+    let result = neo4j
+        .get_neighborhood(&req.pu_code, hops)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(result))
@@ -729,7 +787,9 @@ async fn main() {
         } else {
             "unknown panic".to_string()
         };
-        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "unknown".to_string());
         eprintln!("PANIC at {}: {}", location, msg);
         default_panic(info);
@@ -737,8 +797,7 @@ async fn main() {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -756,14 +815,15 @@ async fn main() {
         .route("/anomaly/predict", post(predict_anomaly))
         .route("/anomaly/batch", post(batch_predict))
         .route("/face/compare", post(compare_faces))
-		.route("/liveness/predict", post(predict_liveness))
+        .route("/liveness/predict", post(predict_liveness))
         .route("/graph/neighborhood", post(query_graph))
         .route("/gps/spoof-detect", post(detect_gps_spoof))
         .layer(middleware::from_fn(inference_api_key_auth))
         .layer({
             let origins_str = std::env::var("CORS_ORIGINS")
                 .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
-            let origins: Vec<_> = origins_str.split(',')
+            let origins: Vec<_> = origins_str
+                .split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect();
             if origins.is_empty() {
@@ -772,7 +832,10 @@ async fn main() {
                 CorsLayer::new()
                     .allow_origin(origins)
                     .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                    .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION])
+                    .allow_headers([
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::header::AUTHORIZATION,
+                    ])
                     .allow_credentials(true)
             }
         })
@@ -788,8 +851,9 @@ async fn main() {
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let ctrl_c = tokio::signal::ctrl_c();
-            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
             tokio::select! {
                 _ = ctrl_c => info!("received SIGINT, shutting down inference engine"),
                 _ = sigterm.recv() => info!("received SIGTERM, shutting down inference engine"),

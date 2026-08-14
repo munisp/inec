@@ -1,17 +1,17 @@
 //! Core pipeline engine — orchestrates all hot-path components.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossbeam::channel;
 use serde::{Deserialize, Serialize};
 
+use crate::fluvio_smart::FluvioSmartProcessor;
 use crate::kafka_consumer::KafkaHotConsumer;
+use crate::opensearch::OpenSearchBulkWriter;
 use crate::redis_cluster::RedisClusterPipeline;
 use crate::tigerbeetle::TigerBeetleDirectClient;
-use crate::opensearch::OpenSearchBulkWriter;
-use crate::fluvio_smart::FluvioSmartProcessor;
 
 /// Configuration loaded from environment variables.
 #[derive(Clone)]
@@ -22,18 +22,18 @@ pub struct Config {
     pub kafka_brokers: String,
     pub kafka_group_id: String,
     pub kafka_topics: Vec<String>,
-    pub kafka_consumers: usize,      // parallel consumer threads
-    pub kafka_batch_size: usize,     // messages per batch before processing
+    pub kafka_consumers: usize,  // parallel consumer threads
+    pub kafka_batch_size: usize, // messages per batch before processing
 
     // Redis
     pub redis_nodes: Vec<String>,
-    pub redis_pipeline_size: usize,  // commands per pipeline flush
+    pub redis_pipeline_size: usize, // commands per pipeline flush
     pub redis_pool_size: usize,
 
     // TigerBeetle
     pub tb_addresses: Vec<String>,
     pub tb_cluster_id: u128,
-    pub tb_batch_size: usize,        // max 8190
+    pub tb_batch_size: usize, // max 8190
 
     // OpenSearch
     pub os_urls: Vec<String>,
@@ -47,7 +47,7 @@ pub struct Config {
     pub fluvio_workers: usize,
 
     // Pipeline
-    pub channel_capacity: usize,     // internal channel buffer size
+    pub channel_capacity: usize, // internal channel buffer size
 
     // Durable retry (R4-25): failed sink batches are appended to a local
     // write-ahead log and replayed on startup. See wal.rs for the honest
@@ -61,33 +61,47 @@ impl Config {
             port: env_u16("PORT", 9091),
             kafka_brokers: env_str("KAFKA_BROKERS", "localhost:9092"),
             kafka_group_id: env_str("KAFKA_GROUP_ID", "inec-hot-path"),
-            kafka_topics: env_str("KAFKA_TOPICS", "inec.results.submitted,inec.ballots.cast,inec.incidents.reported")
-                .split(',').map(|s| s.to_string()).collect(),
+            kafka_topics: env_str(
+                "KAFKA_TOPICS",
+                "inec.results.submitted,inec.ballots.cast,inec.incidents.reported",
+            )
+            .split(',')
+            .map(|s| s.to_string())
+            .collect(),
             kafka_consumers: env_usize("KAFKA_CONSUMERS", 16),
             kafka_batch_size: env_usize("KAFKA_BATCH_SIZE", 10000),
             redis_nodes: env_str("REDIS_NODES", "redis://localhost:6379")
-                .split(',').map(|s| s.to_string()).collect(),
+                .split(',')
+                .map(|s| s.to_string())
+                .collect(),
             redis_pipeline_size: env_usize("REDIS_PIPELINE_SIZE", 1000),
             redis_pool_size: env_usize("REDIS_POOL_SIZE", 500),
             tb_addresses: env_str("TB_ADDRESSES", "localhost:3000")
-                .split(',').map(|s| s.to_string()).collect(),
+                .split(',')
+                .map(|s| s.to_string())
+                .collect(),
             tb_cluster_id: env_str("TB_CLUSTER_ID", "0").parse().unwrap_or(0),
             tb_batch_size: env_usize("TB_BATCH_SIZE", 8190),
             os_urls: env_str("OPENSEARCH_URLS", "http://localhost:9200")
-                .split(',').map(|s| s.to_string()).collect(),
+                .split(',')
+                .map(|s| s.to_string())
+                .collect(),
             os_batch_size: env_usize("OS_BATCH_SIZE", 5000),
             os_flush_ms: env_str("OS_FLUSH_MS", "1000").parse().unwrap_or(1000),
             os_workers: env_usize("OS_WORKERS", 8),
             fluvio_endpoint: env_str("FLUVIO_ENDPOINT", "localhost:9003"),
             fluvio_topics: env_str("FLUVIO_TOPICS", "inec.stream.results,inec.stream.ballots")
-                .split(',').map(|s| s.to_string()).collect(),
+                .split(',')
+                .map(|s| s.to_string())
+                .collect(),
             fluvio_workers: env_usize("FLUVIO_WORKERS", 8),
             // Default 5k batches (not 1M): a million-deep buffer of 10k-message
             // batches is an unbounded-memory footgun, not backpressure.
             channel_capacity: env_usize("CHANNEL_CAPACITY", 5_000),
             // --wal-dir <path> CLI flag wins over WAL_DIR; default /tmp.
-            wal_dir: std::path::PathBuf::from(wal_dir_from_args()
-                .unwrap_or_else(|| env_str("WAL_DIR", "/tmp/inec-hot-path-wal"))),
+            wal_dir: std::path::PathBuf::from(
+                wal_dir_from_args().unwrap_or_else(|| env_str("WAL_DIR", "/tmp/inec-hot-path-wal")),
+            ),
         }
     }
 }
@@ -231,9 +245,7 @@ impl Engine {
             let config = config.clone();
             let sender = sender.clone();
             let errors = self.errors.clone();
-            async move {
-                kafka.consume_batched(&config, sender, errors).await
-            }
+            async move { kafka.consume_batched(&config, sender, errors).await }
         });
 
         // Stage 2: Process batches from channel → fan-out to sinks
@@ -351,7 +363,10 @@ impl Engine {
         if records.is_empty() {
             return;
         }
-        tracing::info!("WAL replay: retrying {} failed batch(es) from previous run", records.len());
+        tracing::info!(
+            "WAL replay: retrying {} failed batch(es) from previous run",
+            records.len()
+        );
 
         let mut still_failed: Vec<crate::wal::WalRecord> = Vec::new();
         for mut record in records {
@@ -369,10 +384,18 @@ impl Engine {
             self.sink_fluvio.record(r4.is_ok(), batch_len);
 
             record.failed_sinks.clear();
-            if let Err(e) = &r1 { record.failed_sinks.push(format!("redis: {e}")); }
-            if let Err(e) = &r2 { record.failed_sinks.push(format!("tigerbeetle: {e}")); }
-            if let Err(e) = &r3 { record.failed_sinks.push(format!("opensearch: {e}")); }
-            if let Err(e) = &r4 { record.failed_sinks.push(format!("fluvio: {e}")); }
+            if let Err(e) = &r1 {
+                record.failed_sinks.push(format!("redis: {e}"));
+            }
+            if let Err(e) = &r2 {
+                record.failed_sinks.push(format!("tigerbeetle: {e}"));
+            }
+            if let Err(e) = &r3 {
+                record.failed_sinks.push(format!("opensearch: {e}"));
+            }
+            if let Err(e) = &r4 {
+                record.failed_sinks.push(format!("fluvio: {e}"));
+            }
 
             if record.failed_sinks.is_empty() {
                 self.processed.fetch_add(batch_len, Ordering::Relaxed);
@@ -416,7 +439,11 @@ impl Engine {
              # HELP inec_hot_path_tps Current transactions per second\n\
              # TYPE inec_hot_path_tps gauge\n\
              inec_hot_path_tps {:.0}\n",
-            if uptime > 0.0 { processed as f64 / uptime } else { 0.0 }
+            if uptime > 0.0 {
+                processed as f64 / uptime
+            } else {
+                0.0
+            }
         )
     }
 
@@ -444,7 +471,10 @@ impl Engine {
 
         let ready = sinks
             .as_array()
-            .map(|arr| arr.iter().all(|s| s["available"].as_bool().unwrap_or(false)))
+            .map(|arr| {
+                arr.iter()
+                    .all(|s| s["available"].as_bool().unwrap_or(false))
+            })
             .unwrap_or(false);
 
         let body = serde_json::json!({
@@ -475,9 +505,15 @@ fn env_str(key: &str, default: &str) -> String {
 }
 
 fn env_u16(key: &str, default: u16) -> u16 {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }

@@ -41,7 +41,9 @@ impl ServiceClient {
         if !status.is_success() {
             anyhow::bail!("{}: GET {} returned {}", self.service_name, path, status);
         }
-        resp.json().await.with_context(|| format!("{}: decode failed", self.service_name))
+        resp.json()
+            .await
+            .with_context(|| format!("{}: decode failed", self.service_name))
     }
 
     pub async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
@@ -58,7 +60,9 @@ impl ServiceClient {
         if !status.is_success() {
             anyhow::bail!("{}: POST {} returned {}", self.service_name, path, status);
         }
-        resp.json().await.with_context(|| format!("{}: decode failed", self.service_name))
+        resp.json()
+            .await
+            .with_context(|| format!("{}: decode failed", self.service_name))
     }
 
     pub async fn health(&self) -> bool {
@@ -129,7 +133,12 @@ impl GeoServiceClient {
         Self(ServiceClient::new("geo-svc", base_url))
     }
 
-    pub async fn validate_geofence(&self, lat: f64, lng: f64, pu_id: &str) -> Result<GeofenceResult> {
+    pub async fn validate_geofence(
+        &self,
+        lat: f64,
+        lng: f64,
+        pu_id: &str,
+    ) -> Result<GeofenceResult> {
         self.0
             .post(
                 "/geo/validate-geofence",

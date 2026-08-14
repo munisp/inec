@@ -48,7 +48,12 @@ fn route_distance(stops: &[RouteStop], start_lat: f64, start_lng: f64) -> f64 {
     }
     let mut total = haversine_m(start_lat, start_lng, stops[0].lat, stops[0].lng);
     for i in 1..stops.len() {
-        total += haversine_m(stops[i - 1].lat, stops[i - 1].lng, stops[i].lat, stops[i].lng);
+        total += haversine_m(
+            stops[i - 1].lat,
+            stops[i - 1].lng,
+            stops[i].lat,
+            stops[i].lng,
+        );
     }
     total
 }
@@ -79,7 +84,12 @@ fn nearest_neighbor(start_lat: f64, start_lng: f64, stops: &[RouteStop]) -> Vec<
 }
 
 /// 2-opt local search improvement
-fn two_opt_improve(route: &mut Vec<RouteStop>, start_lat: f64, start_lng: f64, max_iterations: usize) {
+fn two_opt_improve(
+    route: &mut Vec<RouteStop>,
+    start_lat: f64,
+    start_lng: f64,
+    max_iterations: usize,
+) {
     let n = route.len();
     if n < 4 {
         return;
@@ -113,10 +123,20 @@ fn segment_cost(route: &[RouteStop], i: usize, j: usize, start_lat: f64, start_l
     };
     let mut cost = haversine_m(prev.0, prev.1, route[i + 1].lat, route[i + 1].lng);
     for k in (i + 1)..j {
-        cost += haversine_m(route[k].lat, route[k].lng, route[k + 1].lat, route[k + 1].lng);
+        cost += haversine_m(
+            route[k].lat,
+            route[k].lng,
+            route[k + 1].lat,
+            route[k + 1].lng,
+        );
     }
     if j + 1 < route.len() {
-        cost += haversine_m(route[j].lat, route[j].lng, route[j + 1].lat, route[j + 1].lng);
+        cost += haversine_m(
+            route[j].lat,
+            route[j].lng,
+            route[j + 1].lat,
+            route[j + 1].lng,
+        );
     }
     cost
 }
@@ -299,7 +319,11 @@ pub struct CrowdEstimate {
 /// arithmetic margin, NOT a statistically valid confidence interval, so it
 /// is labeled accordingly. Do not present these numbers as model output.
 pub fn estimate_crowd(area_sqm: f64, density_factor: f64) -> CrowdEstimate {
-    let density = if density_factor > 0.0 { density_factor } else { 2.0 };
+    let density = if density_factor > 0.0 {
+        density_factor
+    } else {
+        2.0
+    };
     let count = (area_sqm * density) as u64;
     let margin = (count as f64 * 0.15) as u64;
 
@@ -341,7 +365,11 @@ mod tests {
     #[test]
     fn test_optimize_route_single() {
         let stops = vec![RouteStop {
-            id: "a".into(), lat: 6.46, lng: 3.40, name: "A".into(), priority: 1,
+            id: "a".into(),
+            lat: 6.46,
+            lng: 3.40,
+            name: "A".into(),
+            priority: 1,
         }];
         let result = optimize_route(6.45, 3.39, stops);
         assert_eq!(result.stops.len(), 1);
@@ -351,10 +379,34 @@ mod tests {
     #[test]
     fn test_optimize_route_multi() {
         let stops = vec![
-            RouteStop { id: "a".into(), lat: 6.45, lng: 3.40, name: "A".into(), priority: 1 },
-            RouteStop { id: "b".into(), lat: 6.50, lng: 3.45, name: "B".into(), priority: 2 },
-            RouteStop { id: "c".into(), lat: 6.46, lng: 3.41, name: "C".into(), priority: 1 },
-            RouteStop { id: "d".into(), lat: 6.55, lng: 3.50, name: "D".into(), priority: 3 },
+            RouteStop {
+                id: "a".into(),
+                lat: 6.45,
+                lng: 3.40,
+                name: "A".into(),
+                priority: 1,
+            },
+            RouteStop {
+                id: "b".into(),
+                lat: 6.50,
+                lng: 3.45,
+                name: "B".into(),
+                priority: 2,
+            },
+            RouteStop {
+                id: "c".into(),
+                lat: 6.46,
+                lng: 3.41,
+                name: "C".into(),
+                priority: 1,
+            },
+            RouteStop {
+                id: "d".into(),
+                lat: 6.55,
+                lng: 3.50,
+                name: "D".into(),
+                priority: 3,
+            },
         ];
         let result = optimize_route(6.44, 3.39, stops);
         assert_eq!(result.stops.len(), 4);

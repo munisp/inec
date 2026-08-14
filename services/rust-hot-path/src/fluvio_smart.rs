@@ -6,9 +6,9 @@
 //! - Partition-level parallelism
 //! - Backpressure via bounded channels
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::pipeline::{Config, Transaction};
 
@@ -102,9 +102,9 @@ impl TopicConfig {
     pub fn results_topic() -> Self {
         Self {
             name: "inec.stream.results".to_string(),
-            partitions: 37,           // one per state
+            partitions: 37, // one per state
             replication_factor: 3,
-            retention_seconds: 86400 * 30, // 30 days
+            retention_seconds: 86400 * 30,     // 30 days
             segment_size_bytes: 1_073_741_824, // 1GB segments
             compression: "lz4".to_string(),
         }
@@ -116,7 +116,7 @@ impl TopicConfig {
             name: "inec.stream.events".to_string(),
             partitions: 64,
             replication_factor: 2,
-            retention_seconds: 86400 * 7, // 7 days
+            retention_seconds: 86400 * 7,    // 7 days
             segment_size_bytes: 536_870_912, // 512MB segments
             compression: "lz4".to_string(),
         }

@@ -8,13 +8,13 @@ pub mod platform;
 pub mod voting_crypto;
 
 use axum::{
+    body::Body,
     extract::{Json, Path, Query, State},
-    http::{StatusCode, Request},
+    http::{Request, StatusCode},
     middleware as axum_mw,
     response::IntoResponse,
     routing::{get, post},
     Extension, Router,
-    body::Body,
 };
 use geo::HaversineDistance;
 use geo::Point;
@@ -33,7 +33,7 @@ pub struct Volunteer {
     pub id: String,
     pub party_id: i64,
     pub name: String,
-    pub role: String,          // canvasser, driver, coordinator, phone_banker, team_lead
+    pub role: String, // canvasser, driver, coordinator, phone_banker, team_lead
     pub latitude: f64,
     pub longitude: f64,
     pub has_vehicle: bool,
@@ -120,9 +120,9 @@ impl rstar::Point for VolunteerPoint {
 // ─── App State ─────────────────────────────────────────────────────────────
 
 struct AppState {
-    volunteers: RwLock<HashMap<i64, Vec<Volunteer>>>,       // party_id -> volunteers
-    rtree: RwLock<RTree<VolunteerPoint>>,                   // spatial index
-    polling_units: RwLock<HashMap<String, PollingUnit>>,     // code -> PU
+    volunteers: RwLock<HashMap<i64, Vec<Volunteer>>>, // party_id -> volunteers
+    rtree: RwLock<RTree<VolunteerPoint>>,             // spatial index
+    polling_units: RwLock<HashMap<String, PollingUnit>>, // code -> PU
     ride_requests: RwLock<Vec<RideRequest>>,
     mw: middleware::Middleware,
     persistence: persistence::PersistenceLayer,
@@ -411,7 +411,10 @@ fn is_production() -> bool {
         .or_else(|_| std::env::var("APP_ENV"))
         .unwrap_or_default()
         .to_ascii_lowercase();
-    !matches!(env.as_str(), "development" | "dev" | "test" | "testing" | "local" | "staging")
+    !matches!(
+        env.as_str(),
+        "development" | "dev" | "test" | "testing" | "local" | "staging"
+    )
 }
 
 /// Startup tenancy guard: refuse to boot in production with neither
@@ -443,7 +446,10 @@ fn enforce_tenancy_config_at_startup() {
 }
 
 /// Reject a request whose party_id disagrees with the key-derived party.
-fn enforce_party(party: &Option<PartyKey>, requested_party: i64) -> Result<(), axum::response::Response> {
+fn enforce_party(
+    party: &Option<PartyKey>,
+    requested_party: i64,
+) -> Result<(), axum::response::Response> {
     if let Some(PartyKey(p)) = party {
         if *p != requested_party {
             return Err((
@@ -459,10 +465,7 @@ fn enforce_party(party: &Option<PartyKey>, requested_party: i64) -> Result<(), a
     Ok(())
 }
 
-async fn internal_api_key_auth(
-    req: Request<Body>,
-    next: axum_mw::Next,
-) -> impl IntoResponse {
+async fn internal_api_key_auth(req: Request<Body>, next: axum_mw::Next) -> impl IntoResponse {
     // Health endpoint is always public
     if req.uri().path() == "/health" {
         return next.run(req).await;
@@ -484,7 +487,8 @@ async fn internal_api_key_auth(
             .into_response();
     }
 
-    let presented_key = req.headers()
+    let presented_key = req
+        .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_string());
@@ -500,9 +504,14 @@ async fn internal_api_key_auth(
     // NOT authentication.
     let dapr_tokens = {
         let tokens = configured_api_keys("DAPR_API_TOKEN");
-        if tokens.is_empty() { expected_keys.clone() } else { tokens }
+        if tokens.is_empty() {
+            expected_keys.clone()
+        } else {
+            tokens
+        }
     };
-    let presented_dapr = req.headers()
+    let presented_dapr = req
+        .headers()
         .get("dapr-api-token")
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_string());
@@ -523,7 +532,11 @@ async fn internal_api_key_auth(
             let binding = presented_key
                 .as_deref()
                 .and_then(|k| party_for_key(&keys, k))
-                .or_else(|| presented_dapr.as_deref().and_then(|t| party_for_key(&keys, t)));
+                .or_else(|| {
+                    presented_dapr
+                        .as_deref()
+                        .and_then(|t| party_for_key(&keys, t))
+                });
             match binding {
                 Some(party_id) => {
                     req.extensions_mut().insert(PartyKey(party_id));
@@ -546,7 +559,9 @@ async fn internal_api_key_auth(
                     }
                     return (
                         StatusCode::UNAUTHORIZED,
-                        Json(serde_json::json!({"error": "x-api-key not authorized for any party"})),
+                        Json(
+                            serde_json::json!({"error": "x-api-key not authorized for any party"}),
+                        ),
                     )
                         .into_response();
                 }
@@ -566,7 +581,11 @@ async fn internal_api_key_auth(
         return next.run(req).await;
     }
 
-    (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": "unauthorized"})),
+    )
+        .into_response()
 }
 
 // ─── Rate Limiting ─────────────────────────────────────────────────────────
@@ -589,7 +608,9 @@ async fn rate_limit(
         warn!(key_prefix = &key[..key.len().min(8)], "rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({"error": "rate_limit_exceeded", "limit": "120 requests/minute"})),
+            Json(
+                serde_json::json!({"error": "rate_limit_exceeded", "limit": "120 requests/minute"}),
+            ),
         )
             .into_response();
     }
@@ -704,18 +725,30 @@ async fn register_volunteers(
     let party_id = req.party_id;
     tokio::spawn(async move {
         for (vol_id, lat, lng) in positions {
-            persistence.save_volunteer_position(&vol_id, party_id, lat, lng).await;
-            persistence.cache_volunteer_position(&vol_id, lat, lng).await;
+            persistence
+                .save_volunteer_position(&vol_id, party_id, lat, lng)
+                .await;
+            persistence
+                .cache_volunteer_position(&vol_id, lat, lng)
+                .await;
         }
     });
-    info!(party_id = req.party_id, count = count, "Registered volunteers");
+    info!(
+        party_id = req.party_id,
+        count = count,
+        "Registered volunteers"
+    );
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "registered": count,
-        "party_id": req.party_id,
-        // INTEGRITY: report honestly whether state survives a restart.
-        "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "registered": count,
+            "party_id": req.party_id,
+            // INTEGRITY: report honestly whether state survives a restart.
+            "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
+        })),
+    )
+        .into_response()
 }
 
 async fn register_polling_units(
@@ -736,7 +769,11 @@ async fn register_polling_units(
     }
     info!(count = count, "Registered polling units");
 
-    (StatusCode::OK, Json(serde_json::json!({"registered": count}))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"registered": count})),
+    )
+        .into_response()
 }
 
 async fn match_ride(
@@ -754,8 +791,13 @@ async fn match_ride(
     let (results, no_match) = {
         let tree = state_read!(state.rtree);
         let pickup = VolunteerPoint {
-            id: String::new(), party_id: req.party_id, lat: req.pickup_lat, lng: req.pickup_lng,
-            has_vehicle: false, capacity: 0, available: false,
+            id: String::new(),
+            party_id: req.party_id,
+            lat: req.pickup_lat,
+            lng: req.pickup_lng,
+            has_vehicle: false,
+            capacity: 0,
+            available: false,
         };
 
         let candidates: Vec<_> = tree
@@ -818,7 +860,14 @@ async fn match_ride(
         "candidates": results.len(),
         "matched_volunteer": best_match,
     });
-    state.mw.publish_kafka("gotv.rides", req.ride_id.as_deref().unwrap_or("unknown"), &event).await;
+    state
+        .mw
+        .publish_kafka(
+            "gotv.rides",
+            req.ride_id.as_deref().unwrap_or("unknown"),
+            &event,
+        )
+        .await;
     state.mw.stream_fluvio("gotv-ride-matches", &event).await;
 
     // Persist the match (previously nothing was saved — match results were
@@ -830,13 +879,17 @@ async fn match_ride(
             .await;
     }
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "matches": results,
-        "total_candidates": results.len(),
-        "polling_unit": req.polling_unit_code,
-        // INTEGRITY: report honestly whether the match was persisted.
-        "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "matches": results,
+            "total_candidates": results.len(),
+            "polling_unit": req.polling_unit_code,
+            // INTEGRITY: report honestly whether the match was persisted.
+            "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
+        })),
+    )
+        .into_response()
 }
 
 async fn bulk_match_rides(
@@ -861,8 +914,13 @@ async fn bulk_match_rides(
     for ride_req in &req.requests {
         let pickup_point = Point::new(ride_req.pickup_lng, ride_req.pickup_lat);
         let pickup_vp = VolunteerPoint {
-            id: String::new(), party_id: req.party_id, lat: ride_req.pickup_lat, lng: ride_req.pickup_lng,
-            has_vehicle: false, capacity: 0, available: false,
+            id: String::new(),
+            party_id: req.party_id,
+            lat: ride_req.pickup_lat,
+            lng: ride_req.pickup_lng,
+            has_vehicle: false,
+            capacity: 0,
+            available: false,
         };
 
         let matched = tree
@@ -915,7 +973,8 @@ async fn bulk_match_rides(
         "unmatched": req.requests.len() - matched_count,
         // INTEGRITY: bulk matches are computed in memory; report persistence honestly.
         "persistence": if state.persistence.is_enabled() { "persistent" } else { "ephemeral" },
-    })).into_response()
+    }))
+    .into_response()
 }
 
 async fn optimize_route(
@@ -964,7 +1023,8 @@ async fn optimize_route(
 
     // Add return to destination
     if let Some(last) = ordered_stops.last() {
-        total_distance += haversine_km(last.lat, last.lng, req.destination.lat, req.destination.lng);
+        total_distance +=
+            haversine_km(last.lat, last.lng, req.destination.lat, req.destination.lng);
     }
 
     let route = OptimizedRoute {
@@ -1056,14 +1116,22 @@ async fn coverage_analysis(
 
     if coverage_status != "unavailable_no_state_codes" {
         for pu in pus.values().take(MAX_COVERAGE_PUS) {
-            let state_key = pu.state_code.clone().unwrap_or_else(|| "unknown".to_string());
+            let state_key = pu
+                .state_code
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
             let entry = coverage_by_state.entry(state_key).or_default();
             entry.polling_units += 1;
 
             // R-tree nearest-volunteer lookup (O(log V)), then exact haversine.
             let pickup = VolunteerPoint {
-                id: String::new(), party_id, lat: pu.latitude, lng: pu.longitude,
-                has_vehicle: false, capacity: 0, available: false,
+                id: String::new(),
+                party_id,
+                lat: pu.latitude,
+                lng: pu.longitude,
+                has_vehicle: false,
+                capacity: 0,
+                available: false,
             };
             let nearest = tree
                 .nearest_neighbor_iter(&pickup)
@@ -1080,7 +1148,10 @@ async fn coverage_analysis(
 
         // Count volunteers per real state code
         for vol in &party_vols {
-            let state_key = vol.state_code.clone().unwrap_or_else(|| "unknown".to_string());
+            let state_key = vol
+                .state_code
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
             let entry = coverage_by_state.entry(state_key).or_default();
             entry.volunteers += 1;
             if vol.has_vehicle {
@@ -1093,8 +1164,13 @@ async fn coverage_analysis(
         // (geo-only, no state attribution).
         for pu in pus.values().take(MAX_COVERAGE_PUS) {
             let pickup = VolunteerPoint {
-                id: String::new(), party_id, lat: pu.latitude, lng: pu.longitude,
-                has_vehicle: false, capacity: 0, available: false,
+                id: String::new(),
+                party_id,
+                lat: pu.latitude,
+                lng: pu.longitude,
+                has_vehicle: false,
+                capacity: 0,
+                available: false,
             };
             let nearest = tree
                 .nearest_neighbor_iter(&pickup)
@@ -1126,7 +1202,8 @@ async fn coverage_analysis(
         coverage_status: coverage_status.to_string(),
         coverage_by_state,
         uncovered_pus: uncovered,
-    }).into_response()
+    })
+    .into_response()
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -1180,20 +1257,25 @@ async fn partition_territories(
         })
         .unwrap_or_default();
 
-    let contact_locs: Vec<(f64, f64)> = req.contact_locations.iter().map(|c| (c.lat, c.lng)).collect();
+    let contact_locs: Vec<(f64, f64)> = req
+        .contact_locations
+        .iter()
+        .map(|c| (c.lat, c.lng))
+        .collect();
 
-    let territories = persistence::partition_ward_territories(
-        &vol_positions,
-        &contact_locs,
-        &req.ward_code,
-    );
+    let territories =
+        persistence::partition_ward_territories(&vol_positions, &contact_locs, &req.ward_code);
 
-    (StatusCode::OK, Json(serde_json::json!({
-        "ward_code": req.ward_code,
-        "territories": territories,
-        "total_volunteers": vol_positions.len(),
-        "total_contacts": contact_locs.len(),
-    }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ward_code": req.ward_code,
+            "territories": territories,
+            "total_volunteers": vol_positions.len(),
+            "total_contacts": contact_locs.len(),
+        })),
+    )
+        .into_response()
 }
 
 // ─── V2: Predictive Turnout ────────────────────────────────────────────────
@@ -1208,9 +1290,7 @@ struct TurnoutPredictionRequest {
     weather_clear: Option<bool>,
 }
 
-async fn predict_turnout(
-    Json(req): Json<TurnoutPredictionRequest>,
-) -> impl IntoResponse {
+async fn predict_turnout(Json(req): Json<TurnoutPredictionRequest>) -> impl IntoResponse {
     let prediction = persistence::predict_ward_turnout(
         req.historical_turnout_pct,
         req.pledge_count,
@@ -1262,7 +1342,10 @@ async fn calculate_isochrone(
             );
             (StatusCode::OK, Json(serde_json::json!(iso)))
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "volunteer not found"}))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "volunteer not found"})),
+        ),
     }
     .into_response()
 }
@@ -1309,7 +1392,8 @@ async fn check_geofence(
     Json(req): Json<GeofenceCheckRequest>,
 ) -> axum::response::Response {
     let pus = state_read!(state.polling_units);
-    let ward_pus: Vec<&PollingUnit> = pus.values()
+    let ward_pus: Vec<&PollingUnit> = pus
+        .values()
         .filter(|pu| pu.ward_code == req.assigned_ward)
         .collect();
 
@@ -1348,7 +1432,10 @@ async fn check_geofence(
 
     let in_zone = dist_to_center < 5.0; // 5km ward radius threshold
     let alert = if !in_zone {
-        Some(format!("Volunteer {} is {:.1}km outside assigned ward {}", req.volunteer_id, dist_to_center, req.assigned_ward))
+        Some(format!(
+            "Volunteer {} is {:.1}km outside assigned ward {}",
+            req.volunteer_id, dist_to_center, req.assigned_ward
+        ))
     } else {
         None
     };
@@ -1378,7 +1465,9 @@ async fn main() {
         } else {
             "unknown panic".to_string()
         };
-        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "unknown".to_string());
         eprintln!("PANIC at {}: {}", location, msg);
         default_panic(info);
@@ -1386,8 +1475,7 @@ async fn main() {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -1427,7 +1515,10 @@ async fn main() {
         let rides = state.persistence.load_pending_rides().await;
         if !rides.is_empty() {
             // Startup-only, no concurrent holders: recover a poisoned lock.
-            let mut rr = state.ride_requests.write().unwrap_or_else(|e| e.into_inner());
+            let mut rr = state
+                .ride_requests
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             for pr in &rides {
                 rr.push(RideRequest {
                     id: pr.request_id.clone(),
@@ -1439,7 +1530,10 @@ async fn main() {
                     status: pr.status.clone(),
                 });
             }
-            info!(count = rides.len(), "Hydrated pending rides from PostgreSQL");
+            info!(
+                count = rides.len(),
+                "Hydrated pending rides from PostgreSQL"
+            );
         }
 
         if !state.rebuild_rtree() {
@@ -1448,8 +1542,6 @@ async fn main() {
     }
 
     let app = build_router(state);
-
-
 
     let addr = format!("0.0.0.0:{}", port);
     info!("GOTV Engine starting on {}", addr);
@@ -1463,8 +1555,9 @@ async fn main() {
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let ctrl_c = tokio::signal::ctrl_c();
-            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler");
             tokio::select! {
                 _ = ctrl_c => info!("received SIGINT, starting graceful shutdown"),
                 _ = sigterm.recv() => info!("received SIGTERM, starting graceful shutdown"),
@@ -1538,12 +1631,18 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/gotv-engine/middleware/status", get(middleware_status))
         .route("/gotv-engine/stats", get(engine_stats))
         // V2 endpoints
-        .route("/gotv-engine/territories/partition", post(partition_territories))
+        .route(
+            "/gotv-engine/territories/partition",
+            post(partition_territories),
+        )
         .route("/gotv-engine/turnout/predict", post(predict_turnout))
         .route("/gotv-engine/isochrone", post(calculate_isochrone))
         .route("/gotv-engine/geofence/check", post(check_geofence))
         // Voting crypto endpoints (Dapr service invocation targets)
-        .route("/gotv-engine/crypto/encrypt-ballot", post(encrypt_ballot_handler))
+        .route(
+            "/gotv-engine/crypto/encrypt-ballot",
+            post(encrypt_ballot_handler),
+        )
         .route("/gotv-engine/crypto/shuffle", post(shuffle_handler))
         .route("/gotv-engine/crypto/merkle-tree", post(merkle_tree_handler))
         .route("/gotv-engine/verify-keys", post(verify_keys_handler))
@@ -1585,7 +1684,10 @@ mod tests {
             let _guard = s2.volunteers.write().unwrap();
             panic!("deliberate panic to poison the lock (test)");
         });
-        assert!(handle.join().is_err(), "poisoning thread must have panicked");
+        assert!(
+            handle.join().is_err(),
+            "poisoning thread must have panicked"
+        );
         assert!(state.volunteers.read().is_err(), "lock must be poisoned");
 
         // Hit a handler that writes state.volunteers — must 500, not abort.

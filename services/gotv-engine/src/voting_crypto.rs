@@ -5,9 +5,9 @@
 // Middleware: Dapr (service mesh), Kafka (event streaming), Redis (session cache),
 // TigerBeetle (audit ledger), Fluvio (live stream)
 
-use sha2::{Sha256, Digest};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -138,14 +138,21 @@ impl std::error::Error for VotingCryptoError {}
 /// from the private key and "Shamir shares" via bytewise wrapping_add —
 /// neither operation is cryptographically valid. Without a real
 /// threshold-encryption backend this function refuses to fabricate keys.
-pub fn generate_election_keys(_election_id: i64, _guardians: usize, _threshold: usize) -> Result<(ElectionKeyPair, Vec<GuardianKeyShare>), VotingCryptoError> {
+pub fn generate_election_keys(
+    _election_id: i64,
+    _guardians: usize,
+    _threshold: usize,
+) -> Result<(ElectionKeyPair, Vec<GuardianKeyShare>), VotingCryptoError> {
     Err(VotingCryptoError::unavailable("generate_election_keys"))
 }
 
 /// SECURITY: Previously returned true for any non-empty share. No real
 /// share-verification backend exists in this build, so verification fails
 /// loudly instead of rubber-stamping invalid guardian shares.
-pub fn verify_guardian_share(_share: &GuardianKeyShare, _election_pub_key: &str) -> Result<bool, VotingCryptoError> {
+pub fn verify_guardian_share(
+    _share: &GuardianKeyShare,
+    _election_pub_key: &str,
+) -> Result<bool, VotingCryptoError> {
     Err(VotingCryptoError::unavailable("verify_guardian_share"))
 }
 
@@ -157,7 +164,12 @@ pub fn verify_guardian_share(_share: &GuardianKeyShare, _election_pub_key: &str)
 /// — a hash, not encryption — and the "Chaum-Pedersen proof" was a chain of
 /// SHA-256 hashes that verified trivially. No real ballot-encryption backend
 /// is configured in this build, so this refuses to fabricate ciphertexts.
-pub fn encrypt_ballot(_delegate_id: &str, _aspirant_id: &str, _vote_type: &str, _election_pub_key: &str) -> Result<EncryptedBallot, VotingCryptoError> {
+pub fn encrypt_ballot(
+    _delegate_id: &str,
+    _aspirant_id: &str,
+    _vote_type: &str,
+    _election_pub_key: &str,
+) -> Result<EncryptedBallot, VotingCryptoError> {
     Err(VotingCryptoError::unavailable("encrypt_ballot"))
 }
 
@@ -176,13 +188,19 @@ pub fn verify_ballot_proof(_ballot: &EncryptedBallot) -> Result<bool, VotingCryp
 /// irreversibly DESTROYS the ballot ciphertext, and the shuffle "proof"
 /// verified by comparing caller-supplied list hashes — any shuffle passed
 /// with verified:true. No mix-net backend exists in this build; refuse.
-pub fn mix_net_shuffle(_encrypted_ballots: &[String]) -> Result<(Vec<String>, ShuffleProof), VotingCryptoError> {
+pub fn mix_net_shuffle(
+    _encrypted_ballots: &[String],
+) -> Result<(Vec<String>, ShuffleProof), VotingCryptoError> {
     Err(VotingCryptoError::unavailable("mix_net_shuffle"))
 }
 
 /// SECURITY: Previously any caller-supplied input/output hash pair passed.
 /// Without a real shuffle-proof backend, verification fails loudly.
-pub fn verify_shuffle_proof(_input: &[String], _output: &[String], _proof: &ShuffleProof) -> Result<bool, VotingCryptoError> {
+pub fn verify_shuffle_proof(
+    _input: &[String],
+    _output: &[String],
+    _proof: &ShuffleProof,
+) -> Result<bool, VotingCryptoError> {
     Err(VotingCryptoError::unavailable("verify_shuffle_proof"))
 }
 
@@ -194,7 +212,10 @@ pub fn verify_shuffle_proof(_input: &[String], _output: &[String], _proof: &Shuf
 /// all-ballots, producing an identical digest for every aspirant regardless
 /// of votes. That is a fabricated tally. No homomorphic-encryption backend
 /// exists in this build; refuse.
-pub fn homomorphic_tally(_encrypted_ballots: &[String], _aspirant_ids: &[String]) -> Result<HashMap<String, String>, VotingCryptoError> {
+pub fn homomorphic_tally(
+    _encrypted_ballots: &[String],
+    _aspirant_ids: &[String],
+) -> Result<HashMap<String, String>, VotingCryptoError> {
     Err(VotingCryptoError::unavailable("homomorphic_tally"))
 }
 
@@ -204,7 +225,10 @@ pub fn homomorphic_tally(_encrypted_ballots: &[String], _aspirant_ids: &[String]
 
 /// SECURITY: The previous partial decryption was SHA256("partial_decrypt:"||tally||share)
 /// — a hash, not a threshold-decryption share. No backend; refuse.
-pub fn create_decryption_share(_encrypted_tally: &str, _guardian_share: &GuardianKeyShare) -> Result<DecryptionShare, VotingCryptoError> {
+pub fn create_decryption_share(
+    _encrypted_tally: &str,
+    _guardian_share: &GuardianKeyShare,
+) -> Result<DecryptionShare, VotingCryptoError> {
     Err(VotingCryptoError::unavailable("create_decryption_share"))
 }
 
@@ -213,7 +237,11 @@ pub fn create_decryption_share(_encrypted_tally: &str, _guardian_share: &Guardia
 /// PANICKED on insufficient shares (API-driven DoS). Both are removed:
 /// insufficient shares returns Err, and without a real threshold-decryption
 /// backend this refuses to fabricate a tally.
-pub fn combine_decryption_shares(shares: &[DecryptionShare], threshold: usize, _actual_count: u64) -> Result<TallyResult, VotingCryptoError> {
+pub fn combine_decryption_shares(
+    shares: &[DecryptionShare],
+    threshold: usize,
+    _actual_count: u64,
+) -> Result<TallyResult, VotingCryptoError> {
     if shares.len() < threshold {
         return Err(VotingCryptoError::invalid_input(
             "combine_decryption_shares",
@@ -275,7 +303,11 @@ fn generate_merkle_proof(levels: &[Vec<String>], index: usize) -> Vec<MerkleProo
         if sibling_idx < level.len() {
             proof.push(MerkleProofStep {
                 hash: level[sibling_idx].clone(),
-                position: if idx % 2 == 0 { "right".to_string() } else { "left".to_string() },
+                position: if idx % 2 == 0 {
+                    "right".to_string()
+                } else {
+                    "left".to_string()
+                },
             });
         }
         idx /= 2;
@@ -313,7 +345,10 @@ pub struct CoercionResistanceToken {
     pub real_credential: String,
 }
 
-pub fn generate_coercion_resistance_tokens(delegate_id: &str, panic_code: &str) -> CoercionResistanceToken {
+pub fn generate_coercion_resistance_tokens(
+    delegate_id: &str,
+    panic_code: &str,
+) -> CoercionResistanceToken {
     let mut rng = rand::thread_rng();
 
     let mut panic_hasher = Sha256::new();
@@ -353,7 +388,12 @@ pub fn generate_receipt(ballot_id: &str, confirmation_code: &str, voter_key: &st
     hex::encode(hasher.finalize())
 }
 
-pub fn verify_receipt(receipt: &str, ballot_id: &str, confirmation_code: &str, voter_key: &str) -> bool {
+pub fn verify_receipt(
+    receipt: &str,
+    ballot_id: &str,
+    confirmation_code: &str,
+    voter_key: &str,
+) -> bool {
     let expected = generate_receipt(ballot_id, confirmation_code, voter_key);
     receipt == expected
 }
@@ -416,25 +456,36 @@ pub struct VerifyKeyResponse {
 // Actix-web handler functions (registered in main.rs)
 // SECURITY: every handler that depends on a real crypto backend returns
 // Err(VotingCryptoError); the HTTP layer maps this to 503 with a JSON error.
-pub fn handle_encrypt_ballot(_req: EncryptBallotRequest) -> Result<EncryptBallotResponse, VotingCryptoError> {
-    Err(VotingCryptoError::unavailable("encrypt-ballot endpoint: ballot encryption backend not configured"))
+pub fn handle_encrypt_ballot(
+    _req: EncryptBallotRequest,
+) -> Result<EncryptBallotResponse, VotingCryptoError> {
+    Err(VotingCryptoError::unavailable(
+        "encrypt-ballot endpoint: ballot encryption backend not configured",
+    ))
 }
 
 pub fn handle_shuffle(_req: ShuffleRequest) -> Result<ShuffleResponse, VotingCryptoError> {
-    Err(VotingCryptoError::unavailable("shuffle endpoint: mix-net backend not configured"))
+    Err(VotingCryptoError::unavailable(
+        "shuffle endpoint: mix-net backend not configured",
+    ))
 }
 
 pub fn handle_merkle_tree(req: MerkleTreeRequest) -> MerkleTreeResponse {
     // Merkle ballot trees are a genuine SHA-256 hash-tree construction and
     // remain functional; they do not depend on the unavailable crypto backend.
     let (root, proofs) = build_ballot_merkle_tree(&req.ballot_hashes);
-    MerkleTreeResponse { root, proof_count: proofs.len() }
+    MerkleTreeResponse {
+        root,
+        proof_count: proofs.len(),
+    }
 }
 
 pub fn handle_verify_keys(_req: VerifyKeyRequest) -> Result<VerifyKeyResponse, VotingCryptoError> {
     // SECURITY: previously valid = !public_key.is_empty(). Without a real
     // key-verification backend, refuse rather than rubber-stamping keys.
-    Err(VotingCryptoError::unavailable("verify-keys endpoint: key verification backend not configured"))
+    Err(VotingCryptoError::unavailable(
+        "verify-keys endpoint: key verification backend not configured",
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -528,7 +579,11 @@ mod tests {
         let token = generate_coercion_resistance_tokens("del-001", "panic123");
         assert_eq!(token.delegate_id, "del-001");
         assert!(is_panic_code("panic123", "del-001", &token.panic_code_hash));
-        assert!(!is_panic_code("wrong_code", "del-001", &token.panic_code_hash));
+        assert!(!is_panic_code(
+            "wrong_code",
+            "del-001",
+            &token.panic_code_hash
+        ));
     }
 
     #[test]

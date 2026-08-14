@@ -66,7 +66,7 @@ impl Default for NormalizationParams {
 
 /// Fingerprint minutiae matching (Bozorth3-like algorithm).
 pub fn match_fingerprint_minutiae(
-    probe: &[(i32, i32, f64, u8)],  // (x, y, angle, type)
+    probe: &[(i32, i32, f64, u8)], // (x, y, angle, type)
     gallery: &[(i32, i32, f64, u8)],
     threshold: f64,
 ) -> MatchScore {
@@ -103,8 +103,8 @@ pub fn match_fingerprint_minutiae(
             }
 
             if dist < spatial_tol * 3.0 && angle_diff < angle_tol * 2.0 {
-                let mut compat = (1.0 - dist / (spatial_tol * 3.0))
-                    * (1.0 - angle_diff / (angle_tol * 2.0));
+                let mut compat =
+                    (1.0 - dist / (spatial_tol * 3.0)) * (1.0 - angle_diff / (angle_tol * 2.0));
                 if pm.3 == gm.3 {
                     compat *= 1.1;
                 }
@@ -155,11 +155,7 @@ pub fn match_fingerprint_minutiae(
 }
 
 /// Face embedding matching using cosine similarity.
-pub fn match_face_embeddings(
-    probe: &[f64],
-    gallery: &[f64],
-    threshold: f64,
-) -> MatchScore {
+pub fn match_face_embeddings(probe: &[f64], gallery: &[f64], threshold: f64) -> MatchScore {
     let start = Instant::now();
 
     let dim = probe.len().min(gallery.len());
@@ -221,7 +217,11 @@ pub fn match_iris_codes(
 ) -> MatchScore {
     let start = Instant::now();
 
-    let min_len = probe.len().min(gallery.len()).min(probe_mask.len()).min(gallery_mask.len());
+    let min_len = probe
+        .len()
+        .min(gallery.len())
+        .min(probe_mask.len())
+        .min(gallery_mask.len());
     if min_len == 0 {
         return MatchScore {
             probe_id: String::new(),
@@ -298,7 +298,12 @@ pub fn identify_1n(
     probe_fingerprint: Option<&[(i32, i32, f64, u8)]>,
     probe_face: Option<&[f64]>,
     probe_iris: Option<(&[u8], &[u8])>,
-    gallery: &[(String, Option<Vec<(i32, i32, f64, u8)>>, Option<Vec<f64>>, Option<(Vec<u8>, Vec<u8>)>)],
+    gallery: &[(
+        String,
+        Option<Vec<(i32, i32, f64, u8)>>,
+        Option<Vec<f64>>,
+        Option<(Vec<u8>, Vec<u8>)>,
+    )],
     thresholds: &IdentifyThresholds,
 ) -> Vec<FusedScore> {
     let _start = Instant::now();
@@ -336,7 +341,11 @@ pub fn identify_1n(
         .collect();
 
     let mut sorted = results;
-    sorted.sort_by(|a, b| b.fused_score.partial_cmp(&a.fused_score).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.fused_score
+            .partial_cmp(&a.fused_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     sorted
 }
 
@@ -378,21 +387,32 @@ pub fn fuse_scores(
             let mut total = 0.0f64;
             let mut total_weight = 0.0f64;
             for s in scores {
-                let w = weights.get(&s.modality).copied().unwrap_or(1.0 / scores.len() as f64);
+                let w = weights
+                    .get(&s.modality)
+                    .copied()
+                    .unwrap_or(1.0 / scores.len() as f64);
                 total += s.normalized_score * w;
                 total_weight += w;
             }
-            if total_weight > 0.0 { total / total_weight } else { 0.0 }
+            if total_weight > 0.0 {
+                total / total_weight
+            } else {
+                0.0
+            }
         }
-        FusionMethod::MaxRule => {
-            scores.iter().map(|s| s.normalized_score).fold(0.0f64, f64::max)
-        }
+        FusionMethod::MaxRule => scores
+            .iter()
+            .map(|s| s.normalized_score)
+            .fold(0.0f64, f64::max),
         FusionMethod::SumRule => {
             let sum: f64 = scores.iter().map(|s| s.normalized_score).sum();
             sum / scores.len().max(1) as f64
         }
         FusionMethod::ProductRule => {
-            let product: f64 = scores.iter().map(|s| s.normalized_score.max(1e-10)).product();
+            let product: f64 = scores
+                .iter()
+                .map(|s| s.normalized_score.max(1e-10))
+                .product();
             product.powf(1.0 / scores.len().max(1) as f64)
         }
     };
@@ -469,7 +489,12 @@ mod tests {
     fn test_1n_identification() {
         let probe_face: Vec<f64> = (0..128).map(|i| (i as f64 * 0.01).sin()).collect();
 
-        let gallery: Vec<(String, Option<Vec<(i32, i32, f64, u8)>>, Option<Vec<f64>>, Option<(Vec<u8>, Vec<u8>)>)> = (0..100)
+        let gallery: Vec<(
+            String,
+            Option<Vec<(i32, i32, f64, u8)>>,
+            Option<Vec<f64>>,
+            Option<(Vec<u8>, Vec<u8>)>,
+        )> = (0..100)
             .map(|i| {
                 let face: Vec<f64> = (0..128).map(|j| ((j + i) as f64 * 0.01).sin()).collect();
                 (format!("voter-{}", i), None, Some(face), None)

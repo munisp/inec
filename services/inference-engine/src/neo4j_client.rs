@@ -7,7 +7,7 @@
 //! - Observer network analysis
 
 use anyhow::{Context, Result};
-use neo4rs::{query, Graph, ConfigBuilder};
+use neo4rs::{query, ConfigBuilder, Graph};
 use serde::Serialize;
 use tracing::info;
 
@@ -61,7 +61,8 @@ impl Neo4jClient {
             .max_connections(10)
             .build()?;
 
-        let graph = Graph::connect(config).await
+        let graph = Graph::connect(config)
+            .await
             .context("Failed to connect to Neo4j")?;
 
         info!(uri, "Connected to Neo4j");
@@ -87,7 +88,8 @@ impl Neo4jClient {
             hops
         );
 
-        let mut result = self.graph
+        let mut result = self
+            .graph
             .execute(query(&cypher).param("code", pu_code))
             .await
             .context("Neo4j query failed")?;
@@ -104,7 +106,9 @@ impl Neo4jClient {
 
             let turnout = row.get::<f64>("neighbor_turnout").unwrap_or(0.0);
             let flagged = row.get::<bool>("neighbor_flagged").unwrap_or(false);
-            if flagged { flagged_count += 1; }
+            if flagged {
+                flagged_count += 1;
+            }
             turnouts.push(turnout);
 
             neighbors.push(NeighborInfo {
@@ -147,7 +151,8 @@ impl Neo4jClient {
             LIMIT 50
         "#;
 
-        let mut result = self.graph
+        let mut result = self
+            .graph
             .execute(query(cypher).param("min_size", min_size as i64))
             .await
             .context("Fraud ring detection query failed")?;
@@ -184,12 +189,21 @@ impl Neo4jClient {
 
         for (code, score) in scores {
             self.graph
-                .run(query(cypher).param("code", code.as_str()).param("score", *score))
+                .run(
+                    query(cypher)
+                        .param("code", code.as_str())
+                        .param("score", *score),
+                )
                 .await
-                .with_context(|| format!("failed to store anomaly score for polling unit {code}"))?;
+                .with_context(|| {
+                    format!("failed to store anomaly score for polling unit {code}")
+                })?;
         }
 
-        info!(n_scores = scores.len(), "Stored GNN anomaly scores in Neo4j");
+        info!(
+            n_scores = scores.len(),
+            "Stored GNN anomaly scores in Neo4j"
+        );
         Ok(())
     }
 
@@ -222,15 +236,16 @@ impl Neo4jClient {
 
             // 17-dim feature vector (pad remaining with 0)
             let feat = vec![
-                registered, accredited, turnout, valid, rejected,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                registered, accredited, turnout, valid, rejected, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ];
             features.push(feat);
             codes.push(code);
         }
 
         // Build code-to-index map
-        let code_to_idx: std::collections::HashMap<&str, usize> = codes.iter()
+        let code_to_idx: std::collections::HashMap<&str, usize> = codes
+            .iter()
             .enumerate()
             .map(|(i, c)| (c.as_str(), i))
             .collect();
@@ -247,12 +262,18 @@ impl Neo4jClient {
         while let Ok(Some(row)) = edge_result.next().await {
             let src: String = row.get("src").unwrap_or_default();
             let dst: String = row.get("dst").unwrap_or_default();
-            if let (Some(&si), Some(&di)) = (code_to_idx.get(src.as_str()), code_to_idx.get(dst.as_str())) {
+            if let (Some(&si), Some(&di)) =
+                (code_to_idx.get(src.as_str()), code_to_idx.get(dst.as_str()))
+            {
                 edges.push([si, di]);
             }
         }
 
-        info!(nodes = codes.len(), edges = edges.len(), "Graph exported for GNN");
+        info!(
+            nodes = codes.len(),
+            edges = edges.len(),
+            "Graph exported for GNN"
+        );
         Ok((features, edges, codes))
     }
 }

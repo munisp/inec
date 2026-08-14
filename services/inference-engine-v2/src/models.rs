@@ -1,7 +1,7 @@
 //! ML Model wrappers for ONNX Runtime inference on CPU.
 
 use anyhow::{bail, Result};
-use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::session::{builder::GraphOptimizationLevel, Session};
 use std::sync::Mutex;
 use tracing::info;
 
@@ -28,7 +28,10 @@ impl AnomalyModel {
             .map_err(ort_err)?;
 
         info!(path, "Anomaly model loaded (ONNX)");
-        Ok(Self { session: Mutex::new(session), n_features: 17 })
+        Ok(Self {
+            session: Mutex::new(session),
+            n_features: 17,
+        })
     }
 
     /// Run inference on a single feature vector. Returns anomaly probability [0,1].
@@ -39,17 +42,24 @@ impl AnomalyModel {
     /// this path never converts a failed model call into a synthetic score.
     pub fn predict(&self, features: &[f64]) -> Result<f64> {
         if features.len() != self.n_features {
-            bail!("expected {} anomaly features, received {}", self.n_features, features.len());
+            bail!(
+                "expected {} anomaly features, received {}",
+                self.n_features,
+                features.len()
+            );
         }
 
         let input: Vec<f32> = features.iter().map(|&x| x as f32).collect();
-        let input_tensor = ort::value::Tensor::from_array(
-            ([1_usize, self.n_features], input)
-        ).map_err(ort_err)?;
+        let input_tensor =
+            ort::value::Tensor::from_array(([1_usize, self.n_features], input)).map_err(ort_err)?;
 
-        let mut session = self.session.lock()
+        let mut session = self
+            .session
+            .lock()
             .map_err(|_| anyhow::anyhow!("anomaly model session lock poisoned"))?;
-        let outputs = session.run(ort::inputs!["float_input" => input_tensor]).map_err(ort_err)?;
+        let outputs = session
+            .run(ort::inputs!["float_input" => input_tensor])
+            .map_err(ort_err)?;
 
         // XGBoost ONNX outputs: [labels, probabilities]
         if outputs.len() >= 2 {
@@ -133,7 +143,8 @@ impl FaceModel {
 
     /// Batch cosine similarity: compare one query against N stored embeddings.
     pub fn batch_similarity(&self, query: &[f32], database: &[Vec<f32>]) -> Vec<f32> {
-        database.iter()
+        database
+            .iter()
             .map(|stored| self.cosine_similarity(query, stored))
             .collect()
     }
@@ -156,7 +167,9 @@ impl LivenessModel {
             .map_err(ort_err)?;
 
         info!(path, "Liveness CDCN model loaded (ONNX)");
-        Ok(Self { session: Mutex::new(session) })
+        Ok(Self {
+            session: Mutex::new(session),
+        })
     }
 
     /// Run liveness inference on the shipped CDCN classifier. The validated ONNX
@@ -166,20 +179,31 @@ impl LivenessModel {
     pub fn predict(&self, face_crop: &[f32]) -> Result<f32> {
         let expected_size = 128 * 128;
         if face_crop.len() != expected_size {
-            bail!("expected {expected_size} liveness tensor values, received {}", face_crop.len());
+            bail!(
+                "expected {expected_size} liveness tensor values, received {}",
+                face_crop.len()
+            );
         }
 
-        let input_tensor = ort::value::Tensor::from_array(
-            ([1_usize, 1, 128, 128], face_crop.to_vec())
-        ).map_err(ort_err)?;
+        let input_tensor =
+            ort::value::Tensor::from_array(([1_usize, 1, 128, 128], face_crop.to_vec()))
+                .map_err(ort_err)?;
 
-        let mut session = self.session.lock().map_err(|_| anyhow::anyhow!("liveness model session lock poisoned"))?;
-        let outputs = session.run(ort::inputs!["input" => input_tensor]).map_err(ort_err)?;
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("liveness model session lock poisoned"))?;
+        let outputs = session
+            .run(ort::inputs!["input" => input_tensor])
+            .map_err(ort_err)?;
         if outputs.len() == 0 {
             bail!("liveness model returned no outputs");
         }
-        let (_shape, classifier_values) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        let score = *classifier_values.first().ok_or_else(|| anyhow::anyhow!("liveness model returned an empty classifier output"))?;
+        let (_shape, classifier_values) =
+            outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+        let score = *classifier_values
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("liveness model returned an empty classifier output"))?;
         if !score.is_finite() {
             bail!("liveness model returned a non-finite classifier score");
         }

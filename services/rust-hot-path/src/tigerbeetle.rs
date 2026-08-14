@@ -8,10 +8,10 @@
 //! - Linked transfers for atomic multi-leg operations
 //! - Zero-copy serialization via fixed-size structs
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use sha2::{Sha256, Digest};
 use anyhow::Result;
+use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::pipeline::{Config, Transaction};
 
@@ -54,8 +54,8 @@ pub mod ledgers {
 
 /// Transfer flags
 pub mod flags {
-    pub const LINKED: u16 = 0x0001;       // atomic with next transfer
-    pub const PENDING: u16 = 0x0002;      // two-phase commit
+    pub const LINKED: u16 = 0x0001; // atomic with next transfer
+    pub const PENDING: u16 = 0x0002; // two-phase commit
     pub const POST_PENDING: u16 = 0x0004; // complete pending transfer
     pub const VOID_PENDING: u16 = 0x0008; // cancel pending transfer
 }
@@ -156,7 +156,8 @@ impl TigerBeetleDirectClient {
             // Flush when batch is full
             if transfers.len() >= self.batch_size {
                 self.submit_batch(&transfers).await?;
-                self.transfers_submitted.fetch_add(transfers.len() as u64, Ordering::Relaxed);
+                self.transfers_submitted
+                    .fetch_add(transfers.len() as u64, Ordering::Relaxed);
                 self.batches_sent.fetch_add(1, Ordering::Relaxed);
                 transfers.clear();
             }
@@ -165,7 +166,8 @@ impl TigerBeetleDirectClient {
         // Flush remaining
         if !transfers.is_empty() {
             self.submit_batch(&transfers).await?;
-            self.transfers_submitted.fetch_add(transfers.len() as u64, Ordering::Relaxed);
+            self.transfers_submitted
+                .fetch_add(transfers.len() as u64, Ordering::Relaxed);
             self.batches_sent.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -281,7 +283,11 @@ mod tests {
     #[test]
     fn negative_amount_is_rejected_not_wrapped() {
         let err = build_transfer(&tx_with_amount(-1)).unwrap_err();
-        assert!(err.to_string().contains("non-positive"), "unexpected: {}", err);
+        assert!(
+            err.to_string().contains("non-positive"),
+            "unexpected: {}",
+            err
+        );
     }
 
     #[test]
@@ -321,8 +327,8 @@ mod tests {
         let config = Config::from_env();
         let client = TigerBeetleDirectClient::new(&config);
         let batch = Arc::new(vec![
-            tx_with_amount(-3),               // rejected
-            tx_with_amount(0),                // rejected
+            tx_with_amount(-3),                      // rejected
+            tx_with_amount(0),                       // rejected
             tx_with_amount(MAX_TRANSFER_AMOUNT + 9), // rejected
         ]);
         // submit_batch fails loudly without a TB client, but the three

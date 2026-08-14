@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// PostgreSQL persistence client for volunteer/ride state.
 #[derive(Clone)]
@@ -26,10 +26,12 @@ impl PersistenceLayer {
         Self {
             pg_url: env::var("DATABASE_URL").ok(),
             redis_url: env::var("REDIS_URL").ok(),
-            client: Some(reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap_or_default()),
+            client: Some(
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .unwrap_or_default(),
+            ),
             write_failures: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -57,9 +59,7 @@ impl PersistenceLayer {
         if let Some(ref client) = self.client {
             match client.post(&url).json(&body).send().await {
                 Ok(resp) if resp.status().is_success() => {}
-                Ok(resp) => {
-                    self.record_failure(&url, &format!("HTTP {}", resp.status()))
-                }
+                Ok(resp) => self.record_failure(&url, &format!("HTTP {}", resp.status())),
                 Err(e) => self.record_failure(&url, &e.to_string()),
             }
         }
@@ -68,7 +68,8 @@ impl PersistenceLayer {
     /// Persist volunteer position to PostgreSQL via GOTV backend API.
     pub async fn save_volunteer_position(&self, vol_id: &str, party_id: i64, lat: f64, lng: f64) {
         if self.pg_url.is_some() {
-            let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
+            let api_url = env::var("GOTV_BACKEND_URL")
+                .unwrap_or_else(|_| "http://localhost:8103".to_string());
             self.post_json(
                 format!("{}/gotv/volunteers/{}/location", api_url, vol_id),
                 serde_json::json!({
@@ -84,7 +85,8 @@ impl PersistenceLayer {
     /// Save ride match to persistent store.
     pub async fn save_ride_match(&self, ride_id: &str, volunteer_id: &str, distance_km: f64) {
         if self.pg_url.is_some() {
-            let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
+            let api_url = env::var("GOTV_BACKEND_URL")
+                .unwrap_or_else(|_| "http://localhost:8103".to_string());
             self.post_json(
                 format!("{}/gotv/rides/{}/match", api_url, ride_id),
                 serde_json::json!({
@@ -100,7 +102,10 @@ impl PersistenceLayer {
     pub async fn cache_volunteer_position(&self, vol_id: &str, lat: f64, lng: f64) {
         if let Some(ref redis_url) = self.redis_url {
             if let Some(ref client) = self.client {
-                let url = format!("{}/GEOADD/gotv:volunteer_positions/{}/{}/{}", redis_url, lng, lat, vol_id);
+                let url = format!(
+                    "{}/GEOADD/gotv:volunteer_positions/{}/{}/{}",
+                    redis_url, lng, lat, vol_id
+                );
                 match client.post(&url).send().await {
                     Ok(resp) if resp.status().is_success() => {}
                     Ok(resp) => self.record_failure(&url, &format!("HTTP {}", resp.status())),
@@ -114,8 +119,10 @@ impl PersistenceLayer {
     pub async fn load_volunteers(&self) -> Vec<PersistedVolunteer> {
         if let Some(ref _url) = self.pg_url {
             if let Some(ref client) = self.client {
-                let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
-                let resp = client.get(format!("{}/gotv/geo/volunteers?limit=10000", api_url))
+                let api_url = env::var("GOTV_BACKEND_URL")
+                    .unwrap_or_else(|_| "http://localhost:8103".to_string());
+                let resp = client
+                    .get(format!("{}/gotv/geo/volunteers?limit=10000", api_url))
                     .send()
                     .await;
                 if let Ok(resp) = resp {
@@ -132,8 +139,13 @@ impl PersistenceLayer {
     pub async fn load_pending_rides(&self) -> Vec<PersistedRide> {
         if let Some(ref _url) = self.pg_url {
             if let Some(ref client) = self.client {
-                let api_url = env::var("GOTV_BACKEND_URL").unwrap_or_else(|_| "http://localhost:8103".to_string());
-                let resp = client.get(format!("{}/gotv/geo/rides?status=pending&limit=10000", api_url))
+                let api_url = env::var("GOTV_BACKEND_URL")
+                    .unwrap_or_else(|_| "http://localhost:8103".to_string());
+                let resp = client
+                    .get(format!(
+                        "{}/gotv/geo/rides?status=pending&limit=10000",
+                        api_url
+                    ))
                     .send()
                     .await;
                 if let Ok(resp) = resp {
@@ -208,17 +220,23 @@ pub fn partition_ward_territories(
                 nearest_idx = i;
             }
         }
-        assignments.entry(nearest_idx).or_insert_with(Vec::new).push((clat, clng));
+        assignments
+            .entry(nearest_idx)
+            .or_insert_with(Vec::new)
+            .push((clat, clng));
     }
 
     let mut territories = Vec::new();
     for (i, (vol_id, vlat, vlng)) in volunteers.iter().enumerate() {
         let assigned = assignments.get(&i).map(|v| v.len()).unwrap_or(0);
         // Calculate bounding radius
-        let max_dist = assignments.get(&i)
-            .map(|pts| pts.iter()
-                .map(|(clat, clng)| haversine_distance(*vlat, *vlng, *clat, *clng))
-                .fold(0.0f64, f64::max))
+        let max_dist = assignments
+            .get(&i)
+            .map(|pts| {
+                pts.iter()
+                    .map(|(clat, clng)| haversine_distance(*vlat, *vlng, *clat, *clng))
+                    .fold(0.0f64, f64::max)
+            })
             .unwrap_or(0.5);
 
         territories.push(TerritoryPartition {
@@ -296,7 +314,11 @@ pub fn predict_ward_turnout(
     };
 
     // Heuristic data-availability score — NOT a trained-model confidence.
-    let heuristic_score = if historical_turnout_pct > 0.0 { 0.72 } else { 0.45 };
+    let heuristic_score = if historical_turnout_pct > 0.0 {
+        0.72
+    } else {
+        0.45
+    };
 
     TurnoutPrediction {
         ward_code: ward_code.to_string(),
@@ -335,10 +357,9 @@ pub fn calculate_isochrone(
     let r30 = avg_speed_kmh * (30.0 / 60.0); // 12.5 or 20 km
     let r45 = avg_speed_kmh * (45.0 / 60.0); // 18.75 or 30 km
 
-    let reachable: Vec<String> = polling_units.iter()
-        .filter(|(_, plat, plng)| {
-            haversine_distance(vol_lat, vol_lng, *plat, *plng) <= r30
-        })
+    let reachable: Vec<String> = polling_units
+        .iter()
+        .filter(|(_, plat, plng)| haversine_distance(vol_lat, vol_lng, *plat, *plng) <= r30)
         .map(|(code, _, _)| code.clone())
         .collect();
 
@@ -398,5 +419,4 @@ mod tests {
         layer.save_ride_match("ride-2", "vol-2", 0.5).await;
         assert_eq!(layer.write_failures(), 0);
     }
-
 }

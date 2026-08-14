@@ -4,13 +4,13 @@ use actix_web::{
     middleware::{self, Next},
     web, App, Error, HttpResponse, HttpServer,
 };
-use fluvio::{Fluvio, FluvioConfig, TopicProducerPool, ConsumerConfig, Offset};
+use chrono::Utc;
 use fluvio::metadata::topic::TopicSpec;
+use fluvio::{ConsumerConfig, Fluvio, FluvioConfig, Offset, TopicProducerPool};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error, warn};
-use chrono::Utc;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 // Election event types that flow through the streaming pipeline.
@@ -130,7 +130,10 @@ async fn produce_event(
         }));
     }
 
-    let key = body.key.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let key = body
+        .key
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let payload = serde_json::to_string(&body.event).unwrap_or_default();
 
     let producer = {
@@ -140,25 +143,26 @@ async fn produce_event(
 
     let producer = match producer {
         Some(p) => p,
-        None => {
-            match state.fluvio.topic_producer(topic).await {
-                Ok(p) => {
-                    let p = Arc::new(p);
-                    let mut producers = state.producers.write().await;
-                    producers.insert(topic.clone(), p.clone());
-                    p
-                }
-                Err(e) => {
-                    error!("Failed to create producer for topic {}: {}", topic, e);
-                    return HttpResponse::InternalServerError().json(serde_json::json!({
-                        "error": format!("Failed to create producer: {}", e)
-                    }));
-                }
+        None => match state.fluvio.topic_producer(topic).await {
+            Ok(p) => {
+                let p = Arc::new(p);
+                let mut producers = state.producers.write().await;
+                producers.insert(topic.clone(), p.clone());
+                p
             }
-        }
+            Err(e) => {
+                error!("Failed to create producer for topic {}: {}", topic, e);
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": format!("Failed to create producer: {}", e)
+                }));
+            }
+        },
     };
 
-    match producer.send(key.as_bytes().to_vec(), payload.as_bytes().to_vec()).await {
+    match producer
+        .send(key.as_bytes().to_vec(), payload.as_bytes().to_vec())
+        .await
+    {
         Ok(_) => {
             let mut stats = state.stats.write().await;
             stats.total_produced += 1;
@@ -189,11 +193,7 @@ async fn consume_events(
 
     // All managed topics are created with a single partition (see
     // ensure_topics), so partition 0 holds the full log.
-    let consumer = match state
-        .fluvio
-        .partition_consumer(topic.clone(), 0)
-        .await
-    {
+    let consumer = match state.fluvio.partition_consumer(topic.clone(), 0).await {
         Ok(c) => c,
         Err(e) => {
             error!("Failed to create consumer for topic {}: {}", topic, e);
@@ -263,7 +263,9 @@ async fn consume_events(
     if timed_out {
         warn!(
             "Consume on topic {} timed out after {:?}; returning {} partial records",
-            topic, CONSUME_TIMEOUT, records.len()
+            topic,
+            CONSUME_TIMEOUT,
+            records.len()
         );
     }
 
@@ -355,7 +357,10 @@ async fn api_key_auth(
     next: Next<BoxBody>,
 ) -> Result<ServiceResponse<BoxBody>, Error> {
     if req.path() == "/health" {
-        return next.call(req).await.map(ServiceResponse::map_into_boxed_body);
+        return next
+            .call(req)
+            .await
+            .map(ServiceResponse::map_into_boxed_body);
     }
 
     let expected_keys = stream_api_tokens();
@@ -396,7 +401,9 @@ async fn api_key_auth(
         ));
     }
 
-    next.call(req).await.map(ServiceResponse::map_into_boxed_body)
+    next.call(req)
+        .await
+        .map(ServiceResponse::map_into_boxed_body)
 }
 
 // Ensure all INEC topics exist.
@@ -410,9 +417,15 @@ async fn ensure_topics(fluvio: &Fluvio) -> Vec<String> {
     // stay 1/1 and production MUST override via env (RF=3 requires a
     // 3-SPU cluster or topic creation will fail loudly).
     let partitions: u32 = std::env::var("FLUVIO_TOPIC_PARTITIONS")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let replicas: u32 = std::env::var("FLUVIO_TOPIC_REPLICATION")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
 
     for topic_name in ALL_TOPICS {
         let spec = TopicSpec::new_computed(partitions, replicas, None);
@@ -435,8 +448,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     info!("Starting INEC Fluvio Stream Processor");
 
-    let fluvio_endpoint = std::env::var("FLUVIO_ENDPOINT")
-        .unwrap_or_else(|_| "localhost:9003".to_string());
+    let fluvio_endpoint =
+        std::env::var("FLUVIO_ENDPOINT").unwrap_or_else(|_| "localhost:9003".to_string());
 
     info!("Connecting to Fluvio at {}", fluvio_endpoint);
     let config = FluvioConfig::new(&fluvio_endpoint);
@@ -478,7 +491,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -513,7 +525,10 @@ mod tests {
         let app = build_test_service!();
         let req = actix_test::TestRequest::post().uri("/produce").to_request();
         let resp = actix_test::call_service(&app, req).await;
-        assert_eq!(resp.status(), actix_web::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.status(),
+            actix_web::http::StatusCode::SERVICE_UNAVAILABLE
+        );
         // /health stays public.
         let req = actix_test::TestRequest::get().uri("/health").to_request();
         let resp = actix_test::call_service(&app, req).await;

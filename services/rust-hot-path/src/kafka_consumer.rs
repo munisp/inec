@@ -7,10 +7,10 @@
 //! - Parallel partition consumers (one consumer per partition)
 //! - Cooperative sticky rebalancing (minimal partition movement)
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 #[cfg(feature = "kafka")]
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use crossbeam::channel::Sender;
 use serde_json;
@@ -51,7 +51,12 @@ impl KafkaHotConsumer {
     /// - auto.commit.interval.ms = 1000 (batch commits)
     /// - partition.assignment.strategy = cooperative-sticky
     #[cfg(feature = "kafka")]
-    pub async fn consume_batched(&self, _config: &Config, sender: Sender<Vec<Transaction>>, errors: Arc<AtomicU64>) -> anyhow::Result<()> {
+    pub async fn consume_batched(
+        &self,
+        _config: &Config,
+        sender: Sender<Vec<Transaction>>,
+        errors: Arc<AtomicU64>,
+    ) -> anyhow::Result<()> {
         use rdkafka::config::ClientConfig;
         use rdkafka::consumer::{Consumer, StreamConsumer};
         use rdkafka::message::Message;
@@ -60,8 +65,8 @@ impl KafkaHotConsumer {
             brokers: self.brokers.clone(),
             group_id: self.group_id.clone(),
             topics: self.topics.clone(),
-            fetch_min_bytes: 1_048_576,           // 1MB min fetch
-            fetch_max_bytes: 52_428_800,          // 50MB max fetch
+            fetch_min_bytes: 1_048_576,            // 1MB min fetch
+            fetch_max_bytes: 52_428_800,           // 50MB max fetch
             queued_max_messages_kbytes: 2_097_152, // 2GB internal queue
             auto_commit_interval_ms: 1000,
             max_poll_interval_ms: 300_000,
@@ -75,13 +80,22 @@ impl KafkaHotConsumer {
             .set("group.id", &cfg.group_id)
             .set("fetch.min.bytes", cfg.fetch_min_bytes.to_string())
             .set("fetch.max.bytes", cfg.fetch_max_bytes.to_string())
-            .set("queued.max.messages.kbytes", cfg.queued_max_messages_kbytes.to_string())
+            .set(
+                "queued.max.messages.kbytes",
+                cfg.queued_max_messages_kbytes.to_string(),
+            )
             .set("enable.auto.commit", "true")
-            .set("auto.commit.interval.ms", cfg.auto_commit_interval_ms.to_string())
+            .set(
+                "auto.commit.interval.ms",
+                cfg.auto_commit_interval_ms.to_string(),
+            )
             .set("max.poll.interval.ms", cfg.max_poll_interval_ms.to_string())
             .set("session.timeout.ms", cfg.session_timeout_ms.to_string())
             .set("partition.assignment.strategy", &cfg.partition_assignment)
-            .set("max.partition.fetch.bytes", cfg.max_partition_fetch_bytes.to_string())
+            .set(
+                "max.partition.fetch.bytes",
+                cfg.max_partition_fetch_bytes.to_string(),
+            )
             .create()?;
 
         let topics: Vec<&str> = cfg.topics.iter().map(|t| t.as_str()).collect();
@@ -126,7 +140,12 @@ impl KafkaHotConsumer {
 
     /// Non-Kafka build: fail loudly instead of simulating consumption.
     #[cfg(not(feature = "kafka"))]
-    pub async fn consume_batched(&self, _config: &Config, _sender: Sender<Vec<Transaction>>, _errors: Arc<AtomicU64>) -> anyhow::Result<()> {
+    pub async fn consume_batched(
+        &self,
+        _config: &Config,
+        _sender: Sender<Vec<Transaction>>,
+        _errors: Arc<AtomicU64>,
+    ) -> anyhow::Result<()> {
         Err(anyhow::anyhow!(
             "kafka consumer unavailable: this binary was built WITHOUT the `kafka` feature (rdkafka); refusing to simulate election hot-path consumption"
         ))
@@ -168,7 +187,9 @@ pub fn deserialize_batch(payloads: &[&[u8]]) -> Vec<Transaction> {
     for (idx, payload) in payloads.iter().enumerate() {
         match deserialize_zero_copy(payload) {
             Ok(tx) => results.push(tx),
-            Err(e) => tracing::warn!(batch_index = idx, error = %e, "batch deserialization failed; skipping message"),
+            Err(e) => {
+                tracing::warn!(batch_index = idx, error = %e, "batch deserialization failed; skipping message")
+            }
         }
     }
     results

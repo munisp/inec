@@ -78,7 +78,9 @@ impl Middleware {
             "value": payload,
         });
         for attempt in 0..3u32 {
-            match self.http.post(format!("{}/produce", url))
+            match self
+                .http
+                .post(format!("{}/produce", url))
                 .json(&body)
                 .send()
                 .await
@@ -86,7 +88,8 @@ impl Middleware {
                 Ok(_) => return,
                 Err(e) => {
                     warn!(error = %e, topic, attempt, "GOTV Engine: Kafka publish attempt failed");
-                    tokio::time::sleep(std::time::Duration::from_millis(100 * 2u64.pow(attempt))).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * 2u64.pow(attempt)))
+                        .await;
                 }
             }
         }
@@ -102,7 +105,9 @@ impl Middleware {
             "command": "SET",
             "args": [format!("gotv-engine:{}", key), value, "EX", ttl_secs.to_string()],
         });
-        let _ = self.http.post(format!("{}/command", url))
+        let _ = self
+            .http
+            .post(format!("{}/command", url))
             .json(&body)
             .send()
             .await;
@@ -115,7 +120,9 @@ impl Middleware {
             "command": "GET",
             "args": [format!("gotv-engine:{}", key)],
         });
-        let resp = self.http.post(format!("{}/command", url))
+        let resp = self
+            .http
+            .post(format!("{}/command", url))
             .json(&body)
             .send()
             .await
@@ -130,7 +137,9 @@ impl Middleware {
             Some(u) => u,
             None => return,
         };
-        let _ = self.http.put(format!("{}/{}/_doc/{}", url, index, id))
+        let _ = self
+            .http
+            .put(format!("{}/{}/_doc/{}", url, index, id))
             .json(doc)
             .send()
             .await;
@@ -172,7 +181,9 @@ impl Middleware {
             "key": "gotv-engine",
             "payload": serde_json::to_string(payload).unwrap_or_default(),
         });
-        let _ = self.http.post(format!("{}/produce", url))
+        let _ = self
+            .http
+            .post(format!("{}/produce", url))
             .json(&body)
             .send()
             .await;
@@ -187,14 +198,21 @@ impl Middleware {
             warn!("Lakehouse query rejected: not a SELECT");
             return None;
         }
-        for banned in &["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "--", ";"] {
+        for banned in &[
+            "DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "--", ";",
+        ] {
             if trimmed.contains(banned) {
-                warn!(keyword = banned, "Lakehouse query rejected: forbidden keyword");
+                warn!(
+                    keyword = banned,
+                    "Lakehouse query rejected: forbidden keyword"
+                );
                 return None;
             }
         }
         let body = serde_json::json!({"query": sql});
-        let resp = self.http.post(format!("{}/query", url))
+        let resp = self
+            .http
+            .post(format!("{}/query", url))
             .json(&body)
             .send()
             .await

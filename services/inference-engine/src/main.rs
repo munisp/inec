@@ -19,8 +19,8 @@ use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use std::{fs, path::Path, sync::Arc};
+use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
@@ -54,8 +54,8 @@ struct IntegritySigner {
 
 impl IntegritySigner {
     fn load() -> Self {
-        let key_id = std::env::var("INTEGRITY_SIGNER_KEY_ID")
-            .unwrap_or_else(|_| "unconfigured".to_string());
+        let key_id =
+            std::env::var("INTEGRITY_SIGNER_KEY_ID").unwrap_or_else(|_| "unconfigured".to_string());
         let service_tokens: Vec<String> = std::env::var("INTEGRITY_SERVICE_TOKEN")
             .unwrap_or_default()
             .split(',')
@@ -76,18 +76,28 @@ impl IntegritySigner {
                 .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
                 .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok())
         };
-        Self { signing_key, verifying_key, key_id, service_tokens }
+        Self {
+            signing_key,
+            verifying_key,
+            key_id,
+            service_tokens,
+        }
     }
 
     fn signing_ready(&self) -> bool {
-        self.signing_key.is_some() && !self.service_tokens.is_empty() && self.key_id != "unconfigured"
+        self.signing_key.is_some()
+            && !self.service_tokens.is_empty()
+            && self.key_id != "unconfigured"
     }
 
     fn authorizes(&self, headers: &HeaderMap) -> bool {
         if self.service_tokens.is_empty() {
             return false;
         }
-        let Some(header) = headers.get("authorization").and_then(|value| value.to_str().ok()) else {
+        let Some(header) = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+        else {
             return false;
         };
         let Some(provided) = header.strip_prefix("Bearer ") else {
@@ -139,18 +149,35 @@ impl ModelGovernance {
                 return governance;
             }
         };
-        let model_id = manifest.get("model_id").and_then(|value| value.as_str()).unwrap_or("");
-        let version = manifest.get("version").and_then(|value| value.as_str()).unwrap_or("");
-        let declared_hash = manifest.get("sha256").and_then(|value| value.as_str()).unwrap_or("");
-        let approved = manifest.get("approved_for_production").and_then(|value| value.as_bool()).unwrap_or(false);
-        let validation_report = manifest.get("validation_report_uri").and_then(|value| value.as_str()).unwrap_or("");
+        let model_id = manifest
+            .get("model_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let version = manifest
+            .get("version")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let declared_hash = manifest
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let approved = manifest
+            .get("approved_for_production")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let validation_report = manifest
+            .get("validation_report_uri")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         if model_id != "anomaly_xgboost" || version.is_empty() || validation_report.is_empty() {
-            governance.reason = Some("model manifest is missing required identity or validation evidence".into());
+            governance.reason =
+                Some("model manifest is missing required identity or validation evidence".into());
             return governance;
         }
         governance.version = version.to_string();
         if declared_hash != actual_hash {
-            governance.reason = Some("model artifact SHA-256 does not match approved manifest".into());
+            governance.reason =
+                Some("model artifact SHA-256 does not match approved manifest".into());
             return governance;
         }
         if !approved {
@@ -178,8 +205,7 @@ struct AppState {
 
 impl AppState {
     async fn new() -> Self {
-        let models_dir = std::env::var("MODELS_DIR")
-            .unwrap_or_else(|_| "/app/models".to_string());
+        let models_dir = std::env::var("MODELS_DIR").unwrap_or_else(|_| "/app/models".to_string());
 
         let anomaly_governance = ModelGovernance::load(&models_dir);
         if !anomaly_governance.approved {
@@ -209,12 +235,15 @@ impl AppState {
             .map_err(|e| warn!("Face model not loaded: {}", e))
             .ok();
 
-        let neo4j = Neo4jClient::connect().await
+        let neo4j = Neo4jClient::connect()
+            .await
             .map_err(|e| warn!("Neo4j not connected: {}", e))
             .ok();
         let integrity_signer = IntegritySigner::load();
         if !integrity_signer.signing_ready() {
-            warn!("Evidence integrity signing is not configured; production callers must fail closed");
+            warn!(
+                "Evidence integrity signing is not configured; production callers must fail closed"
+            );
         }
 
         info!(
@@ -226,7 +255,14 @@ impl AppState {
             "Inference engine initialized"
         );
 
-        Self { anomaly_model, anomaly_governance, face_model, liveness_model, neo4j, integrity_signer }
+        Self {
+            anomaly_model,
+            anomaly_governance,
+            face_model,
+            liveness_model,
+            neo4j,
+            integrity_signer,
+        }
     }
 }
 
@@ -250,8 +286,12 @@ struct AnomalyRequest {
     benford_deviation: f64,
 }
 
-fn default_delay() -> f64 { 3.0 }
-fn default_turnout() -> f64 { 0.55 }
+fn default_delay() -> f64 {
+    3.0
+}
+fn default_turnout() -> f64 {
+    0.55
+}
 
 #[derive(Serialize)]
 struct AnomalyResponse {
@@ -465,9 +505,17 @@ async fn integrity_signer_health(
     }
     let signing_ready = s.integrity_signer.signing_ready();
     let verifying_ready = s.integrity_signer.verifying_key.is_some();
-    let status = if signing_ready { "healthy" } else { "unavailable" };
+    let status = if signing_ready {
+        "healthy"
+    } else {
+        "unavailable"
+    };
     (
-        if signing_ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
+        if signing_ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         Json(IntegritySignerHealthResponse {
             status: status.into(),
             signing_ready,
@@ -484,7 +532,9 @@ async fn predict_anomaly(
     let start = std::time::Instant::now();
     let s = state.read().await;
 
-    let model = s.anomaly_model.as_ref()
+    let model = s
+        .anomaly_model
+        .as_ref()
         .filter(|_| s.anomaly_governance.approved)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
@@ -499,28 +549,37 @@ async fn predict_anomaly(
         req.party_b_votes as f64,
         req.party_a_votes as f64 / req.total_valid_votes.max(1) as f64,
         req.party_b_votes as f64 / req.total_valid_votes.max(1) as f64,
-        (req.party_a_votes as f64 - req.party_b_votes as f64).abs() / req.total_valid_votes.max(1) as f64,
+        (req.party_a_votes as f64 - req.party_b_votes as f64).abs()
+            / req.total_valid_votes.max(1) as f64,
         req.benford_deviation,
         req.submission_delay_hours,
         req.regional_mean_turnout,
         turnout - req.regional_mean_turnout,
         req.rejected_votes as f64 / req.accredited_voters.max(1) as f64,
-        if req.total_valid_votes > req.accredited_voters { 1.0 } else { 0.0 },
-        if req.total_valid_votes % 100 == 0 || req.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
+        if req.total_valid_votes > req.accredited_voters {
+            1.0
+        } else {
+            0.0
+        },
+        if req.total_valid_votes % 100 == 0 || req.total_valid_votes % 50 == 0 {
+            1.0
+        } else {
+            0.0
+        },
     ];
 
-    let score = model
-        .predict(&features)
-        .map_err(|error| {
-            warn!(error = %error, "approved anomaly model inference failed");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
+    let score = model.predict(&features).map_err(|error| {
+        warn!(error = %error, "approved anomaly model inference failed");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
     let elapsed = start.elapsed().as_micros() as u64;
 
     let mut risk_factors = Vec::new();
     if turnout > 0.9 {
         risk_factors.push(RiskFactor {
-            factor: "high_turnout".into(), value: turnout, severity: "high".into()
+            factor: "high_turnout".into(),
+            value: turnout,
+            severity: "high".into(),
         });
     }
     if req.total_valid_votes > req.accredited_voters {
@@ -532,7 +591,9 @@ async fn predict_anomaly(
     }
     if req.benford_deviation > 0.05 {
         risk_factors.push(RiskFactor {
-            factor: "benford_violation".into(), value: req.benford_deviation, severity: "medium".into()
+            factor: "benford_violation".into(),
+            value: req.benford_deviation,
+            severity: "medium".into(),
         });
     }
 
@@ -553,7 +614,9 @@ async fn batch_predict(
     let start = std::time::Instant::now();
     let s = state.read().await;
 
-    let model = s.anomaly_model.as_ref()
+    let model = s
+        .anomaly_model
+        .as_ref()
         .filter(|_| s.anomaly_governance.approved)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
@@ -572,24 +635,33 @@ async fn batch_predict(
             pu.party_b_votes as f64,
             pu.party_a_votes as f64 / pu.total_valid_votes.max(1) as f64,
             pu.party_b_votes as f64 / pu.total_valid_votes.max(1) as f64,
-            (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs() / pu.total_valid_votes.max(1) as f64,
+            (pu.party_a_votes as f64 - pu.party_b_votes as f64).abs()
+                / pu.total_valid_votes.max(1) as f64,
             pu.benford_deviation,
             pu.submission_delay_hours,
             pu.regional_mean_turnout,
             turnout - pu.regional_mean_turnout,
             pu.rejected_votes as f64 / pu.accredited_voters.max(1) as f64,
-            if pu.total_valid_votes > pu.accredited_voters { 1.0 } else { 0.0 },
-            if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 { 1.0 } else { 0.0 },
+            if pu.total_valid_votes > pu.accredited_voters {
+                1.0
+            } else {
+                0.0
+            },
+            if pu.total_valid_votes % 100 == 0 || pu.total_valid_votes % 50 == 0 {
+                1.0
+            } else {
+                0.0
+            },
         ];
 
-        let score = model
-        .predict(&features)
-        .map_err(|error| {
+        let score = model.predict(&features).map_err(|error| {
             warn!(error = %error, "approved anomaly model inference failed");
             StatusCode::SERVICE_UNAVAILABLE
         })?;
         let is_anomaly = score > 0.5;
-        if is_anomaly { total_anomalies += 1; }
+        if is_anomaly {
+            total_anomalies += 1;
+        }
 
         results.push(AnomalyResponse {
             anomaly_score: score,
@@ -617,7 +689,9 @@ async fn compare_faces(
     let start = std::time::Instant::now();
     let s = state.read().await;
 
-    let _face_model = s.face_model.as_ref()
+    let _face_model = s
+        .face_model
+        .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     if req.embedding_a.len() != 512 || req.embedding_b.len() != 512 {
@@ -631,8 +705,18 @@ async fn compare_faces(
         .zip(&req.embedding_b)
         .map(|(left, right)| left * right)
         .sum();
-    let norm_a = req.embedding_a.iter().map(|value| value * value).sum::<f32>().sqrt();
-    let norm_b = req.embedding_b.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let norm_a = req
+        .embedding_a
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+    let norm_b = req
+        .embedding_b
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
     let similarity = dot / (norm_a * norm_b).max(1e-10);
 
     let threshold = req.threshold.unwrap_or(0.4);
@@ -657,9 +741,7 @@ fn haversine_m(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     r * c
 }
 
-async fn detect_gps_spoof(
-    Json(req): Json<GpsSpoofRequest>,
-) -> Json<GpsSpoofResponse> {
+async fn detect_gps_spoof(Json(req): Json<GpsSpoofRequest>) -> Json<GpsSpoofResponse> {
     let start = std::time::Instant::now();
     let mut indicators = Vec::new();
     let mut spoof_score: f64 = 0.0;
@@ -743,7 +825,10 @@ async fn detect_gps_spoof(
                 check: "geofence".into(),
                 result: "FAIL".into(),
                 severity: "high".into(),
-                detail: format!("Device is {:.0}m from expected location (radius: {:.0}m)", dist, radius),
+                detail: format!(
+                    "Device is {:.0}m from expected location (radius: {:.0}m)",
+                    dist, radius
+                ),
             });
             spoof_score += 0.5;
         }
@@ -753,7 +838,8 @@ async fn detect_gps_spoof(
     if let Some(ref samples) = req.jitter_samples {
         if samples.len() >= 3 {
             let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-            let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / samples.len() as f64;
+            let variance =
+                samples.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / samples.len() as f64;
             let std_dev = variance.sqrt();
 
             if std_dev < 0.0001 {
@@ -761,7 +847,10 @@ async fn detect_gps_spoof(
                     check: "jitter".into(),
                     result: "FAIL".into(),
                     severity: "high".into(),
-                    detail: format!("GPS jitter std_dev={:.6} suggests emulated/static GPS", std_dev),
+                    detail: format!(
+                        "GPS jitter std_dev={:.6} suggests emulated/static GPS",
+                        std_dev
+                    ),
                 });
                 spoof_score += 0.4;
             }
@@ -799,7 +888,11 @@ async fn sign_integrity(
     if !state.integrity_signer.authorizes(&headers) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let signing_key = state.integrity_signer.signing_key.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let signing_key = state
+        .integrity_signer
+        .signing_key
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     if state.integrity_signer.key_id == "unconfigured" {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -823,18 +916,34 @@ async fn verify_integrity(
     if !state.integrity_signer.authorizes(&headers) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let verifying_key = state.integrity_signer.verifying_key.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let signature_bytes = BASE64_STANDARD.decode(req.signature.trim()).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let signature_array = <[u8; 64]>::try_from(signature_bytes.as_slice()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let verifying_key = state
+        .integrity_signer
+        .verifying_key
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let signature_bytes = BASE64_STANDARD
+        .decode(req.signature.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let signature_array =
+        <[u8; 64]>::try_from(signature_bytes.as_slice()).map_err(|_| StatusCode::BAD_REQUEST)?;
     let signature = Signature::from_bytes(&signature_array);
     let key_matches = req.key_id == state.integrity_signer.key_id;
-    let valid = key_matches && verifying_key.verify(req.payload_sha256.as_bytes(), &signature).is_ok();
-    Ok(Json(IntegrityVerifyResponse { valid, key_id: state.integrity_signer.key_id.clone() }))
+    let valid = key_matches
+        && verifying_key
+            .verify(req.payload_sha256.as_bytes(), &signature)
+            .is_ok();
+    Ok(Json(IntegrityVerifyResponse {
+        valid,
+        key_id: state.integrity_signer.key_id.clone(),
+    }))
 }
 
 fn canonical_json(value: &serde_json::Value) -> Result<String, String> {
     match value {
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::String(_) => {
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {
             serde_json::to_string(value).map_err(|error| error.to_string())
         }
         serde_json::Value::Array(values) => {
@@ -850,7 +959,8 @@ fn canonical_json(value: &serde_json::Value) -> Result<String, String> {
             let members = entries
                 .into_iter()
                 .map(|(key, value)| {
-                    let encoded_key = serde_json::to_string(key).map_err(|error| error.to_string())?;
+                    let encoded_key =
+                        serde_json::to_string(key).map_err(|error| error.to_string())?;
                     Ok(format!("{}:{}", encoded_key, canonical_json(value)?))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -877,7 +987,10 @@ fn canonical_device_envelope(envelope: &DeviceEnvelope) -> Result<Vec<u8>, Strin
 }
 
 fn valid_device_event_type(event_type: &str) -> bool {
-    matches!(event_type, "accreditation" | "result_capture" | "heartbeat" | "incident")
+    matches!(
+        event_type,
+        "accreditation" | "result_capture" | "heartbeat" | "incident"
+    )
 }
 
 fn contains_prohibited_device_field(value: &serde_json::Value) -> bool {
@@ -912,46 +1025,104 @@ fn verify_device_envelope_payload(
         || !valid_sha256(&envelope.payload_sha256)
         || request.attestation_policy_version.trim().is_empty()
     {
-        return Err((StatusCode::BAD_REQUEST, "invalid device envelope shape".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "invalid device envelope shape".into(),
+        ));
     }
     let observed = DateTime::parse_from_rfc3339(&envelope.observed_at)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "observed_at must be RFC3339".into()))?
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "observed_at must be RFC3339".into(),
+            )
+        })?
         .with_timezone(&Utc);
     let skew_seconds = (Utc::now() - observed).num_seconds().abs();
     if skew_seconds > 600 {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "device timestamp outside permitted clock skew".into()));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "device timestamp outside permitted clock skew".into(),
+        ));
     }
     if contains_prohibited_device_field(&envelope.payload) {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "payload contains prohibited sensitive device field".into()));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "payload contains prohibited sensitive device field".into(),
+        ));
     }
-    let canonical_payload = canonical_json(&envelope.payload)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "payload cannot be canonicalized".into()))?;
+    let canonical_payload = canonical_json(&envelope.payload).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "payload cannot be canonicalized".into(),
+        )
+    })?;
     let calculated_payload_hash = format!("{:x}", Sha256::digest(canonical_payload.as_bytes()));
     if calculated_payload_hash != envelope.payload_sha256.to_ascii_lowercase() {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "payload SHA-256 mismatch".into()));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "payload SHA-256 mismatch".into(),
+        ));
     }
     let public_key_bytes = BASE64_STANDARD
         .decode(request.public_key_base64.trim())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid enrolled device public key".into()))?;
-    let public_key_array = <[u8; 32]>::try_from(public_key_bytes.as_slice())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid enrolled device public key length".into()))?;
-    let verifying_key = VerifyingKey::from_bytes(&public_key_array)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid enrolled device public key".into()))?;
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid enrolled device public key".into(),
+            )
+        })?;
+    let public_key_array = <[u8; 32]>::try_from(public_key_bytes.as_slice()).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid enrolled device public key length".into(),
+        )
+    })?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key_array).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid enrolled device public key".into(),
+        )
+    })?;
     let signature_bytes = BASE64_STANDARD
         .decode(envelope.signature.trim())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid device signature encoding".into()))?;
-    let signature_array = <[u8; 64]>::try_from(signature_bytes.as_slice())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid device signature length".into()))?;
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid device signature encoding".into(),
+            )
+        })?;
+    let signature_array = <[u8; 64]>::try_from(signature_bytes.as_slice()).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid device signature length".into(),
+        )
+    })?;
     let signature = Signature::from_bytes(&signature_array);
-    let canonical_envelope = canonical_device_envelope(envelope)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "envelope cannot be canonicalized".into()))?;
+    let canonical_envelope = canonical_device_envelope(envelope).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "envelope cannot be canonicalized".into(),
+        )
+    })?;
     verifying_key
         .verify(&canonical_envelope, &signature)
-        .map_err(|_| (StatusCode::UNPROCESSABLE_ENTITY, "device signature verification failed".into()))?;
+        .map_err(|_| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "device signature verification failed".into(),
+            )
+        })?;
     let envelope_sha256 = format!("{:x}", Sha256::digest(&canonical_envelope));
-    let signing_key = signer.signing_key.as_ref().ok_or((StatusCode::SERVICE_UNAVAILABLE, "integrity attestation signer is unavailable".into()))?;
+    let signing_key = signer.signing_key.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "integrity attestation signer is unavailable".into(),
+    ))?;
     if signer.key_id == "unconfigured" {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "integrity attestation key is unavailable".into()));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "integrity attestation key is unavailable".into(),
+        ));
     }
     let verified_at = Utc::now().to_rfc3339();
     let attestation_payload = format!(
@@ -1019,11 +1190,12 @@ async fn query_graph(
     Json(req): Json<GraphQueryRequest>,
 ) -> Result<Json<GraphQueryResponse>, StatusCode> {
     let s = state.read().await;
-    let neo4j = s.neo4j.as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let neo4j = s.neo4j.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let hops = req.hops.unwrap_or(2);
-    let result = neo4j.get_neighborhood(&req.pu_code, hops).await
+    let result = neo4j
+        .get_neighborhood(&req.pu_code, hops)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(result))
@@ -1035,8 +1207,7 @@ async fn query_graph(
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -1052,7 +1223,10 @@ async fn main() {
         .route("/integrity/sign", post(sign_integrity))
         .route("/integrity/verify", post(verify_integrity))
         .route("/integrity/device/verify", post(verify_device_envelope))
-        .route("/integrity/health", get(integrity_signer_health).post(integrity_signer_health))
+        .route(
+            "/integrity/health",
+            get(integrity_signer_health).post(integrity_signer_health),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -1087,11 +1261,17 @@ mod integrity_tests {
             service_tokens: vec!["service-secret".to_string()],
         };
         let mut accepted = HeaderMap::new();
-        accepted.insert("authorization", HeaderValue::from_static("Bearer service-secret"));
+        accepted.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer service-secret"),
+        );
         assert!(signer.authorizes(&accepted));
 
         let mut rejected = HeaderMap::new();
-        rejected.insert("authorization", HeaderValue::from_static("Bearer different-secret"));
+        rejected.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer different-secret"),
+        );
         assert!(!signer.authorizes(&rejected));
         assert!(!signer.authorizes(&HeaderMap::new()));
     }
@@ -1103,7 +1283,9 @@ mod integrity_tests {
         let digest = "a2d7798c9f4f094c0f7dbbd6f1d9b58975523ffcc5e6980b57eae3dac0dbcb81";
         let signature = signing_key.sign(digest.as_bytes());
         assert!(verifying_key.verify(digest.as_bytes(), &signature).is_ok());
-        assert!(verifying_key.verify(b"different digest", &signature).is_err());
+        assert!(verifying_key
+            .verify(b"different digest", &signature)
+            .is_err());
     }
 
     fn signed_device_request(payload: serde_json::Value) -> DeviceEnvelopeVerifyRequest {
@@ -1147,7 +1329,8 @@ mod integrity_tests {
             "pvc_verified": true,
             "method": "biometric"
         }));
-        let response = verify_device_envelope_payload(&request, &signer).expect("valid device envelope");
+        let response =
+            verify_device_envelope_payload(&request, &signer).expect("valid device envelope");
         assert!(response.valid);
         assert!(valid_sha256(&response.envelope_sha256));
         assert!(response.attestation.get("signature").is_some());
@@ -1162,8 +1345,10 @@ mod integrity_tests {
             key_id: "integrity-device-test-key".into(),
             service_tokens: vec!["service-secret".into()],
         };
-        let request = signed_device_request(serde_json::json!({"voter_pvc_number": "not-permitted"}));
-        let error = verify_device_envelope_payload(&request, &signer).expect_err("sensitive field must fail");
+        let request =
+            signed_device_request(serde_json::json!({"voter_pvc_number": "not-permitted"}));
+        let error = verify_device_envelope_payload(&request, &signer)
+            .expect_err("sensitive field must fail");
         assert_eq!(error.0, StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

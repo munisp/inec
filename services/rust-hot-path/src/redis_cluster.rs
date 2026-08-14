@@ -7,9 +7,9 @@
 //! - Lua scripts for atomic multi-key operations
 //! - MessagePack values (smaller than JSON)
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{anyhow, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::pipeline::{Config, Transaction};
@@ -35,12 +35,21 @@ impl RedisClusterPipeline {
     /// Establish a real cluster connection at startup; fails (refusing to
     /// start the pipeline) when Redis is unreachable.
     pub async fn new(config: &Config) -> Result<Self> {
-        let client = redis::cluster::ClusterClient::new(config.redis_nodes.clone())
-            .map_err(|e| anyhow!("invalid redis cluster nodes {:?}: {}", config.redis_nodes, e))?;
-        let conn = client
-            .get_async_connection()
-            .await
-            .map_err(|e| anyhow!("cannot connect to redis cluster {:?}: {}", config.redis_nodes, e))?;
+        let client =
+            redis::cluster::ClusterClient::new(config.redis_nodes.clone()).map_err(|e| {
+                anyhow!(
+                    "invalid redis cluster nodes {:?}: {}",
+                    config.redis_nodes,
+                    e
+                )
+            })?;
+        let conn = client.get_async_connection().await.map_err(|e| {
+            anyhow!(
+                "cannot connect to redis cluster {:?}: {}",
+                config.redis_nodes,
+                e
+            )
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
             commands_executed: AtomicU64::new(0),
@@ -66,7 +75,10 @@ impl RedisClusterPipeline {
         for tx in batch.iter() {
             let value = rmp_serde::to_vec(tx)?; // MessagePack encoding
             pipe.set_ex(format!("tx:{}", tx.id), value, 10);
-            pipe.incr(format!("counter:state:{}:{}", tx.state_code, tx.tx_type), 1i64);
+            pipe.incr(
+                format!("counter:state:{}:{}", tx.state_code, tx.tx_type),
+                1i64,
+            );
             pipe.incr(format!("counter:total:{}", tx.tx_type), 1i64);
             pipe.publish(format!("events:{}", tx.tx_type), &tx.id);
         }
@@ -76,7 +88,8 @@ impl RedisClusterPipeline {
             .await
             .map_err(|e| anyhow!("redis pipeline flush failed: {}", e))?;
 
-        self.commands_executed.fetch_add(batch.len() as u64 * 4, Ordering::Relaxed);
+        self.commands_executed
+            .fetch_add(batch.len() as u64 * 4, Ordering::Relaxed);
         self.pipeline_flushes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -85,7 +98,8 @@ impl RedisClusterPipeline {
     /// Increments party vote count AND total in a single atomic operation.
     /// Returns the real server-side total (previously echoed the input).
     pub async fn atomic_tally(&self, state_code: &str, party: &str, votes: i64) -> Result<i64> {
-        let script = redis::Script::new(r#"
+        let script = redis::Script::new(
+            r#"
             local key = KEYS[1]
             local party = ARGV[1]
             local votes = tonumber(ARGV[2])
@@ -93,7 +107,8 @@ impl RedisClusterPipeline {
             redis.call('HINCRBY', key, 'total', votes)
             redis.call('EXPIRE', key, 3600)
             return redis.call('HGET', key, 'total')
-        "#);
+        "#,
+        );
 
         let mut conn = self.conn.lock().await;
         let total: i64 = script
@@ -107,7 +122,12 @@ impl RedisClusterPipeline {
     }
 
     /// Sorted set leaderboard update (O(log N) per update).
-    pub async fn update_leaderboard(&self, election_id: &str, state_code: &str, score: f64) -> Result<()> {
+    pub async fn update_leaderboard(
+        &self,
+        election_id: &str,
+        state_code: &str,
+        score: f64,
+    ) -> Result<()> {
         let mut conn = self.conn.lock().await;
         redis::cmd("ZADD")
             .arg(format!("leaderboard:{}", election_id))
@@ -135,7 +155,12 @@ impl RedisClusterPipeline {
             .arg(tx_id)
             .query_async(&mut *conn)
             .await
-            .map_err(|e| anyhow!("redis BF.ADD dedup check failed (dedup NOT enforced): {}", e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "redis BF.ADD dedup check failed (dedup NOT enforced): {}",
+                    e
+                )
+            })?;
         Ok(added == 0)
     }
 

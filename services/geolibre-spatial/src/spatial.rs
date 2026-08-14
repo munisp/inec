@@ -21,7 +21,10 @@ fn is_valid_coord(latitude: f64, longitude: f64) -> bool {
 
 /// 400 response when any point carries an out-of-range or non-finite coordinate.
 fn validate_points(points: &[PointInput]) -> Option<HttpResponse> {
-    if let Some(p) = points.iter().find(|p| !is_valid_coord(p.latitude, p.longitude)) {
+    if let Some(p) = points
+        .iter()
+        .find(|p| !is_valid_coord(p.latitude, p.longitude))
+    {
         return Some(HttpResponse::BadRequest().json(serde_json::json!({
             "error": "invalid_coordinate",
             "message": "latitude must be in [-90, 90] and longitude in [-180, 180] (finite values only)",
@@ -89,7 +92,9 @@ pub struct BufferRequest {
     pub segments: usize,
 }
 
-fn default_segments() -> usize { 32 }
+fn default_segments() -> usize {
+    32
+}
 
 pub async fn buffer_analysis(body: actix_web::web::Json<BufferRequest>) -> HttpResponse {
     let req = body.into_inner();
@@ -109,10 +114,14 @@ pub async fn buffer_analysis(body: actix_web::web::Json<BufferRequest>) -> HttpR
             ring.push([pt.longitude + dy, pt.latitude + dx]);
         }
 
-        let mut props: HashMap<String, serde_json::Value> = pt.properties.clone().unwrap_or_default();
+        let mut props: HashMap<String, serde_json::Value> =
+            pt.properties.clone().unwrap_or_default();
         props.insert("buffer_index".into(), serde_json::json!(i));
         props.insert("radius_km".into(), serde_json::json!(req.radius_km));
-        props.insert("center".into(), serde_json::json!([pt.longitude, pt.latitude]));
+        props.insert(
+            "center".into(),
+            serde_json::json!([pt.longitude, pt.latitude]),
+        );
 
         fc.features.push(Feature {
             feat_type: "Feature".into(),
@@ -144,7 +153,9 @@ pub struct VoronoiRequest {
     pub bbox: [f64; 4], // [min_lng, min_lat, max_lng, max_lat]
 }
 
-fn default_bbox() -> [f64; 4] { [2.5, 4.0, 14.7, 14.0] } // Nigeria bounds
+fn default_bbox() -> [f64; 4] {
+    [2.5, 4.0, 14.7, 14.0]
+} // Nigeria bounds
 
 pub async fn voronoi_analysis(body: actix_web::web::Json<VoronoiRequest>) -> HttpResponse {
     let req = body.into_inner();
@@ -160,7 +171,9 @@ pub async fn voronoi_analysis(body: actix_web::web::Json<VoronoiRequest>) -> Htt
 
         // Clip against all other points
         for (j, other) in req.points.iter().enumerate() {
-            if i == j { continue; }
+            if i == j {
+                continue;
+            }
 
             let mid_lng = (pt.longitude + other.longitude) / 2.0;
             let mid_lat = (pt.latitude + other.latitude) / 2.0;
@@ -195,11 +208,19 @@ pub async fn voronoi_analysis(body: actix_web::web::Json<VoronoiRequest>) -> Htt
             [cell_bounds[0], cell_bounds[1]],
         ];
 
-        let mut props: HashMap<String, serde_json::Value> = pt.properties.clone().unwrap_or_default();
+        let mut props: HashMap<String, serde_json::Value> =
+            pt.properties.clone().unwrap_or_default();
         props.insert("voronoi_index".into(), serde_json::json!(i));
-        props.insert("center".into(), serde_json::json!([pt.longitude, pt.latitude]));
-        let area = (cell_bounds[2] - cell_bounds[0]) * (cell_bounds[3] - cell_bounds[1]) * 111.32 * 111.32;
-        props.insert("area_km2".into(), serde_json::json!((area * 100.0).round() / 100.0));
+        props.insert(
+            "center".into(),
+            serde_json::json!([pt.longitude, pt.latitude]),
+        );
+        let area =
+            (cell_bounds[2] - cell_bounds[0]) * (cell_bounds[3] - cell_bounds[1]) * 111.32 * 111.32;
+        props.insert(
+            "area_km2".into(),
+            serde_json::json!((area * 100.0).round() / 100.0),
+        );
 
         fc.features.push(Feature {
             feat_type: "Feature".into(),
@@ -231,7 +252,9 @@ pub struct H3Request {
     pub aggregate_field: Option<String>,
 }
 
-fn default_resolution() -> u8 { 5 }
+fn default_resolution() -> u8 {
+    5
+}
 
 pub async fn h3_aggregation(body: actix_web::web::Json<H3Request>) -> HttpResponse {
     let req = body.into_inner();
@@ -276,12 +299,20 @@ pub async fn h3_aggregation(body: actix_web::web::Json<H3Request>) -> HttpRespon
 
         // Aggregate numeric field if specified
         if let Some(ref field) = req.aggregate_field {
-            let sum: f64 = points.iter()
+            let sum: f64 = points
+                .iter()
                 .filter_map(|p| p.properties.as_ref()?.get(field)?.as_f64())
                 .sum();
-            let avg = if !points.is_empty() { sum / points.len() as f64 } else { 0.0 };
+            let avg = if !points.is_empty() {
+                sum / points.len() as f64
+            } else {
+                0.0
+            };
             props.insert(format!("{}_sum", field), serde_json::json!(sum));
-            props.insert(format!("{}_avg", field), serde_json::json!((avg * 100.0).round() / 100.0));
+            props.insert(
+                format!("{}_avg", field),
+                serde_json::json!((avg * 100.0).round() / 100.0),
+            );
         }
 
         fc.features.push(Feature {
@@ -317,8 +348,12 @@ pub struct ClusterRequest {
     pub min_points: usize,
 }
 
-fn default_eps() -> f64 { 5.0 }
-fn default_min_pts() -> usize { 3 }
+fn default_eps() -> f64 {
+    5.0
+}
+fn default_min_pts() -> usize {
+    3
+}
 
 fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let r = 6371.0;
@@ -339,19 +374,25 @@ pub async fn dbscan_cluster(body: actix_web::web::Json<ClusterRequest>) -> HttpR
     let mut cluster_id: i32 = 0;
 
     for i in 0..n {
-        if labels[i] != -1 { continue; }
+        if labels[i] != -1 {
+            continue;
+        }
 
         // Find neighbors
         let neighbors: Vec<usize> = (0..n)
             .filter(|&j| {
                 haversine_km(
-                    req.points[i].latitude, req.points[i].longitude,
-                    req.points[j].latitude, req.points[j].longitude,
+                    req.points[i].latitude,
+                    req.points[i].longitude,
+                    req.points[j].latitude,
+                    req.points[j].longitude,
                 ) <= req.eps_km
             })
             .collect();
 
-        if neighbors.len() < req.min_points { continue; }
+        if neighbors.len() < req.min_points {
+            continue;
+        }
 
         labels[i] = cluster_id;
         let mut queue = neighbors.clone();
@@ -372,8 +413,10 @@ pub async fn dbscan_cluster(body: actix_web::web::Json<ClusterRequest>) -> HttpR
             let j_neighbors: Vec<usize> = (0..n)
                 .filter(|&k| {
                     haversine_km(
-                        req.points[j].latitude, req.points[j].longitude,
-                        req.points[k].latitude, req.points[k].longitude,
+                        req.points[j].latitude,
+                        req.points[j].longitude,
+                        req.points[k].latitude,
+                        req.points[k].longitude,
                     ) <= req.eps_km
                 })
                 .collect();
@@ -392,7 +435,8 @@ pub async fn dbscan_cluster(body: actix_web::web::Json<ClusterRequest>) -> HttpR
 
     let mut fc = FeatureCollection::new();
     for (i, pt) in req.points.iter().enumerate() {
-        let mut props: HashMap<String, serde_json::Value> = pt.properties.clone().unwrap_or_default();
+        let mut props: HashMap<String, serde_json::Value> =
+            pt.properties.clone().unwrap_or_default();
         props.insert("cluster_id".into(), serde_json::json!(labels[i]));
         props.insert("is_noise".into(), serde_json::json!(labels[i] == -1));
 
@@ -431,8 +475,12 @@ pub struct DensityRequest {
     pub bbox: Option<[f64; 4]>,
 }
 
-fn default_bandwidth() -> f64 { 10.0 }
-fn default_grid_size() -> usize { 20 }
+fn default_bandwidth() -> f64 {
+    10.0
+}
+fn default_grid_size() -> usize {
+    20
+}
 
 pub async fn kernel_density(body: actix_web::web::Json<DensityRequest>) -> HttpResponse {
     let req = body.into_inner();
@@ -441,12 +489,18 @@ pub async fn kernel_density(body: actix_web::web::Json<DensityRequest>) -> HttpR
     }
 
     let bbox = req.bbox.unwrap_or_else(|| {
-        if req.points.is_empty() { return [2.5, 4.0, 14.7, 14.0]; }
-        let mut min_lng = f64::MAX; let mut max_lng = f64::MIN;
-        let mut min_lat = f64::MAX; let mut max_lat = f64::MIN;
+        if req.points.is_empty() {
+            return [2.5, 4.0, 14.7, 14.0];
+        }
+        let mut min_lng = f64::MAX;
+        let mut max_lng = f64::MIN;
+        let mut min_lat = f64::MAX;
+        let mut max_lat = f64::MIN;
         for p in &req.points {
-            min_lng = min_lng.min(p.longitude); max_lng = max_lng.max(p.longitude);
-            min_lat = min_lat.min(p.latitude);  max_lat = max_lat.max(p.latitude);
+            min_lng = min_lng.min(p.longitude);
+            max_lng = max_lng.max(p.longitude);
+            min_lat = min_lat.min(p.latitude);
+            max_lat = max_lat.max(p.latitude);
         }
         let pad = req.bandwidth_km / 111.32;
         [min_lng - pad, min_lat - pad, max_lng + pad, max_lat + pad]
@@ -464,7 +518,9 @@ pub async fn kernel_density(body: actix_web::web::Json<DensityRequest>) -> HttpR
             let cell_lat = bbox[1] + (row as f64 + 0.5) * step_lat;
 
             // Gaussian kernel density
-            let density: f64 = req.points.iter()
+            let density: f64 = req
+                .points
+                .iter()
                 .map(|p| {
                     let dx = (p.longitude - cell_lng) / bandwidth_deg;
                     let dy = (p.latitude - cell_lat) / bandwidth_deg;
@@ -473,7 +529,9 @@ pub async fn kernel_density(body: actix_web::web::Json<DensityRequest>) -> HttpR
                 })
                 .sum();
 
-            if density < 0.001 { continue; }
+            if density < 0.001 {
+                continue;
+            }
 
             let ring = vec![
                 [cell_lng - step_lng / 2.0, cell_lat - step_lat / 2.0],
@@ -484,7 +542,10 @@ pub async fn kernel_density(body: actix_web::web::Json<DensityRequest>) -> HttpR
             ];
 
             let mut props = HashMap::new();
-            props.insert("density".into(), serde_json::json!((density * 10000.0).round() / 10000.0));
+            props.insert(
+                "density".into(),
+                serde_json::json!((density * 10000.0).round() / 10000.0),
+            );
             props.insert("grid_row".into(), serde_json::json!(row));
             props.insert("grid_col".into(), serde_json::json!(col));
 
@@ -521,7 +582,9 @@ pub struct NearestRequest {
     pub k: usize,
 }
 
-fn default_k() -> usize { 10 }
+fn default_k() -> usize {
+    10
+}
 
 pub async fn nearest_neighbors(body: actix_web::web::Json<NearestRequest>) -> HttpResponse {
     let req = body.into_inner();
@@ -536,7 +599,10 @@ pub async fn nearest_neighbors(body: actix_web::web::Json<NearestRequest>) -> Ht
     }
     let q = &req.query_point;
 
-    let mut distances: Vec<(usize, f64)> = req.points.iter().enumerate()
+    let mut distances: Vec<(usize, f64)> = req
+        .points
+        .iter()
+        .enumerate()
         .map(|(i, p)| {
             let dist = haversine_km(q.latitude, q.longitude, p.latitude, p.longitude);
             (i, dist)
@@ -550,9 +616,13 @@ pub async fn nearest_neighbors(body: actix_web::web::Json<NearestRequest>) -> Ht
 
     for (rank, (i, dist)) in distances.iter().enumerate() {
         let pt = &req.points[*i];
-        let mut props: HashMap<String, serde_json::Value> = pt.properties.clone().unwrap_or_default();
+        let mut props: HashMap<String, serde_json::Value> =
+            pt.properties.clone().unwrap_or_default();
         props.insert("rank".into(), serde_json::json!(rank + 1));
-        props.insert("distance_km".into(), serde_json::json!((*dist * 1000.0).round() / 1000.0));
+        props.insert(
+            "distance_km".into(),
+            serde_json::json!((*dist * 1000.0).round() / 1000.0),
+        );
 
         fc.features.push(Feature {
             feat_type: "Feature".into(),
@@ -596,13 +666,17 @@ pub async fn convex_hull(body: actix_web::web::Json<HullRequest>) -> HttpRespons
     }
 
     // Graham scan
-    let mut pts: Vec<(f64, f64)> = req.points.iter()
+    let mut pts: Vec<(f64, f64)> = req
+        .points
+        .iter()
         .map(|p| (p.longitude, p.latitude))
         .collect();
 
     // Find bottom-most point
-    let start = pts.iter().enumerate()
-        .min_by(|a, b| a.1.1.total_cmp(&b.1.1).then(a.1.0.total_cmp(&b.1.0)))
+    let start = pts
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1 .1.total_cmp(&b.1 .1).then(a.1 .0.total_cmp(&b.1 .0)))
         .map(|(i, _)| i)
         .unwrap_or(0);
     pts.swap(0, start);
@@ -620,7 +694,11 @@ pub async fn convex_hull(body: actix_web::web::Json<HullRequest>) -> HttpRespons
             let a = hull[hull.len() - 2];
             let b = hull[hull.len() - 1];
             let cross = (b.0 - a.0) * (pt.1 - a.1) - (b.1 - a.1) * (pt.0 - a.0);
-            if cross <= 0.0 { hull.pop(); } else { break; }
+            if cross <= 0.0 {
+                hull.pop();
+            } else {
+                break;
+            }
         }
         hull.push(*pt);
     }
@@ -676,28 +754,42 @@ pub async fn centroid_analysis(body: actix_web::web::Json<CentroidRequest>) -> H
     let mut fc = FeatureCollection::new();
 
     for group in &req.groups {
-        if group.points.is_empty() { continue; }
+        if group.points.is_empty() {
+            continue;
+        }
 
         let n = group.points.len() as f64;
         let avg_lng: f64 = group.points.iter().map(|p| p.longitude).sum::<f64>() / n;
         let avg_lat: f64 = group.points.iter().map(|p| p.latitude).sum::<f64>() / n;
 
         // Standard distance
-        let std_dist: f64 = (group.points.iter()
+        let std_dist: f64 = (group
+            .points
+            .iter()
             .map(|p| {
                 let dx = (p.longitude - avg_lng) * 111.32;
                 let dy = (p.latitude - avg_lat) * 111.32;
                 dx * dx + dy * dy
             })
-            .sum::<f64>() / n)
+            .sum::<f64>()
+            / n)
             .sqrt();
 
         let mut props = HashMap::new();
         props.insert("group_name".into(), serde_json::json!(group.name));
         props.insert("point_count".into(), serde_json::json!(group.points.len()));
-        props.insert("centroid_lng".into(), serde_json::json!((avg_lng * 10000.0).round() / 10000.0));
-        props.insert("centroid_lat".into(), serde_json::json!((avg_lat * 10000.0).round() / 10000.0));
-        props.insert("standard_distance_km".into(), serde_json::json!((std_dist * 100.0).round() / 100.0));
+        props.insert(
+            "centroid_lng".into(),
+            serde_json::json!((avg_lng * 10000.0).round() / 10000.0),
+        );
+        props.insert(
+            "centroid_lat".into(),
+            serde_json::json!((avg_lat * 10000.0).round() / 10000.0),
+        );
+        props.insert(
+            "standard_distance_km".into(),
+            serde_json::json!((std_dist * 100.0).round() / 100.0),
+        );
 
         fc.features.push(Feature {
             feat_type: "Feature".into(),
@@ -729,7 +821,11 @@ mod tests {
         // ~536 km (the previously asserted ~450 km range was geographically
         // wrong and made this test fail on every run).
         let dist = haversine_km(6.45, 3.40, 9.06, 7.49);
-        assert!(dist > 500.0 && dist < 570.0, "Lagos-Abuja should be ~536km, got {}", dist);
+        assert!(
+            dist > 500.0 && dist < 570.0,
+            "Lagos-Abuja should be ~536km, got {}",
+            dist
+        );
     }
 
     #[test]

@@ -180,17 +180,14 @@ impl CancelableBiometrics {
     }
 
     /// Revoke a transform in PostgreSQL.
-    pub async fn revoke_transform(
-        &self,
-        transform_id: &str,
-    ) -> Result<(), CancelableError> {
+    pub async fn revoke_transform(&self, transform_id: &str) -> Result<(), CancelableError> {
         let result = sqlx::query(
             "UPDATE cancelable_transforms SET is_revoked = TRUE, seed = '\\x00', revoked_at = NOW()
-             WHERE transform_id = $1 AND is_revoked = FALSE"
+             WHERE transform_id = $1 AND is_revoked = FALSE",
         )
-            .bind(transform_id)
-            .execute(&self.pool)
-            .await?;
+        .bind(transform_id)
+        .execute(&self.pool)
+        .await?;
 
         if result.rows_affected() == 0 {
             return Err(CancelableError::TransformNotFound(transform_id.to_string()));
@@ -206,7 +203,8 @@ impl CancelableBiometrics {
         modality: &str,
         transform_type: TransformType,
     ) -> Result<String, CancelableError> {
-        self.create_transform(voter_vin, modality, transform_type).await
+        self.create_transform(voter_vin, modality, transform_type)
+            .await
     }
 
     /// Compare two BioHash codes via normalized Hamming distance.
@@ -230,15 +228,18 @@ impl CancelableBiometrics {
 
     // ─── Private ────────────────────────────────────────────────
 
-    async fn load_transform(&self, transform_id: &str) -> Result<CancelableTransform, CancelableError> {
+    async fn load_transform(
+        &self,
+        transform_id: &str,
+    ) -> Result<CancelableTransform, CancelableError> {
         let row = sqlx::query_as::<_, (String, String, String, i32, bool, Vec<u8>)>(
             "SELECT voter_vin, modality, transform_type, version, is_revoked, seed
-             FROM cancelable_transforms WHERE transform_id = $1"
+             FROM cancelable_transforms WHERE transform_id = $1",
         )
-            .bind(transform_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| CancelableError::TransformNotFound(transform_id.to_string()))?;
+        .bind(transform_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| CancelableError::TransformNotFound(transform_id.to_string()))?;
 
         Ok(CancelableTransform {
             transform_id: transform_id.to_string(),
@@ -301,7 +302,10 @@ mod tests {
             return;
         };
         let cb = CancelableBiometrics::new(pool);
-        let tid = cb.create_transform("VIN001", "fingerprint", TransformType::BioHashing).await.unwrap();
+        let tid = cb
+            .create_transform("VIN001", "fingerprint", TransformType::BioHashing)
+            .await
+            .unwrap();
 
         let features = vec![0.1, 0.5, -0.3, 0.8, -0.2, 0.4, 0.7, -0.1];
         let hash1 = cb.apply_biohash(&tid, &features).await.unwrap();
@@ -319,7 +323,10 @@ mod tests {
             return;
         };
         let cb = CancelableBiometrics::new(pool);
-        let tid = cb.create_transform("VIN001", "facial", TransformType::BioHashing).await.unwrap();
+        let tid = cb
+            .create_transform("VIN001", "facial", TransformType::BioHashing)
+            .await
+            .unwrap();
 
         cb.revoke_transform(&tid).await.unwrap();
 
