@@ -15,13 +15,19 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(database_url)
         .await?;
 
-    // Run migrations. Failure here usually means the tables already exist
-    // (idempotent DDL), but it must not be silently discarded — log it.
-    if let Err(e) = sqlx::query(include_str!("../migrations/001_biometric_tables.sql"))
-        .execute(&pool)
-        .await
-    {
-        tracing::warn!("embedded biometric migration did not apply cleanly (tables may already exist): {}", e);
+    // Run embedded migrations. `sqlx::query` uses the extended protocol and
+    // silently executes ONLY the first statement of a multi-statement file —
+    // that is why 001's tables "applied" but the vault tables never existed.
+    // `raw_sql` uses the simple protocol (multi-statement capable). Failures
+    // are logged, not discarded: idempotent DDL failing on "already exists"
+    // is fine, silence is not.
+    for (name, sql) in [
+        ("001_biometric_tables.sql", include_str!("../migrations/001_biometric_tables.sql")),
+        ("002_vault_tables.sql", include_str!("../migrations/002_vault_tables.sql")),
+    ] {
+        if let Err(e) = sqlx::raw_sql(sql).execute(&pool).await {
+            tracing::warn!("embedded migration {} did not apply cleanly (objects may already exist): {}", name, e);
+        }
     }
 
     Ok(pool)

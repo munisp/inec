@@ -760,7 +760,9 @@ mod tests {
     use super::*;
 
     // Tests require a running PostgreSQL instance provided via TEST_DATABASE_URL.
-    // Run with: TEST_DATABASE_URL=postgresql://... cargo test -- --ignored
+    // Run with: TEST_DATABASE_URL=postgresql://... cargo test -- --ignored --test-threads=1
+    // (serial: the tests share one scratch DB and the single-active-key
+    // invariant, so parallel runs can race on key creation/rotation).
     // No credentials are committed to the repository — tests skip when unset.
     async fn test_pool() -> Option<sqlx::PgPool> {
         let url = std::env::var("TEST_DATABASE_URL").ok()?;
