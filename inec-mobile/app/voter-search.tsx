@@ -30,7 +30,7 @@ export default function VoterSearchScreen() {
           <Ionicons name="person-outline" size={20} color="#166534" />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.voterName}>{item.full_name}</Text>
+          <Text style={styles.voterName}>{(item as any).full_name || `${(item as any).first_name || ''} ${(item as any).last_name || ''}`.trim()}</Text>
           <Text style={styles.voterVin}>{item.vin}</Text>
         </View>
         <View style={[styles.genderBadge, { backgroundColor: item.gender === 'M' ? '#dbeafe' : '#fce7f3' }]}>
@@ -40,7 +40,7 @@ export default function VoterSearchScreen() {
       <View style={styles.voterDetails}>
         <View style={styles.detailRow}>
           <Ionicons name="location-outline" size={14} color="#6b7280" />
-          <Text style={styles.detailText}>{item.state} → {item.lga} → {item.ward}</Text>
+          <Text style={styles.detailText}>{(item as any).state_name || (item as any).state_code || item.state} → {(item as any).lga_name || (item as any).lga_code || item.lga} → {(item as any).ward_name || (item as any).ward_code || item.ward}</Text>
         </View>
         <View style={styles.detailRow}>
           <Ionicons name="business-outline" size={14} color="#6b7280" />

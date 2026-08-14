@@ -4,12 +4,23 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 
+// R4-52: /biometric/engine/dedup/status never existed; real route is
+// GET /biometric/engine/dedup/jobs. Aggregate the job list client-side.
+interface DedupJob {
+  id: number;
+  type: string;
+  status: string;
+  total_comparisons: number;
+  duplicates_found: number;
+  false_positives: number;
+  progress: number;
+}
+
 interface DedupStatus {
   total_scanned: number;
   duplicates_found: number;
   resolved: number;
   pending_review: number;
-  last_scan: string;
 }
 
 export default function DuplicateDetectionScreen() {
@@ -20,8 +31,14 @@ export default function DuplicateDetectionScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const res = await apiCall<DedupStatus>('/biometric/engine/dedup/status');
-      setStatus(res);
+      const res = await apiCall<{ jobs: DedupJob[] }>('/biometric/engine/dedup/jobs');
+      const jobs = res.jobs || [];
+      setStatus({
+        total_scanned: jobs.reduce((n, j) => n + (j.total_comparisons || 0), 0),
+        duplicates_found: jobs.reduce((n, j) => n + (j.duplicates_found || 0), 0),
+        resolved: jobs.filter((j) => j.status === 'completed').length,
+        pending_review: jobs.filter((j) => j.status === 'running' || j.status === 'pending').length,
+      });
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Failed to load dedup status');
     }
@@ -32,7 +49,7 @@ export default function DuplicateDetectionScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     try {
-      await apiCall('/biometric/engine/dedup/start', { method: 'POST' });
+      await apiCall('/biometric/engine/dedup/start', { method: 'POST', body: JSON.stringify({ type: 'incremental' }) });
       Alert.alert('Scan Started', 'Deduplication scan has been initiated.');
       await loadStatus();
     } catch (e: unknown) {

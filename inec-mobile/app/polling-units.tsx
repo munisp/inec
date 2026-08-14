@@ -23,9 +23,11 @@ export default function PollingUnitsScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const data = await api<{ polling_units: PollingUnit[]; total: number }>('/polling-units?limit=50');
-      setUnits(data.polling_units || []);
-      setTotal(data.total || 0);
+      // R4-52: real route is /geo/polling-units and it returns a bare array.
+      const data = await api<PollingUnit[]>('/geo/polling-units?limit=50');
+      const list = Array.isArray(data) ? data : [];
+      setUnits(list);
+      setTotal(list.length);
     } catch { /* ignore */ }
     setLoading(false);
   };

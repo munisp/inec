@@ -12,8 +12,9 @@ import {
 import type { Stakeholder } from "./StakeholderTypes";
 import { Bell, BellOff } from "lucide-react";
 import type { ReminderEvent } from "../hooks/useNotificationReminders";
+import { escapeHtml } from "@/lib/html";
 
-interface CalendarEvent {
+export interface CalendarEvent {
   id: string;
   day: number;
   date: Date;
@@ -159,7 +160,9 @@ function downloadFile(content: string, filename: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
-function generatePrintHTML(events: CalendarEvent[], candidateName: string, stateName: string, office: string): string {
+// Exported for regression tests (R4-40): stakeholder/candidate fields are
+// escaped before interpolation so stored payloads render as inert text.
+export function generatePrintHTML(events: CalendarEvent[], candidateName: string, stateName: string, office: string): string {
   const phases = ["Legitimacy", "Mobilisation", "Consolidation"] as const;
   const phaseDescs = {
     "Legitimacy":    "Days 1–30 · Establish credibility with traditional, religious, and women's leaders",
@@ -170,26 +173,27 @@ function generatePrintHTML(events: CalendarEvent[], candidateName: string, state
   const rows = events.map(e => `
     <tr>
       <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">Day ${e.day} · ${e.date.toLocaleDateString("en-NG", { weekday: "short", month: "short", day: "numeric" })}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;">${e.stakeholder.name}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;">${e.eventType}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">${e.duration}</td>
-      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">${e.stakeholder.key_ask.substring(0, 60)}...</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;">${escapeHtml(e.stakeholder.name)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;">${escapeHtml(e.eventType)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">${escapeHtml(e.duration)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">${escapeHtml(e.stakeholder.key_ask.substring(0, 60))}...</td>
     </tr>`).join("");
 
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${candidateName} — 90-Day Stakeholder Calendar</title>
+  const eCandidateName = escapeHtml(candidateName);
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${eCandidateName} — 90-Day Stakeholder Calendar</title>
   <style>body{font-family:Georgia,serif;margin:40px;color:#111;}h1{font-size:22px;margin-bottom:4px;}h2{font-size:15px;color:#374151;margin-top:28px;border-bottom:2px solid #111;padding-bottom:4px;}
   .meta{color:#6b7280;font-size:13px;margin-bottom:24px;}table{width:100%;border-collapse:collapse;}th{text-align:left;padding:8px;background:#111;color:white;font-size:12px;}
   .phase-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;margin-bottom:6px;}
   .leg{background:#ede9fe;color:#5b21b6;}.mob{background:#dcfce7;color:#15803d;}.con{background:#fef3c7;color:#92400e;}
   @media print{body{margin:20px;}}</style></head><body>
-  <h1>${candidateName} — 90-Day Stakeholder Engagement Calendar</h1>
-  <div class="meta">${office} · ${stateName} · Generated ${new Date().toLocaleDateString("en-NG", { year: "numeric", month: "long", day: "numeric" })}</div>
+  <h1>${eCandidateName} — 90-Day Stakeholder Engagement Calendar</h1>
+  <div class="meta">${escapeHtml(office)} · ${escapeHtml(stateName)} · Generated ${new Date().toLocaleDateString("en-NG", { year: "numeric", month: "long", day: "numeric" })}</div>
   ${phases.map(phase => {
     const phaseEvents = events.filter(e => e.phase === phase);
     const cls = phase === "Legitimacy" ? "leg" : phase === "Mobilisation" ? "mob" : "con";
     return `<h2><span class="phase-badge ${cls}">${phase}</span> — ${phaseDescs[phase]}</h2>
     <table><tr><th>Date</th><th>Stakeholder Group</th><th>Event Type</th><th>Duration</th><th>Key Ask</th></tr>
-    ${phaseEvents.map(e => `<tr><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">Day ${e.day} · ${e.date.toLocaleDateString("en-NG", { weekday: "short", month: "short", day: "numeric" })}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;">${e.stakeholder.name}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;">${e.eventType}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">${e.duration}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">${e.stakeholder.key_ask.substring(0, 70)}...</td></tr>`).join("")}
+    ${phaseEvents.map(e => `<tr><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">Day ${e.day} · ${e.date.toLocaleDateString("en-NG", { weekday: "short", month: "short", day: "numeric" })}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;">${escapeHtml(e.stakeholder.name)}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;">${escapeHtml(e.eventType)}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#6b7280;">${escapeHtml(e.duration)}</td><td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;font-size:12px;color:#374151;">${escapeHtml(e.stakeholder.key_ask.substring(0, 70))}...</td></tr>`).join("")}
     </table>`;
   }).join("")}
   <p style="margin-top:32px;font-size:11px;color:#9ca3af;">Generated by INEC Campaign Intelligence Platform · Stakeholder Engagement Engine v2.0</p>

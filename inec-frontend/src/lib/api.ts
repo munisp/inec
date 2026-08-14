@@ -819,7 +819,8 @@ export const api = {
   },
   createLandmark: (data: { name: string; category: string; latitude: number; longitude: number; state_code?: string; address?: string }) =>
     request('/geo/landmarks', { method: 'POST', body: JSON.stringify(data) }),
-  seedLandmarks: () => request('/geo/landmarks/seed', { method: 'POST' }),
+  // R4-56: removed seedLandmarks/seedTrackingData/seedGeofenceZones — the
+  // backend has no such routes; fixture seeding is backend-fixture territory.
   getGeoHeatmap: (electionId: number, metric?: string) => {
     const p = new URLSearchParams({ election_id: String(electionId) });
     if (metric) p.set('metric', metric);
@@ -867,7 +868,6 @@ export const api = {
   },
   reportCrowdDensity: (data: { pu_code: string; lat: number; lng: number; head_count: number; density_level?: string; queue_length?: number; wait_time_min?: number }) =>
     request('/geo/crowd/report', { method: 'POST', body: JSON.stringify(data) }),
-  seedTrackingData: () => request('/geo/tracking/seed', { method: 'POST' }),
   // Advanced Geo (#2-#30)
   getTrackingReplay: (staffId?: string, hours?: number) => {
     const p = new URLSearchParams();
@@ -878,7 +878,6 @@ export const api = {
   getGeofenceZones: (stateCode?: string) =>
     request(`/geo/geofence/zones${stateCode ? `?state_code=${stateCode}` : ''}`),
   getGeofenceViolations: () => request('/geo/geofence/violations'),
-  seedGeofenceZones: () => request('/geo/geofence/zones/seed', { method: 'POST' }),
   getSpatialClusters: (electionId: number, epsKm?: number) => {
     const p = new URLSearchParams({ election_id: String(electionId) });
     if (epsKm) p.set('eps_km', String(epsKm));

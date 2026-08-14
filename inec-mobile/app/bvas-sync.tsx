@@ -4,12 +4,14 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 
+// R4-52: /bvas/sync/status never existed; real route is GET /ems/sync/stats.
 interface SyncStatus {
-  total_devices: number;
+  total: number;
   synced: number;
-  pending: number;
+  queued: number;
+  conflicts: number;
   failed: number;
-  last_sync: string;
+  offline_devices: number;
 }
 
 export default function BVASSyncScreen() {
@@ -20,7 +22,7 @@ export default function BVASSyncScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const res = await apiCall<SyncStatus>('/bvas/sync/status');
+      const res = await apiCall<SyncStatus>('/ems/sync/stats');
       setSyncStatus(res);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Failed to load sync status');
@@ -28,18 +30,9 @@ export default function BVASSyncScreen() {
     setLoading(false);
   };
 
-  const triggerSync = async () => {
-    setLoading(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    try {
-      await apiCall('/bvas/sync/trigger', { method: 'POST' });
-      Alert.alert('Sync Started', 'BVAS synchronization has been triggered.');
-      await loadSyncStatus();
-    } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Sync trigger failed');
-    }
-    setLoading(false);
-  };
+  // R4-52: /bvas/sync/trigger never existed. Server-side sync is device-push
+  // (POST /ems/sync/submit from BVAS devices); there is no central "trigger
+  // all devices" action, so this screen is read-only and says so honestly.
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -55,16 +48,16 @@ export default function BVASSyncScreen() {
         {syncStatus && (
           <View style={styles.statsGrid}>
             <View style={styles.statCard}>
-              <Text style={styles.statNumber}>{syncStatus.total_devices}</Text>
-              <Text style={styles.statLabel}>Devices</Text>
+              <Text style={styles.statNumber}>{syncStatus.total}</Text>
+              <Text style={styles.statLabel}>Queue Items</Text>
             </View>
             <View style={[styles.statCard]}>
               <Text style={[styles.statNumber, { color: '#166534' }]}>{syncStatus.synced}</Text>
               <Text style={styles.statLabel}>Synced</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#f59e0b' }]}>{syncStatus.pending}</Text>
-              <Text style={styles.statLabel}>Pending</Text>
+              <Text style={[styles.statNumber, { color: '#f59e0b' }]}>{syncStatus.queued}</Text>
+              <Text style={styles.statLabel}>Queued</Text>
             </View>
             <View style={styles.statCard}>
               <Text style={[styles.statNumber, { color: '#dc2626' }]}>{syncStatus.failed}</Text>
@@ -79,10 +72,10 @@ export default function BVASSyncScreen() {
           <Ionicons name="cloud-upload-outline" size={24} color="#2563eb" />
           <Text style={styles.cardTitle}>Manual Sync</Text>
         </View>
-        <Text style={styles.muted}>Trigger manual synchronization for all pending BVAS devices.</Text>
-        <TouchableOpacity style={[styles.button, { backgroundColor: '#2563eb' }]} onPress={triggerSync} disabled={loading} activeOpacity={0.8}>
-          <Text style={styles.buttonText}>Trigger Sync Now</Text>
-        </TouchableOpacity>
+        <Text style={styles.muted}>Sync is initiated by BVAS devices pushing to the server; there is no central trigger. Conflicts are resolved from the web console (BVAS Sync page).</Text>
+        {syncStatus && (
+          <Text style={styles.muted}>Conflicts awaiting resolution: {syncStatus.conflicts} · Offline devices: {syncStatus.offline_devices}</Text>
+        )}
       </View>
     </ScrollView>
   );

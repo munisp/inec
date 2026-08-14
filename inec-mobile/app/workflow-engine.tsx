@@ -1,54 +1,50 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { api } from '../src/lib/api';
 
-interface Workflow { id: number; name: string; status: string; type: string; started_at: string; completed_at: string; steps_total: number; steps_completed: number; }
-
+// R4-52: /workflows never existed. The real route GET
+// /middleware/temporal/workflows returns only the engine status (there is no
+// workflow-list endpoint), so this screen reports engine health honestly.
 export default function WorkflowEngineScreen() {
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
+    setFailed(false);
     try {
-      const res = await fetch(`${API}/workflows`);
-      if (res.ok) { const d = await res.json(); setWorkflows(Array.isArray(d) ? d : d.workflows || []); }
-    } catch (e) { console.error('Workflow load:', e); }
-    setLoading(false); setRefreshing(false);
+      const d = await api<{ status: string }>('/middleware/temporal/workflows');
+      setStatus(d.status || 'unknown');
+    } catch (e) { console.error('Workflow engine status:', e); setStatus(null); setFailed(true); }
+    setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color="#16a34a" /></View>;
 
-  const statusColors: Record<string, string> = { running: '#3b82f6', completed: '#16a34a', failed: '#dc2626', paused: '#f59e0b', pending: '#94a3b8' };
-
   return (
     <View style={s.container}>
       <Text style={s.title}>Workflow Engine</Text>
-      <Text style={s.count}>{workflows.length} workflows</Text>
-      <FlatList data={workflows} keyExtractor={w => String(w.id)}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
-        renderItem={({ item }) => (
-          <View style={s.card}>
-            <View style={s.row}>
-              <Text style={s.name}>{item.name}</Text>
-              <View style={[s.badge, { backgroundColor: statusColors[item.status] || '#6b7280' }]}>
-                <Text style={s.badgeText}>{item.status}</Text>
-              </View>
-            </View>
-            <Text style={s.sub}>Type: {item.type}</Text>
-            <View style={s.progressBar}>
-              <View style={[s.progressFill, { width: `${item.steps_total > 0 ? (item.steps_completed / item.steps_total) * 100 : 0}%` }]} />
-            </View>
-            <Text style={s.progressText}>{item.steps_completed}/{item.steps_total} steps</Text>
+      <Text style={s.count}>Temporal orchestration engine</Text>
+      <View style={s.card}>
+        <View style={s.row}>
+          <Text style={s.name}>Temporal engine</Text>
+          <View style={[s.badge, { backgroundColor: failed ? '#dc2626' : '#16a34a' }]}>
+            <Text style={s.badgeText}>{failed ? 'unreachable' : (status || 'unknown')}</Text>
           </View>
-        )}
-      />
+        </View>
+        <Text style={s.sub}>Individual workflow status and execution history are managed from the web console (Middleware → Temporal).</Text>
+      </View>
+      <TouchableOpacity style={s.retry} onPress={() => { setLoading(true); load(); }}>
+        <Text style={s.retryText}>Refresh</Text>
+      </TouchableOpacity>
     </View>
   );
 }
 
 const s = StyleSheet.create({
+  retry: { backgroundColor: '#16a34a', borderRadius: 10, padding: 12, alignItems: 'center', marginTop: 8 },
+  retryText: { color: '#fff', fontWeight: '600' },
   container: { flex: 1, backgroundColor: '#f8fafc', padding: 16 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   title: { fontSize: 22, fontWeight: '700', color: '#1e293b', marginBottom: 4 },

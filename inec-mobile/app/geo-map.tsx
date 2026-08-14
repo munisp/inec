@@ -137,7 +137,8 @@ export default function GeoMapScreen() {
 
   const loadGeofences = async () => {
     try {
-      await geoApi.seedGeofenceZones().catch(err => console.error("API error:", err));
+      // R4-56: removed seedGeofenceZones — no such backend route (404 was
+      // being swallowed); zones come pre-provisioned from backend fixtures.
       const data = await geoApi.getGeofenceZones();
       const zones = data?.zones?.features || data?.zones || [];
       const parsed: GeofenceZone[] = zones.map((z: any) => ({

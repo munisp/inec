@@ -6,9 +6,9 @@ import { api as apiCall } from '../src/lib/api';
 
 interface ObserverStats {
   total_observers: number;
-  active_now: number;
-  reports_submitted: number;
-  incidents_flagged: number;
+  active_check_ins: number;
+  reports_today: number;
+  active_alert_rules: number;
 }
 
 export default function ObserverMonitoringScreen() {
@@ -19,7 +19,7 @@ export default function ObserverMonitoringScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const res = await apiCall<ObserverStats>('/observers/stats');
+      const res = await apiCall<ObserverStats>('/observer/stats');
       setStats(res);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Failed to load observer stats');
@@ -45,16 +45,16 @@ export default function ObserverMonitoringScreen() {
               <Text style={styles.statLabel}>Observers</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#166534' }]}>{stats.active_now}</Text>
+              <Text style={[styles.statNumber, { color: '#166534' }]}>{stats.active_check_ins}</Text>
               <Text style={styles.statLabel}>Active Now</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#2563eb' }]}>{stats.reports_submitted}</Text>
+              <Text style={[styles.statNumber, { color: '#2563eb' }]}>{stats.reports_today}</Text>
               <Text style={styles.statLabel}>Reports</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#dc2626' }]}>{stats.incidents_flagged}</Text>
-              <Text style={styles.statLabel}>Incidents</Text>
+              <Text style={[styles.statNumber, { color: '#dc2626' }]}>{stats.active_alert_rules}</Text>
+              <Text style={styles.statLabel}>Alert Rules</Text>
             </View>
           </View>
         )}

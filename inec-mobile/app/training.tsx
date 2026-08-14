@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { api } from '../src/lib/api';
 
-interface TrainingModule { id: number; title: string; category: string; target_role: string; difficulty: string; duration_mins: number; completion_rate: number; is_mandatory: boolean; }
+// R4-52: /training/modules never existed; real route is GET /training/courses.
+interface TrainingModule { id: number; title: string; course_type: string; target_role: string; difficulty: string; duration_minutes: number; modules_count: number; is_mandatory: boolean; }
 
 export default function TrainingScreen() {
   const [modules, setModules] = useState<TrainingModule[]>([]);
@@ -11,8 +12,8 @@ export default function TrainingScreen() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/training/modules`);
-        if (res.ok) { const d = await res.json(); setModules(Array.isArray(d) ? d : d.modules || []); }
+        const d = await api<{ courses: TrainingModule[] } | TrainingModule[]>('/training/courses');
+        setModules(Array.isArray(d) ? d : d.courses || []);
       } catch (e) { console.error('Training load:', e); }
       setLoading(false);
     })();
@@ -25,7 +26,7 @@ export default function TrainingScreen() {
   return (
     <View style={s.container}>
       <Text style={s.title}>Training Center</Text>
-      <Text style={s.count}>{modules.length} modules available</Text>
+      <Text style={s.count}>{modules.length} courses available</Text>
       <FlatList data={modules} keyExtractor={m => String(m.id)} renderItem={({ item }) => (
         <TouchableOpacity style={s.card}>
           <View style={s.row}>
@@ -36,13 +37,10 @@ export default function TrainingScreen() {
             <View style={[s.diffBadge, { backgroundColor: diffColors[item.difficulty] || '#6b7280' }]}>
               <Text style={s.diffText}>{item.difficulty}</Text>
             </View>
-            <Text style={s.sub}>{item.duration_mins} min</Text>
+            <Text style={s.sub}>{item.duration_minutes} min</Text>
             <Text style={s.sub}>{item.target_role}</Text>
           </View>
-          <View style={s.progressBar}>
-            <View style={[s.progressFill, { width: `${item.completion_rate}%` }]} />
-          </View>
-          <Text style={s.progressText}>{item.completion_rate}% complete</Text>
+          <Text style={s.progressText}>{item.modules_count} modules{item.course_type ? ` · ${item.course_type}` : ''}</Text>
         </TouchableOpacity>
       )} />
     </View>

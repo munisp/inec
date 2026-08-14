@@ -5,13 +5,23 @@ import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
 import { useResolvedElection } from '../src/lib/election';
 
+// R4-52: /collation/summary never existed; the real backend route is
+// GET /dashboard/collation (state-level rows). We aggregate the rows into a
+// national summary client-side.
+interface CollationStateRow {
+  code: string;
+  name: string;
+  total_pus: number;
+  reported_pus: number;
+  total_valid_votes: number;
+  rejected_votes: number;
+  party_scores?: { party_code: string; abbreviation: string; total_votes: number }[];
+}
+
 interface CollationSummary {
-  election_id: number;
   election_title: string;
   total_polling_units: number;
   results_received: number;
-  results_validated: number;
-  results_finalized: number;
   completion_pct: number;
   total_valid_votes: number;
   total_rejected_votes: number;
@@ -30,8 +40,29 @@ export default function CollationScreen() {
     setError(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const data = await api<CollationSummary>(`/collation/summary?election_id=${electionId}`);
-      setSummary(data);
+      const rows = await api<CollationStateRow[]>(`/dashboard/collation?election_id=${electionId}`);
+      const list = Array.isArray(rows) ? rows : [];
+      const partyTotals: Record<string, number> = {};
+      let totalPUs = 0, received = 0, valid = 0, rejected = 0;
+      for (const row of list) {
+        totalPUs += row.total_pus || 0;
+        received += row.reported_pus || 0;
+        valid += row.total_valid_votes || 0;
+        rejected += row.rejected_votes || 0;
+        for (const ps of row.party_scores || []) {
+          const label = ps.abbreviation || ps.party_code;
+          partyTotals[label] = (partyTotals[label] || 0) + (ps.total_votes || 0);
+        }
+      }
+      setSummary({
+        election_title: `Election #${electionId}`,
+        total_polling_units: totalPUs,
+        results_received: received,
+        completion_pct: totalPUs > 0 ? (received / totalPUs) * 100 : 0,
+        total_valid_votes: valid,
+        total_rejected_votes: rejected,
+        party_totals: partyTotals,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
@@ -85,8 +116,8 @@ export default function CollationScreen() {
             {[
               { label: 'Total PUs', value: summary.total_polling_units, icon: 'location' as const, color: '#3b82f6' },
               { label: 'Received', value: summary.results_received, icon: 'cloud-download' as const, color: '#22c55e' },
-              { label: 'Validated', value: summary.results_validated, icon: 'checkmark-circle' as const, color: '#f59e0b' },
-              { label: 'Finalized', value: summary.results_finalized, icon: 'shield-checkmark' as const, color: '#166534' },
+              { label: 'Valid Votes', value: summary.total_valid_votes, icon: 'checkmark-circle' as const, color: '#f59e0b' },
+              { label: 'Rejected', value: summary.total_rejected_votes, icon: 'shield-checkmark' as const, color: '#166534' },
             ].map((s) => (
               <View key={s.label} style={styles.statCard}>
                 <Ionicons name={s.icon} size={20} color={s.color} />

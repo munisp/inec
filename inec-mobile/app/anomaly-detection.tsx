@@ -4,15 +4,13 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
 
+// R4-52: real route is /ai/anomalies; items carry no id/status/created_at.
 interface AnomalyItem {
-  id: number;
   polling_unit_code: string;
   anomaly_type: string;
   severity: string;
   score: number;
   description: string;
-  status: string;
-  created_at: string;
 }
 
 export default function AnomalyDetectionScreen() {
@@ -25,7 +23,7 @@ export default function AnomalyDetectionScreen() {
     setError(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const data = await api<{ anomalies: AnomalyItem[] }>('/anomalies?limit=50');
+      const data = await api<{ anomalies: AnomalyItem[] }>('/ai/anomalies?limit=50');
       setAnomalies(data.anomalies || []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
@@ -77,8 +75,8 @@ export default function AnomalyDetectionScreen() {
         </View>
       </View>
 
-      {anomalies.map((a) => (
-        <View key={a.id} style={[styles.anomalyCard, { borderLeftColor: severityColor(a.severity) }]}>
+      {anomalies.map((a, i) => (
+        <View key={`${a.polling_unit_code}-${i}`} style={[styles.anomalyCard, { borderLeftColor: severityColor(a.severity) }]}>
           <View style={styles.anomalyHeader}>
             <Ionicons name="alert-circle" size={18} color={severityColor(a.severity)} />
             <Text style={styles.anomalyType}>{a.anomaly_type}</Text>
@@ -90,7 +88,6 @@ export default function AnomalyDetectionScreen() {
           <Text style={styles.anomalyDesc}>{a.description}</Text>
           <View style={styles.anomalyFooter}>
             <Text style={styles.anomalyScore}>Score: {(a.score * 100).toFixed(0)}%</Text>
-            <Text style={styles.anomalyStatus}>{a.status}</Text>
           </View>
         </View>
       ))}

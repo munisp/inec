@@ -5,6 +5,7 @@
 import { useCallback, useState } from "react";
 import { FileDown, ChevronDown } from "lucide-react";
 import type { Stakeholder } from "./StakeholderTypes";
+import { escapeHtml, safeColor, safeImageUrl } from "@/lib/html";
 
 interface Props {
   stakeholders: Stakeholder[];
@@ -94,12 +95,18 @@ const CATEGORY_ICONS: Record<string, string> = {
   "Pastoral": "🐄", "Media & Influencers": "📡",
 };
 
-function generateBriefHTML(
+// Exported for regression tests (R4-40): every user/API-controlled field is
+// escaped before interpolation so stored payloads render as inert text.
+export function generateBriefHTML(
   stakeholders: Stakeholder[], candidateName: string, office: string,
   stateName: string, party: string, lang: Lang, partyLogo: string, partyColor: string
 ): string {
   const t = T[lang];
-  const accentColor = partyColor || "#111827";
+  const accentColor = safeColor(partyColor || "#111827");
+  const eCandidateName = escapeHtml(candidateName);
+  const eOffice = escapeHtml(office);
+  const eStateName = escapeHtml(stateName);
+  const eParty = escapeHtml(party);
   const top10 = [...stakeholders]
     .sort((a, b) => a.priority - b.priority || (b.estimated_voter_reach ?? b.reach_pct * 50000) - (a.estimated_voter_reach ?? a.reach_pct * 50000))
     .slice(0, 10);
@@ -116,29 +123,29 @@ function generateBriefHTML(
         <div style="width:26px;height:26px;border-radius:50%;background:${accentColor};color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;">${i + 1}</div>
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
-            <span style="font-size:14px;font-weight:700;color:#111827;">${icon} ${s.name}</span>
+            <span style="font-size:14px;font-weight:700;color:#111827;">${icon} ${escapeHtml(s.name)}</span>
             <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:${priorityColor}22;color:${priorityColor};border:1px solid ${priorityColor}44;">${priorityLabel}</span>
-            <span style="font-size:10px;color:#6b7280;margin-left:auto;">${s.category} · ~${(reach / 1000).toFixed(0)}K voters</span>
+            <span style="font-size:10px;color:#6b7280;margin-left:auto;">${escapeHtml(s.category)} · ~${(reach / 1000).toFixed(0)}K voters</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px;">
             <div>
               <div style="font-size:10px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">${t.key_ask}</div>
-              <div style="font-size:11px;color:#374151;line-height:1.5;">${s.key_ask}</div>
+              <div style="font-size:11px;color:#374151;line-height:1.5;">${escapeHtml(s.key_ask)}</div>
             </div>
             <div>
               <div style="font-size:10px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">${t.cultural_protocol}</div>
-              <div style="font-size:11px;color:#374151;line-height:1.5;">${s.cultural_protocol.split(".")[0]}.</div>
+              <div style="font-size:11px;color:#374151;line-height:1.5;">${escapeHtml(s.cultural_protocol.split(".")[0])}.</div>
             </div>
           </div>
           <div style="margin-top:7px;">
             <div style="font-size:10px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">${t.talking_points}</div>
             <ul style="margin:0;padding-left:16px;">
-              ${talkingPoints.map(tp => `<li style="font-size:11px;color:#374151;line-height:1.6;margin-bottom:2px;">${tp}</li>`).join("")}
+              ${talkingPoints.map(tp => `<li style="font-size:11px;color:#374151;line-height:1.6;margin-bottom:2px;">${escapeHtml(tp)}</li>`).join("")}
             </ul>
           </div>
           <div style="margin-top:7px;display:flex;gap:16px;flex-wrap:wrap;">
-            <span style="font-size:10px;color:#6b7280;"><strong>${t.engagement}:</strong> ${Array.isArray(s.engagement_method) ? s.engagement_method[0] : s.engagement_method}</span>
-            <span style="font-size:10px;color:#6b7280;"><strong>${t.best_time}:</strong> ${s.best_engagement_time}</span>
+            <span style="font-size:10px;color:#6b7280;"><strong>${t.engagement}:</strong> ${escapeHtml(Array.isArray(s.engagement_method) ? s.engagement_method[0] : s.engagement_method)}</span>
+            <span style="font-size:10px;color:#6b7280;"><strong>${t.best_time}:</strong> ${escapeHtml(s.best_engagement_time)}</span>
           </div>
         </div>
       </div>
@@ -149,13 +156,14 @@ function generateBriefHTML(
   const critical = top10.filter(s => s.priority === 1).length;
   const high = top10.filter(s => s.priority === 2).length;
   const dateStr = new Date().toLocaleDateString("en-NG", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  const logoHTML = partyLogo ? `<img src="${partyLogo}" style="height:52px;width:auto;object-fit:contain;margin-right:14px;flex-shrink:0;" alt="Party Logo" />` : "";
+  const safeLogo = safeImageUrl(partyLogo);
+  const logoHTML = safeLogo ? `<img src="${safeLogo}" style="height:52px;width:auto;object-fit:contain;margin-right:14px;flex-shrink:0;" alt="Party Logo" />` : "";
 
   return `<!DOCTYPE html>
 <html lang="${lang}">
 <head>
   <meta charset="UTF-8">
-  <title>${candidateName} — ${t.title}</title>
+  <title>${eCandidateName} — ${t.title}</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Georgia, "Times New Roman", serif; margin: 0; padding: 32px 40px; color: #111827; background: white; }
@@ -175,8 +183,8 @@ function generateBriefHTML(
   <div class="header">
     ${logoHTML}
     <div>
-      <h1>${candidateName} — ${t.title}</h1>
-      <div class="meta">${office} · ${stateName}${party ? " · " + party : ""} · ${t.generated} ${dateStr}</div>
+      <h1>${eCandidateName} — ${t.title}</h1>
+      <div class="meta">${eOffice} · ${eStateName}${eParty ? " · " + eParty : ""} · ${t.generated} ${dateStr}</div>
     </div>
   </div>
   <div class="stats">

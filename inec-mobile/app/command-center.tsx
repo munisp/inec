@@ -4,6 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api } from '../src/lib/api';
 
+// R4-52: /command-center/state never existed. Real routes:
+// GET /command-center/live (state velocities + alerts + load shedding) and
+// GET /dashboard/live-feed (recent result submissions).
 interface CommandCenterData {
   total_polling_units: number;
   results_received: number;
@@ -15,16 +18,26 @@ interface CommandCenterData {
     state_code: string;
     state_name: string;
     total_pus: number;
-    reported: number;
-    pct: number;
+    reported_pus: number;
+    completion_pct: number;
     status: string;
   }>;
   live_feed: Array<{
     polling_unit_code: string;
     state_name: string;
-    total_votes: number;
+    total_votes_cast: number;
     submitted_at: string;
   }>;
+}
+
+interface CommandCenterLiveResponse {
+  overall_pus: number;
+  reported_pus: number;
+  stalled_pus: number;
+  completion_pct: number;
+  load_shedding: number;
+  alerts: unknown[];
+  states: CommandCenterData['state_velocities'];
 }
 
 export default function CommandCenterScreen() {
@@ -37,8 +50,20 @@ export default function CommandCenterScreen() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const d = await api<CommandCenterData>('/command-center/state');
-      setData(d);
+      const [live, feed] = await Promise.all([
+        api<CommandCenterLiveResponse>('/command-center/live'),
+        api<CommandCenterData['live_feed']>('/dashboard/live-feed?limit=10').catch(() => []),
+      ]);
+      setData({
+        total_polling_units: live.overall_pus || 0,
+        results_received: live.reported_pus || 0,
+        stalled_count: live.stalled_pus || 0,
+        completion_pct: live.completion_pct || 0,
+        alert_count: (live.alerts || []).length,
+        load_shedding_level: live.load_shedding || 0,
+        state_velocities: live.states || [],
+        live_feed: Array.isArray(feed) ? feed : [],
+      });
       setLastUpdate(new Date());
       setError(null);
     } catch (e) {
@@ -128,10 +153,10 @@ export default function CommandCenterScreen() {
                   <Text style={styles.stateName}>{sv.state_name || sv.state_code}</Text>
                   <View style={{ flex: 1, marginHorizontal: 8 }}>
                     <View style={styles.miniBarBg}>
-                      <View style={[styles.miniBarFill, { width: `${Math.min(sv.pct, 100)}%` }]} />
+                      <View style={[styles.miniBarFill, { width: `${Math.min(sv.completion_pct, 100)}%` }]} />
                     </View>
                   </View>
-                  <Text style={styles.statePct}>{sv.pct.toFixed(0)}%</Text>
+                  <Text style={styles.statePct}>{sv.completion_pct.toFixed(0)}%</Text>
                 </View>
               ))}
             </View>
@@ -145,7 +170,7 @@ export default function CommandCenterScreen() {
                   <Ionicons name="radio-button-on" size={10} color="#22c55e" />
                   <View style={{ flex: 1, marginLeft: 8 }}>
                     <Text style={styles.feedPU}>{f.polling_unit_code}</Text>
-                    <Text style={styles.feedState}>{f.state_name} — {f.total_votes} votes</Text>
+                    <Text style={styles.feedState}>{f.state_name} — {f.total_votes_cast} votes</Text>
                   </View>
                 </View>
               ))}

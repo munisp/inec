@@ -4,16 +4,18 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 
+// R4-52: /ems/voters/search never existed; the real lookup is
+// GET /ems/voters/{vin} which returns the voter row plus joined names.
 interface VoterInfo {
   vin: string;
   pvc_number: string;
   first_name: string;
   last_name: string;
-  polling_unit: string;
-  state: string;
-  lga: string;
-  ward: string;
-  pvc_collected: boolean;
+  pu_name: string;
+  state_name: string;
+  lga_name: string;
+  ward_name: string;
+  pvc_collected: boolean | number;
 }
 
 export default function CitizenPortalScreen() {
@@ -26,7 +28,7 @@ export default function CitizenPortalScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const res = await apiCall<VoterInfo>(`/ems/voters/search?vin=${encodeURIComponent(searchQuery)}`);
+      const res = await apiCall<VoterInfo>(`/ems/voters/${encodeURIComponent(searchQuery.trim())}`);
       setVoterInfo(res);
     } catch (e: unknown) {
       Alert.alert('Not Found', 'No voter record found for this VIN.');
@@ -66,20 +68,20 @@ export default function CitizenPortalScreen() {
           {[
             { label: 'VIN', value: voterInfo.vin },
             { label: 'PVC Number', value: voterInfo.pvc_number },
-            { label: 'State', value: voterInfo.state },
-            { label: 'LGA', value: voterInfo.lga },
-            { label: 'Ward', value: voterInfo.ward },
-            { label: 'Polling Unit', value: voterInfo.polling_unit },
+            { label: 'State', value: voterInfo.state_name },
+            { label: 'LGA', value: voterInfo.lga_name },
+            { label: 'Ward', value: voterInfo.ward_name },
+            { label: 'Polling Unit', value: voterInfo.pu_name },
           ].map((row) => (
             <View key={row.label} style={styles.infoRow}>
               <Text style={styles.infoLabel}>{row.label}</Text>
               <Text style={styles.infoValue}>{row.value}</Text>
             </View>
           ))}
-          <View style={[styles.resultBanner, { backgroundColor: voterInfo.pvc_collected ? '#dcfce7' : '#fef9c3' }]}>
-            <Ionicons name={voterInfo.pvc_collected ? 'checkmark-circle' : 'alert-circle'} size={24} color={voterInfo.pvc_collected ? '#166534' : '#ca8a04'} />
-            <Text style={{ marginLeft: 10, fontWeight: '600', color: voterInfo.pvc_collected ? '#166534' : '#ca8a04' }}>
-              {voterInfo.pvc_collected ? 'PVC Collected' : 'PVC Not Yet Collected'}
+          <View style={[styles.resultBanner, { backgroundColor: !!voterInfo.pvc_collected ? '#dcfce7' : '#fef9c3' }]}>
+            <Ionicons name={!!voterInfo.pvc_collected ? 'checkmark-circle' : 'alert-circle'} size={24} color={voterInfo.pvc_collected ? '#166534' : '#ca8a04'} />
+            <Text style={{ marginLeft: 10, fontWeight: '600', color: !!voterInfo.pvc_collected ? '#166534' : '#ca8a04' }}>
+              {!!voterInfo.pvc_collected ? 'PVC Collected' : 'PVC Not Yet Collected'}
             </Text>
           </View>
         </View>

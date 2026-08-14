@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { api } from '../src/lib/api';
 
 export default function AdminConsoleScreen() {
   const [stats, setStats] = useState<any>(null);
@@ -9,8 +9,8 @@ export default function AdminConsoleScreen() {
 
   const load = async () => {
     try {
-      const res = await fetch(`${API}/admin/stats`);
-      if (res.ok) setStats(await res.json());
+      // R4-52: /admin/stats never existed; real route is GET /ems/dashboard.
+      setStats(await api<Record<string, any>>('/ems/dashboard'));
     } catch (e) { console.error('Admin stats load:', e); }
     setLoading(false); setRefreshing(false);
   };
@@ -19,14 +19,14 @@ export default function AdminConsoleScreen() {
   if (loading) return <View style={s.center}><ActivityIndicator size="large" color="#16a34a" /></View>;
 
   const cards = [
-    { label: 'Total Users', value: stats?.total_users || 0, color: '#3b82f6' },
-    { label: 'Active Elections', value: stats?.active_elections || 0, color: '#16a34a' },
-    { label: 'Results Submitted', value: stats?.total_results || 0, color: '#8b5cf6' },
-    { label: 'BVAS Devices', value: stats?.bvas_count || 0, color: '#f59e0b' },
-    { label: 'Open Incidents', value: stats?.open_incidents || 0, color: '#ef4444' },
-    { label: 'Active Observers', value: stats?.active_observers || 0, color: '#06b6d4' },
-    { label: 'Pending Disputes', value: stats?.pending_disputes || 0, color: '#d946ef' },
-    { label: 'System Uptime', value: stats?.uptime || '99.9%', color: '#10b981' },
+    { label: 'Registered Voters', value: stats?.voter_registration?.total_voters ?? 0, color: '#3b82f6' },
+    { label: 'PVC Collected', value: stats?.voter_registration?.pvc_collected ?? 0, color: '#16a34a' },
+    { label: 'BVAS Sync Queue', value: stats?.bvas_sync?.total ?? 0, color: '#8b5cf6' },
+    { label: 'Sync Conflicts', value: stats?.bvas_sync?.conflicts ?? 0, color: '#ef4444' },
+    { label: 'Active Portals', value: stats?.portal_hub?.active ?? 0, color: '#f59e0b' },
+    { label: 'Validation Pass %', value: `${(stats?.validation?.pass_rate ?? 0).toFixed(1)}%`, color: '#06b6d4' },
+    { label: 'Materials Delivered', value: stats?.materials?.delivered ?? 0, color: '#d946ef' },
+    { label: 'Staff Deployed', value: stats?.staff_deployed ?? 0, color: '#10b981' },
   ];
 
   return (

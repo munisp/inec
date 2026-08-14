@@ -479,6 +479,12 @@ func main() {
 	r.HandleFunc("/api/v1/ai/anomalies", apiKeyAuth(handleAIAnomalies)).Methods("GET")
 	r.HandleFunc("/api/v1/ai/integrity", apiKeyAuth(handleAIIntegrity)).Methods("GET")
 
+	// Frontend error telemetry (R4-53): web + mobile clients POST here. Ingest
+	// is unauthenticated but rate-limited and size-capped inside the handler;
+	// listing is admin-only. Table from migration 000028.
+	r.HandleFunc("/api/v1/errors/frontend", handleFrontendErrorReport).Methods("POST")
+	r.HandleFunc("/api/v1/errors/frontend", adminOnly(handleFrontendErrorList)).Methods("GET")
+
 	// EMS - Voter Registration — auth required
 	r.HandleFunc("/ems/voters", readAuth(handleListVoters)).Methods("GET")
 	r.HandleFunc("/ems/voters/stats", readAuth(handleVoterStats)).Methods("GET")
