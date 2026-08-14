@@ -10,13 +10,15 @@ for millions of transactions per second using:
 """
 
 import asyncio
+import hmac
 import os
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
 from dapr_bulk_processor import DaprBulkProcessor
@@ -81,6 +83,16 @@ class Config:
     WORKERS = int(os.getenv("PIPELINE_WORKERS", "16"))
     QUEUE_SIZE = int(os.getenv("PIPELINE_QUEUE_SIZE", "1000000"))
 
+    # Kafka consumer is OPT-IN: KAFKA_ENABLED=true starts a real
+    # confluent-kafka consumer on KAFKA_TOPICS. When disabled (default) the
+    # service only serves the ingest API — no simulated consume loop runs.
+    KAFKA_ENABLED = os.getenv("KAFKA_ENABLED", "").strip().lower() in ("1", "true", "yes")
+    KAFKA_TOPICS = [
+        t.strip()
+        for t in os.getenv("KAFKA_TOPICS", "inec.results.submitted,inec.ballots.cast").split(",")
+        if t.strip()
+    ]
+
 
 # Global state
 pipeline_engine: Optional["PipelineEngine"] = None
@@ -112,6 +124,42 @@ app = FastAPI(
     redoc_url=None if _PRODUCTION else "/redoc",
     openapi_url=None if _PRODUCTION else "/openapi.json",
 )
+
+
+# ─── API-token authentication (fail closed) ──────────────────────────────────
+# SECURITY: /api/v1/ingest (and every other non-health route) was previously
+# unauthenticated — anyone could inject arbitrary batches into the election
+# data pipeline. A shared bearer token is now mandatory; the service FAILS
+# CLOSED (503) when PIPELINE_OPTIMIZER_API_TOKEN is unset.
+# KEY ROTATION: comma-separated tokens; any constant-time match authenticates.
+PIPELINE_API_KEYS: list[str] = [
+    k.strip()
+    for k in os.getenv("PIPELINE_OPTIMIZER_API_TOKEN", "").split(",")
+    if k.strip()
+]
+
+_PUBLIC_PATHS = ("/health",)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if request.url.path in _PUBLIC_PATHS:
+        return await call_next(request)
+    if not PIPELINE_API_KEYS:
+        log.error("api_token_not_configured",
+                  detail="PIPELINE_OPTIMIZER_API_TOKEN unset")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "PIPELINE_OPTIMIZER_API_TOKEN not configured; "
+                              "refusing to serve unauthenticated requests"},
+        )
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:] if auth.lower().startswith("bearer ") else auth
+    if not bearer or not any(
+        hmac.compare_digest(bearer.encode(), key.encode()) for key in PIPELINE_API_KEYS
+    ):
+        return JSONResponse(status_code=401, content={"error": "authentication required"})
+    return await call_next(request)
 
 
 class PipelineEngine:
@@ -154,8 +202,16 @@ class PipelineEngine:
         for i in range(self.cfg.WORKERS):
             self._spawn(self._worker(i))
 
-        # Start Kafka consumer
-        self._spawn(self.kafka.consume(self._queue))
+        # Start Kafka consumer (opt-in). Previously this spawned a SIMULATED
+        # consume loop that never connected to Kafka — pure theater. Now a
+        # real confluent-kafka consumer runs only when explicitly enabled.
+        if self.cfg.KAFKA_ENABLED:
+            self._spawn(self.kafka.consume(self._queue))
+            log.info("kafka consumer ENABLED", brokers=self.cfg.KAFKA_BROKERS,
+                     topics=self.cfg.KAFKA_TOPICS)
+        else:
+            log.info("kafka consumer DISABLED — set KAFKA_ENABLED=true to "
+                     "consume from Kafka; the /api/v1/ingest API remains available")
 
     async def stop(self):
         self._running = False
