@@ -2,7 +2,8 @@
 // Handles: Login, registration, JWT lifecycle, MFA (TOTP/WebAuthn), session management.
 //
 // Usage:
-//   go run ./cmd/auth-svc --port=8090 --db=postgres://...
+//
+//	go run ./cmd/auth-svc --port=8090 --db=postgres://...
 package main
 
 import (

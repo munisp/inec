@@ -81,9 +81,9 @@ func initArchitecture() {
 
 	// Configure circuit breakers for all external dependencies
 	externalServices := []struct {
-		name        string
-		maxFail     int
-		cooldown    time.Duration
+		name     string
+		maxFail  int
+		cooldown time.Duration
 	}{
 		{"redis", 5, 30 * time.Second},
 		{"kafka", 5, 60 * time.Second},
@@ -165,7 +165,7 @@ func registerMiddlewareServices() {
 	}
 
 	services := []struct {
-		name string
+		name  string
 		check func() bool
 		mode  string
 	}{

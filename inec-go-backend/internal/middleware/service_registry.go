@@ -4,11 +4,11 @@
 // changing business logic.
 //
 // The registry enables:
-// 1. Dependency injection — handlers receive services via context, not globals
-// 2. Horizontal scaling — services use Redis/Kafka when available, not in-memory
-// 3. Testability — mock implementations can be injected in tests
-// 4. Service decomposition — when a service is extracted to a separate binary,
-//    the interface stays the same and only the implementation changes
+//  1. Dependency injection — handlers receive services via context, not globals
+//  2. Horizontal scaling — services use Redis/Kafka when available, not in-memory
+//  3. Testability — mock implementations can be injected in tests
+//  4. Service decomposition — when a service is extracted to a separate binary,
+//     the interface stays the same and only the implementation changes
 package middleware
 
 import (
@@ -39,11 +39,11 @@ type ServiceRegistry struct {
 
 // ServiceInfo describes a registered service.
 type ServiceInfo struct {
-	Name       string `json:"name"`
-	Mode       string `json:"mode"`       // "native", "embedded", "remote"
-	Connected  bool   `json:"connected"`
-	Latency    string `json:"latency,omitempty"`
-	Version    string `json:"version,omitempty"`
+	Name         string `json:"name"`
+	Mode         string `json:"mode"` // "native", "embedded", "remote"
+	Connected    bool   `json:"connected"`
+	Latency      string `json:"latency,omitempty"`
+	Version      string `json:"version,omitempty"`
 	BreakerState string `json:"breaker_state,omitempty"`
 }
 

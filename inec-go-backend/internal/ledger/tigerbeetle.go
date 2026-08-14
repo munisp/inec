@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	tb "github.com/tigerbeetle/tigerbeetle-go"
 	tbt "github.com/tigerbeetle/tigerbeetle-go/pkg/types"
-	"github.com/rs/zerolog/log"
 )
 
 // Ledger constants for INEC financial tracking.

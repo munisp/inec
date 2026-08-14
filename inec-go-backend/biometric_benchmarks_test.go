@@ -31,7 +31,9 @@ func getNFIQ2Description(score int) string {
 // NIST FRVT defaults if the file is not found.
 func SkipTestLoadBenchmarkCohort(t *testing.T) {
 	t.Skip("skip")
-	if db == nil { t.Skip("No DB") }
+	if db == nil {
+		t.Skip("No DB")
+	}
 	// Initialize benchmarks if not already done (from initBiometricBenchmarks).
 	// The initBiometricBenchmarks() function is called from init() or main init flow.
 
@@ -166,10 +168,12 @@ func SkipTestComputeNFIQ2ScoreRange(t *testing.T) {
 // TestGetEERRange verifies that EER ranges are returned correctly for known modalities.
 func SkipTestGetEERRange(t *testing.T) {
 	t.Skip("skip")
-	if db == nil { t.Skip("No DB") }
+	if db == nil {
+		t.Skip("No DB")
+	}
 	testCases := []struct {
-		modality    string
-		quality     string
+		modality     string
+		quality      string
 		expectNonNil bool
 	}{
 		{"fingerprint", "good", true},
@@ -300,9 +304,9 @@ func SkipTestGetPADBaselineAccuracyByModality(t *testing.T) {
 // TestEstimateLaplacianVarianceFromQuality verifies the quality-to-variance conversion.
 func SkipTestEstimateLaplacianVarianceFromQuality(t *testing.T) {
 	tests := []struct {
-		quality    float64
-		expectMin  float64
-		expectMax  float64
+		quality     float64
+		expectMin   float64
+		expectMax   float64
 		description string
 	}{
 		{0.0, 50.0, 50.0, "quality=0 → variance=50"},
@@ -571,9 +575,9 @@ func SkipTestEERRangeInterpolation(t *testing.T) {
 		t.Skip("fingerprint EER data not available")
 	}
 
-	eerLow := computeEERFromQuality("fingerprint", 0.5)   // should be near EERMax
-	eerHigh := computeEERFromQuality("fingerprint", 1.0)   // should be near EERMin
-	eerMid := computeEERFromQuality("fingerprint", 0.75)   // should be between
+	eerLow := computeEERFromQuality("fingerprint", 0.5)  // should be near EERMax
+	eerHigh := computeEERFromQuality("fingerprint", 1.0) // should be near EERMin
+	eerMid := computeEERFromQuality("fingerprint", 0.75) // should be between
 
 	t.Logf("fingerprint EER: quality=0.5 → %.6f, quality=0.75 → %.6f, quality=1.0 → %.6f",
 		eerLow, eerMid, eerHigh)

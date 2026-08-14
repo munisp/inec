@@ -19,17 +19,17 @@ type Point struct {
 
 // Official represents a tracked election official.
 type Official struct {
-	ID           int       `json:"id"`
-	StaffID      string    `json:"staff_id"`
-	Name         string    `json:"name"`
-	Role         string    `json:"role"`
-	Location     Point     `json:"location"`
-	Speed        float64   `json:"speed_kmh"`
-	Heading      float64   `json:"heading"`
-	Battery      int       `json:"battery_pct"`
-	Status       string    `json:"status"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	PollingUnit  string    `json:"polling_unit,omitempty"`
+	ID          int       `json:"id"`
+	StaffID     string    `json:"staff_id"`
+	Name        string    `json:"name"`
+	Role        string    `json:"role"`
+	Location    Point     `json:"location"`
+	Speed       float64   `json:"speed_kmh"`
+	Heading     float64   `json:"heading"`
+	Battery     int       `json:"battery_pct"`
+	Status      string    `json:"status"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	PollingUnit string    `json:"polling_unit,omitempty"`
 }
 
 // Geofence defines a monitored geographic boundary.
@@ -45,11 +45,11 @@ type Geofence struct {
 
 // GeofenceEvent records boundary crossings.
 type GeofenceEvent struct {
-	OfficialID  int       `json:"official_id"`
-	GeofenceID  int       `json:"geofence_id"`
-	EventType   string    `json:"event_type"` // enter, exit, dwell
-	Timestamp   time.Time `json:"timestamp"`
-	Location    Point     `json:"location"`
+	OfficialID int       `json:"official_id"`
+	GeofenceID int       `json:"geofence_id"`
+	EventType  string    `json:"event_type"` // enter, exit, dwell
+	Timestamp  time.Time `json:"timestamp"`
+	Location   Point     `json:"location"`
 }
 
 // Landmark represents a point of interest on the map.
@@ -64,11 +64,11 @@ type Landmark struct {
 
 // CrowdDensity represents a crowd density observation.
 type CrowdDensity struct {
-	ID        int       `json:"id"`
-	Location  Point     `json:"location"`
-	Density   int       `json:"density"` // estimated crowd size
-	Level     string    `json:"level"`   // low, medium, high, critical
-	Source    string    `json:"source"`
+	ID         int       `json:"id"`
+	Location   Point     `json:"location"`
+	Density    int       `json:"density"` // estimated crowd size
+	Level      string    `json:"level"`   // low, medium, high, critical
+	Source     string    `json:"source"`
 	ReportedAt time.Time `json:"reported_at"`
 }
 
@@ -299,14 +299,14 @@ func (s *Service) GetCrowdDensity(ctx context.Context, since time.Duration) ([]C
 
 // PollingUnit represents a polling unit with geographic data.
 type PollingUnit struct {
-	Code      string  `json:"code"`
-	Name      string  `json:"name"`
-	State     string  `json:"state"`
-	LGA       string  `json:"lga"`
-	Ward      string  `json:"ward"`
-	Lat       float64 `json:"lat"`
-	Lng       float64 `json:"lng"`
-	Voters    int     `json:"registered_voters"`
+	Code   string  `json:"code"`
+	Name   string  `json:"name"`
+	State  string  `json:"state"`
+	LGA    string  `json:"lga"`
+	Ward   string  `json:"ward"`
+	Lat    float64 `json:"lat"`
+	Lng    float64 `json:"lng"`
+	Voters int     `json:"registered_voters"`
 }
 
 // GeofenceResult is the result of a geofence check.

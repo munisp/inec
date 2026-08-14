@@ -369,12 +369,12 @@ func handleGeoLibreBVAS(w http.ResponseWriter, r *http.Request) {
 			Type:     "Feature",
 			Geometry: geoJSONGeom{Type: "Point", Coordinates: [2]float64{lng, lat}},
 			Properties: map[string]any{
-				"device_id":       deviceID,
-				"pu_code":         puCode,
-				"status":          devStatus,
-				"battery_pct":     batteryLevel,
-				"accreditations":  accreditations,
-				"last_sync":       lastSync,
+				"device_id":        deviceID,
+				"pu_code":          puCode,
+				"status":           devStatus,
+				"battery_pct":      batteryLevel,
+				"accreditations":   accreditations,
+				"last_sync":        lastSync,
 				"firmware_version": firmware,
 			},
 		})
@@ -511,7 +511,7 @@ func handleGeoLibreProjectExport(w http.ResponseWriter, r *http.Request) {
 // ─── Spatial Query endpoint (buffer, within, nearest) ───────────────────
 
 func handleGeoLibreSpatialQuery(w http.ResponseWriter, r *http.Request) {
-	queryType := r.URL.Query().Get("type")      // buffer, nearest, within
+	queryType := r.URL.Query().Get("type") // buffer, nearest, within
 	lat, _ := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
 	lng, _ := strconv.ParseFloat(r.URL.Query().Get("lng"), 64)
 	radius, _ := strconv.ParseFloat(r.URL.Query().Get("radius_km"), 64)

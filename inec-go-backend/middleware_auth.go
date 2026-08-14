@@ -16,13 +16,13 @@ const userContextKey contextKey = "user"
 
 // publicPaths are endpoints that do not require authentication.
 var publicPaths = map[string]bool{
-	"/healthz":         true,
-	"/readiness":       true,
-	"/auth/login":      true,
-	"/auth/register":   true,
-	"/metrics":         true,
-	"/auth/refresh":    true,
-	"/observer/stream": true, // SSE authenticates in-handler via authenticateStreamRequest (HttpOnly cookie; EventSource can't set headers)
+	"/healthz":                          true,
+	"/readiness":                        true,
+	"/auth/login":                       true,
+	"/auth/register":                    true,
+	"/metrics":                          true,
+	"/auth/refresh":                     true,
+	"/observer/stream":                  true, // SSE authenticates in-handler via authenticateStreamRequest (HttpOnly cookie; EventSource can't set headers)
 	"/.well-known/openid-configuration": true,
 }
 

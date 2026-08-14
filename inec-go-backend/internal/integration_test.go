@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/segmentio/kafka-go"
 	"github.com/rs/zerolog/log"
+	"github.com/segmentio/kafka-go"
 )
 
 // TestRedisIntegration verifies real Redis client operations.
@@ -168,10 +168,10 @@ func TestKafkaIntegration(t *testing.T) {
 
 		// Consume
 		reader := kafka.NewReader(kafka.ReaderConfig{
-			Brokers:  []string{brokers},
-			Topic:    topic,
-			GroupID:  "integration-test-group",
-			MaxWait:  5 * time.Second,
+			Brokers: []string{brokers},
+			Topic:   topic,
+			GroupID: "integration-test-group",
+			MaxWait: 5 * time.Second,
 		})
 		defer reader.Close()
 

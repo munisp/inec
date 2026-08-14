@@ -214,6 +214,7 @@ func dbExecCtx(ctx context.Context, query string, args ...interface{}) (sql.Resu
 	}
 	return res, err
 }
+
 // dbExecLog executes a write query and logs errors (fire-and-forget with observability).
 // Use for non-critical writes (audit logs, metrics, caches) where failure is acceptable but should be visible.
 func dbExecLog(label string, query string, args ...interface{}) {

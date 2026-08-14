@@ -111,44 +111,44 @@ CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_leve
 func runGeoMigrations() {
 	// Run each statement individually for PostgreSQL
 	stmts := []string{
-			`CREATE EXTENSION IF NOT EXISTS postgis`,
-			`CREATE TABLE IF NOT EXISTS landmarks (
+		`CREATE EXTENSION IF NOT EXISTS postgis`,
+		`CREATE TABLE IF NOT EXISTS landmarks (
 				id SERIAL PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
 				latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
 				geom geometry(Point, 4326), state_code TEXT, lga_code TEXT,
 				address TEXT, description TEXT, icon TEXT DEFAULT 'marker',
 				importance INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-			`CREATE INDEX IF NOT EXISTS idx_landmarks_geom ON landmarks USING GIST(geom)`,
-			`CREATE INDEX IF NOT EXISTS idx_landmarks_category ON landmarks(category)`,
-			`CREATE INDEX IF NOT EXISTS idx_landmarks_state ON landmarks(state_code)`,
-			`CREATE TABLE IF NOT EXISTS geo_analytics_cache (
+		`CREATE INDEX IF NOT EXISTS idx_landmarks_geom ON landmarks USING GIST(geom)`,
+		`CREATE INDEX IF NOT EXISTS idx_landmarks_category ON landmarks(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_landmarks_state ON landmarks(state_code)`,
+		`CREATE TABLE IF NOT EXISTS geo_analytics_cache (
 				id TEXT PRIMARY KEY, data JSONB NOT NULL,
 				computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP)`,
-			`CREATE TABLE IF NOT EXISTS geo_events (
+		`CREATE TABLE IF NOT EXISTS geo_events (
 				id SERIAL PRIMARY KEY, polling_unit_code TEXT NOT NULL,
 				event_type TEXT NOT NULL, latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
 				payload JSONB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-			`CREATE INDEX IF NOT EXISTS idx_geo_events_created ON geo_events(created_at DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_geo_events_pu ON geo_events(polling_unit_code)`,
-			`CREATE TABLE IF NOT EXISTS official_tracking (
+		`CREATE INDEX IF NOT EXISTS idx_geo_events_created ON geo_events(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_geo_events_pu ON geo_events(polling_unit_code)`,
+		`CREATE TABLE IF NOT EXISTS official_tracking (
 				staff_id TEXT PRIMARY KEY, role TEXT NOT NULL DEFAULT 'field_officer',
 				latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
 				pu_code TEXT, activity TEXT DEFAULT 'patrol', battery_pct INTEGER DEFAULT 100,
 				geom geometry(Point, 4326), updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-			`CREATE INDEX IF NOT EXISTS idx_official_tracking_updated ON official_tracking(updated_at DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_official_tracking_role ON official_tracking(role)`,
-			`CREATE INDEX IF NOT EXISTS idx_official_tracking_geom ON official_tracking USING GIST(geom)`,
-			`CREATE TABLE IF NOT EXISTS crowd_density (
+		`CREATE INDEX IF NOT EXISTS idx_official_tracking_updated ON official_tracking(updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_official_tracking_role ON official_tracking(role)`,
+		`CREATE INDEX IF NOT EXISTS idx_official_tracking_geom ON official_tracking USING GIST(geom)`,
+		`CREATE TABLE IF NOT EXISTS crowd_density (
 				id SERIAL PRIMARY KEY, pu_code TEXT NOT NULL,
 				latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
 				head_count INTEGER DEFAULT 0, density_level TEXT DEFAULT 'moderate',
 				queue_length INTEGER DEFAULT 0, wait_time_min INTEGER DEFAULT 0,
 				notes TEXT, reporter_id TEXT, geom geometry(Point, 4326),
 				reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-			`CREATE INDEX IF NOT EXISTS idx_crowd_density_pu ON crowd_density(pu_code)`,
-			`CREATE INDEX IF NOT EXISTS idx_crowd_density_reported ON crowd_density(reported_at DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_level)`,
-			`CREATE INDEX IF NOT EXISTS idx_crowd_density_geom ON crowd_density USING GIST(geom)`,
+		`CREATE INDEX IF NOT EXISTS idx_crowd_density_pu ON crowd_density(pu_code)`,
+		`CREATE INDEX IF NOT EXISTS idx_crowd_density_reported ON crowd_density(reported_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_crowd_density_level ON crowd_density(density_level)`,
+		`CREATE INDEX IF NOT EXISTS idx_crowd_density_geom ON crowd_density USING GIST(geom)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -694,7 +694,7 @@ func handleGeoSpatialStats(w http.ResponseWriter, r *http.Request) {
 		&stats.MinLat, &stats.MaxLat, &stats.MinLng, &stats.MaxLng,
 		&stats.TotalRegistered, &stats.TotalVotes, &stats.AvgTurnout, &stats.TurnoutStddev)
 	if err != nil {
-		writeJSON(w, 500, M{"error": "stats query failed: "+err.Error()})
+		writeJSON(w, 500, M{"error": "stats query failed: " + err.Error()})
 		return
 	}
 
@@ -807,7 +807,7 @@ func handleSedonaAnalysis(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, 200, M{
 			"available_analyses": []string{"hotspot", "coverage_gap", "spatial_autocorrelation"},
-			"usage":             "?type=hotspot&election_id=1",
+			"usage":              "?type=hotspot&election_id=1",
 		})
 	}
 }

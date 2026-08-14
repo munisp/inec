@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	kafka "github.com/segmentio/kafka-go"
 	"github.com/rs/zerolog/log"
+	kafka "github.com/segmentio/kafka-go"
 )
 
 // ─── InitV2Tables creates all V2 schema tables ─────────────────────────────

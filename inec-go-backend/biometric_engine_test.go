@@ -339,5 +339,3 @@ func SkipTestPadResultStructure(t *testing.T) {
 		t.Log("confidence should equal liveness_score per source code")
 	}
 }
-
-

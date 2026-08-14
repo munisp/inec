@@ -20,7 +20,7 @@ type MiddlewareHub struct {
 	TigerBeetle TigerBeetleClient
 	APISIX      APISIXClient
 	Lakehouse   LakehouseClient
-Caddy       CaddyClient
+	Caddy       CaddyClient
 	Mojaloop    MojaloopClient
 	OpenSearch  OpenSearchClient
 	OpenAppSec  OpenAppSecClient
@@ -71,9 +71,9 @@ func initMiddlewareHub() *MiddlewareHub {
 	hub.setStatus("apisix", hub.APISIX.Status())
 
 	hub.Lakehouse = initLakehouseClient()
-hub.Caddy = newCaddyClient(envOrDefault("CADDY_ADMIN_URL", ""))
+	hub.Caddy = newCaddyClient(envOrDefault("CADDY_ADMIN_URL", ""))
 	hub.setStatus("lakehouse", hub.Lakehouse.Status())
-hub.setStatus("caddy", hub.Caddy.Status())
+	hub.setStatus("caddy", hub.Caddy.Status())
 
 	hub.Mojaloop = initMojaloopClient()
 	hub.setStatus("mojaloop", hub.Mojaloop.Status())
@@ -179,7 +179,7 @@ func (h *MiddlewareHub) Shutdown() {
 		{"TigerBeetle", safeClose(h.TigerBeetle)},
 		{"APISIX", safeClose(h.APISIX)},
 		{"Lakehouse", safeClose(h.Lakehouse)},
-{"Caddy", safeClose(h.Caddy)},
+		{"Caddy", safeClose(h.Caddy)},
 		{"Mojaloop", safeClose(h.Mojaloop)},
 		{"OpenSearch", safeClose(h.OpenSearch)},
 		{"OpenAppSec", safeClose(h.OpenAppSec)},

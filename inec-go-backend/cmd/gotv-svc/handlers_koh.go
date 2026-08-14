@@ -201,10 +201,10 @@ func initKOHIndicatorTables(db *sql.DB) error {
 // ─── LGA Tier Reference Data (Lagos State) ─────────────────────────────────
 
 type LGATier struct {
-	LGACode       string `json:"lga_code"`
-	LGAName       string `json:"lga_name"`
-	Tier          int    `json:"tier"`
-	TierName      string `json:"tier_name"`
+	LGACode        string `json:"lga_code"`
+	LGAName        string `json:"lga_name"`
+	Tier           int    `json:"tier"`
+	TierName       string `json:"tier_name"`
 	StrategicFocus string `json:"strategic_focus"`
 }
 
@@ -345,15 +345,15 @@ func handleCPIHistory(w http.ResponseWriter, r *http.Request) {
 		var lgaCode sql.NullString
 		rows.Scan(&score, &vi, &fav, &sent, &ground, &endorse, &voice, &computedAt, &lgaCode)
 		entry := map[string]interface{}{
-			"cpi_score":          score.Float64,
-			"voting_intention":   vi.Float64,
-			"favourability":      fav.Float64,
-			"digital_sentiment":  sent.Float64,
+			"cpi_score":           score.Float64,
+			"voting_intention":    vi.Float64,
+			"favourability":       fav.Float64,
+			"digital_sentiment":   sent.Float64,
 			"ground_mobilisation": ground.Float64,
-			"endorsement_index":  endorse.Float64,
-			"share_of_voice":     voice.Float64,
-			"computed_at":        computedAt.Format(time.RFC3339),
-			"lga_code":           lgaCode.String,
+			"endorsement_index":   endorse.Float64,
+			"share_of_voice":      voice.Float64,
+			"computed_at":         computedAt.Format(time.RFC3339),
+			"lga_code":            lgaCode.String,
 		}
 		history = append(history, entry)
 	}
@@ -389,11 +389,11 @@ func handleCPIBreakdown(w http.ResponseWriter, r *http.Request) {
 		endorsements := computeEndorsementIndexForLGAs(partyID, lgas)
 
 		breakdown = append(breakdown, map[string]interface{}{
-			"tier":               tier.Tier,
-			"tier_name":          tier.Name,
-			"lgas":               lgas,
+			"tier":                tier.Tier,
+			"tier_name":           tier.Name,
+			"lgas":                lgas,
 			"ground_mobilisation": ground,
-			"endorsement_index":  endorsements,
+			"endorsement_index":   endorsements,
 		})
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"breakdown": breakdown})
@@ -896,13 +896,13 @@ func handleSurveyResults(w http.ResponseWriter, r *http.Request) {
 			surveyID, partyID).Scan(&totalResp, &avgAwareness, &avgFav, &avgIssue, &intentPct, &npsScore)
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"survey_id":          surveyID,
-			"total_responses":    totalResp,
-			"avg_awareness":      avgAwareness.Float64,
-			"avg_favourability":  avgFav.Float64,
+			"survey_id":            surveyID,
+			"total_responses":      totalResp,
+			"avg_awareness":        avgAwareness.Float64,
+			"avg_favourability":    avgFav.Float64,
 			"voting_intention_pct": intentPct.Float64,
-			"avg_issue_alignment": avgIssue.Float64,
-			"avg_nps":            npsScore.Float64,
+			"avg_issue_alignment":  avgIssue.Float64,
+			"avg_nps":              npsScore.Float64,
 		})
 		return
 	}
@@ -929,11 +929,11 @@ func handleSurveyResults(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&dimVal, &count, &awareness, &fav, &intent, &issue, &nps)
 		results = append(results, map[string]interface{}{
 			"value": dimVal, "responses": count,
-			"avg_awareness": math.Round(awareness.Float64*100) / 100,
-			"avg_favourability": math.Round(fav.Float64*100) / 100,
+			"avg_awareness":        math.Round(awareness.Float64*100) / 100,
+			"avg_favourability":    math.Round(fav.Float64*100) / 100,
 			"voting_intention_pct": math.Round(intent.Float64*100) / 100,
-			"avg_issue_alignment": math.Round(issue.Float64*100) / 100,
-			"avg_nps": math.Round(nps.Float64*100) / 100,
+			"avg_issue_alignment":  math.Round(issue.Float64*100) / 100,
+			"avg_nps":              math.Round(nps.Float64*100) / 100,
 		})
 	}
 	if results == nil {
@@ -950,8 +950,8 @@ func handleSurveyTrend(w http.ResponseWriter, r *http.Request) {
 		"awareness":        "AVG(awareness_score)",
 		"favourability":    "AVG(favourability_score)",
 		"voting_intention": "AVG(CASE WHEN voting_intention THEN 100.0 ELSE 0 END)",
-		"nps":             "AVG(nps_score)",
-		"issue_alignment": "AVG(issue_alignment)",
+		"nps":              "AVG(nps_score)",
+		"issue_alignment":  "AVG(issue_alignment)",
 	}
 	agg, ok := validIndicators[indicator]
 	if !ok {
@@ -1110,8 +1110,8 @@ func handleLGATiers(w http.ResponseWriter, r *http.Request) {
 func handleSocialIngest(w http.ResponseWriter, r *http.Request) {
 	partyID := getPartyID(r)
 	var req struct {
-		Platform  string  `json:"platform"` // twitter, facebook, instagram, tiktok, news
-		Mentions  []struct {
+		Platform string `json:"platform"` // twitter, facebook, instagram, tiktok, news
+		Mentions []struct {
 			Text      string  `json:"text"`
 			Sentiment string  `json:"sentiment"` // positive, negative, neutral
 			Score     float64 `json:"score"`
@@ -1227,13 +1227,13 @@ func handleSentimentSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"sentiment_score":   math.Round(sentimentScore*100) / 100,
-		"total_mentions":    total,
-		"positive":          sentimentCounts["positive"],
-		"negative":          sentimentCounts["negative"],
-		"neutral":           sentimentCounts["neutral"],
-		"days":              days,
-		"trend":             trend,
+		"sentiment_score": math.Round(sentimentScore*100) / 100,
+		"total_mentions":  total,
+		"positive":        sentimentCounts["positive"],
+		"negative":        sentimentCounts["negative"],
+		"neutral":         sentimentCounts["neutral"],
+		"days":            days,
+		"trend":           trend,
 	})
 }
 
@@ -1400,11 +1400,11 @@ func handleEndorsementScore(w http.ResponseWriter, r *http.Request) {
 	index := (breadth*0.4 + volume*0.6) * 100
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"coalition_index":    math.Round(index*100) / 100,
-		"total_verified":     totalVerified,
-		"distinct_types":     distinctTypes,
-		"max_types":          10,
-		"by_type":            byType,
+		"coalition_index": math.Round(index*100) / 100,
+		"total_verified":  totalVerified,
+		"distinct_types":  distinctTypes,
+		"max_types":       10,
+		"by_type":         byType,
 	})
 }
 
@@ -1688,9 +1688,9 @@ func handlePlatformAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
 		platforms = append(platforms, map[string]interface{}{
 			"platform": platform, "followers": followers, "follower_growth_pct": growth.Float64,
 			"total_reach": reach, "organic_reach": organic, "paid_reach": paid,
-			"engagement_rate": math.Round(engagement.Float64*10000) / 10000,
+			"engagement_rate":       math.Round(engagement.Float64*10000) / 10000,
 			"video_completion_rate": math.Round(videoCompletion.Float64*10000) / 10000,
-			"impressions": impressions, "clicks": clicks, "shares": shares, "comments": comments,
+			"impressions":           impressions, "clicks": clicks, "shares": shares, "comments": comments,
 		})
 	}
 	if platforms == nil {

@@ -3,21 +3,23 @@
 // In distributed mode (--distributed), routes to external service URLs.
 //
 // Service Architecture:
-//   auth-svc:8090        — Authentication, JWT, MFA, sessions
-//   election-svc:8091    — Election lifecycle, FSM, results, collation
-//   biometric-svc:8092   — Biometric verification, template matching
-//   geo-svc:8093         — Geospatial: geofencing, tracking, PostGIS
-//   compliance-svc:8094  — NDPR, DSR, consent, breach register
-//   ingestion-svc:8095   — Data ingestion with backpressure
-//   bvas-svc:8096        — BVAS device management, accreditation
-//   inference-engine:8097 — Rust ML inference
-//   lakehouse:8098       — Python analytics + Apache Sedona
-//   document-ai:8099     — Python OCR + document verification
-//   fluvio-stream:8100   — Rust event streaming
+//
+//	auth-svc:8090        — Authentication, JWT, MFA, sessions
+//	election-svc:8091    — Election lifecycle, FSM, results, collation
+//	biometric-svc:8092   — Biometric verification, template matching
+//	geo-svc:8093         — Geospatial: geofencing, tracking, PostGIS
+//	compliance-svc:8094  — NDPR, DSR, consent, breach register
+//	ingestion-svc:8095   — Data ingestion with backpressure
+//	bvas-svc:8096        — BVAS device management, accreditation
+//	inference-engine:8097 — Rust ML inference
+//	lakehouse:8098       — Python analytics + Apache Sedona
+//	document-ai:8099     — Python OCR + document verification
+//	fluvio-stream:8100   — Rust event streaming
 //
 // Usage:
-//   go run ./cmd/gateway --port=8088
-//   go run ./cmd/gateway --port=8088 --distributed
+//
+//	go run ./cmd/gateway --port=8088
+//	go run ./cmd/gateway --port=8088 --distributed
 package main
 
 import (
@@ -250,11 +252,11 @@ func architectureInfo(services []ServiceEndpoint) http.HandlerFunc {
 				"cache": "Redis (session + rate limit)",
 			},
 			"databases": map[string]interface{}{
-				"primary":    "PostgreSQL 16 + PostGIS",
-				"ledger":     "TigerBeetle",
-				"search":     "OpenSearch",
-				"analytics":  "DuckDB (lakehouse) + Apache Sedona",
-				"cache":      "Redis",
+				"primary":   "PostgreSQL 16 + PostGIS",
+				"ledger":    "TigerBeetle",
+				"search":    "OpenSearch",
+				"analytics": "DuckDB (lakehouse) + Apache Sedona",
+				"cache":     "Redis",
 			},
 			"security": map[string]interface{}{
 				"auth":    "Keycloak (OIDC) + JWT + MFA",

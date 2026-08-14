@@ -333,9 +333,9 @@ func handleUSSDDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, M{
-		"total_sessions":  totalSessions,
-		"active_sessions": activeSessions,
+		"total_sessions":      totalSessions,
+		"active_sessions":     activeSessions,
 		"total_ussd_requests": totalUSSD,
-		"by_stage":        byStage,
+		"by_stage":            byStage,
 	})
 }

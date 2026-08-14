@@ -30,7 +30,7 @@ type RetryPolicy struct {
 // DefaultRetryPolicy for election workflows — limited retries with exponential backoff.
 var DefaultRetryPolicy = &RetryPolicy{
 	MaxAttempts:        3,
-	InitialInterval:   time.Second,
+	InitialInterval:    time.Second,
 	BackoffCoefficient: 2.0,
 	MaxInterval:        30 * time.Second,
 }

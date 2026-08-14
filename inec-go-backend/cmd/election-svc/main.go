@@ -2,10 +2,12 @@
 // Handles: FSM transitions, result submission/validation, collation, real-time updates.
 //
 // Usage:
-//   go run ./cmd/election-svc --port=8091 --db=postgres://...
+//
+//	go run ./cmd/election-svc --port=8091 --db=postgres://...
 //
 // Or via Docker:
-//   docker run inec/election-svc:latest
+//
+//	docker run inec/election-svc:latest
 package main
 
 import (
@@ -150,9 +152,9 @@ func transitionElection(svc *election.Service, bus *eventbus.LocalBus) http.Hand
 			return
 		}
 		bus.Publish(r.Context(), eventbus.Event{
-			Type: "election.transitioned",
+			Type:   "election.transitioned",
 			Source: "election-svc",
-			Data: map[string]interface{}{"election_id": id, "new_state": req.TargetState},
+			Data:   map[string]interface{}{"election_id": id, "new_state": req.TargetState},
 		})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "new_state": req.TargetState})

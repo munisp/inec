@@ -71,24 +71,24 @@ func stopDataRetentionWorker() {
 
 // DataRetentionPolicy defines purge rules for each data category.
 type DataRetentionPolicy struct {
-	Name           string
-	Table          string
-	TimestampCol   string
-	RetentionDays  int
-	ArchiveFirst   bool // If true, export to CSV before purging
-	Description    string
+	Name          string
+	Table         string
+	TimestampCol  string
+	RetentionDays int
+	ArchiveFirst  bool // If true, export to CSV before purging
+	Description   string
 }
 
 func defaultRetentionPolicies() []DataRetentionPolicy {
-	biometricDays := envIntOr("RETENTION_BIOMETRIC_DAYS", 365)          // 1 year for biometric data
-	auditDays := envIntOr("RETENTION_AUDIT_DAYS", 2555)                 // 7 years for audit trail (legal)
-	sessionDays := envIntOr("RETENTION_SESSION_DAYS", 90)               // 90 days for sessions
-	trackingDays := envIntOr("RETENTION_TRACKING_DAYS", 180)            // 6 months for GPS tracking
-	geoEventDays := envIntOr("RETENTION_GEO_EVENT_DAYS", 365)           // 1 year for geo events
-	notificationDays := envIntOr("RETENTION_NOTIFICATION_DAYS", 90)     // 90 days for notifications
-	jobLogDays := envIntOr("RETENTION_JOB_LOG_DAYS", 90)                // 90 days for background job logs
-	crowdAlertDays := envIntOr("RETENTION_CROWD_ALERT_DAYS", 180)       // 6 months for crowd alerts
-	incidentDays := envIntOr("RETENTION_INCIDENT_DAYS", 2555)           // 7 years for incidents (legal)
+	biometricDays := envIntOr("RETENTION_BIOMETRIC_DAYS", 365)      // 1 year for biometric data
+	auditDays := envIntOr("RETENTION_AUDIT_DAYS", 2555)             // 7 years for audit trail (legal)
+	sessionDays := envIntOr("RETENTION_SESSION_DAYS", 90)           // 90 days for sessions
+	trackingDays := envIntOr("RETENTION_TRACKING_DAYS", 180)        // 6 months for GPS tracking
+	geoEventDays := envIntOr("RETENTION_GEO_EVENT_DAYS", 365)       // 1 year for geo events
+	notificationDays := envIntOr("RETENTION_NOTIFICATION_DAYS", 90) // 90 days for notifications
+	jobLogDays := envIntOr("RETENTION_JOB_LOG_DAYS", 90)            // 90 days for background job logs
+	crowdAlertDays := envIntOr("RETENTION_CROWD_ALERT_DAYS", 180)   // 6 months for crowd alerts
+	incidentDays := envIntOr("RETENTION_INCIDENT_DAYS", 2555)       // 7 years for incidents (legal)
 
 	return []DataRetentionPolicy{
 		{Name: "biometric_verifications", Table: "biometric_verifications", TimestampCol: "verified_at", RetentionDays: biometricDays, ArchiveFirst: true, Description: "Biometric verification logs"},
@@ -116,7 +116,8 @@ func envIntOr(key string, fallback int) int {
 }
 
 // RunDataRetention executes purge policies. Called by a cron or startup hook.
-func RunDataRetention(dryRun bool) {	policies := defaultRetentionPolicies()
+func RunDataRetention(dryRun bool) {
+	policies := defaultRetentionPolicies()
 	log.Info().Bool("dry_run", dryRun).Int("policies", len(policies)).Msg("Starting data retention sweep")
 
 	for _, p := range policies {

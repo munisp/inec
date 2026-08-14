@@ -47,21 +47,21 @@ func seedComprehensive(db *sql.DB) {
 	}
 
 	// ── Staff Assignments ──
-dbExecLog("seed_staff1", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (1, 1, 'admin', 'FC')`)
-dbExecLog("seed_staff2", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (2, 1, 'observer', 'FC')`)
-dbExecLog("seed_staff3", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (3, 1, 'presiding_officer', 'FC')`)
+	dbExecLog("seed_staff1", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (1, 1, 'admin', 'FC')`)
+	dbExecLog("seed_staff2", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (2, 1, 'observer', 'FC')`)
+	dbExecLog("seed_staff3", `INSERT INTO staff_assignments (user_id, election_id, role, state_code) VALUES (3, 1, 'presiding_officer', 'FC')`)
 
-// ── Voter Registrations ──
-dbExecLog("seed_voter1", `INSERT INTO voter_registrations (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code) VALUES ('VIN123456789', 'John', 'Doe', '1990-01-01', 'M', 'FC', 'FC-001', 'FC-001-W001', 'FC-001-W001-PU001')`)
-dbExecLog("seed_voter2", `INSERT INTO voter_registrations (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code) VALUES ('VIN987654321', 'Jane', 'Smith', '1985-05-15', 'F', 'FC', 'FC-001', 'FC-001-W001', 'FC-001-W001-PU001')`)
+	// ── Voter Registrations ──
+	dbExecLog("seed_voter1", `INSERT INTO voter_registrations (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code) VALUES ('VIN123456789', 'John', 'Doe', '1990-01-01', 'M', 'FC', 'FC-001', 'FC-001-W001', 'FC-001-W001-PU001')`)
+	dbExecLog("seed_voter2", `INSERT INTO voter_registrations (vin, first_name, last_name, date_of_birth, gender, state_code, lga_code, ward_code, polling_unit_code) VALUES ('VIN987654321', 'Jane', 'Smith', '1985-05-15', 'F', 'FC', 'FC-001', 'FC-001-W001', 'FC-001-W001-PU001')`)
 
-// ── Workflow Instances ──
-dbExecLog("seed_wf1", `INSERT INTO workflow_instances (workflow_id, workflow_type, status, entity_type, entity_id) VALUES ('wf-elec-1', 'ElectionActivation', 'completed', 'election', '1')`)
-dbExecLog("seed_wf2", `INSERT INTO workflow_instances (workflow_id, workflow_type, status, entity_type, entity_id) VALUES ('wf-col-1', 'ResultCollation', 'running', 'ward', 'FC-001-W001')`)
+	// ── Workflow Instances ──
+	dbExecLog("seed_wf1", `INSERT INTO workflow_instances (workflow_id, workflow_type, status, entity_type, entity_id) VALUES ('wf-elec-1', 'ElectionActivation', 'completed', 'election', '1')`)
+	dbExecLog("seed_wf2", `INSERT INTO workflow_instances (workflow_id, workflow_type, status, entity_type, entity_id) VALUES ('wf-col-1', 'ResultCollation', 'running', 'ward', 'FC-001-W001')`)
 
-// ── Compliance Records ──
-dbExecLog("seed_comp1", `INSERT INTO compliance_records (election_id, polling_unit_code, check_type, status, details) VALUES (1, 'FC-001-W001-PU001', 'bvas_match_rate', 'pass', '{"rate": 98.5}')`)
-dbExecLog("seed_comp2", `INSERT INTO compliance_records (election_id, polling_unit_code, check_type, status, details) VALUES (1, 'FC-001-W001-PU002', 'overvoting', 'warning', '{"margin": 2}')`)
+	// ── Compliance Records ──
+	dbExecLog("seed_comp1", `INSERT INTO compliance_records (election_id, polling_unit_code, check_type, status, details) VALUES (1, 'FC-001-W001-PU001', 'bvas_match_rate', 'pass', '{"rate": 98.5}')`)
+	dbExecLog("seed_comp2", `INSERT INTO compliance_records (election_id, polling_unit_code, check_type, status, details) VALUES (1, 'FC-001-W001-PU002', 'overvoting', 'warning', '{"margin": 2}')`)
 
 	// ── Disputes (DisputeResolutionPage) ──
 	// Schema: election_id, polling_unit_code, filed_by TEXT, party, category, description, evidence, status, priority
@@ -151,8 +151,8 @@ dbExecLog("seed_comp2", `INSERT INTO compliance_records (election_id, polling_un
 	// Schema: title, description, course_type (enum), target_role, difficulty, duration_minutes, passing_score, modules_count, is_mandatory, is_active
 	courseData := []struct {
 		title, desc, ctype, role, diff string
-		dur, score, modules           int
-		mandatory                     int
+		dur, score, modules            int
+		mandatory                      int
 	}{
 		{"BVAS Operation & Troubleshooting", "Comprehensive training on BVAS device operation", "interactive", "officer", "intermediate", 480, 80, 8, 1},
 		{"Election Day Procedures", "Step-by-step guide for presiding officers", "video", "officer", "beginner", 360, 70, 6, 1},
@@ -392,7 +392,11 @@ dbExecLog("seed_comp2", `INSERT INTO compliance_records (election_id, polling_un
 	var lmCount int
 	db.QueryRow("SELECT COUNT(*) FROM landmarks").Scan(&lmCount)
 	if lmCount == 0 {
-		type lm struct{ name, cat string; lat, lng float64; state, addr, desc, icon string }
+		type lm struct {
+			name, cat               string
+			lat, lng                float64
+			state, addr, desc, icon string
+		}
 		geoLandmarks := []lm{
 			{"INEC National HQ", "inec_office", 9.0805, 7.4969, "FC", "Zambezi Crescent, Maitama, Abuja", "INEC headquarters", "building"},
 			{"INEC Lagos Office", "inec_office", 6.5975, 3.3433, "LA", "Oba Akinjobi Way, Ikeja", "Lagos state INEC office", "building"},
@@ -429,7 +433,13 @@ dbExecLog("seed_comp2", `INSERT INTO compliance_records (election_id, polling_un
 	var cdCount int
 	db.QueryRow("SELECT COUNT(*) FROM crowd_density WHERE reported_at > NOW() - INTERVAL '2 hours'").Scan(&cdCount)
 	if cdCount == 0 {
-		type cd struct{ pu string; head int; density string; queue, wait int; lat, lng float64 }
+		type cd struct {
+			pu          string
+			head        int
+			density     string
+			queue, wait int
+			lat, lng    float64
+		}
 		crowds := []cd{
 			{"FC-001-W001-PU001", 245, "high", 85, 35, 9.0579, 7.4951},
 			{"FC-001-W001-PU002", 380, "overcrowded", 150, 60, 9.0765, 7.4986},

@@ -2,7 +2,8 @@
 // Handles: Device management, voter accreditation, fleet monitoring.
 //
 // Usage:
-//   go run ./cmd/bvas-svc --port=8096 --db=postgres://...
+//
+//	go run ./cmd/bvas-svc --port=8096 --db=postgres://...
 package main
 
 import (

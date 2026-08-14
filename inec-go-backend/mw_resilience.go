@@ -64,7 +64,6 @@ func (tb *TokenBucket) Allow(ip string) bool {
 	return false
 }
 
-
 // AdaptiveRateLimitMiddleware applies per-IP rate limiting with configurable burst.
 func AdaptiveRateLimitMiddleware(ratePerSec, burst float64) func(http.Handler) http.Handler {
 	limiter := NewTokenBucket(ratePerSec, burst)

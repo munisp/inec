@@ -50,13 +50,13 @@ func handleGetVolunteerVetting(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"volunteer_id":         vid,
-		"full_name":            name,
-		"role":                 role,
-		"vetting_status":       vettingStatus,
-		"nin_verified":         ninVerified,
-		"training_completed":   trainingCompleted,
-		"background_cleared":   backgroundCleared,
+		"volunteer_id":       vid,
+		"full_name":          name,
+		"role":               role,
+		"vetting_status":     vettingStatus,
+		"nin_verified":       ninVerified,
+		"training_completed": trainingCompleted,
+		"background_cleared": backgroundCleared,
 	}
 	if ninVerifiedAt.Valid {
 		result["nin_verified_at"] = ninVerifiedAt.Time
@@ -558,14 +558,14 @@ func handleAutoAssignTasks(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	roleMap := map[string][]string{
-		"door_knock":              {"canvasser", "team_lead"},
-		"phone_call":              {"caller", "phone_banker", "canvasser"},
-		"ride_duty":               {"driver"},
-		"event_setup":             {"coordinator", "team_lead", "canvasser"},
-		"data_collection":         {"canvasser", "observer"},
-		"voter_registration":      {"canvasser", "team_lead"},
-		"materials_distribution":  {"coordinator", "canvasser"},
-		"monitoring":              {"observer", "coordinator"},
+		"door_knock":             {"canvasser", "team_lead"},
+		"phone_call":             {"caller", "phone_banker", "canvasser"},
+		"ride_duty":              {"driver"},
+		"event_setup":            {"coordinator", "team_lead", "canvasser"},
+		"data_collection":        {"canvasser", "observer"},
+		"voter_registration":     {"canvasser", "team_lead"},
+		"materials_distribution": {"coordinator", "canvasser"},
+		"monitoring":             {"observer", "coordinator"},
 	}
 
 	assigned := 0
@@ -816,7 +816,10 @@ func handleAutoAssignLocations(w http.ResponseWriter, r *http.Request) {
 	}
 	defer wardRows.Close()
 
-	type ward struct{ state, lga, code string; contacts, vols int }
+	type ward struct {
+		state, lga, code string
+		contacts, vols   int
+	}
 	var wards []ward
 	for wardRows.Next() {
 		var w ward

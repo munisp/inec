@@ -29,12 +29,12 @@ type WSMessage struct {
 
 // WSClient tracks a single WebSocket connection.
 type WSClient struct {
-	conn       *websocket.Conn
-	partyID    int
-	channels   map[string]bool
-	send       chan []byte
-	hub        *WSHub
-	mu         sync.Mutex
+	conn     *websocket.Conn
+	partyID  int
+	channels map[string]bool
+	send     chan []byte
+	hub      *WSHub
+	mu       sync.Mutex
 }
 
 // WSHub manages WebSocket connections with party-scoped broadcasting.

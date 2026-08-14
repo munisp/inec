@@ -26,14 +26,14 @@ type StablecoinEngine struct {
 }
 
 type StablecoinWallet struct {
-	WalletID    string  `json:"wallet_id"`
-	OwnerID     string  `json:"owner_id"`
-	OwnerType   string  `json:"owner_type"`
-	Currency    string  `json:"currency"`
-	Balance     float64 `json:"balance"`
-	Status      string  `json:"status"`
-	PublicKey   string  `json:"public_key"`
-	CreatedAt   string  `json:"created_at"`
+	WalletID  string  `json:"wallet_id"`
+	OwnerID   string  `json:"owner_id"`
+	OwnerType string  `json:"owner_type"`
+	Currency  string  `json:"currency"`
+	Balance   float64 `json:"balance"`
+	Status    string  `json:"status"`
+	PublicKey string  `json:"public_key"`
+	CreatedAt string  `json:"created_at"`
 }
 
 type StablecoinTx struct {
@@ -140,7 +140,7 @@ func (s *StablecoinEngine) CreateWallet(ctx context.Context, ownerID, ownerType,
 	pubKeyHex := hex.EncodeToString(pubKeyBytes)
 	privKeyHex := hex.EncodeToString(privKey.D.Bytes())
 
-	walletID := fmt.Sprintf("W-%s", hex.EncodeToString(sha256.New().Sum([]byte(ownerID+time.Now().String()))[:8]))
+	walletID := fmt.Sprintf("W-%s", hex.EncodeToString(sha256.New().Sum([]byte(ownerID + time.Now().String()))[:8]))
 
 	_, err = s.db.Exec(`INSERT INTO stablecoin_wallets (wallet_id, owner_id, owner_type, currency, public_key, private_key_enc)
 		VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -193,7 +193,7 @@ func (s *StablecoinEngine) Transfer(ctx context.Context, fromWallet, toWallet st
 	}
 
 	// Generate transaction ID and signature
-	txID := fmt.Sprintf("TX-%s", hex.EncodeToString(sha256.New().Sum([]byte(fromWallet+toWallet+fmt.Sprintf("%.4f", amount)+time.Now().String()))[:12]))
+	txID := fmt.Sprintf("TX-%s", hex.EncodeToString(sha256.New().Sum([]byte(fromWallet + toWallet + fmt.Sprintf("%.4f", amount) + time.Now().String()))[:12]))
 	signature := signTransaction(senderPrivKeyHex, txID, amount)
 	blockHash := computeBlockHash(txID, fromWallet, toWallet, amount)
 
@@ -221,16 +221,16 @@ func (s *StablecoinEngine) Transfer(ctx context.Context, fromWallet, toWallet st
 	}
 
 	return &StablecoinTx{
-		TxID:      txID,
+		TxID:       txID,
 		FromWallet: fromWallet,
 		ToWallet:   toWallet,
-		Amount:    amount,
-		Currency:  "eNGN",
-		TxType:    txType,
-		Purpose:   purpose,
-		Status:    "confirmed",
-		Signature: signature,
-		BlockHash: blockHash,
+		Amount:     amount,
+		Currency:   "eNGN",
+		TxType:     txType,
+		Purpose:    purpose,
+		Status:     "confirmed",
+		Signature:  signature,
+		BlockHash:  blockHash,
 	}, nil
 }
 

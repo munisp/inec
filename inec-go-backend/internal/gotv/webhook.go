@@ -83,10 +83,10 @@ type WebhookPayload struct {
 
 // WebhookManager handles webhook registration and event delivery.
 type WebhookManager struct {
-	db      *sql.DB
-	client  *http.Client
-	retryQ  chan retryItem
-	wg      sync.WaitGroup
+	db     *sql.DB
+	client *http.Client
+	retryQ chan retryItem
+	wg     sync.WaitGroup
 }
 
 type retryItem struct {

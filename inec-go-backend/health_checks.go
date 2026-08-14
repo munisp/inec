@@ -14,28 +14,28 @@ import (
 
 // HealthStatus represents the overall health of the platform.
 type HealthStatus struct {
-	Status    string                    `json:"status"`
-	Timestamp time.Time                 `json:"timestamp"`
-	Version   string                    `json:"version"`
-	Uptime    string                    `json:"uptime"`
+	Status    string                      `json:"status"`
+	Timestamp time.Time                   `json:"timestamp"`
+	Version   string                      `json:"version"`
+	Uptime    string                      `json:"uptime"`
 	Checks    map[string]*ComponentHealth `json:"checks"`
-	System    SystemInfo                `json:"system"`
+	System    SystemInfo                  `json:"system"`
 }
 
 // ComponentHealth holds the health result for a single dependency.
 type ComponentHealth struct {
-	Status  string        `json:"status"`
-	Latency string        `json:"latency,omitempty"`
-	Error   string        `json:"error,omitempty"`
-	Details interface{}   `json:"details,omitempty"`
+	Status  string      `json:"status"`
+	Latency string      `json:"latency,omitempty"`
+	Error   string      `json:"error,omitempty"`
+	Details interface{} `json:"details,omitempty"`
 }
 
 // SystemInfo holds runtime metrics.
 type SystemInfo struct {
-	GoVersion  string `json:"go_version"`
-	NumCPU     int    `json:"num_cpu"`
-	NumGoroutine int  `json:"num_goroutine"`
-	MemAllocMB float64 `json:"mem_alloc_mb"`
+	GoVersion    string  `json:"go_version"`
+	NumCPU       int     `json:"num_cpu"`
+	NumGoroutine int     `json:"num_goroutine"`
+	MemAllocMB   float64 `json:"mem_alloc_mb"`
 }
 
 var startTime = time.Now()

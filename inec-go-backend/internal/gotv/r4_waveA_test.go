@@ -269,7 +269,7 @@ func TestR443_ValidateWebhookURL(t *testing.T) {
 		{"http://203.0.113.10/hook", true},                // plain http in prod
 		{"ftp://203.0.113.10/hook", true},                 // bad scheme
 		{"not-a-url", true},
-		{"https://203.0.113.10/hook", false},              // public https IP, no DNS needed
+		{"https://203.0.113.10/hook", false}, // public https IP, no DNS needed
 	}
 	for _, c := range cases {
 		err := ValidateWebhookURL(c.url)

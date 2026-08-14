@@ -110,7 +110,6 @@ func (t *temporalSDKClient) SignalWorkflow(ctx context.Context, workflowID, sign
 	return t.c.SignalWorkflow(ctx, workflowID, "", signalName, data)
 }
 
-
 func (t *temporalSDKClient) CancelWorkflow(ctx context.Context, workflowID string) error {
 	return t.c.CancelWorkflow(ctx, workflowID, "")
 }

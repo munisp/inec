@@ -18,13 +18,13 @@ import (
 
 // Config holds authentication service configuration.
 type Config struct {
-	JWTSecret          []byte
-	AccessTokenTTL     time.Duration
-	RefreshTokenTTL    time.Duration
-	BcryptCost         int
-	MaxLoginAttempts   int
-	LockoutDuration    time.Duration
-	TokenIssuer        string
+	JWTSecret        []byte
+	AccessTokenTTL   time.Duration
+	RefreshTokenTTL  time.Duration
+	BcryptCost       int
+	MaxLoginAttempts int
+	LockoutDuration  time.Duration
+	TokenIssuer      string
 }
 
 // DefaultConfig returns production-safe defaults.

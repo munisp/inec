@@ -349,20 +349,20 @@ func (gl *GOTVLedger) Reconcile(partyID int) map[string]interface{} {
 	variance := totalDebitsPosted - totalCreditsPosted
 
 	return map[string]interface{}{
-		"party_id":        partyID,
-		"account_count":   accountCount,
-		"transfer_count":  transferCount,
-		"posted":          postedCount,
-		"pending":         pendingCount,
-		"voided":          voidedCount,
+		"party_id":         partyID,
+		"account_count":    accountCount,
+		"transfer_count":   transferCount,
+		"posted":           postedCount,
+		"pending":          pendingCount,
+		"voided":           voidedCount,
 		"total_posted_ngn": float64(transferTotal) / 100.0,
-		"debits_posted":   totalDebitsPosted,
-		"credits_posted":  totalCreditsPosted,
-		"variance":        variance,
-		"balanced":        balanced,
-		"reconciled_at":   time.Now(),
-		"double_entry":    true,
-		"acid_compliant":  true,
+		"debits_posted":    totalDebitsPosted,
+		"credits_posted":   totalCreditsPosted,
+		"variance":         variance,
+		"balanced":         balanced,
+		"reconciled_at":    time.Now(),
+		"double_entry":     true,
+		"acid_compliant":   true,
 	}
 }
 
@@ -585,16 +585,16 @@ func (bc *GOTVBlockchain) GetChainStatus(partyID int) map[string]interface{} {
 	integrityValid := bc.verifyChainIntegrity(partyID)
 
 	return map[string]interface{}{
-		"party_id":          partyID,
-		"total_blocks":      totalBlocks,
+		"party_id":           partyID,
+		"total_blocks":       totalBlocks,
 		"total_transactions": totalTx,
-		"verified_tx":       verifiedTx,
-		"merkle_anchors":    anchors,
-		"latest_block_hash": latestBlockHash,
-		"latest_block_time": latestBlockTime,
-		"chain_integrity":   integrityValid,
-		"consensus":         "append-only-verified",
-		"hash_algorithm":    "SHA-256",
+		"verified_tx":        verifiedTx,
+		"merkle_anchors":     anchors,
+		"latest_block_hash":  latestBlockHash,
+		"latest_block_time":  latestBlockTime,
+		"chain_integrity":    integrityValid,
+		"consensus":          "append-only-verified",
+		"hash_algorithm":     "SHA-256",
 	}
 }
 
@@ -639,15 +639,15 @@ func (bc *GOTVBlockchain) CrossPartyVerify(ctx context.Context, requestingPartyI
 	integrity := bc.verifyChainIntegrity(targetPartyID)
 
 	return map[string]interface{}{
-		"requesting_party": requestingPartyID,
-		"target_party":     targetPartyID,
-		"total_anchors":    targetAnchors,
+		"requesting_party":   requestingPartyID,
+		"target_party":       targetPartyID,
+		"total_anchors":      targetAnchors,
 		"latest_merkle_root": latestRoot,
-		"pledge_count":     latestLeafCount,
-		"chain_integrity":  integrity,
-		"zero_knowledge":   true,
-		"verified_at":      time.Now(),
-		"note":             "Cross-party verification reveals aggregate counts only, not individual pledge data",
+		"pledge_count":       latestLeafCount,
+		"chain_integrity":    integrity,
+		"zero_knowledge":     true,
+		"verified_at":        time.Now(),
+		"note":               "Cross-party verification reveals aggregate counts only, not individual pledge data",
 	}
 }
 
@@ -839,14 +839,14 @@ func handleLedgerTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"transfer_id":     txID,
-		"status":          "POSTED",
-		"amount_kobo":     req.AmountKobo,
-		"amount_naira":    float64(req.AmountKobo) / 100.0,
-		"debit_account":   req.DebitAccount,
-		"credit_account":  req.CreditAccount,
-		"double_entry":    true,
-		"acid_compliant":  true,
+		"transfer_id":    txID,
+		"status":         "POSTED",
+		"amount_kobo":    req.AmountKobo,
+		"amount_naira":   float64(req.AmountKobo) / 100.0,
+		"debit_account":  req.DebitAccount,
+		"credit_account": req.CreditAccount,
+		"double_entry":   true,
+		"acid_compliant": true,
 	})
 }
 
@@ -1053,5 +1053,3 @@ func handleBlockchainBlocks(w http.ResponseWriter, r *http.Request) {
 		"count":    len(blocks),
 	})
 }
-
-

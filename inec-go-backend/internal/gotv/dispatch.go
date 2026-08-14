@@ -47,15 +47,15 @@ type ChannelAdapter interface {
 
 // OutboundMessage is a single outreach message to dispatch.
 type OutboundMessage struct {
-	CampaignID  string
-	ContactID   string
-	PartyID     int
-	Phone       string // decrypted plaintext phone number
-	FullName    string // decrypted plaintext name
-	Template    string // personalized message body
-	Variant     string // "a" or "b"
-	Channel     string // sms, push, whatsapp, ussd, email, twitter, facebook, instagram
-	ConsentID   string
+	CampaignID string
+	ContactID  string
+	PartyID    int
+	Phone      string // decrypted plaintext phone number
+	FullName   string // decrypted plaintext name
+	Template   string // personalized message body
+	Variant    string // "a" or "b"
+	Channel    string // sms, push, whatsapp, ussd, email, twitter, facebook, instagram
+	ConsentID  string
 }
 
 // DeliveryResult captures the outcome of a single send attempt.
@@ -1303,7 +1303,7 @@ func (d *DispatchEngine) GetDLQCount(partyID int) int {
 // ── Webhook Signature Verification ─────────────────────────────────────
 
 var (
-	webhookSecretAT      string // Africa's Talking webhook secret
+	webhookSecretAT       string // Africa's Talking webhook secret
 	webhookSecretTwilio   string // Twilio Auth Token
 	webhookSecretWhatsApp string // Meta App Secret
 )
@@ -1404,17 +1404,17 @@ func (a *TikTokAdapter) Send(ctx context.Context, msg OutboundMessage) DeliveryR
 	// Step 1: Initialize post
 	initPayload := map[string]interface{}{
 		"post_info": map[string]interface{}{
-			"title":              msg.Template,
-			"privacy_level":      "PUBLIC_TO_EVERYONE",
-			"disable_duet":       false,
-			"disable_comment":    false,
-			"disable_stitch":     false,
+			"title":                msg.Template,
+			"privacy_level":        "PUBLIC_TO_EVERYONE",
+			"disable_duet":         false,
+			"disable_comment":      false,
+			"disable_stitch":       false,
 			"brand_content_toggle": false,
 			"brand_organic_toggle": false,
 		},
 		"source_info": map[string]interface{}{
-			"source":       "PULL_FROM_URL",
-			"video_url":    "", // text-only post
+			"source":    "PULL_FROM_URL",
+			"video_url": "", // text-only post
 		},
 	}
 	body, _ := json.Marshal(initPayload)
@@ -1569,7 +1569,7 @@ func (a *WhatsAppInteractiveAdapter) SendCTA(ctx context.Context, msg OutboundMe
 				"text": msg.Template,
 			},
 			"action": map[string]interface{}{
-				"name":       "cta_url",
+				"name": "cta_url",
 				"parameters": map[string]string{
 					"display_text": buttonText,
 					"url":          ctaURL,

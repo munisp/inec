@@ -157,13 +157,13 @@ func TestMerkleTreeLargeInput(t *testing.T) {
 
 func TestTransferCodes(t *testing.T) {
 	codes := map[string]int{
-		"campaign_spend":     TransferCodeCampaignSpend,
-		"ride_cost":          TransferCodeRideCost,
-		"volunteer_reimb":    TransferCodeVolunteerReimb,
-		"material_purchase":  TransferCodeMaterialPurchase,
-		"event_cost":         TransferCodeEventCost,
-		"sms_cost":           TransferCodeSMSCost,
-		"phone_bank_cost":    TransferCodePhoneBankCost,
+		"campaign_spend":    TransferCodeCampaignSpend,
+		"ride_cost":         TransferCodeRideCost,
+		"volunteer_reimb":   TransferCodeVolunteerReimb,
+		"material_purchase": TransferCodeMaterialPurchase,
+		"event_cost":        TransferCodeEventCost,
+		"sms_cost":          TransferCodeSMSCost,
+		"phone_bank_cost":   TransferCodePhoneBankCost,
 	}
 	seen := map[int]bool{}
 	for name, code := range codes {

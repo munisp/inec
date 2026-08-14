@@ -13,10 +13,10 @@ import (
 // BiometricBenchmarkConfig holds NIST FRVT/MinEx/Irex benchmark data.
 // Loaded from config/biometric_benchmarks.json at startup.
 type BiometricBenchmarkConfig struct {
-	ScoreNormalizationCohorts map[string]*NormCohortData `json:"score_normalization_cohorts"`
+	ScoreNormalizationCohorts map[string]*NormCohortData      `json:"score_normalization_cohorts"`
 	EERByModalityQuality      map[string]map[string]*EERRange `json:"eer_by_modality_quality"`
-	PADModelBaselineAccuracy  map[string]*PADBaseline          `json:"pad_model_baseline_accuracy"`
-	LaplacianThresholds       map[string]*LaplacianThreshold   `json:"laplacian_variance_quality_thresholds"`
+	PADModelBaselineAccuracy  map[string]*PADBaseline         `json:"pad_model_baseline_accuracy"`
+	LaplacianThresholds       map[string]*LaplacianThreshold  `json:"laplacian_variance_quality_thresholds"`
 }
 
 type NormCohortData struct {
@@ -46,9 +46,9 @@ type LaplacianThreshold struct {
 }
 
 var (
-	benchmarkConfig      *BiometricBenchmarkConfig
-	benchmarkConfigMu    sync.RWMutex
-	benchmarkConfigPath  string
+	benchmarkConfig     *BiometricBenchmarkConfig
+	benchmarkConfigMu   sync.RWMutex
+	benchmarkConfigPath string
 )
 
 // initBiometricBenchmarks loads NIST benchmark data from config/biometric_benchmarks.json.
@@ -77,10 +77,10 @@ func initBiometricBenchmarks() {
 func findConfigPath(filename string) string {
 	// Try multiple locations
 	candidates := []string{
-		filepath.Join("config", filename),                          // repo root
-		filepath.Join("..", "config", filename),                    // inec-go-backend/../config
-		filepath.Join("inec-repo", "config", filename),             // nested project structure
-		filepath.Join("/app", "config", filename),                  // Docker /app
+		filepath.Join("config", filename),              // repo root
+		filepath.Join("..", "config", filename),        // inec-go-backend/../config
+		filepath.Join("inec-repo", "config", filename), // nested project structure
+		filepath.Join("/app", "config", filename),      // Docker /app
 	}
 
 	for _, candidate := range candidates {
@@ -124,16 +124,16 @@ func embeddedNISTDefaults() *BiometricBenchmarkConfig {
 		},
 		EERByModalityQuality: map[string]map[string]*EERRange{
 			"fingerprint": {
-				"good":  {EERMin: 0.005, EERMax: 0.02, Description: "High quality capture, NFIQ2 <= 2"},
-				"poor":  {EERMin: 0.02, EERMax: 0.05, Description: "Low quality capture, NFIQ2 > 2"},
+				"good": {EERMin: 0.005, EERMax: 0.02, Description: "High quality capture, NFIQ2 <= 2"},
+				"poor": {EERMin: 0.02, EERMax: 0.05, Description: "Low quality capture, NFIQ2 > 2"},
 			},
 			"facial": {
-				"good":  {EERMin: 0.01, EERMax: 0.03, Description: "Good lighting, frontal pose, high resolution"},
-				"poor":  {EERMin: 0.03, EERMax: 0.08, Description: "Poor lighting, profile pose, low resolution"},
+				"good": {EERMin: 0.01, EERMax: 0.03, Description: "Good lighting, frontal pose, high resolution"},
+				"poor": {EERMin: 0.03, EERMax: 0.08, Description: "Poor lighting, profile pose, low resolution"},
 			},
 			"iris": {
-				"good":  {EERMin: 0.001, EERMax: 0.005, Description: "Clear iris texture, good NIR illumination"},
-				"poor":  {EERMin: 0.005, EERMax: 0.01, Description: "Partial occlusion, poor focus"},
+				"good": {EERMin: 0.001, EERMax: 0.005, Description: "Clear iris texture, good NIR illumination"},
+				"poor": {EERMin: 0.005, EERMax: 0.01, Description: "Partial occlusion, poor focus"},
 			},
 		},
 		PADModelBaselineAccuracy: map[string]*PADBaseline{
@@ -149,7 +149,9 @@ func embeddedNISTDefaults() *BiometricBenchmarkConfig {
 func GetBenchmarkCohort(modality string) *NormCohortData {
 	benchmarkConfigMu.RLock()
 	defer benchmarkConfigMu.RUnlock()
-	if benchmarkConfig == nil { return nil }
+	if benchmarkConfig == nil {
+		return nil
+	}
 	return benchmarkConfig.ScoreNormalizationCohorts[modality]
 }
 
@@ -218,8 +220,8 @@ func estimateImpostorDistribution(genuineScores []float64, nPoints int) []float6
 		x := muImpostor + float64(i)*3.0*sigmaImpostor/float64(max(nPoints-1, 1))
 		// Gaussian PDF (unnormalized weight for this x)
 		z := (x - muImpostor) / sigmaImpostor
-		weight := math.Exp(-0.5*z*z)
-		scores[i] = clamp01(muImpostor + sigmaImpostor*math.Sin(float64(i)*2.0*math.Pi/float64(nPoints))+weight*sigmaImpostor)
+		weight := math.Exp(-0.5 * z * z)
+		scores[i] = clamp01(muImpostor + sigmaImpostor*math.Sin(float64(i)*2.0*math.Pi/float64(nPoints)) + weight*sigmaImpostor)
 	}
 
 	return scores
@@ -322,4 +324,3 @@ func computeEERFromQuality(modality string, avgQuality float64) float64 {
 		return 0.02 // Generic
 	}
 }
-

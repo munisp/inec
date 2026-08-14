@@ -29,24 +29,24 @@ const (
 
 // VerificationResult represents the outcome of a biometric match.
 type VerificationResult struct {
-	Match           bool    `json:"match"`
-	Score           float64 `json:"score"`
-	Threshold       float64 `json:"threshold"`
-	Modality        string  `json:"modality"`
-	QualityScore    int     `json:"quality_score"`
-	LivenessScore   float64 `json:"liveness_score"`
-	LivenessPass    bool    `json:"liveness_pass"`
-	ProcessingTime  int64   `json:"processing_time_ms"`
-	TemplateID      string  `json:"template_id"`
+	Match          bool    `json:"match"`
+	Score          float64 `json:"score"`
+	Threshold      float64 `json:"threshold"`
+	Modality       string  `json:"modality"`
+	QualityScore   int     `json:"quality_score"`
+	LivenessScore  float64 `json:"liveness_score"`
+	LivenessPass   bool    `json:"liveness_pass"`
+	ProcessingTime int64   `json:"processing_time_ms"`
+	TemplateID     string  `json:"template_id"`
 }
 
 // EnrollmentData contains biometric templates for enrollment.
 type EnrollmentData struct {
-	VoterVIN    string            `json:"voter_vin"`
-	Templates   map[Modality][]byte `json:"templates"`
-	Quality     map[Modality]int  `json:"quality_scores"`
-	CapturedAt  time.Time         `json:"captured_at"`
-	DeviceID    string            `json:"device_id"`
+	VoterVIN   string              `json:"voter_vin"`
+	Templates  map[Modality][]byte `json:"templates"`
+	Quality    map[Modality]int    `json:"quality_scores"`
+	CapturedAt time.Time           `json:"captured_at"`
+	DeviceID   string              `json:"device_id"`
 }
 
 // Config holds biometric service configuration.

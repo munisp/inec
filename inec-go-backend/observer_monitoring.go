@@ -27,8 +27,8 @@ const (
 
 // SSE (Server-Sent Events) hub for pushing real-time result updates to connected observers
 const (
-	MaxGlobalSSEConnections = 10000 // Global limit across all users
-	MaxPerUserSSEConnections = 5    // Per-user limit to prevent abuse
+	MaxGlobalSSEConnections  = 10000 // Global limit across all users
+	MaxPerUserSSEConnections = 5     // Per-user limit to prevent abuse
 )
 
 type SSEHub struct {

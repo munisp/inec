@@ -198,7 +198,7 @@ func SkipTestBenfordsLawUniformData(t *testing.T) {
 	values := make([]int, 90)
 	for i := 0; i < 90; i++ {
 		digit := (i % 9) + 1
-		values[i] = digit * 100 + i
+		values[i] = digit*100 + i
 	}
 
 	chi2, pValue, _ := computeBenfordsLaw(values)
@@ -511,7 +511,7 @@ func SkipTestGeographicAdjacencyWardPrecedence(t *testing.T) {
 		Latitude:  9.0579, // Kano — very far
 		Longitude: 7.4951,
 		Ward:      "Ward-A", // Same ward (admin boundary spans far)
-		LGA:       "", // empty LGA
+		LGA:       "",       // empty LGA
 	}
 
 	nodes := []GNNNode{node1, node2}

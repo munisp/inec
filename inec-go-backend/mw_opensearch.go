@@ -255,8 +255,10 @@ func (o *realOpenSearchClient) BulkIndex(ctx context.Context, items []BulkIndexI
 		Errors bool `json:"errors"`
 		Items  []struct {
 			Index struct {
-				Status int    `json:"status"`
-				Error  *struct{ Reason string `json:"reason"` } `json:"error"`
+				Status int `json:"status"`
+				Error  *struct {
+					Reason string `json:"reason"`
+				} `json:"error"`
 			} `json:"index"`
 		} `json:"items"`
 	}

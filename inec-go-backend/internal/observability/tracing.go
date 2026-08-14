@@ -16,27 +16,27 @@ import (
 
 // TraceContext carries trace/span IDs through the request lifecycle.
 type TraceContext struct {
-	TraceID    string `json:"trace_id"`
-	SpanID     string `json:"span_id"`
-	ParentSpan string `json:"parent_span,omitempty"`
-	Service    string `json:"service"`
-	Operation  string `json:"operation"`
+	TraceID    string    `json:"trace_id"`
+	SpanID     string    `json:"span_id"`
+	ParentSpan string    `json:"parent_span,omitempty"`
+	Service    string    `json:"service"`
+	Operation  string    `json:"operation"`
 	StartTime  time.Time `json:"start_time"`
 }
 
 // Span represents a unit of work within a trace.
 type Span struct {
-	TraceID    string                 `json:"trace_id"`
-	SpanID     string                 `json:"span_id"`
-	ParentSpan string                 `json:"parent_span,omitempty"`
-	Service    string                 `json:"service"`
-	Operation  string                 `json:"operation"`
-	StartTime  time.Time              `json:"start_time"`
-	EndTime    time.Time              `json:"end_time,omitempty"`
-	Duration   time.Duration          `json:"duration_ms,omitempty"`
-	Status     string                 `json:"status"` // ok, error
-	Tags       map[string]string      `json:"tags,omitempty"`
-	Events     []SpanEvent            `json:"events,omitempty"`
+	TraceID    string            `json:"trace_id"`
+	SpanID     string            `json:"span_id"`
+	ParentSpan string            `json:"parent_span,omitempty"`
+	Service    string            `json:"service"`
+	Operation  string            `json:"operation"`
+	StartTime  time.Time         `json:"start_time"`
+	EndTime    time.Time         `json:"end_time,omitempty"`
+	Duration   time.Duration     `json:"duration_ms,omitempty"`
+	Status     string            `json:"status"` // ok, error
+	Tags       map[string]string `json:"tags,omitempty"`
+	Events     []SpanEvent       `json:"events,omitempty"`
 }
 
 // SpanEvent is a timestamped annotation within a span.

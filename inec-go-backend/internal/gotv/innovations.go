@@ -174,13 +174,13 @@ func (f *WhatsAppFlowSender) SendPledgeFlow(ctx context.Context, phone, flowID, 
 				"text": "Powered by GOTV Platform",
 			},
 			"action": map[string]interface{}{
-				"name":       "flow",
+				"name": "flow",
 				"parameters": map[string]interface{}{
 					"flow_message_version": "3",
-					"flow_token":          contactID,
-					"flow_id":             flowID,
-					"flow_cta":            "Get Started",
-					"flow_action":         "navigate",
+					"flow_token":           contactID,
+					"flow_id":              flowID,
+					"flow_cta":             "Get Started",
+					"flow_action":          "navigate",
 					"flow_action_payload": map[string]interface{}{
 						"screen": "PLEDGE_SCREEN",
 					},
@@ -260,8 +260,8 @@ func (v *VoiceAICaller) PlaceCall(ctx context.Context, campaignID, contactID, ph
 	switch v.Provider {
 	case "retell":
 		payload = map[string]interface{}{
-			"agent_id":             v.AgentID,
-			"customer_number":      phone,
+			"agent_id":        v.AgentID,
+			"customer_number": phone,
 			"retell_llm_dynamic_variables": map[string]string{
 				"campaign_id": campaignID,
 				"contact_id":  contactID,
@@ -269,15 +269,15 @@ func (v *VoiceAICaller) PlaceCall(ctx context.Context, campaignID, contactID, ph
 		}
 	case "vapi":
 		payload = map[string]interface{}{
-			"assistantId":    v.AgentID,
-			"phoneNumberId":  os.Getenv("VAPI_PHONE_ID"),
-			"customer":       map[string]string{"number": phone},
+			"assistantId":   v.AgentID,
+			"phoneNumberId": os.Getenv("VAPI_PHONE_ID"),
+			"customer":      map[string]string{"number": phone},
 		}
 	case "bland":
 		payload = map[string]interface{}{
-			"phone_number": phone,
-			"task":         "Remind the voter about the upcoming election and encourage them to vote.",
-			"voice_id":     1,
+			"phone_number":   phone,
+			"task":           "Remind the voter about the upcoming election and encourage them to vote.",
+			"voice_id":       1,
 			"reduce_latency": true,
 		}
 	}
@@ -441,7 +441,7 @@ type AllianceGrant struct {
 
 // AllianceManager handles multi-party resource sharing.
 type AllianceManager struct {
-	DB        *sql.DB
+	DB         *sql.DB
 	PermifyURL string
 }
 

@@ -2,7 +2,8 @@
 // Handles: Consent management, DSR requests, breach notifications, processing register.
 //
 // Usage:
-//   go run ./cmd/compliance-svc --port=8094 --db=postgres://...
+//
+//	go run ./cmd/compliance-svc --port=8094 --db=postgres://...
 package main
 
 import (

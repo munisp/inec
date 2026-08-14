@@ -2,7 +2,8 @@
 // Handles: Geofencing, PostGIS queries, polling unit mapping, landmarks, heatmaps.
 //
 // Usage:
-//   go run ./cmd/geo-svc --port=8093 --db=postgres://...
+//
+//	go run ./cmd/geo-svc --port=8093 --db=postgres://...
 package main
 
 import (

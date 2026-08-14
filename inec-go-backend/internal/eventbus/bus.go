@@ -16,8 +16,8 @@ import (
 // Event is the envelope for all domain events.
 type Event struct {
 	ID        string                 `json:"id"`
-	Type      string                 `json:"type"`      // e.g. "election.results.submitted"
-	Source    string                 `json:"source"`    // originating service
+	Type      string                 `json:"type"`   // e.g. "election.results.submitted"
+	Source    string                 `json:"source"` // originating service
 	Timestamp time.Time              `json:"timestamp"`
 	Data      map[string]interface{} `json:"data"`
 	TraceID   string                 `json:"trace_id,omitempty"`
@@ -105,7 +105,7 @@ func (b *LocalBus) Close() {
 // RedisBus uses Redis Pub/Sub for multi-pod event distribution.
 type RedisBus struct {
 	local    *LocalBus
-	redisPub func(channel string, data []byte) error // injected Redis publish fn
+	redisPub func(channel string, data []byte) error           // injected Redis publish fn
 	redisSub func(channel string, handler func([]byte)) func() // injected Redis subscribe fn
 	cancels  []func()
 	mu       sync.Mutex
@@ -191,19 +191,19 @@ func matchPattern(pattern, eventType string) bool {
 
 // Well-known event types for the INEC platform.
 const (
-	EventElectionCreated          = "election.created"
-	EventElectionStateChanged     = "election.state_changed"
-	EventResultSubmitted          = "election.result.submitted"
-	EventResultCollated           = "election.result.collated"
-	EventBiometricVerified        = "biometric.verified"
-	EventBiometricFailed          = "biometric.failed"
-	EventVoterRegistered          = "voter.registered"
-	EventIncidentReported         = "incident.reported"
-	EventOfficialLocationUpdated  = "tracking.official.location"
-	EventCrowdDensityUpdated      = "tracking.crowd.density"
-	EventAnomalyDetected          = "anomaly.detected"
-	EventAuditLogCreated          = "audit.log.created"
-	EventGeofenceViolation        = "geofence.violation"
-	EventBVASHeartbeat            = "bvas.heartbeat"
-	EventBlockchainAttested       = "blockchain.attested"
+	EventElectionCreated         = "election.created"
+	EventElectionStateChanged    = "election.state_changed"
+	EventResultSubmitted         = "election.result.submitted"
+	EventResultCollated          = "election.result.collated"
+	EventBiometricVerified       = "biometric.verified"
+	EventBiometricFailed         = "biometric.failed"
+	EventVoterRegistered         = "voter.registered"
+	EventIncidentReported        = "incident.reported"
+	EventOfficialLocationUpdated = "tracking.official.location"
+	EventCrowdDensityUpdated     = "tracking.crowd.density"
+	EventAnomalyDetected         = "anomaly.detected"
+	EventAuditLogCreated         = "audit.log.created"
+	EventGeofenceViolation       = "geofence.violation"
+	EventBVASHeartbeat           = "bvas.heartbeat"
+	EventBlockchainAttested      = "blockchain.attested"
 )

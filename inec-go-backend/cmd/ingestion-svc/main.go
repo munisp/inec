@@ -2,7 +2,8 @@
 // Handles: Batch imports, backpressure, dead-letter queue, retry with exponential backoff.
 //
 // Usage:
-//   go run ./cmd/ingestion-svc --port=8095 --db=postgres://...
+//
+//	go run ./cmd/ingestion-svc --port=8095 --db=postgres://...
 package main
 
 import (

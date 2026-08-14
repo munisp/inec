@@ -478,14 +478,14 @@ func TestVettingStateTransitions(t *testing.T) {
 
 func TestTaskRoleCompatibility(t *testing.T) {
 	compatibility := map[string][]string{
-		"door_knock":              {"canvasser", "team_lead"},
-		"phone_call":              {"caller", "phone_banker"},
-		"ride_duty":               {"driver"},
-		"event_setup":             {"canvasser", "coordinator", "team_lead"},
-		"data_collection":         {"canvasser", "team_lead", "observer"},
-		"voter_registration":      {"canvasser", "team_lead"},
-		"materials_distribution":  {"canvasser", "team_lead", "coordinator"},
-		"monitoring":              {"observer", "coordinator"},
+		"door_knock":             {"canvasser", "team_lead"},
+		"phone_call":             {"caller", "phone_banker"},
+		"ride_duty":              {"driver"},
+		"event_setup":            {"canvasser", "coordinator", "team_lead"},
+		"data_collection":        {"canvasser", "team_lead", "observer"},
+		"voter_registration":     {"canvasser", "team_lead"},
+		"materials_distribution": {"canvasser", "team_lead", "coordinator"},
+		"monitoring":             {"observer", "coordinator"},
 	}
 
 	tests := []struct {
@@ -572,6 +572,7 @@ func TestNLQueryEmptyQuery(t *testing.T) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 func timeNow() time.Time { return time.Now() }
+
 var _ = timeNow // suppress unused warning
 
 func containsSubstring(s, sub string) bool {

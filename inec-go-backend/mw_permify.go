@@ -267,7 +267,6 @@ func (p *pgPermify) LookupResources(_ context.Context, subjectType, subjectID, p
 	return resources, nil
 }
 
-
 func (p *pgPermify) BulkCheck(ctx context.Context, checks []PermifyCheck) (*BulkPermifyResult, error) {
 	results := make([]bool, len(checks))
 	for i, c := range checks {

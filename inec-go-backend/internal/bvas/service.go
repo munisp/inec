@@ -15,9 +15,9 @@ import (
 type DeviceStatus string
 
 const (
-	StatusActive       DeviceStatus = "active"
-	StatusInactive     DeviceStatus = "inactive"
-	StatusMaintenance  DeviceStatus = "maintenance"
+	StatusActive         DeviceStatus = "active"
+	StatusInactive       DeviceStatus = "inactive"
+	StatusMaintenance    DeviceStatus = "maintenance"
 	StatusDecommissioned DeviceStatus = "decommissioned"
 )
 

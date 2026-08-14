@@ -244,8 +244,8 @@ func handleScoringPersuadability(w http.ResponseWriter, r *http.Request) {
 		"total_analyzed":        len(results),
 		"persuadable_count":     catDist["persuadable"],
 		"category_distribution": catDist,
-		"contacts":             results,
-		"generated_at":         time.Now().UTC().Format(time.RFC3339),
+		"contacts":              results,
+		"generated_at":          time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -280,10 +280,10 @@ func handleScoringAllocation(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type wardData struct {
-		wardCode, stateCode       string
-		total, pledged, unknown   int
-		currentVols               int
-		marginal                  float64
+		wardCode, stateCode     string
+		total, pledged, unknown int
+		currentVols             int
+		marginal                float64
 	}
 
 	var wards []wardData
@@ -354,10 +354,10 @@ func handleScoringAllocation(w http.ResponseWriter, r *http.Request) {
 		"party_id":                   partyID,
 		"available_volunteers":       available,
 		"allocated":                  available - remaining,
-		"unallocated":               remaining,
+		"unallocated":                remaining,
 		"total_expected_pledge_gain": totalGain,
-		"allocations":               allocs,
-		"generated_at":              time.Now().UTC().Format(time.RFC3339),
+		"allocations":                allocs,
+		"generated_at":               time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -506,8 +506,8 @@ func handleScoringWinProbability(w http.ResponseWriter, r *http.Request) {
 		"competitive_states": len(results) - winningCount - losing,
 		"losing_states":      losing,
 		"overall_strength":   math.Round(overall*1000) / 1000,
-		"states":            results,
-		"generated_at":      time.Now().UTC().Format(time.RFC3339),
+		"states":             results,
+		"generated_at":       time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -583,9 +583,9 @@ func handleScoringMessageOptimize(w http.ResponseWriter, r *http.Request) {
 		"party_id":          partyID,
 		"total_variants":    len(arms),
 		"total_impressions": totalImpressions,
-		"arms":             arms,
-		"algorithm":        "UCB1 + Thompson Sampling",
-		"generated_at":     time.Now().UTC().Format(time.RFC3339),
+		"arms":              arms,
+		"algorithm":         "UCB1 + Thompson Sampling",
+		"generated_at":      time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -675,7 +675,7 @@ func handleScoringSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResp(w, http.StatusOK, map[string]interface{}{
-		"party_id":              partyID,
+		"party_id":             partyID,
 		"contacts_sampled":     scored,
 		"average_score":        math.Round(avg*10) / 10,
 		"segment_distribution": segments,

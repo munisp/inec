@@ -23,15 +23,15 @@ type ServiceRegistry struct {
 	mu sync.RWMutex
 
 	// Core services
-	Auth       *auth.Service
-	MFA        *auth.MFAService
-	Election   *election.Service
-	Biometric  *biometric.Service
-	Geo        *geo.Service
-	EventBus   eventbus.Bus
+	Auth      *auth.Service
+	MFA       *auth.MFAService
+	Election  *election.Service
+	Biometric *biometric.Service
+	Geo       *geo.Service
+	EventBus  eventbus.Bus
 
 	// Infrastructure
-	DB             *sql.DB
+	DB              *sql.DB
 	CircuitBreakers map[string]*circuit.Breaker
 
 	// Service metadata

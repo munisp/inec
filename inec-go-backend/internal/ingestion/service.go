@@ -45,11 +45,11 @@ type Job struct {
 
 // Service provides ingestion queue operations.
 type Service struct {
-	db             *sql.DB
-	mu             sync.Mutex
-	queue          []Job
-	idempotency    map[string]string
-	processors     map[string]ProcessorFunc
+	db          *sql.DB
+	mu          sync.Mutex
+	queue       []Job
+	idempotency map[string]string
+	processors  map[string]ProcessorFunc
 }
 
 // ProcessorFunc handles a specific job type.
@@ -140,12 +140,12 @@ func (s *Service) QueueStats() map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"total":      len(s.queue),
-		"capacity":   MaxQueueSize,
-		"pending":    pending,
-		"processing": processing,
-		"completed":  completed,
-		"failed":     failed,
+		"total":           len(s.queue),
+		"capacity":        MaxQueueSize,
+		"pending":         pending,
+		"processing":      processing,
+		"completed":       completed,
+		"failed":          failed,
 		"utilization_pct": float64(len(s.queue)) / float64(MaxQueueSize) * 100,
 	}
 }

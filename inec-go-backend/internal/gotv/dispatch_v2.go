@@ -365,16 +365,16 @@ func (a *WhatsAppAdapterV2) Send(ctx context.Context, msg OutboundMessage) Deliv
 		// Free-form text allowed within 24h window
 		payload = map[string]interface{}{
 			"messaging_product": "whatsapp",
-			"to":               msg.Phone,
-			"type":             "text",
-			"text":             map[string]string{"body": msg.Template},
+			"to":                msg.Phone,
+			"type":              "text",
+			"text":              map[string]string{"body": msg.Template},
 		}
 	} else {
 		// Template message required outside 24h window (Meta policy)
 		payload = map[string]interface{}{
 			"messaging_product": "whatsapp",
-			"to":               msg.Phone,
-			"type":             "template",
+			"to":                msg.Phone,
+			"type":              "template",
 			"template": map[string]interface{}{
 				"name":     a.TemplateName,
 				"language": map[string]string{"code": "en"},
@@ -429,8 +429,8 @@ func (a *WhatsAppAdapterV2) Send(ctx context.Context, msg OutboundMessage) Deliv
 
 // DNDClient checks Nigeria NCC Do Not Disturb registry with 5s timeout (CRITICAL #5).
 type DNDClient struct {
-	URL     string
-	client  *http.Client
+	URL    string
+	client *http.Client
 }
 
 // NewDNDClient creates a DND client with explicit 5s timeout (not http.DefaultClient).
@@ -456,7 +456,9 @@ func (d *DNDClient) CheckDND(ctx context.Context, phone string) (bool, error) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	var result struct{ IsDND bool `json:"is_dnd"` }
+	var result struct {
+		IsDND bool `json:"is_dnd"`
+	}
 	json.Unmarshal(body, &result)
 	return result.IsDND, nil
 }
@@ -574,11 +576,11 @@ type CampaignSequence struct {
 
 // Wave is a single step in a multi-wave sequence.
 type Wave struct {
-	WaveNumber  int    `json:"wave_number"`
-	Channel     string `json:"channel"`     // sms, whatsapp, phone_call
-	Template    string `json:"template"`
-	DelayHours  int    `json:"delay_hours"` // hours after previous wave
-	Condition   string `json:"condition"`   // "no_response", "no_pledge", "all"
+	WaveNumber int    `json:"wave_number"`
+	Channel    string `json:"channel"` // sms, whatsapp, phone_call
+	Template   string `json:"template"`
+	DelayHours int    `json:"delay_hours"` // hours after previous wave
+	Condition  string `json:"condition"`   // "no_response", "no_pledge", "all"
 }
 
 // CreateSequence saves a multi-wave campaign sequence.
@@ -795,15 +797,15 @@ func (d *DispatchEngine) CheckBudget(ctx context.Context, campaignID string) (sp
 
 // LeaderboardEntry holds a volunteer's ranking.
 type LeaderboardEntry struct {
-	VolunteerID string `json:"volunteer_id"`
-	FullName    string `json:"full_name"`
-	Role        string `json:"role"`
-	Score       int    `json:"score"`
-	Rank        int    `json:"rank"`
-	Badge       string `json:"badge,omitempty"`
-	DoorsKnocked int   `json:"doors_knocked"`
-	CallsMade    int   `json:"calls_made"`
-	RidesGiven   int   `json:"rides_given"`
+	VolunteerID  string `json:"volunteer_id"`
+	FullName     string `json:"full_name"`
+	Role         string `json:"role"`
+	Score        int    `json:"score"`
+	Rank         int    `json:"rank"`
+	Badge        string `json:"badge,omitempty"`
+	DoorsKnocked int    `json:"doors_knocked"`
+	CallsMade    int    `json:"calls_made"`
+	RidesGiven   int    `json:"rides_given"`
 }
 
 // GetLeaderboard returns ranked volunteers for a party.
@@ -901,12 +903,12 @@ func (d *DispatchEngine) AssignTerritories(ctx context.Context, partyID int, war
 			terrID, partyID, vol.ID, wardCode, count)
 
 		territories = append(territories, map[string]interface{}{
-			"territory_id":  terrID,
-			"volunteer_id":  vol.ID,
+			"territory_id":   terrID,
+			"volunteer_id":   vol.ID,
 			"volunteer_name": vol.Name,
-			"ward_code":     wardCode,
-			"contact_count": count,
-			"status":        "assigned",
+			"ward_code":      wardCode,
+			"contact_count":  count,
+			"status":         "assigned",
 		})
 	}
 	return territories, nil

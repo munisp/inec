@@ -155,6 +155,7 @@ func initMiddlewareTables(database *sql.DB) {
 	execMulti(database, schema)
 	log.Info().Msg("Middleware persistence tables initialized")
 }
+
 // Cleanup expired cache entries (run periodically)
 func cleanupExpiredCache() {
 	for {

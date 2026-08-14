@@ -13,35 +13,35 @@ import (
 
 // ConsentRecord represents a data subject's consent.
 type ConsentRecord struct {
-	ID          int       `json:"id"`
-	SubjectNIN  string    `json:"subject_nin"`
-	Purpose     string    `json:"purpose"`
-	Status      string    `json:"status"` // granted, withdrawn, expired
-	GrantedAt   time.Time `json:"granted_at"`
+	ID          int        `json:"id"`
+	SubjectNIN  string     `json:"subject_nin"`
+	Purpose     string     `json:"purpose"`
+	Status      string     `json:"status"` // granted, withdrawn, expired
+	GrantedAt   time.Time  `json:"granted_at"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	WithdrawnAt *time.Time `json:"withdrawn_at,omitempty"`
 }
 
 // DSRRequest represents a Data Subject Rights request.
 type DSRRequest struct {
-	ID          int       `json:"id"`
-	SubjectNIN  string    `json:"subject_nin"`
-	RightType   string    `json:"right_type"` // access, rectification, erasure, portability, restriction, objection
-	Status      string    `json:"status"`     // pending, in_progress, completed, rejected
-	RequestedAt time.Time `json:"requested_at"`
+	ID          int        `json:"id"`
+	SubjectNIN  string     `json:"subject_nin"`
+	RightType   string     `json:"right_type"` // access, rectification, erasure, portability, restriction, objection
+	Status      string     `json:"status"`     // pending, in_progress, completed, rejected
+	RequestedAt time.Time  `json:"requested_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	Response    string    `json:"response,omitempty"`
+	Response    string     `json:"response,omitempty"`
 }
 
 // BreachRecord represents a data breach notification.
 type BreachRecord struct {
-	ID          int       `json:"id"`
-	Severity    string    `json:"severity"` // low, medium, high, critical
-	Description string    `json:"description"`
-	AffectedCount int    `json:"affected_count"`
-	DetectedAt  time.Time `json:"detected_at"`
-	ReportedAt  *time.Time `json:"reported_at,omitempty"`
-	Status      string    `json:"status"`
+	ID            int        `json:"id"`
+	Severity      string     `json:"severity"` // low, medium, high, critical
+	Description   string     `json:"description"`
+	AffectedCount int        `json:"affected_count"`
+	DetectedAt    time.Time  `json:"detected_at"`
+	ReportedAt    *time.Time `json:"reported_at,omitempty"`
+	Status        string     `json:"status"`
 }
 
 // ProcessingActivity describes a data processing activity for NDPR Article 30.
@@ -182,12 +182,12 @@ func (s *Service) Dashboard(ctx context.Context) (map[string]interface{}, error)
 	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ndpr_breaches`).Scan(&totalBreaches)
 
 	return map[string]interface{}{
-		"consent_total":    totalConsents,
-		"consent_active":   activeConsents,
-		"dsr_total":        totalDSR,
-		"dsr_pending":      pendingDSR,
-		"breaches_total":   totalBreaches,
+		"consent_total":         totalConsents,
+		"consent_active":        activeConsents,
+		"dsr_total":             totalDSR,
+		"dsr_pending":           pendingDSR,
+		"breaches_total":        totalBreaches,
 		"processing_activities": len(s.GetProcessingRegister()),
-		"compliance_score": 85,
+		"compliance_score":      85,
 	}, nil
 }

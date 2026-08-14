@@ -83,11 +83,11 @@ func handleCampaignBudget(w http.ResponseWriter, r *http.Request) {
 
 	spent, cap, remaining, exceeded := dispatcher.CheckBudget(r.Context(), campaignID)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"campaign_id":   campaignID,
-		"spent_kobo":    spent,
-		"cap_kobo":      cap,
+		"campaign_id":    campaignID,
+		"spent_kobo":     spent,
+		"cap_kobo":       cap,
 		"remaining_kobo": remaining,
-		"exceeded":      exceeded,
+		"exceeded":       exceeded,
 	})
 }
 
@@ -247,12 +247,12 @@ func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 func handleCreateChallenge(w http.ResponseWriter, r *http.Request) {
 	partyID := getPartyID(r)
 	var req struct {
-		Name          string `json:"name"`
-		TargetMetric  string `json:"target_metric"` // doors_knocked, calls_made, rides_given
-		TargetValue   int    `json:"target_value"`
-		Reward        string `json:"reward_description"`
-		StartsAt      string `json:"starts_at"`
-		EndsAt        string `json:"ends_at"`
+		Name         string `json:"name"`
+		TargetMetric string `json:"target_metric"` // doors_knocked, calls_made, rides_given
+		TargetValue  int    `json:"target_value"`
+		Reward       string `json:"reward_description"`
+		StartsAt     string `json:"starts_at"`
+		EndsAt       string `json:"ends_at"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
@@ -411,7 +411,7 @@ func handleSendWhatsAppFlow(w http.ResponseWriter, r *http.Request) {
 	_ = partyID
 	var req struct {
 		Phone     string `json:"phone"`
-		FlowID   string `json:"flow_id"`
+		FlowID    string `json:"flow_id"`
 		ContactID string `json:"contact_id"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
@@ -706,11 +706,11 @@ func handleWarRoomSummary(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"timestamp": time.Now().Format(time.RFC3339),
 		"ops": map[string]interface{}{
-			"active_campaigns":    activeCampaigns,
-			"active_volunteers":   activeVolunteers,
-			"pending_rides":       pendingRides,
+			"active_campaigns":     activeCampaigns,
+			"active_volunteers":    activeVolunteers,
+			"pending_rides":        pendingRides,
 			"dispatches_last_hour": dispatchesLastHour,
-			"pledges_today":       pledgesToday,
+			"pledges_today":        pledgesToday,
 		},
 		"alerts":   alerts,
 		"coverage": coverage,
@@ -940,7 +940,7 @@ func handlePlaceVoiceCall(w http.ResponseWriter, r *http.Request) {
 func handleCreateFieldReport(w http.ResponseWriter, r *http.Request) {
 	partyID := getPartyID(r)
 	var req struct {
-		IssueType   string  `json:"issue_type"`   // voter_intimidation, ballot_irregularity, access_blocked, other
+		IssueType   string  `json:"issue_type"` // voter_intimidation, ballot_irregularity, access_blocked, other
 		Description string  `json:"description"`
 		WardCode    string  `json:"ward_code"`
 		Latitude    float64 `json:"latitude"`

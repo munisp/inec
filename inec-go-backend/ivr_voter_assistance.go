@@ -50,11 +50,11 @@ type IVRAction struct {
 
 // IVRResponse is sent back to the telephony platform.
 type IVRResponse struct {
-	Action  string `json:"action"`  // say | gather | redirect | hangup
-	Text    string `json:"text"`
-	Language string `json:"language"`
-	MaxDigits int  `json:"max_digits,omitempty"`
-	Timeout  int  `json:"timeout,omitempty"`
+	Action    string `json:"action"` // say | gather | redirect | hangup
+	Text      string `json:"text"`
+	Language  string `json:"language"`
+	MaxDigits int    `json:"max_digits,omitempty"`
+	Timeout   int    `json:"timeout,omitempty"`
 }
 
 // IVRIncidentReport captures a voter-reported incident via voice.

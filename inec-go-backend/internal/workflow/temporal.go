@@ -16,10 +16,10 @@ import (
 
 // TaskQueue names for different workflow types.
 const (
-	TaskQueueResults    = "inec-results"
-	TaskQueueCollation  = "inec-collation"
-	TaskQueueBiometric  = "inec-biometric"
-	TaskQueueAudit      = "inec-audit"
+	TaskQueueResults   = "inec-results"
+	TaskQueueCollation = "inec-collation"
+	TaskQueueBiometric = "inec-biometric"
+	TaskQueueAudit     = "inec-audit"
 )
 
 // Config for Temporal connection.
@@ -115,17 +115,17 @@ func (s *Service) Close() {
 
 // ResultSubmissionInput contains the data for result processing.
 type ResultSubmissionInput struct {
-	ElectionID      int    `json:"election_id"`
-	PollingUnitCode string `json:"polling_unit_code"`
-	State           string `json:"state"`
-	LGA             string `json:"lga"`
-	Ward            string `json:"ward"`
-	TotalVotes      int    `json:"total_votes"`
-	RejectedVotes   int    `json:"rejected_votes"`
-	AccreditedVoters int   `json:"accredited_voters"`
-	SubmittedBy     int    `json:"submitted_by"`
-	DeviceID        string `json:"device_id"`
-	ResultHash      string `json:"result_hash"`
+	ElectionID       int    `json:"election_id"`
+	PollingUnitCode  string `json:"polling_unit_code"`
+	State            string `json:"state"`
+	LGA              string `json:"lga"`
+	Ward             string `json:"ward"`
+	TotalVotes       int    `json:"total_votes"`
+	RejectedVotes    int    `json:"rejected_votes"`
+	AccreditedVoters int    `json:"accredited_voters"`
+	SubmittedBy      int    `json:"submitted_by"`
+	DeviceID         string `json:"device_id"`
+	ResultHash       string `json:"result_hash"`
 }
 
 // ResultSubmissionWorkflow orchestrates the full result submission pipeline.
@@ -318,10 +318,10 @@ func (a *CollationActivities) PublishCollation(ctx context.Context, level string
 
 // BiometricInput for verification request.
 type BiometricInput struct {
-	VoterVIN  string `json:"voter_vin"`
-	DeviceID  string `json:"device_id"`
-	Modality  string `json:"modality"`
-	Template  []byte `json:"template"`
+	VoterVIN string `json:"voter_vin"`
+	DeviceID string `json:"device_id"`
+	Modality string `json:"modality"`
+	Template []byte `json:"template"`
 }
 
 // BiometricVerificationWorkflow handles biometric verification with retries.

@@ -182,4 +182,3 @@ func requireRole(r *http.Request, roles ...string) (jwt.MapClaims, error) {
 	}
 	return nil, fmt.Errorf("insufficient permissions")
 }
-

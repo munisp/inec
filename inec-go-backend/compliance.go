@@ -117,10 +117,10 @@ func registerComplianceRoutes(r *mux.Router) {
 
 func handleRecordConsent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SubjectID   string  `json:"subject_id"`
-		Purpose     string  `json:"purpose"`
-		LegalBasis  string  `json:"legal_basis"`
-		ExpiresAt   *string `json:"expires_at,omitempty"`
+		SubjectID  string  `json:"subject_id"`
+		Purpose    string  `json:"purpose"`
+		LegalBasis string  `json:"legal_basis"`
+		ExpiresAt  *string `json:"expires_at,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, 400)

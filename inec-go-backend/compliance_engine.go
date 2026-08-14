@@ -289,23 +289,23 @@ type ScreeningRequest struct {
 }
 
 type ScreeningResult struct {
-	ScreenID    string         `json:"screen_id"`
-	Status      string         `json:"status"`
-	RiskLevel   string         `json:"risk_level"`
-	Matches     []ScreenMatch  `json:"matches"`
-	TotalChecks int            `json:"total_checks"`
-	CheckedAt   time.Time      `json:"checked_at"`
-	Lists       []string       `json:"lists_checked"`
-	Score       float64        `json:"score"`
+	ScreenID    string        `json:"screen_id"`
+	Status      string        `json:"status"`
+	RiskLevel   string        `json:"risk_level"`
+	Matches     []ScreenMatch `json:"matches"`
+	TotalChecks int           `json:"total_checks"`
+	CheckedAt   time.Time     `json:"checked_at"`
+	Lists       []string      `json:"lists_checked"`
+	Score       float64       `json:"score"`
 }
 
 type ScreenMatch struct {
-	ListName   string  `json:"list_name"`
-	MatchedName string `json:"matched_name"`
-	MatchScore float64 `json:"match_score"`
-	Category   string  `json:"category"`
-	Details    string  `json:"details"`
-	ListedDate string  `json:"listed_date"`
+	ListName    string  `json:"list_name"`
+	MatchedName string  `json:"matched_name"`
+	MatchScore  float64 `json:"match_score"`
+	Category    string  `json:"category"`
+	Details     string  `json:"details"`
+	ListedDate  string  `json:"listed_date"`
 }
 
 func NewSanctionsEngine(database *sql.DB) *SanctionsEngine {
@@ -625,9 +625,9 @@ func handleComplianceDashboardEngine(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow(`SELECT COUNT(*) FROM sanctions_list`).Scan(&sanctionsEntries)
 
 	writeJSON(w, 200, M{
-		"screenings":       M{"total": totalScreenings, "high_risk": highRisk, "medium_risk": mediumRisk, "clear": clear},
+		"screenings":        M{"total": totalScreenings, "high_risk": highRisk, "medium_risk": mediumRisk, "clear": clear},
 		"nin_verifications": M{"total": ninVerifications, "verified": ninVerified},
-		"sanctions_lists":  M{"total_entries": sanctionsEntries},
+		"sanctions_lists":   M{"total_entries": sanctionsEntries},
 		"services": M{
 			"nimc":  M{"configured": nimcClient.apiKey != "", "url": nimcClient.baseURL},
 			"nibss": M{"configured": nibssClient.apiKey != "", "url": nibssClient.baseURL},
