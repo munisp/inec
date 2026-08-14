@@ -3,8 +3,10 @@ import { logger } from '@/lib/utils';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { api } from '@/lib/api';
+import { popupEl } from '@/lib/popup-dom';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
-import { generateStateBoundaryGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
+import { useResolvedElection } from '@/lib/gotv-session';
+import { generateStateMarkerGeoJSON, NIGERIA_STATE_COORDS, ZONE_COLORS } from '@/lib/nigeria-geo';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -33,6 +35,13 @@ type TileMode = 'street' | 'satellite';
 
 function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
 
+// R4-56: glyphs endpoint is configurable so production deployments can point
+// at their own hosted font service instead of the public demo tiles. The
+// default preserves prior behavior; set VITE_MAP_GLYPHS_URL to override
+// (see .env.example).
+const MAP_GLYPHS_URL: string = (import.meta as any).env.VITE_MAP_GLYPHS_URL
+  || 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+
 const STATUS_COLORS: Record<string, string> = {
   finalized: '#16a34a',
   validated: '#2563eb',
@@ -46,6 +55,7 @@ export default function MapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapContainerB = useRef<HTMLDivElement>(null);
   const mapRefB = useRef<maplibregl.Map | null>(null);
+  const { electionId: resolvedElectionId } = useResolvedElection();
   const [loading, setLoading] = useState(true);
   const [states, setStates] = useState<StateData[]>([]);
   const [pus, setPus] = useState<PUData[]>([]);
@@ -143,8 +153,10 @@ export default function MapPage() {
   }
 
   async function loadSpatialStats(stateCode?: string) {
+    // Election scope is resolved, never hardcoded.
+    if (!resolvedElectionId) return;
     try {
-      const data = await api.getGeoSpatialStats(1, stateCode);
+      const data = await api.getGeoSpatialStats(resolvedElectionId, stateCode);
       setSpatialStats(data);
     } catch (e) { logger.error(e); }
   }
@@ -351,19 +363,21 @@ export default function MapPage() {
       bounds.extend(lngLat);
       hasValidCoords = true;
 
+      // DOM-built popup (textContent only) — server data never becomes markup.
+      const popup = popupEl('div', '', 'font-size:12px;min-width:200px');
+      popup.appendChild(popupEl('div', off.staff_id, `font-weight:700;margin-bottom:6px;font-size:14px;color:${color}`));
+      const roleRow = popupEl('div', 'Role: ');
+      roleRow.appendChild(popupEl('b', off.role.replace(/_/g, ' ')));
+      popup.appendChild(roleRow);
+      popup.appendChild(popupEl('div', `Activity: ${off.activity}`));
+      popup.appendChild(popupEl('div', `Battery: ${off.battery_pct}%`));
+      popup.appendChild(popupEl('div', `PU: ${off.pu_code}`));
+      popup.appendChild(popupEl('div', `Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}`));
+      popup.appendChild(popupEl('div', off.updated_at, 'color:#888;font-size:10px;margin-top:4px'));
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat(lngLat)
-        .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
-          <div style="font-size:12px;min-width:200px">
-            <div style="font-weight:700;margin-bottom:6px;font-size:14px;color:${color}">${off.staff_id}</div>
-            <div>Role: <b>${off.role.replace(/_/g, ' ')}</b></div>
-            <div>Activity: ${off.activity}</div>
-            <div>Battery: ${off.battery_pct}%</div>
-            <div>PU: ${off.pu_code}</div>
-            <div>Coords: ${off.latitude.toFixed(4)}, ${off.longitude.toFixed(4)}</div>
-            <div style="color:#888;font-size:10px;margin-top:4px">${off.updated_at}</div>
-          </div>
-        `))
+        .setPopup(new maplibregl.Popup({ offset: 25 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       officialMarkers.current.push(marker);
     });
@@ -419,18 +433,22 @@ export default function MapPage() {
       bounds.extend(lngLat);
       hasValidCoords = true;
 
+      // DOM-built popup (textContent only) — server data never becomes markup.
+      const popup = popupEl('div', '', 'font-size:12px;min-width:200px');
+      popup.appendChild(popupEl('div', cr.pu_name || cr.pu_code, 'font-weight:600;margin-bottom:4px'));
+      const headRow = popupEl('div', 'Head Count: ');
+      headRow.appendChild(popupEl('b', String(cr.head_count)));
+      popup.appendChild(headRow);
+      const densityRow = popupEl('div', 'Density: ');
+      densityRow.appendChild(popupEl('b', cr.density_level.toUpperCase(), `color:${color}`));
+      popup.appendChild(densityRow);
+      popup.appendChild(popupEl('div', `Queue Length: ${cr.queue_length} people`));
+      popup.appendChild(popupEl('div', `Wait Time: ${cr.wait_time_min} min`));
+      popup.appendChild(popupEl('div', `Coords: ${cr.latitude.toFixed(4)}, ${cr.longitude.toFixed(4)}`));
+
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat(lngLat)
-        .setPopup(new maplibregl.Popup({ offset: 20 }).setHTML(`
-          <div style="font-size:12px;min-width:200px">
-            <div style="font-weight:600;margin-bottom:4px">${cr.pu_name || cr.pu_code}</div>
-            <div>Head Count: <b>${cr.head_count}</b></div>
-            <div>Density: <b style="color:${color}">${cr.density_level.toUpperCase()}</b></div>
-            <div>Queue Length: ${cr.queue_length} people</div>
-            <div>Wait Time: ${cr.wait_time_min} min</div>
-            <div>Coords: ${cr.latitude.toFixed(4)}, ${cr.longitude.toFixed(4)}</div>
-          </div>
-        `))
+        .setPopup(new maplibregl.Popup({ offset: 20 }).setDOMContent(popup))
         .addTo(mapRef.current!);
       crowdMarkers.current.push(marker);
     });
@@ -470,8 +488,19 @@ export default function MapPage() {
 
       const marker = new maplibregl.Marker({ element: el })
         .setLngLat([lm.longitude, lm.latitude])
-        .setPopup(new maplibregl.Popup({ offset: 15 }).setHTML(
-          `<div style="font-size:12px"><strong>${lm.name}</strong><br/><span style="color:#6b7280">${lm.category.replace(/_/g, ' ')}</span>${lm.address ? `<br/><span style="font-size:10px">${lm.address}</span>` : ''}</div>`
+        .setPopup(new maplibregl.Popup({ offset: 15 }).setDOMContent(
+          (() => {
+            // DOM-built popup (textContent only) — server data never becomes markup.
+            const popup = popupEl('div', '', 'font-size:12px');
+            popup.appendChild(popupEl('strong', lm.name));
+            popup.appendChild(document.createElement('br'));
+            popup.appendChild(popupEl('span', lm.category.replace(/_/g, ' '), 'color:#6b7280'));
+            if (lm.address) {
+              popup.appendChild(document.createElement('br'));
+              popup.appendChild(popupEl('span', lm.address, 'font-size:10px'));
+            }
+            return popup;
+          })()
         ))
         .addTo(mapRef.current!);
       landmarkMarkers.current.push(marker);
@@ -498,7 +527,7 @@ export default function MapPage() {
         const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(mapRef.current!);
         geofenceMarkers.current.push(marker);
       });
-    }).catch(err => console.error("API error:", err));
+    }).catch(err => logger.error("API error:", err));
   }, [showGeofences, selectedState?.code]);
 
   // #20 Incident hotspot rendering
@@ -522,7 +551,7 @@ export default function MapPage() {
         const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(mapRef.current!);
         incidentMarkers.current.push(marker);
       });
-    }).catch(err => console.error("API error:", err));
+    }).catch(err => logger.error("API error:", err));
   }, [showIncidents]);
 
   // #15 Weather overlay rendering
@@ -568,7 +597,7 @@ export default function MapPage() {
           paint: { 'line-color': '#6b7280', 'line-width': 0.5 }
         });
       }
-    }).catch(err => console.error("API error:", err));
+    }).catch(err => logger.error("API error:", err));
   }, [showH3Grid]);
 
   // #26 Mesh network visualization (as GeoJSON lines between connected officials)
@@ -588,7 +617,7 @@ export default function MapPage() {
         paint: { 'line-color': '#8b5cf6', 'line-width': 1.5, 'line-opacity': 0.6, 'line-dasharray': [2, 2] }
       });
       meshLayerAdded.current = true;
-    }).catch(err => console.error("API error:", err));
+    }).catch(err => logger.error("API error:", err));
   }, [showMesh]);
 
   // #13 Movement trails (tracking history as polylines)
@@ -605,7 +634,7 @@ export default function MapPage() {
         id: 'trails-line', type: 'line', source: 'trails-data',
         paint: { 'line-color': '#f59e0b', 'line-width': 2, 'line-opacity': 0.7 }
       });
-    }).catch(err => console.error("API error:", err));
+    }).catch(err => logger.error("API error:", err));
   }, [showTrails, showTracking]);
 
   // #17 Time-slider: filter PU markers by submission time
@@ -735,7 +764,7 @@ export default function MapPage() {
       container: mapContainer.current,
       style: {
         version: 8,
-        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        glyphs: MAP_GLYPHS_URL,
         sources: { 'base-tiles': getTileSource(tileMode) },
         layers: [{
           id: 'base-tiles',
@@ -758,26 +787,21 @@ export default function MapPage() {
     map.on('load', () => {
       const t1 = performance.now();
       sendMetric('map_load', { duration_ms: Math.round(t1 - t0), tileMode, compareMode, state: selectedState?.code || null });
-      const stateGeoJSON = generateStateBoundaryGeoJSON(states);
+      // States are rendered as center-point markers: official boundary
+      // geometry is not bundled in this build, so no polygon layer is drawn.
+      const stateGeoJSON = generateStateMarkerGeoJSON(states);
       map.addSource('states', { type: 'geojson', data: stateGeoJSON as GeoJSON.GeoJSON });
 
       map.addLayer({
         id: 'state-fills',
-        type: 'fill',
+        type: 'circle',
         source: 'states',
         paint: {
-          'fill-color': getStateFillExpression(mapMode),
-          'fill-opacity': 0.6,
-        },
-      });
-
-      map.addLayer({
-        id: 'state-borders',
-        type: 'line',
-        source: 'states',
-        paint: {
-          'line-color': '#374151',
-          'line-width': 1.5,
+          'circle-color': getStateFillExpression(mapMode),
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 8, 7, 14, 10, 20],
+          'circle-opacity': 0.75,
+          'circle-stroke-color': '#374151',
+          'circle-stroke-width': 1.5,
         },
       });
 
@@ -858,38 +882,66 @@ export default function MapPage() {
           if (puData) setSelectedPU(puData);
           const statusColor = STATUS_COLORS[props.status] || '#9ca3af';
           const statusLabel = props.status === 'no_result' ? 'No Result' : (props.status || 'N/A').charAt(0).toUpperCase() + (props.status || '').slice(1);
-          const partyBars = puData?.party_scores?.slice(0, 5).map(p =>
-            '<div style="display:flex;align-items:center;gap:6px;margin:2px 0">' +
-              '<div style="width:10px;height:10px;border-radius:50%;background:' + p.color + ';flex-shrink:0"></div>' +
-              '<span style="flex:1">' + p.abbreviation + '</span>' +
-              '<span style="font-weight:600">' + formatNumber(p.votes) + '</span></div>'
-          ).join('') || '<div style="color:#999">No results submitted</div>';
           const svUrl = 'https://kartaview.org/map/@' + coords[1] + ',' + coords[0] + ',17z';
           const dirUrl = 'https://www.openstreetmap.org/#map=18/' + coords[1] + '/' + coords[0];
+          // DOM-built popup (textContent only) — server data never becomes markup.
+          const popup = popupEl('div', '', 'font-family:system-ui;font-size:13px;max-height:350px;overflow-y:auto');
+          const header = popupEl('div', '', 'display:flex;align-items:center;gap:6px;margin-bottom:6px');
+          header.appendChild(popupEl('div', '', `width:10px;height:10px;border-radius:50%;background:${statusColor};flex-shrink:0`));
+          header.appendChild(popupEl('span', String(props.name ?? ''), 'font-weight:700;font-size:14px'));
+          popup.appendChild(header);
+          const meta = popupEl('div', '', 'color:#666;font-size:11px;margin-bottom:8px;line-height:1.4');
+          meta.appendChild(popupEl('div', String(props.code ?? '')));
+          meta.appendChild(popupEl('div', `${props.ward ?? ''} • ${props.lga ?? ''} • ${props.state ?? ''}`));
+          popup.appendChild(meta);
+          const statsBox = popupEl('div', '', 'background:#f9fafb;border-radius:6px;padding:8px;margin-bottom:8px');
+          const statsGrid = popupEl('div', '', 'display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px');
+          const statRow = (label: string, value: string, valueCss = 'font-weight:600') => {
+            statsGrid.appendChild(popupEl('span', label, 'color:#888'));
+            statsGrid.appendChild(popupEl('span', value, valueCss));
+          };
+          statRow('Status:', statusLabel, `font-weight:600;color:${statusColor}`);
+          statRow('Registered:', formatNumber(Number(props.registered) || 0));
+          statRow('Valid Votes:', formatNumber(Number(props.votes) || 0));
+          statRow('Total Cast:', formatNumber(Number(props.cast) || 0), '');
+          statRow('TigerBeetle:', String(props.tb ?? ''), '');
+          statRow('Hyperledger:', String(props.hl ?? ''), '');
+          statsBox.appendChild(statsGrid);
+          popup.appendChild(statsBox);
+          const partySection = popupEl('div', '', 'margin-bottom:8px');
+          partySection.appendChild(popupEl('div', 'Party Results', 'font-weight:600;font-size:12px;margin-bottom:4px'));
+          const scores = puData?.party_scores?.slice(0, 5) || [];
+          if (scores.length === 0) {
+            partySection.appendChild(popupEl('div', 'No results submitted', 'color:#999'));
+          } else {
+            scores.forEach(p => {
+              const row = popupEl('div', '', 'display:flex;align-items:center;gap:6px;margin:2px 0');
+              row.appendChild(popupEl('div', '', `width:10px;height:10px;border-radius:50%;background:${p.color};flex-shrink:0`));
+              row.appendChild(popupEl('span', p.abbreviation, 'flex:1'));
+              row.appendChild(popupEl('span', formatNumber(p.votes), 'font-weight:600'));
+              partySection.appendChild(row);
+            });
+          }
+          popup.appendChild(partySection);
+          const links = popupEl('div', '', 'display:flex;gap:6px;border-top:1px solid #eee;padding-top:8px');
+          const linkCss = 'flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 8px;color:white;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600';
+          const mkLink = (href: string, label: string, bg: string) => {
+            const a = document.createElement('a');
+            a.href = href; // built from numeric map coords only — never server strings
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.style.cssText = `${linkCss};background:${bg}`;
+            a.textContent = label;
+            return a;
+          };
+          links.appendChild(mkLink(svUrl, 'KartaView', '#16a34a'));
+          links.appendChild(mkLink(dirUrl, 'Open in OSM', '#2563eb'));
+          popup.appendChild(links);
+          popup.appendChild(popupEl('div', `${coords[1].toFixed(6)}, ${coords[0].toFixed(6)}`, 'font-size:10px;color:#aaa;margin-top:6px;text-align:center'));
           new maplibregl.Popup({ closeButton: true, maxWidth: '320px', className: 'pu-popup' })
             .setLngLat(coords)
-            .setHTML(
-              '<div style="font-family:system-ui;font-size:13px;max-height:350px;overflow-y:auto">' +
-              '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
-              '<div style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';flex-shrink:0"></div>' +
-              '<span style="font-weight:700;font-size:14px">' + props.name + '</span></div>' +
-              '<div style="color:#666;font-size:11px;margin-bottom:8px;line-height:1.4">' +
-              '<div>' + props.code + '</div>' +
-              '<div>' + props.ward + ' &bull; ' + props.lga + ' &bull; ' + props.state + '</div></div>' +
-              '<div style="background:#f9fafb;border-radius:6px;padding:8px;margin-bottom:8px">' +
-              '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px">' +
-              '<span style="color:#888">Status:</span><span style="font-weight:600;color:' + statusColor + '">' + statusLabel + '</span>' +
-              '<span style="color:#888">Registered:</span><span style="font-weight:600">' + formatNumber(Number(props.registered) || 0) + '</span>' +
-              '<span style="color:#888">Valid Votes:</span><span style="font-weight:600">' + formatNumber(Number(props.votes) || 0) + '</span>' +
-              '<span style="color:#888">Total Cast:</span><span>' + formatNumber(Number(props.cast) || 0) + '</span>' +
-              '<span style="color:#888">TigerBeetle:</span><span>' + props.tb + '</span>' +
-              '<span style="color:#888">Hyperledger:</span><span>' + props.hl + '</span></div></div>' +
-              '<div style="margin-bottom:8px"><div style="font-weight:600;font-size:12px;margin-bottom:4px">Party Results</div>' + partyBars + '</div>' +
-              '<div style="display:flex;gap:6px;border-top:1px solid #eee;padding-top:8px">' +
-              '<a href="' + svUrl + '" target="_blank" rel="noopener" style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 8px;background:#16a34a;color:white;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600">KartaView</a>' +
-              '<a href="' + dirUrl + '" target="_blank" rel="noopener" style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 8px;background:#2563eb;color:white;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600">Open in OSM</a></div>' +
-              '<div style="font-size:10px;color:#aaa;margin-top:6px;text-align:center">' + coords[1].toFixed(6) + ', ' + coords[0].toFixed(6) + '</div></div>'
-            ).addTo(map);
+            .setDOMContent(popup)
+            .addTo(map);
         });
 
         map.on('mouseenter', 'pu-markers', () => { map.getCanvas().style.cursor = 'pointer'; });
@@ -915,10 +967,19 @@ export default function MapPage() {
         map.getCanvas().style.cursor = 'pointer';
         if (!e.features || e.features.length === 0) return;
         const props = e.features[0].properties;
-        const html = `<b>${props.name}</b><br/>${props.geo_zone}<br/>Reported: ${props.reported_pus}/${props.total_pus} (${props.completion}%)<br/>Leading: <b style="color:${props.leading_color}">${props.leading_party}</b>`;
+        // DOM-built popup (textContent only) — server data never becomes markup.
+        const hoverPopup = popupEl('div', '', 'font-family:system-ui;font-size:12px');
+        hoverPopup.appendChild(popupEl('b', String(props.name ?? '')));
+        hoverPopup.appendChild(document.createElement('br'));
+        hoverPopup.appendChild(document.createTextNode(String(props.geo_zone ?? '')));
+        hoverPopup.appendChild(document.createElement('br'));
+        hoverPopup.appendChild(document.createTextNode(`Reported: ${props.reported_pus}/${props.total_pus} (${props.completion}%)`));
+        hoverPopup.appendChild(document.createElement('br'));
+        hoverPopup.appendChild(document.createTextNode('Leading: '));
+        hoverPopup.appendChild(popupEl('b', String(props.leading_party ?? ''), `color:${props.leading_color}`));
         new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'state-hover-popup' })
           .setLngLat(e.lngLat)
-          .setHTML(`<div style="font-family:system-ui;font-size:12px">${html}</div>`)
+          .setDOMContent(hoverPopup)
           .addTo(map);
       });
 
@@ -958,7 +1019,7 @@ export default function MapPage() {
       container: mapContainerB.current,
       style: {
         version: 8,
-        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        glyphs: MAP_GLYPHS_URL,
         sources: { 'base-tiles-b': getTileSource(tileMode) },
         layers: [{ id: 'base-tiles-b', type: 'raster', source: 'base-tiles-b', minzoom: 0, maxzoom: 19 }],
       },
@@ -972,11 +1033,17 @@ export default function MapPage() {
     mapB.addControl(new maplibregl.FullscreenControl(), 'top-right');
 
     mapB.on('load', () => {
-      const stateGeoJSON = generateStateBoundaryGeoJSON(states);
+      // Center-point markers only: no fabricated boundary polygons.
+      const stateGeoJSON = generateStateMarkerGeoJSON(states);
       mapB.addSource('states-b', { type: 'geojson', data: stateGeoJSON as GeoJSON.GeoJSON });
 
-      mapB.addLayer({ id: 'state-fills-b', type: 'fill', source: 'states-b', paint: { 'fill-color': getStateFillExpression(mapMode), 'fill-opacity': 0.6 } });
-      mapB.addLayer({ id: 'state-borders-b', type: 'line', source: 'states-b', paint: { 'line-color': '#374151', 'line-width': 1.5 } });
+      mapB.addLayer({ id: 'state-fills-b', type: 'circle', source: 'states-b', paint: {
+        'circle-color': getStateFillExpression(mapMode),
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 8, 7, 14, 10, 20],
+        'circle-opacity': 0.75,
+        'circle-stroke-color': '#374151',
+        'circle-stroke-width': 1.5,
+      } });
       mapB.addLayer({ id: 'state-labels-b', type: 'symbol', source: 'states-b', layout: { 'text-field': ['get', 'code'], 'text-size': 11, 'text-font': ['Open Sans Regular'], 'text-allow-overlap': true }, paint: { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
       if (showPUs) {
@@ -1046,7 +1113,7 @@ export default function MapPage() {
     fetch(url, { signal: controller.signal, headers: { 'Accept-Language': 'en' } })
       .then(r => r.json())
       .then((data) => setPlaces(Array.isArray(data) ? data.map((d: any) => ({ name: d.display_name, lat: parseFloat(d.lat), lon: parseFloat(d.lon) })) : []))
-      .catch(err => console.error("API error:", err));
+      .catch(err => logger.error("API error:", err));
     return () => controller.abort();
   }, [searchQuery]);
 
@@ -1172,14 +1239,16 @@ export default function MapPage() {
           <Button variant={selecting ? 'default' : 'outline'} size="sm" onClick={() => { setSelecting(v => !v); setSelectionBox(null); }} className="gap-1 h-8" aria-label="Toggle box select">
             Box Select
           </Button>
-          <Button variant="outline" size="sm" onClick={() => {
-            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.csv?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
+          <Button variant="outline" size="sm" disabled={!resolvedElectionId} onClick={() => {
+            if (!resolvedElectionId) return;
+            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.csv?election_id=${resolvedElectionId}${selectedState ? `&state_code=${selectedState.code}` : ''}`;
             window.open(base, '_blank');
           }} className="gap-1 h-8" aria-label="Export polling units CSV">
             Export CSV
           </Button>
-          <Button variant="outline" size="sm" onClick={() => {
-            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.geojson?election_id=1${selectedState ? `&state_code=${selectedState.code}` : ''}`;
+          <Button variant="outline" size="sm" disabled={!resolvedElectionId} onClick={() => {
+            if (!resolvedElectionId) return;
+            const base = `${(import.meta as any).env.VITE_API_URL || 'http://localhost:8000'}/geo/reports/polling-units.geojson?election_id=${resolvedElectionId}${selectedState ? `&state_code=${selectedState.code}` : ''}`;
             window.open(base, '_blank');
           }} className="gap-1 h-8" aria-label="Export polling units GeoJSON">
             Export GeoJSON
@@ -1238,6 +1307,9 @@ export default function MapPage() {
                   )}
                 </div>
               )}
+              <div className="absolute bottom-2 left-2 bg-white/90 dark:bg-zinc-800/90 rounded px-2 py-1 text-xs text-zinc-600 dark:text-zinc-300 shadow max-w-xs">
+                State boundary geometry not available in this build — states are shown as center-point markers.
+              </div>
               <div className="absolute bottom-8 right-2 flex flex-col gap-1">
                 {Object.entries(STATUS_COLORS).map(([status, color]) => (
                   <div key={status} className="flex items-center gap-1.5 bg-white/90 rounded px-2 py-0.5 text-xs shadow">
@@ -1352,7 +1424,7 @@ export default function MapPage() {
                     {selectedPU.party_scores.map(p => (
                       <div key={p.party_code} className="flex items-center justify-between text-xs py-0.5">
                         <div className="flex items-center gap-1.5">
-                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color }} />
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
                           <span>{p.abbreviation}</span>
                         </div>
                         <span className="font-medium">{formatNumber(p.votes)}</span>
@@ -1403,7 +1475,7 @@ export default function MapPage() {
                   {selectedState.party_scores.slice(0, 6).map(p => (
                     <div key={p.party_code} className="flex items-center justify-between text-xs py-0.5">
                       <div className="flex items-center gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.color }} />
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
                         <span>{p.abbreviation}</span>
                       </div>
                       <span className="font-medium">{formatNumber(p.total_votes)}</span>
@@ -1573,7 +1645,7 @@ export default function MapPage() {
               <div className="flex items-center justify-between">
                 <span className="text-xs flex items-center gap-1"><Shield className="w-3 h-3" /> Geofences</span>
                 <Button size="sm" variant={showGeofences ? 'default' : 'outline'} className="h-6 text-xs px-2"
-                  onClick={() => { setShowGeofences(!showGeofences); if (!showGeofences) { api.seedGeofenceZones().catch(err => console.error("API error:", err)); } }}>
+                  onClick={() => setShowGeofences(!showGeofences)}>
                   {showGeofences ? 'Hide' : 'Show'}
                 </Button>
               </div>
@@ -1647,7 +1719,7 @@ export default function MapPage() {
                 <Button size="sm" variant="outline" className="h-6 text-xs px-2"
                   onClick={() => {
                     setTileMode(tileMode === 'satellite' ? 'street' : 'satellite');
-                  }}>
+                    }}>
                   {tileMode === 'satellite' ? 'Street' : 'Satellite'}
                 </Button>
               </div>
