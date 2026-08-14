@@ -299,11 +299,15 @@ fn generate_merkle_proof(levels: &[Vec<String>], index: usize) -> Vec<MerkleProo
     let mut idx = index;
 
     for level in levels.iter().take(levels.len() - 1) {
-        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+        let sibling_idx = if idx.is_multiple_of(2) {
+            idx + 1
+        } else {
+            idx - 1
+        };
         if sibling_idx < level.len() {
             proof.push(MerkleProofStep {
                 hash: level[sibling_idx].clone(),
-                position: if idx % 2 == 0 {
+                position: if idx.is_multiple_of(2) {
                     "right".to_string()
                 } else {
                     "left".to_string()

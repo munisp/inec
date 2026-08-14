@@ -19,7 +19,7 @@ use axum::{
 use geo::HaversineDistance;
 use geo::Point;
 use ordered_float::OrderedFloat;
-use rstar::{RTree, RTreeObject, AABB};
+use rstar::RTree;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -706,7 +706,7 @@ async fn register_volunteers(
         .collect();
     {
         let mut vols = state_write!(state.volunteers);
-        let entry = vols.entry(req.party_id).or_insert_with(Vec::new);
+        let entry = vols.entry(req.party_id).or_default();
         for v in req.volunteers {
             // Upsert by volunteer_id
             if let Some(existing) = entry.iter_mut().find(|e| e.id == v.id) {
@@ -1494,7 +1494,7 @@ async fn main() {
             // Startup-only, no concurrent holders: recover a poisoned lock.
             let mut vol_map = state.volunteers.write().unwrap_or_else(|e| e.into_inner());
             for pv in &vols {
-                let entry = vol_map.entry(pv.party_id).or_insert_with(Vec::new);
+                let entry = vol_map.entry(pv.party_id).or_default();
                 entry.push(Volunteer {
                     id: pv.volunteer_id.clone(),
                     party_id: pv.party_id,

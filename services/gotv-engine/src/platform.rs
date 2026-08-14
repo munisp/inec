@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -241,7 +241,7 @@ impl SlidingWindowLimiter {
         // a panic is a partially-updated window, which is benign for a
         // best-effort rate limiter.
         let mut windows = self.windows.write().unwrap_or_else(|e| e.into_inner());
-        let entry = windows.entry(key.to_string()).or_insert_with(Vec::new);
+        let entry = windows.entry(key.to_string()).or_default();
 
         // Remove expired entries
         entry.retain(|&t| t > cutoff);

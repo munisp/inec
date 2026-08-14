@@ -222,7 +222,7 @@ pub fn partition_ward_territories(
         }
         assignments
             .entry(nearest_idx)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((clat, clng));
     }
 
@@ -303,7 +303,7 @@ pub fn predict_ward_turnout(
         factors.push("poor_weather".to_string());
     }
 
-    predicted = predicted.min(95.0).max(5.0);
+    predicted = predicted.clamp(5.0, 95.0);
 
     let risk_level = if predicted < 40.0 {
         "high".to_string()
