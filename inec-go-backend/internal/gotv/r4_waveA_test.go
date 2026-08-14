@@ -14,22 +14,88 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
-// r4TestDB returns a scratch PostgreSQL handle or skips. Set R4_TEST_DB to a
-// lib/pq DSN (e.g. "host=/path dbname=wavea user=postgres sslmode=disable").
+// r4ScratchDBName is this suite's dedicated scratch database. The R4 suites
+// in the monolith root, internal/auth and internal/gotv must NOT share one
+// scratch database: their hand-rolled schemas are mutually incompatible
+// (this suite creates parties.is_active BOOLEAN while the canonical monolith
+// schema uses INTEGER), which made `go test ./...` order-dependent.
+const r4ScratchDBName = "r4_wavea_gotv"
+
+var (
+	r4ScratchOnce sync.Once
+	r4ScratchDSN  string
+	r4ScratchErr  error
+)
+
+// r4WithDBName retargets a lib/pq DSN (URL or keyword/value form) at a
+// different database name.
+func r4WithDBName(dsn, name string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", fmt.Errorf("parse DSN URL: %w", err)
+		}
+		u.Path = "/" + name
+		return u.String(), nil
+	}
+	fields := strings.Fields(dsn)
+	replaced := false
+	for i, f := range fields {
+		if strings.HasPrefix(f, "dbname=") {
+			fields[i] = "dbname=" + name
+			replaced = true
+		}
+	}
+	if !replaced {
+		fields = append(fields, "dbname="+name)
+	}
+	return strings.Join(fields, " "), nil
+}
+
+// r4TestDB returns a handle to this suite's own scratch PostgreSQL database
+// or skips. Set R4_TEST_DB to a lib/pq DSN used as the admin/server
+// connection (e.g. "host=/path dbname=wavea user=postgres sslmode=disable");
+// the scratch database (r4ScratchDBName) is provisioned underneath it.
 func r4TestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("R4_TEST_DB")
 	if dsn == "" {
 		t.Skip("R4_TEST_DB not set — skipping PG-backed regression test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	// Provision a fresh per-suite scratch database once per test process.
+	r4ScratchOnce.Do(func() {
+		admin, err := sql.Open("postgres", dsn)
+		if err != nil {
+			r4ScratchErr = fmt.Errorf("open admin: %w", err)
+			return
+		}
+		defer admin.Close()
+		if _, err := admin.Exec(`DROP DATABASE IF EXISTS ` + r4ScratchDBName + ` WITH (FORCE)`); err != nil {
+			r4ScratchErr = fmt.Errorf("drop scratch db: %w", err)
+			return
+		}
+		if _, err := admin.Exec(`CREATE DATABASE ` + r4ScratchDBName); err != nil {
+			r4ScratchErr = fmt.Errorf("create scratch db: %w", err)
+			return
+		}
+		if r4ScratchDSN, r4ScratchErr = r4WithDBName(dsn, r4ScratchDBName); r4ScratchErr != nil {
+			return
+		}
+	})
+	if r4ScratchErr != nil {
+		t.Fatalf("provision scratch db: %v", r4ScratchErr)
+	}
+	db, err := sql.Open("postgres", r4ScratchDSN)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -269,7 +335,7 @@ func TestR443_ValidateWebhookURL(t *testing.T) {
 		{"http://203.0.113.10/hook", true},                // plain http in prod
 		{"ftp://203.0.113.10/hook", true},                 // bad scheme
 		{"not-a-url", true},
-		{"https://203.0.113.10/hook", false},              // public https IP, no DNS needed
+		{"https://203.0.113.10/hook", false}, // public https IP, no DNS needed
 	}
 	for _, c := range cases {
 		err := ValidateWebhookURL(c.url)
