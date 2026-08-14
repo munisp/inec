@@ -157,7 +157,10 @@ services:
   fluvio-sc:
     # healthcheck: omitted — fluvio SC exposes no HTTP health endpoint; a CLI probe requires bootstrapped cluster metadata.
     command: run sc --local /fluvio/metadata
-    image: infinyon/fluvio:latest
+    # R4-39d: pinned (was :latest). Tag = current stable per fluvio-community
+    # releases (0.18.1, 2025-06-30). Bump deliberately; consider digest pinning
+    # (see NOTE in docs/SUPPLY_CHAIN_PINS.md).
+    image: infinyon/fluvio:0.18.1
     networks:
     - inec-network
     ports:
@@ -640,7 +643,10 @@ services:
     mem_limit: 512M
     cpus: 0.5
     command: serve
-    image: ghcr.io/permify/permify:latest
+    # R4-39d: pinned (was :latest). Tag = latest release v1.7.2
+    # (ghcr.io/permify/permify, published 2026-07; multi-arch digest
+    # sha256:99edbbcf79faa5243bb6d4f6d72b1e34548143df08a089ba3c995c83ffa0a8b4).
+    image: ghcr.io/permify/permify:v1.7.2
     networks:
     - inec-network
     ports:

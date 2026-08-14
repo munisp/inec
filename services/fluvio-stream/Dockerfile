@@ -1,5 +1,8 @@
 FROM rust:1.89-slim-trixie AS builder
 
+# R4-39d: distro-managed pins — package versions bounded by the pinned base-image tag;
+# security-sensitive packages (ca-certificates/openssl/libssl) listed explicitly to receive
+# distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates g++ perl make \
     && rm -rf /var/lib/apt/lists/*
@@ -16,6 +19,9 @@ COPY src ./src
 RUN cargo build --release
 
 FROM debian:trixie-slim
+# R4-39d: distro-managed pins — package versions bounded by the pinned base-image tag;
+# security-sensitive packages (ca-certificates/openssl/libssl) listed explicitly to receive
+# distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/*

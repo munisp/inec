@@ -3,6 +3,9 @@
 FROM rust:1.88-slim-trixie AS builder
 WORKDIR /workspace
 
+# R4-39d: distro-managed pins — package versions bounded by the pinned base-image tag;
+# security-sensitive packages (ca-certificates/openssl/libssl) listed explicitly to receive
+# distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -20,6 +23,9 @@ RUN cargo build --release
 # resulting executable therefore needs only the standard C++ runtime at launch.
 
 FROM debian:trixie-slim AS runtime
+# R4-39d: distro-managed pins — package versions bounded by the pinned base-image tag;
+# security-sensitive packages (ca-certificates/openssl/libssl) listed explicitly to receive
+# distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 curl \
     && rm -rf /var/lib/apt/lists/*

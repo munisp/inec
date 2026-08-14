@@ -15,6 +15,9 @@ RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 
+# R4-39d: distro-managed pins — package versions are bounded by the pinned
+# base-image tag; security-sensitive packages (ca-certificates/openssl/libssl) are
+# listed explicitly so they receive distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl libssl3 \
     && rm -rf /var/lib/apt/lists/*

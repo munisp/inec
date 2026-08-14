@@ -3,6 +3,9 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # System dependencies for OpenCV + PaddleOCR
+# R4-39d: distro-managed pins — package versions are bounded by the pinned
+# base-image tag; security-sensitive packages (ca-certificates/openssl/libssl) are
+# listed explicitly so they receive distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx libglib2.0-0 libsm6 libxrender1 libxext6 \
     && rm -rf /var/lib/apt/lists/*

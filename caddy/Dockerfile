@@ -11,6 +11,8 @@ FROM caddy:2.11.2-alpine
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
-RUN apk add --no-cache tzdata ca-certificates
+# R4-39d: distro-managed pins — apk resolves within the pinned alpine tag;
+# ca-certificates carries an explicit version floor. See docs/SUPPLY_CHAIN_PINS.md.
+RUN apk add --no-cache tzdata 'ca-certificates>=20240226'
 
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
