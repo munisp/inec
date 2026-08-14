@@ -6,13 +6,52 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
 )
+
+// r4ScratchDBName is this suite's dedicated scratch database. The R4 suites
+// in the monolith root, internal/auth and internal/gotv must NOT share one
+// scratch database: their hand-rolled schemas are mutually incompatible
+// (users/parties DDL differences), which made `go test ./...` order-dependent.
+const r4ScratchDBName = "r4_wavea_auth"
+
+var (
+	r4ScratchOnce sync.Once
+	r4ScratchDSN  string
+	r4ScratchErr  error
+)
+
+// r4WithDBName retargets a lib/pq DSN (URL or keyword/value form) at a
+// different database name.
+func r4WithDBName(dsn, name string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", fmt.Errorf("parse DSN URL: %w", err)
+		}
+		u.Path = "/" + name
+		return u.String(), nil
+	}
+	fields := strings.Fields(dsn)
+	replaced := false
+	for i, f := range fields {
+		if strings.HasPrefix(f, "dbname=") {
+			fields[i] = "dbname=" + name
+			replaced = true
+		}
+	}
+	if !replaced {
+		fields = append(fields, "dbname="+name)
+	}
+	return strings.Join(fields, " "), nil
+}
 
 func r4LockoutDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -20,7 +59,30 @@ func r4LockoutDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("R4_TEST_DB not set — skipping PG-backed lockout regression test")
 	}
-	db, err := sql.Open("postgres", dsn)
+	// Provision a fresh per-suite scratch database once per test process.
+	r4ScratchOnce.Do(func() {
+		admin, err := sql.Open("postgres", dsn)
+		if err != nil {
+			r4ScratchErr = fmt.Errorf("open admin: %w", err)
+			return
+		}
+		defer admin.Close()
+		if _, err := admin.Exec(`DROP DATABASE IF EXISTS ` + r4ScratchDBName + ` WITH (FORCE)`); err != nil {
+			r4ScratchErr = fmt.Errorf("drop scratch db: %w", err)
+			return
+		}
+		if _, err := admin.Exec(`CREATE DATABASE ` + r4ScratchDBName); err != nil {
+			r4ScratchErr = fmt.Errorf("create scratch db: %w", err)
+			return
+		}
+		if r4ScratchDSN, r4ScratchErr = r4WithDBName(dsn, r4ScratchDBName); r4ScratchErr != nil {
+			return
+		}
+	})
+	if r4ScratchErr != nil {
+		t.Fatalf("provision scratch db: %v", r4ScratchErr)
+	}
+	db, err := sql.Open("postgres", r4ScratchDSN)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

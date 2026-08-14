@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -19,17 +20,115 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// r4ScratchDBName is the dedicated scratch database for THIS suite. The R4
+// suites in the monolith root, internal/auth and internal/gotv historically
+// shared a single scratch database via R4_TEST_DB, but their schemas are
+// mutually incompatible (e.g. parties.is_active is INTEGER in the canonical
+// monolith migration 000001 while the gotv-svc tests create a BOOLEAN
+// variant), so a shared database made `go test ./...` order-dependent.
+// Each suite therefore provisions its own database.
+const r4ScratchDBName = "r4_wavea_monolith"
+
+var (
+	r4ScratchOnce sync.Once
+	r4ScratchDSN  string
+	r4ScratchErr  error
+)
+
+// r4WithDBName retargets a lib/pq DSN at a different database name. Supports
+// both URL ("postgres://...") and keyword/value ("host=... dbname=...")
+// forms.
+func r4WithDBName(dsn, name string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", fmt.Errorf("parse DSN URL: %w", err)
+		}
+		u.Path = "/" + name
+		return u.String(), nil
+	}
+	fields := strings.Fields(dsn)
+	replaced := false
+	for i, f := range fields {
+		if strings.HasPrefix(f, "dbname=") {
+			fields[i] = "dbname=" + name
+			replaced = true
+		}
+	}
+	if !replaced {
+		fields = append(fields, "dbname="+name)
+	}
+	return strings.Join(fields, " "), nil
+}
+
+// r4ProvisionScratch (re)creates this suite's scratch database from a clean
+// slate and applies the CANONICAL migration files that define the tables the
+// monolith tests touch (000001: users/parties with is_active INTEGER; 000031:
+// users.party_id membership binding). Migrations are applied verbatim through
+// a raw lib/pq connection — correctness by construction instead of
+// hand-rolled DDL that can drift from the production schema.
+func r4ProvisionScratch(baseDSN string) {
+	r4ScratchOnce.Do(func() {
+		admin, err := sql.Open("postgres", baseDSN)
+		if err != nil {
+			r4ScratchErr = fmt.Errorf("open admin: %w", err)
+			return
+		}
+		defer admin.Close()
+		if _, err := admin.Exec(`DROP DATABASE IF EXISTS ` + r4ScratchDBName + ` WITH (FORCE)`); err != nil {
+			r4ScratchErr = fmt.Errorf("drop scratch db: %w", err)
+			return
+		}
+		if _, err := admin.Exec(`CREATE DATABASE ` + r4ScratchDBName); err != nil {
+			r4ScratchErr = fmt.Errorf("create scratch db: %w", err)
+			return
+		}
+		dsn, err := r4WithDBName(baseDSN, r4ScratchDBName)
+		if err != nil {
+			r4ScratchErr = err
+			return
+		}
+		raw, err := sql.Open("postgres", dsn)
+		if err != nil {
+			r4ScratchErr = fmt.Errorf("open scratch: %w", err)
+			return
+		}
+		defer raw.Close()
+		for _, f := range []string{
+			"migrations/000001_initial_schema.up.sql",
+			"migrations/000031_users_party_membership.up.sql",
+		} {
+			ddl, err := os.ReadFile(f)
+			if err != nil {
+				r4ScratchErr = fmt.Errorf("read %s: %w", f, err)
+				return
+			}
+			if _, err := raw.Exec(string(ddl)); err != nil {
+				r4ScratchErr = fmt.Errorf("apply %s: %w", f, err)
+				return
+			}
+		}
+		r4ScratchDSN = dsn
+	})
+}
+
 // r4MonolithTestDB returns a scratch PostgreSQL handle wrapped in the SAME
 // pgcompat shim the production monolith uses (placeholder/dialect conversion
 // happens at the driver-connector level), and points the db/dbReader/dbWriter
-// globals at it. Skips unless R4_TEST_DB is set.
+// globals at it. Skips unless R4_TEST_DB is set. R4_TEST_DB is used as the
+// admin/server DSN; the suite's own scratch database (r4ScratchDBName) is
+// provisioned underneath it so suites never share schema state.
 func r4MonolithTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("R4_TEST_DB")
 	if dsn == "" {
 		t.Skip("R4_TEST_DB not set — skipping PG-backed regression test")
 	}
-	testDB := openPgCompat(dsn)
+	r4ProvisionScratch(dsn)
+	if r4ScratchErr != nil {
+		t.Fatalf("provision scratch db: %v", r4ScratchErr)
+	}
+	testDB := openPgCompat(r4ScratchDSN)
 	if err := testDB.Ping(); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
@@ -172,21 +271,19 @@ func TestR420_EMSLifecycleForwardOnly(t *testing.T) {
 func TestR421_ConcurrentTransitionSerialized(t *testing.T) {
 	r4MonolithTestDB(t)
 
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS elections (
-		id SERIAL PRIMARY KEY, title TEXT, election_type TEXT, election_date TEXT,
-		status TEXT NOT NULL DEFAULT 'draft', description TEXT,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`); err != nil {
-		t.Fatalf("ddl elections: %v", err)
-	}
+	// elections comes from the canonical migration 000001 schema applied by
+	// the suite provisioning; election_state_log is auxiliary test DDL.
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS election_state_log (
 		id SERIAL PRIMARY KEY, election_id INTEGER, from_state TEXT, to_state TEXT,
 		event TEXT, actor TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatalf("ddl state log: %v", err)
 	}
 	// 'cancel' from draft has no guard → pure read-check-update race surface.
+	// NOTE: the scratch DB carries the canonical elections table (migration
+	// 000001), whose CHECK constraints require a valid election_type/status.
 	var eid int
 	if err := db.QueryRow(`INSERT INTO elections (title, election_type, election_date, status)
-		VALUES ('r421', 'test', '2030-01-01', 'draft') RETURNING id`).Scan(&eid); err != nil {
+		VALUES ('r421', 'presidential', '2030-01-01', 'draft') RETURNING id`).Scan(&eid); err != nil {
 		t.Fatalf("seed election: %v", err)
 	}
 
@@ -293,34 +390,22 @@ func TestR407_RevokedTokenRejectedAndPersisted(t *testing.T) {
 func TestR405_GOTVPartyHeaderMustMatchMembership(t *testing.T) {
 	r4MonolithTestDB(t)
 
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS users (
-		id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, party_id INTEGER)`); err != nil {
-		t.Fatalf("ddl users: %v", err)
-	}
-	// The scratch DB may already have a users table from another package's
-	// test schema — ensure the membership column exists either way.
-	if _, err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS party_id INTEGER`); err != nil {
-		t.Fatalf("alter users: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS parties (
-		id SERIAL PRIMARY KEY, code TEXT, name TEXT, is_active INTEGER DEFAULT 1)`); err != nil {
-		t.Fatalf("ddl parties: %v", err)
-	}
-	// Normalize is_active to the monolith's INTEGER convention (the shared
-	// scratch DB may carry a BOOLEAN variant created by gotv-svc tests).
-	for _, stmt := range []string{
-		`ALTER TABLE parties ALTER COLUMN is_active DROP DEFAULT`,
-		`ALTER TABLE parties ALTER COLUMN is_active TYPE INTEGER USING CASE WHEN is_active THEN 1 ELSE 0 END`,
-		`ALTER TABLE parties ALTER COLUMN is_active SET DEFAULT 1`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("normalize parties.is_active: %v", err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO parties (id, code, name) VALUES (999051,'A','Party A'), (999052,'B','Party B') ON CONFLICT DO NOTHING`); err != nil {
+	// The suite scratch DB carries the canonical schema: users and parties
+	// from migration 000001 (parties.is_active INTEGER) plus users.party_id
+	// from migration 000031 — exactly what the production middleware queries.
+	if _, err := db.Exec(`INSERT INTO parties (id, code, name, abbreviation) VALUES
+		(999051,'A','Party A','PA'), (999052,'B','Party B','PB') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatalf("seed parties: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO users (username, party_id) VALUES ('r405admin', 999051) ON CONFLICT (username) DO UPDATE SET party_id=999051`); err != nil {
+	// users.username is not UNIQUE in the canonical schema, so reseed
+	// idempotently via delete-then-insert. The role column must satisfy the
+	// canonical users_role_check; the middleware authorizes on the JWT role
+	// (party_admin below), not on this row.
+	if _, err := db.Exec(`DELETE FROM users WHERE username='r405admin'`); err != nil {
+		t.Fatalf("reseed user: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, full_name, role, party_id)
+		VALUES ('r405admin', 'x', 'R4 Admin', 'public', 999051)`); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 
