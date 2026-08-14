@@ -15,11 +15,14 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(database_url)
         .await?;
 
-    // Run migrations
-    sqlx::query(include_str!("../migrations/001_biometric_tables.sql"))
+    // Run migrations. Failure here usually means the tables already exist
+    // (idempotent DDL), but it must not be silently discarded — log it.
+    if let Err(e) = sqlx::query(include_str!("../migrations/001_biometric_tables.sql"))
         .execute(&pool)
         .await
-        .ok(); // Ignore if tables already exist
+    {
+        tracing::warn!("embedded biometric migration did not apply cleanly (tables may already exist): {}", e);
+    }
 
     Ok(pool)
 }

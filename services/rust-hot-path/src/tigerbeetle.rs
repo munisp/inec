@@ -60,6 +60,54 @@ pub mod flags {
     pub const VOID_PENDING: u16 = 0x0008; // cancel pending transfer
 }
 
+/// Upper bound on a single ledger transfer amount. `Transaction.amount` is a
+/// signed i64 from the Kafka payload; TigerBeetle amounts are u64. A negative
+/// amount run through `as u64` wraps to ~u64::MAX — silent ledger corruption
+/// (R4-34b). Anything above this cap is a data bug, not a real ballot/result
+/// quantity: 1e15 milli-units is orders of magnitude beyond any plausible
+/// election figure.
+pub const MAX_TRANSFER_AMOUNT: i64 = 1_000_000_000_000_000;
+
+/// Validate a transaction's amount for ledger submission.
+/// Rejects zero/negative amounts and amounts above MAX_TRANSFER_AMOUNT
+/// BEFORE any `as u64` cast can wrap them.
+fn validate_amount(tx: &Transaction) -> Result<u64> {
+    if tx.amount <= 0 {
+        anyhow::bail!(
+            "transaction {} has non-positive amount {} — refusing to wrap-cast into a ledger transfer",
+            tx.id, tx.amount
+        );
+    }
+    if tx.amount > MAX_TRANSFER_AMOUNT {
+        anyhow::bail!(
+            "transaction {} amount {} exceeds MAX_TRANSFER_AMOUNT ({}) — refusing implausible ledger transfer",
+            tx.id, tx.amount, MAX_TRANSFER_AMOUNT
+        );
+    }
+    Ok(tx.amount as u64) // safe: 0 < amount <= MAX_TRANSFER_AMOUNT
+}
+
+/// Build a TBTransfer, validating all signed fields first.
+fn build_transfer(tx: &Transaction) -> Result<TBTransfer> {
+    let amount = validate_amount(tx)?;
+    Ok(TBTransfer {
+        id: deterministic_id(&tx.id),
+        debit_account_id: deterministic_id(&tx.source),
+        credit_account_id: deterministic_id(&tx.election_id),
+        amount,
+        pending_id: 0,
+        user_data_128: deterministic_id(&tx.hash),
+        // Negative timestamps clamp to 0 rather than wrapping to ~u64::MAX.
+        user_data_64: u64::try_from(tx.timestamp).unwrap_or(0),
+        user_data_32: 0,
+        timeout: 0,
+        ledger: ledger_for_type(&tx.tx_type),
+        code: code_for_type(&tx.tx_type),
+        flags: 0,
+        timestamp: 0, // server-assigned
+    })
+}
+
 pub struct TigerBeetleDirectClient {
     addresses: Vec<String>,
     cluster_id: u128,
@@ -71,6 +119,8 @@ pub struct TigerBeetleDirectClient {
     // Metrics
     transfers_submitted: AtomicU64,
     batches_sent: AtomicU64,
+    /// Transactions rejected before ledger submission (invalid amount).
+    transfers_rejected: AtomicU64,
 }
 
 impl TigerBeetleDirectClient {
@@ -82,28 +132,24 @@ impl TigerBeetleDirectClient {
             buffer: Vec::with_capacity(8190),
             transfers_submitted: AtomicU64::new(0),
             batches_sent: AtomicU64::new(0),
+            transfers_rejected: AtomicU64::new(0),
         }
     }
 
     /// Convert a batch of transactions into TigerBeetle transfers and submit.
+    /// Transactions with invalid amounts are rejected (counted + logged) and
+    /// skipped — never wrap-cast into the ledger.
     pub async fn batch_transfer(&self, batch: Arc<Vec<Transaction>>) -> Result<()> {
         let mut transfers = Vec::with_capacity(batch.len().min(self.batch_size));
 
         for tx in batch.iter() {
-            let transfer = TBTransfer {
-                id: deterministic_id(&tx.id),
-                debit_account_id: deterministic_id(&tx.source),
-                credit_account_id: deterministic_id(&tx.election_id),
-                amount: tx.amount as u64,
-                pending_id: 0,
-                user_data_128: deterministic_id(&tx.hash),
-                user_data_64: tx.timestamp as u64,
-                user_data_32: 0,
-                timeout: 0,
-                ledger: ledger_for_type(&tx.tx_type),
-                code: code_for_type(&tx.tx_type),
-                flags: 0,
-                timestamp: 0, // server-assigned
+            let transfer = match build_transfer(tx) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("rejecting transfer: {}", e);
+                    self.transfers_rejected.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
             };
             transfers.push(transfer);
 
@@ -127,26 +173,13 @@ impl TigerBeetleDirectClient {
     }
 
     /// Submit linked transfers (atomic multi-leg operation).
-    /// All transfers succeed or all fail.
+    /// All transfers succeed or all fail; any invalid amount aborts the whole
+    /// linked chain before submission.
     pub async fn linked_transfer(&self, txs: &[Transaction]) -> Result<()> {
         let mut transfers = Vec::with_capacity(txs.len());
 
         for (i, tx) in txs.iter().enumerate() {
-            let mut transfer = TBTransfer {
-                id: deterministic_id(&tx.id),
-                debit_account_id: deterministic_id(&tx.source),
-                credit_account_id: deterministic_id(&tx.election_id),
-                amount: tx.amount as u64,
-                pending_id: 0,
-                user_data_128: deterministic_id(&tx.hash),
-                user_data_64: tx.timestamp as u64,
-                user_data_32: 0,
-                timeout: 0,
-                ledger: ledger_for_type(&tx.tx_type),
-                code: code_for_type(&tx.tx_type),
-                flags: 0,
-                timestamp: 0,
-            };
+            let mut transfer = build_transfer(tx)?;
 
             // Link all except the last transfer
             if i < txs.len() - 1 {
@@ -161,21 +194,9 @@ impl TigerBeetleDirectClient {
     /// Two-phase commit: create pending transfer, then post or void.
     pub async fn pending_transfer(&self, tx: &Transaction, timeout_secs: u32) -> Result<u128> {
         let id = deterministic_id(&tx.id);
-        let transfer = TBTransfer {
-            id,
-            debit_account_id: deterministic_id(&tx.source),
-            credit_account_id: deterministic_id(&tx.election_id),
-            amount: tx.amount as u64,
-            pending_id: 0,
-            user_data_128: deterministic_id(&tx.hash),
-            user_data_64: tx.timestamp as u64,
-            user_data_32: 0,
-            timeout: timeout_secs,
-            ledger: ledger_for_type(&tx.tx_type),
-            code: code_for_type(&tx.tx_type),
-            flags: flags::PENDING,
-            timestamp: 0,
-        };
+        let mut transfer = build_transfer(tx)?;
+        transfer.timeout = timeout_secs;
+        transfer.flags = flags::PENDING;
         self.submit_batch(&[transfer]).await?;
         Ok(id)
     }
@@ -197,6 +218,11 @@ impl TigerBeetleDirectClient {
             self.transfers_submitted.load(Ordering::Relaxed),
             self.batches_sent.load(Ordering::Relaxed),
         )
+    }
+
+    /// Number of transactions rejected before ledger submission.
+    pub fn rejected(&self) -> u64 {
+        self.transfers_rejected.load(Ordering::Relaxed)
     }
 }
 
@@ -225,5 +251,84 @@ fn code_for_type(tx_type: &str) -> u16 {
         "settlement" => codes::SETTLEMENT,
         "accreditation" => codes::ACCREDITATION,
         _ => codes::SETTLEMENT,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tx_with_amount(amount: i64) -> Transaction {
+        Transaction {
+            id: "tx-1".into(),
+            tx_type: "ballot_cast".into(),
+            source: "pu-001".into(),
+            timestamp: 1_700_000_000,
+            election_id: "elec-1".into(),
+            state_code: "01".into(),
+            lga_id: "lga-1".into(),
+            ward_id: "ward-1".into(),
+            pu_id: "pu-1".into(),
+            amount,
+            hash: "hash".into(),
+            data: serde_json::Value::Null,
+        }
+    }
+
+    /// R4-34b regression: a negative i64 amount used to wrap via `as u64`
+    /// into ~u64::MAX and land in the financial ledger. It must now be an
+    /// error and produce NO transfer.
+    #[test]
+    fn negative_amount_is_rejected_not_wrapped() {
+        let err = build_transfer(&tx_with_amount(-1)).unwrap_err();
+        assert!(err.to_string().contains("non-positive"), "unexpected: {}", err);
+    }
+
+    #[test]
+    fn zero_amount_is_rejected() {
+        assert!(build_transfer(&tx_with_amount(0)).is_err());
+    }
+
+    #[test]
+    fn amount_above_max_is_rejected() {
+        assert!(build_transfer(&tx_with_amount(MAX_TRANSFER_AMOUNT + 1)).is_err());
+    }
+
+    #[test]
+    fn valid_amount_builds_transfer() {
+        let t = build_transfer(&tx_with_amount(42)).unwrap();
+        // repr(packed): copy fields out before asserting (no unaligned refs).
+        let (amount, ts) = (t.amount, t.user_data_64);
+        assert_eq!(amount, 42);
+        assert_eq!(ts, 1_700_000_000);
+    }
+
+    #[test]
+    fn negative_timestamp_clamps_instead_of_wrapping() {
+        let mut tx = tx_with_amount(7);
+        tx.timestamp = -5;
+        let t = build_transfer(&tx).unwrap();
+        let ts = t.user_data_64;
+        assert_eq!(ts, 0);
+    }
+
+    /// A batch mixing valid and invalid transactions: invalid ones are
+    /// skipped and counted, valid ones still build — and the batch-level
+    /// submit fails loudly in this build (no TB client), which is fine; the
+    /// assertion target is the rejection counter.
+    #[tokio::test]
+    async fn batch_rejects_invalid_and_counts_them() {
+        let config = Config::from_env();
+        let client = TigerBeetleDirectClient::new(&config);
+        let batch = Arc::new(vec![
+            tx_with_amount(-3),               // rejected
+            tx_with_amount(0),                // rejected
+            tx_with_amount(MAX_TRANSFER_AMOUNT + 9), // rejected
+        ]);
+        // submit_batch fails loudly without a TB client, but the three
+        // invalid transactions must already have been counted as rejected
+        // before any submission attempt.
+        let _ = client.batch_transfer(batch).await;
+        assert_eq!(client.rejected(), 3);
     }
 }

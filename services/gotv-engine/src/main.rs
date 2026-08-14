@@ -128,6 +128,43 @@ struct AppState {
     persistence: persistence::PersistenceLayer,
 }
 
+// ─── Lock-poisoning safety ──────────────────────────────────────────────────
+//
+// A panic while a write guard is held poisons the std::sync::RwLock. Every
+// `.read().unwrap()` / `.write().unwrap()` on a request path would then panic
+// too, turning one bad request into a permanent service-wide outage. Request
+// handlers use these macros instead: a poisoned lock yields HTTP 500
+// (`internal_state_unavailable`), which axum returns without aborting the
+// worker.
+
+fn lock_poisoned() -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": "internal_state_unavailable", "message": "shared state lock poisoned by a prior panic"})),
+    )
+        .into_response()
+}
+
+/// Acquire a read guard on shared state; on poison return 500 from the handler.
+macro_rules! state_read {
+    ($lock:expr) => {
+        match $lock.read() {
+            Ok(guard) => guard,
+            Err(_) => return lock_poisoned(),
+        }
+    };
+}
+
+/// Acquire a write guard on shared state; on poison return 500 from the handler.
+macro_rules! state_write {
+    ($lock:expr) => {
+        match $lock.write() {
+            Ok(guard) => guard,
+            Err(_) => return lock_poisoned(),
+        }
+    };
+}
+
 impl AppState {
     fn new() -> Self {
         Self {
@@ -140,8 +177,13 @@ impl AppState {
         }
     }
 
-    fn rebuild_rtree(&self) {
-        let vols = self.volunteers.read().unwrap();
+    /// Rebuild the spatial index. Returns false when a lock is poisoned so
+    /// the caller can surface HTTP 500 instead of panicking.
+    fn rebuild_rtree(&self) -> bool {
+        let vols = match self.volunteers.read() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
         let points: Vec<VolunteerPoint> = vols
             .values()
             .flat_map(|v| v.iter())
@@ -157,7 +199,14 @@ impl AppState {
             })
             .collect();
         let tree = RTree::bulk_load(points);
-        *self.rtree.write().unwrap() = tree;
+        drop(vols);
+        match self.rtree.write() {
+            Ok(mut guard) => {
+                *guard = tree;
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -635,7 +684,7 @@ async fn register_volunteers(
         .map(|v| (v.id.clone(), v.latitude, v.longitude))
         .collect();
     {
-        let mut vols = state.volunteers.write().unwrap();
+        let mut vols = state_write!(state.volunteers);
         let entry = vols.entry(req.party_id).or_insert_with(Vec::new);
         for v in req.volunteers {
             // Upsert by volunteer_id
@@ -646,7 +695,9 @@ async fn register_volunteers(
             }
         }
     }
-    state.rebuild_rtree();
+    if !state.rebuild_rtree() {
+        return lock_poisoned();
+    }
 
     // Persist positions asynchronously (registration/upsert = position update).
     let persistence = state.persistence.clone();
@@ -679,7 +730,7 @@ async fn register_polling_units(
             .into_response();
     }
     let count = req.polling_units.len();
-    let mut pus = state.polling_units.write().unwrap();
+    let mut pus = state_write!(state.polling_units);
     for pu in req.polling_units {
         pus.insert(pu.code.clone(), pu);
     }
@@ -701,7 +752,7 @@ async fn match_ride(
 
     // Scope RwLock guards so they're dropped before any .await
     let (results, no_match) = {
-        let tree = state.rtree.read().unwrap();
+        let tree = state_read!(state.rtree);
         let pickup = VolunteerPoint {
             id: String::new(), party_id: req.party_id, lat: req.pickup_lat, lng: req.pickup_lng,
             has_vehicle: false, capacity: 0, available: false,
@@ -737,7 +788,7 @@ async fn match_ride(
             results.sort_by_key(|r| OrderedFloat(r.distance_km));
 
             // Populate volunteer names
-            let vols = state.volunteers.read().unwrap();
+            let vols = state_read!(state.volunteers);
             if let Some(party_vols) = vols.get(&req.party_id) {
                 for result in &mut results {
                     if let Some(vol) = party_vols.iter().find(|v| v.id == result.volunteer_id) {
@@ -803,7 +854,7 @@ async fn bulk_match_rides(
         )
             .into_response();
     }
-    let tree = state.rtree.read().unwrap();
+    let tree = state_read!(state.rtree);
     let mut assigned: HashMap<String, bool> = HashMap::new();
     let mut results = Vec::new();
 
@@ -929,10 +980,10 @@ async fn optimize_route(
 async fn proximity_polling_units(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ProximityQuery>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let radius = query.radius_km.unwrap_or(5.0);
     let limit = query.limit.unwrap_or(10);
-    let pus = state.polling_units.read().unwrap();
+    let pus = state_read!(state.polling_units);
 
     let query_point = Point::new(query.lng, query.lat);
     let mut results: Vec<ProximityResult> = pus
@@ -961,6 +1012,7 @@ async fn proximity_polling_units(
         "total": results.len(),
         "radius_km": radius
     }))
+    .into_response()
 }
 
 async fn coverage_analysis(
@@ -976,9 +1028,9 @@ async fn coverage_analysis(
     // the previous O(PU x V) brute-force scan.
     const MAX_COVERAGE_PUS: usize = 20_000;
 
-    let vols = state.volunteers.read().unwrap();
-    let pus = state.polling_units.read().unwrap();
-    let tree = state.rtree.read().unwrap();
+    let vols = state_read!(state.volunteers);
+    let pus = state_read!(state.polling_units);
+    let tree = state_read!(state.rtree);
 
     let party_vols = vols.get(&party_id).cloned().unwrap_or_default();
     let total_volunteers = party_vols.len();
@@ -1116,7 +1168,7 @@ async fn partition_territories(
     if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
         return resp;
     }
-    let vols = state.volunteers.read().unwrap();
+    let vols = state_read!(state.volunteers);
     let party_vols = vols.get(&req.party_id);
 
     let vol_positions: Vec<(String, f64, f64)> = party_vols
@@ -1188,14 +1240,14 @@ async fn calculate_isochrone(
     if let Err(resp) = enforce_party(&party.map(|Extension(p)| p), req.party_id) {
         return resp;
     }
-    let vols = state.volunteers.read().unwrap();
+    let vols = state_read!(state.volunteers);
     let party_vols = vols.get(&req.party_id);
 
     let vol = party_vols.and_then(|vs| vs.iter().find(|v| v.id == req.volunteer_id));
 
     match vol {
         Some(v) => {
-            let pus = state.polling_units.read().unwrap();
+            let pus = state_read!(state.polling_units);
             let pu_list: Vec<(String, f64, f64)> = pus
                 .values()
                 .map(|pu| (pu.code.clone(), pu.latitude, pu.longitude))
@@ -1233,11 +1285,30 @@ struct GeofenceResult {
     alert: Option<String>,
 }
 
+/// GET /gotv-engine/stats — operational counters, including persistence
+/// health (R4-28): fire-and-forget writes are fine, but their failures must
+/// be observable.
+async fn engine_stats(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let vols = state_read!(state.volunteers);
+    let pus = state_read!(state.polling_units);
+    let rides = state_read!(state.ride_requests);
+    let volunteer_count: usize = vols.values().map(|v| v.len()).sum();
+    Json(serde_json::json!({
+        "volunteers": volunteer_count,
+        "parties_with_volunteers": vols.len(),
+        "polling_units": pus.len(),
+        "ride_requests_tracked": rides.len(),
+        "persistence_enabled": state.persistence.is_enabled(),
+        "persistence_write_failures": state.persistence.write_failures(),
+    }))
+    .into_response()
+}
+
 async fn check_geofence(
     State(state): State<Arc<AppState>>,
     Json(req): Json<GeofenceCheckRequest>,
-) -> impl IntoResponse {
-    let pus = state.polling_units.read().unwrap();
+) -> axum::response::Response {
+    let pus = state_read!(state.polling_units);
     let ward_pus: Vec<&PollingUnit> = pus.values()
         .filter(|pu| pu.ward_code == req.assigned_ward)
         .collect();
@@ -1254,7 +1325,8 @@ async fn check_geofence(
                 "unknown_ward: no polling units registered for ward {}; cannot verify geofence",
                 req.assigned_ward
             )),
-        });
+        })
+        .into_response();
     }
 
     // Calculate centroid of ward PUs
@@ -1287,6 +1359,7 @@ async fn check_geofence(
         nearest_pu,
         alert,
     })
+    .into_response()
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────
@@ -1330,7 +1403,8 @@ async fn main() {
         info!("Loading persisted state from PostgreSQL...");
         let vols = state.persistence.load_volunteers().await;
         if !vols.is_empty() {
-            let mut vol_map = state.volunteers.write().unwrap();
+            // Startup-only, no concurrent holders: recover a poisoned lock.
+            let mut vol_map = state.volunteers.write().unwrap_or_else(|e| e.into_inner());
             for pv in &vols {
                 let entry = vol_map.entry(pv.party_id).or_insert_with(Vec::new);
                 entry.push(Volunteer {
@@ -1352,7 +1426,8 @@ async fn main() {
 
         let rides = state.persistence.load_pending_rides().await;
         if !rides.is_empty() {
-            let mut rr = state.ride_requests.write().unwrap();
+            // Startup-only, no concurrent holders: recover a poisoned lock.
+            let mut rr = state.ride_requests.write().unwrap_or_else(|e| e.into_inner());
             for pr in &rides {
                 rr.push(RideRequest {
                     id: pr.request_id.clone(),
@@ -1367,83 +1442,14 @@ async fn main() {
             info!(count = rides.len(), "Hydrated pending rides from PostgreSQL");
         }
 
-        state.rebuild_rtree();
-    }
-
-    // ── Voting Crypto Handlers ────────────────────────────────────────────
-    // SECURITY: crypto backend is not implemented in this build; handlers
-    // return 503 with a JSON error instead of fabricated artifacts.
-    fn crypto_unavailable(e: voting_crypto::VotingCryptoError) -> axum::response::Response {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response()
-    }
-
-    async fn encrypt_ballot_handler(
-        Json(req): Json<voting_crypto::EncryptBallotRequest>,
-    ) -> axum::response::Response {
-        match voting_crypto::handle_encrypt_ballot(req) {
-            Ok(resp) => Json(serde_json::json!(resp)).into_response(),
-            Err(e) => crypto_unavailable(e),
+        if !state.rebuild_rtree() {
+            warn!("rtree rebuild failed after hydration (poisoned lock) — spatial queries will be stale until next registration");
         }
     }
 
-    async fn shuffle_handler(
-        Json(req): Json<voting_crypto::ShuffleRequest>,
-    ) -> axum::response::Response {
-        match voting_crypto::handle_shuffle(req) {
-            Ok(resp) => Json(serde_json::json!(resp)).into_response(),
-            Err(e) => crypto_unavailable(e),
-        }
-    }
+    let app = build_router(state);
 
-    async fn merkle_tree_handler(
-        Json(req): Json<voting_crypto::MerkleTreeRequest>,
-    ) -> impl IntoResponse {
-        let resp = voting_crypto::handle_merkle_tree(req);
-        Json(serde_json::json!(resp))
-    }
 
-    async fn verify_keys_handler(
-        Json(req): Json<voting_crypto::VerifyKeyRequest>,
-    ) -> axum::response::Response {
-        match voting_crypto::handle_verify_keys(req) {
-            Ok(resp) => Json(serde_json::json!(resp)).into_response(),
-            Err(e) => crypto_unavailable(e),
-        }
-    }
-
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/gotv-engine/volunteers", post(register_volunteers))
-        .route("/gotv-engine/polling-units", post(register_polling_units))
-        .route("/gotv-engine/match", post(match_ride))
-        .route("/gotv-engine/bulk-match", post(bulk_match_rides))
-        .route("/gotv-engine/optimize-route", post(optimize_route))
-        .route("/gotv-engine/proximity", get(proximity_polling_units))
-        .route("/gotv-engine/coverage/:party_id", get(coverage_analysis))
-        .route("/gotv-engine/middleware/status", get(middleware_status))
-        // V2 endpoints
-        .route("/gotv-engine/territories/partition", post(partition_territories))
-        .route("/gotv-engine/turnout/predict", post(predict_turnout))
-        .route("/gotv-engine/isochrone", post(calculate_isochrone))
-        .route("/gotv-engine/geofence/check", post(check_geofence))
-        // Voting crypto endpoints (Dapr service invocation targets)
-        .route("/gotv-engine/crypto/encrypt-ballot", post(encrypt_ballot_handler))
-        .route("/gotv-engine/crypto/shuffle", post(shuffle_handler))
-        .route("/gotv-engine/crypto/merkle-tree", post(merkle_tree_handler))
-        .route("/gotv-engine/verify-keys", post(verify_keys_handler))
-        // Runs after auth (layers execute outermost-last): the limiter key is
-        // the authenticated x-api-key identity. ~120 requests/minute per key.
-        .layer(axum_mw::from_fn_with_state(
-            Arc::new(platform::SlidingWindowLimiter::new(120, 60)),
-            rate_limit,
-        ))
-        .layer(axum_mw::from_fn(internal_api_key_auth))
-        .layer(cors_layer())
-        .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
     info!("GOTV Engine starting on {}", addr);
@@ -1468,4 +1474,145 @@ async fn main() {
         .unwrap();
 
     info!("GOTV Engine shut down gracefully");
+}
+
+// ─── Voting Crypto Handlers ───────────────────────────────────────────────
+// SECURITY: crypto backend is not implemented in this build; handlers
+// return 503 with a JSON error instead of fabricated artifacts.
+fn crypto_unavailable(e: voting_crypto::VotingCryptoError) -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"error": e.to_string()})),
+    )
+        .into_response()
+}
+
+async fn encrypt_ballot_handler(
+    Json(req): Json<voting_crypto::EncryptBallotRequest>,
+) -> axum::response::Response {
+    match voting_crypto::handle_encrypt_ballot(req) {
+        Ok(resp) => Json(serde_json::json!(resp)).into_response(),
+        Err(e) => crypto_unavailable(e),
+    }
+}
+
+async fn shuffle_handler(
+    Json(req): Json<voting_crypto::ShuffleRequest>,
+) -> axum::response::Response {
+    match voting_crypto::handle_shuffle(req) {
+        Ok(resp) => Json(serde_json::json!(resp)).into_response(),
+        Err(e) => crypto_unavailable(e),
+    }
+}
+
+async fn merkle_tree_handler(
+    Json(req): Json<voting_crypto::MerkleTreeRequest>,
+) -> impl IntoResponse {
+    let resp = voting_crypto::handle_merkle_tree(req);
+    Json(serde_json::json!(resp))
+}
+
+async fn verify_keys_handler(
+    Json(req): Json<voting_crypto::VerifyKeyRequest>,
+) -> axum::response::Response {
+    match voting_crypto::handle_verify_keys(req) {
+        Ok(resp) => Json(serde_json::json!(resp)).into_response(),
+        Err(e) => crypto_unavailable(e),
+    }
+}
+
+// ─── Router ───────────────────────────────────────────────────────────────
+
+/// Build the HTTP router. Extracted from main so tests can drive handlers
+/// in-process (tower::ServiceExt::oneshot).
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/gotv-engine/volunteers", post(register_volunteers))
+        .route("/gotv-engine/polling-units", post(register_polling_units))
+        .route("/gotv-engine/match", post(match_ride))
+        .route("/gotv-engine/bulk-match", post(bulk_match_rides))
+        .route("/gotv-engine/optimize-route", post(optimize_route))
+        .route("/gotv-engine/proximity", get(proximity_polling_units))
+        .route("/gotv-engine/coverage/:party_id", get(coverage_analysis))
+        .route("/gotv-engine/middleware/status", get(middleware_status))
+        .route("/gotv-engine/stats", get(engine_stats))
+        // V2 endpoints
+        .route("/gotv-engine/territories/partition", post(partition_territories))
+        .route("/gotv-engine/turnout/predict", post(predict_turnout))
+        .route("/gotv-engine/isochrone", post(calculate_isochrone))
+        .route("/gotv-engine/geofence/check", post(check_geofence))
+        // Voting crypto endpoints (Dapr service invocation targets)
+        .route("/gotv-engine/crypto/encrypt-ballot", post(encrypt_ballot_handler))
+        .route("/gotv-engine/crypto/shuffle", post(shuffle_handler))
+        .route("/gotv-engine/crypto/merkle-tree", post(merkle_tree_handler))
+        .route("/gotv-engine/verify-keys", post(verify_keys_handler))
+        // Runs after auth (layers execute outermost-last): the limiter key is
+        // the authenticated x-api-key identity. ~120 requests/minute per key.
+        .layer(axum_mw::from_fn_with_state(
+            Arc::new(platform::SlidingWindowLimiter::new(120, 60)),
+            rate_limit,
+        ))
+        .layer(axum_mw::from_fn(internal_api_key_auth))
+        .layer(cors_layer())
+        .with_state(state)
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt; // for `oneshot`
+
+    /// R4-34c regression: a panic while a write guard is held poisons the
+    /// RwLock; every subsequent handler touching that state used to panic on
+    /// `.unwrap()` (permanent service-wide 500s-by-abort). Handlers must now
+    /// return a clean HTTP 500 response instead.
+    #[tokio::test]
+    async fn poisoned_lock_yields_500_not_panic() {
+        // Auth + tenancy config so the request reaches the handler.
+        std::env::set_var("GOTV_ENGINE_API_KEY", "test-key");
+        std::env::set_var("GOTV_SINGLE_TENANT_MODE", "true");
+        std::env::remove_var("GOTV_ENGINE_PARTY_KEYS");
+
+        let state = Arc::new(AppState::new());
+
+        // Poison the volunteers lock: panic while holding a write guard.
+        let s2 = state.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = s2.volunteers.write().unwrap();
+            panic!("deliberate panic to poison the lock (test)");
+        });
+        assert!(handle.join().is_err(), "poisoning thread must have panicked");
+        assert!(state.volunteers.read().is_err(), "lock must be poisoned");
+
+        // Hit a handler that writes state.volunteers — must 500, not abort.
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/gotv-engine/volunteers")
+            .header("x-api-key", "test-key")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"party_id": 7, "volunteers": []}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // A handler that only reads OTHER state (polling_units) still works —
+        // poisoning one lock must not take down unrelated endpoints.
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/gotv-engine/proximity?lat=6.5&lng=3.4")
+            .header("x-api-key", "test-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        std::env::remove_var("GOTV_ENGINE_API_KEY");
+        std::env::remove_var("GOTV_SINGLE_TENANT_MODE");
+    }
 }

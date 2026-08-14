@@ -165,6 +165,15 @@ fn configured_api_keys(env_var: &str) -> Vec<String> {
         .collect()
 }
 
+/// Configured vault API tokens. Primary source: BIOMETRIC_VAULT_API_KEY
+/// (comma-separated rotation list). VAULT_API_TOKEN is accepted as a
+/// single-token alias for operators that follow the generic vault naming.
+fn vault_api_tokens() -> Vec<String> {
+    let mut keys = configured_api_keys("BIOMETRIC_VAULT_API_KEY");
+    keys.extend(configured_api_keys("VAULT_API_TOKEN"));
+    keys
+}
+
 /// Return the configured key that matches `provided`, comparing each
 /// candidate in constant time.
 fn matching_api_key<'a>(provided: &str, keys: &'a [String]) -> Option<&'a str> {
@@ -188,37 +197,51 @@ fn vault_actor_identity(key: &str) -> String {
 }
 
 /// API-key authentication for all vault/matching endpoints. /health stays
-/// public for orchestrator probes. Fail-closed: when BIOMETRIC_VAULT_API_KEY
-/// is unset the service returns 503 rather than serving unauthenticated
-/// biometric plaintext. BIOMETRIC_VAULT_API_KEY accepts a comma-separated
-/// key list so rotation is possible without downtime; the presented key is
-/// compared against each configured key in constant time.
+/// public for orchestrator probes. Fail-closed: when neither
+/// BIOMETRIC_VAULT_API_KEY nor VAULT_API_TOKEN is configured the service
+/// returns 503 rather than serving unauthenticated biometric plaintext.
+/// BIOMETRIC_VAULT_API_KEY accepts a comma-separated key list so rotation is
+/// possible without downtime; the presented credential is compared against
+/// each configured key in constant time. Callers may authenticate with an
+/// `x-api-key: <key>` header or `Authorization: Bearer <token>`.
 async fn vault_api_key_auth(req: Request, next: Next) -> Response {
     if req.uri().path() == "/health" {
         return next.run(req).await;
     }
 
-    let expected_keys = configured_api_keys("BIOMETRIC_VAULT_API_KEY");
+    let expected_keys = vault_api_tokens();
     if expected_keys.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
-                "error": "BIOMETRIC_VAULT_API_KEY not configured; refusing to serve unauthenticated requests"
+                "error": "BIOMETRIC_VAULT_API_KEY/VAULT_API_TOKEN not configured; refusing to serve unauthenticated requests"
             })),
         )
             .into_response();
     }
 
-    let provided = req
+    // Accept either x-api-key or an Authorization: Bearer token.
+    let presented = req
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| {
+            req.headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|t| t.trim().to_string())
+        });
+
+    let provided = presented
+        .as_deref()
         .and_then(|v| matching_api_key(v, &expected_keys));
 
     let Some(matched_key) = provided else {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "missing or invalid x-api-key" })),
+            Json(serde_json::json!({ "error": "missing or invalid credentials (x-api-key or Authorization: Bearer)" })),
         )
             .into_response();
     };
@@ -557,4 +580,113 @@ async fn match_fuse(Json(req): Json<FuseRequest>) -> impl IntoResponse {
         "decision": format!("{:?}", fused.decision),
         "fusion_method": format!("{:?}", fused.fusion_method),
     }))
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt; // for `oneshot`
+
+    /// Minimal router exercising ONLY the auth middleware with a dummy
+    /// protected route and the public /health route — no database needed.
+    fn test_app() -> Router {
+        Router::new()
+            .route("/health", get(|| async { StatusCode::OK }))
+            .route("/vault/stats", get(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn(vault_api_key_auth))
+    }
+
+    async fn status_for(app: Router, headers: &[(&str, &str)], path: &str) -> StatusCode {
+        let mut builder = Request::builder().uri(path);
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        let resp = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        resp.status()
+    }
+
+    /// Single test function because the middleware reads process-global env
+    /// vars; parallel tests mutating them would race.
+    #[tokio::test]
+    async fn vault_auth_is_fail_closed_and_authenticates() {
+        std::env::remove_var("BIOMETRIC_VAULT_API_KEY");
+        std::env::remove_var("VAULT_API_TOKEN");
+
+        // 1. No token configured -> protected routes fail closed with 503.
+        assert_eq!(
+            status_for(test_app(), &[], "/vault/stats").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // /health stays public even when unconfigured.
+        assert_eq!(
+            status_for(test_app(), &[], "/health").await,
+            StatusCode::OK
+        );
+
+        // 2. Token configured (VAULT_API_TOKEN alias) but none presented -> 401.
+        std::env::set_var("VAULT_API_TOKEN", "s3cret-vault-token");
+        assert_eq!(
+            status_for(test_app(), &[], "/vault/stats").await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        // 3. Wrong token -> 401.
+        assert_eq!(
+            status_for(test_app(), &[("x-api-key", "wrong")], "/vault/stats").await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_for(
+                test_app(),
+                &[("authorization", "Bearer wrong")],
+                "/vault/stats"
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        // 4. Correct token -> pass, via both header forms.
+        assert_eq!(
+            status_for(test_app(), &[("x-api-key", "s3cret-vault-token")], "/vault/stats").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status_for(
+                test_app(),
+                &[("authorization", "Bearer s3cret-vault-token")],
+                "/vault/stats"
+            )
+            .await,
+            StatusCode::OK
+        );
+
+        // 5. Primary env var (comma-separated rotation list) also authenticates.
+        std::env::remove_var("VAULT_API_TOKEN");
+        std::env::set_var("BIOMETRIC_VAULT_API_KEY", "old-key,new-key");
+        assert_eq!(
+            status_for(test_app(), &[("x-api-key", "old-key")], "/vault/stats").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status_for(test_app(), &[("x-api-key", "new-key")], "/vault/stats").await,
+            StatusCode::OK
+        );
+
+        // 6. Authenticated identity derives from the key, not caller input:
+        //    different keys map to distinct audit actors, and no actor field
+        //    is read from request bodies (EncryptRequest has no such field).
+        let a1 = vault_actor_identity("old-key");
+        let a2 = vault_actor_identity("new-key");
+        assert_ne!(a1, a2);
+        assert!(a1.starts_with("vault-key:"));
+        assert!(!a1.contains("old-key")); // raw key never in the audit trail
+
+        std::env::remove_var("BIOMETRIC_VAULT_API_KEY");
+    }
 }

@@ -72,6 +72,11 @@ const ALL_TOPICS: &[&str] = &[
     TOPIC_AUDIT,
 ];
 
+/// Managed-topic allowlist check for /produce (and any future mutation).
+fn topic_allowed(topic: &str) -> bool {
+    ALL_TOPICS.contains(&topic)
+}
+
 /// Hard cap on records returned per /consume request.
 const MAX_CONSUME_LIMIT: usize = 1000;
 /// Maximum time a /consume request may spend reading from the broker.
@@ -114,6 +119,17 @@ async fn produce_event(
     body: web::Json<ProduceRequest>,
 ) -> HttpResponse {
     let topic = &body.topic;
+
+    // Fail closed on unknown topics: producers may only write to the managed
+    // INEC topic allowlist — an arbitrary-topic produce API would let any
+    // caller create/pollute topics on the shared cluster.
+    if !topic_allowed(topic) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("topic '{}' is not in the managed allowlist (ALL_TOPICS)", topic),
+            "allowed_topics": ALL_TOPICS,
+        }));
+    }
+
     let key = body.key.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let payload = serde_json::to_string(&body.event).unwrap_or_default();
 
@@ -325,6 +341,15 @@ fn api_key_matches(provided: &str, keys: &[String]) -> bool {
         .any(|k| constant_time_eq(provided.as_bytes(), k.as_bytes()))
 }
 
+/// Configured produce/stream tokens. Primary: FLUVIO_STREAM_API_KEY
+/// (comma-separated rotation list). FLUVIO_PRODUCE_TOKEN is accepted as a
+/// single-token alias.
+fn stream_api_tokens() -> Vec<String> {
+    let mut keys = configured_api_keys("FLUVIO_STREAM_API_KEY");
+    keys.extend(configured_api_keys("FLUVIO_PRODUCE_TOKEN"));
+    keys
+}
+
 async fn api_key_auth(
     req: ServiceRequest,
     next: Next<BoxBody>,
@@ -333,28 +358,40 @@ async fn api_key_auth(
         return next.call(req).await.map(ServiceResponse::map_into_boxed_body);
     }
 
-    let expected_keys = configured_api_keys("FLUVIO_STREAM_API_KEY");
+    let expected_keys = stream_api_tokens();
     if expected_keys.is_empty() {
         return Ok(req.into_response(
             HttpResponse::ServiceUnavailable()
                 .json(serde_json::json!({
-                    "error": "FLUVIO_STREAM_API_KEY not configured; refusing to serve unauthenticated requests"
+                    "error": "FLUVIO_STREAM_API_KEY/FLUVIO_PRODUCE_TOKEN not configured; refusing to serve unauthenticated requests"
                 }))
                 .map_into_boxed_body(),
         ));
     }
 
-    let authorized = req
+    // Accept either x-api-key or Authorization: Bearer <token>.
+    let presented = req
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| {
+            req.headers()
+                .get(actix_web::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|t| t.trim().to_string())
+        });
+
+    let authorized = presented
+        .as_deref()
         .map(|v| api_key_matches(v, &expected_keys))
         .unwrap_or(false);
 
     if !authorized {
         return Ok(req.into_response(
             HttpResponse::Unauthorized()
-                .json(serde_json::json!({ "error": "missing or invalid x-api-key" }))
+                .json(serde_json::json!({ "error": "missing or invalid credentials (x-api-key or Authorization: Bearer)" }))
                 .map_into_boxed_body(),
         ));
     }
@@ -367,8 +404,18 @@ async fn ensure_topics(fluvio: &Fluvio) -> Vec<String> {
     let admin = fluvio.admin().await;
     let mut created = Vec::new();
 
+    // Single-node dev defaults (1 partition, RF=1) are NOT production-safe:
+    // RF=1 means zero broker-fault tolerance for election streams. No in-repo
+    // doc/compose declares a multi-broker Fluvio cluster, so the defaults
+    // stay 1/1 and production MUST override via env (RF=3 requires a
+    // 3-SPU cluster or topic creation will fail loudly).
+    let partitions: u32 = std::env::var("FLUVIO_TOPIC_PARTITIONS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let replicas: u32 = std::env::var("FLUVIO_TOPIC_REPLICATION")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+
     for topic_name in ALL_TOPICS {
-        let spec = TopicSpec::new_computed(1, 1, None);
+        let spec = TopicSpec::new_computed(partitions, replicas, None);
         match admin.create(topic_name.to_string(), false, spec).await {
             Ok(_) => {
                 info!("Created topic: {}", topic_name);
@@ -429,4 +476,98 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{middleware as mw, test as actix_test, web, App};
+
+    async fn dummy_ok() -> HttpResponse {
+        HttpResponse::Ok().finish()
+    }
+
+    macro_rules! build_test_service {
+        () => {
+            actix_test::init_service(
+                App::new()
+                    .wrap(mw::from_fn(api_key_auth))
+                    .route("/health", web::get().to(dummy_ok))
+                    .route("/produce", web::post().to(dummy_ok)),
+            )
+            .await
+        };
+    }
+
+    /// Single test function: middleware reads process-global env vars, so
+    /// parallel tests would race.
+    #[actix_web::test]
+    async fn auth_fail_closed_then_accepts_bearer_and_x_api_key() {
+        std::env::remove_var("FLUVIO_STREAM_API_KEY");
+        std::env::remove_var("FLUVIO_PRODUCE_TOKEN");
+
+        // 1. Unset env -> fail closed 503 on protected routes.
+        let app = build_test_service!();
+        let req = actix_test::TestRequest::post().uri("/produce").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::SERVICE_UNAVAILABLE);
+        // /health stays public.
+        let req = actix_test::TestRequest::get().uri("/health").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+
+        // 2. Configured (via FLUVIO_PRODUCE_TOKEN alias) but no credential -> 401.
+        std::env::set_var("FLUVIO_PRODUCE_TOKEN", "prod-token-1");
+        let req = actix_test::TestRequest::post().uri("/produce").to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+
+        // 3. Wrong credential -> 401.
+        let req = actix_test::TestRequest::post()
+            .uri("/produce")
+            .insert_header(("x-api-key", "nope"))
+            .to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::UNAUTHORIZED);
+
+        // 4. Correct credential via Bearer and via x-api-key -> pass.
+        let req = actix_test::TestRequest::post()
+            .uri("/produce")
+            .insert_header(("authorization", "Bearer prod-token-1"))
+            .to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+        let req = actix_test::TestRequest::post()
+            .uri("/produce")
+            .insert_header(("x-api-key", "prod-token-1"))
+            .to_request();
+        let resp = actix_test::call_service(&app, req).await;
+        assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+
+        std::env::remove_var("FLUVIO_PRODUCE_TOKEN");
+    }
+
+    /// R4-12(b): the produce path must reject topics outside the managed
+    /// allowlist (arbitrary-topic produce = uncontrolled cluster mutation).
+    #[test]
+    fn produce_topic_allowlist() {
+        for t in ALL_TOPICS {
+            assert!(topic_allowed(t), "{} must be allowed", t);
+        }
+        assert!(!topic_allowed("evil.arbitrary.topic"));
+        assert!(!topic_allowed(""));
+        assert!(!topic_allowed("inec.results.submitted.evil"));
+    }
+
+    #[test]
+    fn constant_time_eq_basics() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"", b"a"));
+        assert!(constant_time_eq(b"", b""));
+    }
 }

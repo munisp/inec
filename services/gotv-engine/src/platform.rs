@@ -216,7 +216,11 @@ impl SlidingWindowLimiter {
         let now = Instant::now();
         let cutoff = now - self.window_duration;
 
-        let mut windows = self.windows.write().unwrap();
+        // A poisoned limiter window must not panic the middleware (which
+        // would 500 every request). Recover the inner state: worst case after
+        // a panic is a partially-updated window, which is benign for a
+        // best-effort rate limiter.
+        let mut windows = self.windows.write().unwrap_or_else(|e| e.into_inner());
         let entry = windows.entry(key.to_string()).or_insert_with(Vec::new);
 
         // Remove expired entries
