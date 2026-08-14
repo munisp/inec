@@ -393,7 +393,8 @@ func TestR405_GOTVPartyHeaderMustMatchMembership(t *testing.T) {
 	// The suite scratch DB carries the canonical schema: users and parties
 	// from migration 000001 (parties.is_active INTEGER) plus users.party_id
 	// from migration 000031 — exactly what the production middleware queries.
-	if _, err := db.Exec(`INSERT INTO parties (id, code, name) VALUES (999051,'A','Party A'), (999052,'B','Party B') ON CONFLICT DO NOTHING`); err != nil {
+	if _, err := db.Exec(`INSERT INTO parties (id, code, name, abbreviation) VALUES
+		(999051,'A','Party A','PA'), (999052,'B','Party B','PB') ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatalf("seed parties: %v", err)
 	}
 	// users.username is not UNIQUE in the canonical schema, so reseed
