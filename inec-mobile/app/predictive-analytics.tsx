@@ -5,23 +5,37 @@ import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 import { useResolvedElection } from '../src/lib/election';
 
-interface PredictionResult {
-  state: string;
-  predicted_turnout: number;
-  confidence: number;
-  risk_level: string;
-  anomaly_probability: number;
+// R4-52: /ai/predict-turnout never existed; the real route is
+// GET /predictive/analytics (per-state completion + turnout estimate).
+interface StatePrediction {
+  state_code: string;
+  total_pus: number;
+  reported_pus: number;
+  completion_pct: number;
 }
 
+interface PredictiveAnalytics {
+  completion_pct: number;
+  predicted_turnout: number;
+  total_pus: number;
+  reported_pus: number;
+  confidence: number;
+  eta_complete: string;
+  state_predictions: StatePrediction[];
+}
+
+// Real /ai/benford response shape (no p_value — chi-square threshold test).
 interface BenfordResult {
-  passes: boolean;
+  status: 'pass' | 'warning' | 'fail';
+  conclusion: string;
   chi_squared: number;
-  p_value: number;
-  deviation_score: number;
+  sample_size?: number;
+  error?: string;
 }
 
 export default function PredictiveAnalyticsScreen() {
-  const [predictions, setPredictions] = useState<PredictionResult[]>([]);
+  const [predictions, setPredictions] = useState<StatePrediction[]>([]);
+  const [overview, setOverview] = useState<PredictiveAnalytics | null>(null);
   const [benford, setBenford] = useState<BenfordResult | null>(null);
   const [loading, setLoading] = useState(false);
   const { electionId, loading: electionLoading } = useResolvedElection();
@@ -30,8 +44,9 @@ export default function PredictiveAnalyticsScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const res = await apiCall<{ predictions: PredictionResult[] }>('/ai/predict-turnout');
-      setPredictions(res.predictions || []);
+      const res = await apiCall<PredictiveAnalytics>(`/predictive/analytics${electionId ? `?election_id=${electionId}` : ''}`);
+      setPredictions(res.state_predictions || []);
+      setOverview(res);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Prediction failed');
     }
@@ -51,6 +66,9 @@ export default function PredictiveAnalyticsScreen() {
     setLoading(false);
   };
 
+  // Risk band derived from reporting completion (no server risk score exists).
+  const riskOf = (completionPct: number) =>
+    completionPct >= 75 ? 'low' : completionPct >= 40 ? 'medium' : 'high';
   const riskColor = (level: string) => {
     if (level === 'high') return '#dc2626';
     if (level === 'medium') return '#f59e0b';
@@ -68,17 +86,25 @@ export default function PredictiveAnalyticsScreen() {
         <TouchableOpacity style={[styles.button, { backgroundColor: '#7c3aed' }]} onPress={runPrediction} disabled={loading} activeOpacity={0.8}>
           <Text style={styles.buttonText}>{loading ? 'Analyzing...' : 'Run Prediction Model'}</Text>
         </TouchableOpacity>
-        {predictions.map((p) => (
-          <View key={p.state} style={styles.predRow}>
+        {overview && (
+          <Text style={styles.muted}>
+            Overall turnout estimate: {overview.predicted_turnout.toFixed(1)}% · Completion: {overview.completion_pct.toFixed(1)}% · Confidence: {(overview.confidence * 100).toFixed(0)}%
+          </Text>
+        )}
+        {predictions.map((p) => {
+          const risk = riskOf(p.completion_pct);
+          return (
+          <View key={p.state_code} style={styles.predRow}>
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14, fontWeight: '600', color: '#111827' }}>{p.state}</Text>
-              <Text style={styles.muted}>Turnout: {(p.predicted_turnout * 100).toFixed(1)}% | Confidence: {(p.confidence * 100).toFixed(0)}%</Text>
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#111827' }}>{p.state_code}</Text>
+              <Text style={styles.muted}>Reported: {p.reported_pus}/{p.total_pus} PUs ({p.completion_pct.toFixed(1)}%)</Text>
             </View>
-            <View style={[styles.riskBadge, { backgroundColor: riskColor(p.risk_level) + '20' }]}>
-              <Text style={{ fontSize: 11, fontWeight: '700', color: riskColor(p.risk_level) }}>{p.risk_level.toUpperCase()}</Text>
+            <View style={[styles.riskBadge, { backgroundColor: riskColor(risk) + '20' }]}>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: riskColor(risk) }}>{risk.toUpperCase()}</Text>
             </View>
           </View>
-        ))}
+          );
+        })}
       </View>
 
       <View style={styles.card}>
@@ -91,13 +117,15 @@ export default function PredictiveAnalyticsScreen() {
           <Text style={styles.buttonText}>{loading ? 'Analyzing...' : 'Run Benford Analysis'}</Text>
         </TouchableOpacity>
         {benford && (
-          <View style={[styles.resultBanner, { backgroundColor: benford.passes ? '#dcfce7' : '#fef2f2' }]}>
-            <Ionicons name={benford.passes ? 'checkmark-circle' : 'warning'} size={28} color={benford.passes ? '#166534' : '#dc2626'} />
+          <View style={[styles.resultBanner, { backgroundColor: benford.status === 'pass' ? '#dcfce7' : '#fef2f2' }]}>
+            <Ionicons name={benford.status === 'pass' ? 'checkmark-circle' : 'warning'} size={28} color={benford.status === 'pass' ? '#166534' : '#dc2626'} />
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={{ fontSize: 16, fontWeight: '700', color: benford.passes ? '#166534' : '#dc2626' }}>
-                {benford.passes ? 'Distribution Normal' : 'Anomaly Detected'}
+              <Text style={{ fontSize: 16, fontWeight: '700', color: benford.status === 'pass' ? '#166534' : '#dc2626' }}>
+                {benford.error ? benford.error : benford.status === 'pass' ? 'Distribution Normal' : benford.status === 'warning' ? 'Marginal Deviation' : 'Anomaly Detected'}
               </Text>
-              <Text style={styles.muted}>Chi-squared: {benford.chi_squared.toFixed(2)} | p-value: {benford.p_value.toFixed(4)}</Text>
+              {benford.chi_squared !== undefined && (
+                <Text style={styles.muted}>Chi-squared: {benford.chi_squared.toFixed(2)}{benford.conclusion ? ` — ${benford.conclusion}` : ''}</Text>
+              )}
             </View>
           </View>
         )}

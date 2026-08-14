@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Vote, Shield, Eye } from 'lucide-react';
+import { Vote } from 'lucide-react';
+import DemoQuickAccess from '@/components/DemoQuickAccess';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -78,44 +79,8 @@ export default function LoginPage() {
             </form>
 
             {/* Demo quick-login accounts are a DEV-only convenience; they must
-                never render in production builds. */}
-            {import.meta.env.DEV && (
-            <div className="mt-6 pt-4 border-t border-zinc-200">
-              <p className="text-xs text-zinc-500 mb-3">Quick access (demo accounts, dev only):</p>
-              <div className="space-y-2">
-                <button onClick={() => quickLogin('admin', 'admin123')}
-                  className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-zinc-200 hover:bg-zinc-50 transition-colors text-left">
-                  <div className="w-8 h-8 rounded-lg bg-green-100 flex items-center justify-center">
-                    <Shield className="w-4 h-4 text-green-700" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-zinc-900">Administrator</p>
-                    <p className="text-xs text-zinc-500">Full system access</p>
-                  </div>
-                </button>
-                <button onClick={() => quickLogin('officer1', 'officer123')}
-                  className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-zinc-200 hover:bg-zinc-50 transition-colors text-left">
-                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-                    <Vote className="w-4 h-4 text-blue-700" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-zinc-900">Presiding Officer</p>
-                    <p className="text-xs text-zinc-500">Upload & manage results</p>
-                  </div>
-                </button>
-                <button onClick={() => quickLogin('observer', 'observer123')}
-                  className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-zinc-200 hover:bg-zinc-50 transition-colors text-left">
-                  <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center">
-                    <Eye className="w-4 h-4 text-amber-700" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-zinc-900">Election Observer</p>
-                    <p className="text-xs text-zinc-500">View & verify results</p>
-                  </div>
-                </button>
-              </div>
-            </div>
-            )}
+                never render in production builds (R4-41). */}
+            <DemoQuickAccess enabled={import.meta.env.DEV} onQuickLogin={quickLogin} />
           </CardContent>
         </Card>
 

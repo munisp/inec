@@ -4,8 +4,25 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 
+// R4-52: /validation/run never existed. Real routes: GET /ems/validation/stats
+// (aggregate) and GET /ems/validation/history (per-check results).
+interface ValidationStats {
+  total_rules: number;
+  active_rules: number;
+  total_checks: number;
+  total_passed: number;
+  total_failed: number;
+  pass_rate: number;
+}
+
+interface ValidationHistoryEntry {
+  rule_name: string;
+  passed: boolean | number;
+  severity: string;
+  message: string;
+}
+
 interface ValidationResult {
-  total_results: number;
   valid: number;
   warnings: number;
   errors: number;
@@ -20,8 +37,22 @@ export default function DataValidationScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const res = await apiCall<ValidationResult>('/validation/run', { method: 'POST' });
-      setResult(res);
+      const [stats, history] = await Promise.all([
+        apiCall<ValidationStats>('/ems/validation/stats'),
+        apiCall<{ results: ValidationHistoryEntry[] } | ValidationHistoryEntry[]>('/ems/validation/history?limit=50'),
+      ]);
+      const entries = Array.isArray(history) ? history : (history.results || []);
+      const checks = entries.map((e) => ({
+        name: e.rule_name || 'validation rule',
+        status: e.passed ? 'pass' : (e.severity === 'warning' || e.severity === 'info' ? 'warning' : 'fail'),
+        details: e.message || '',
+      }));
+      setResult({
+        valid: stats.total_passed ?? checks.filter((c) => c.status === 'pass').length,
+        warnings: checks.filter((c) => c.status === 'warning').length,
+        errors: stats.total_failed ?? checks.filter((c) => c.status === 'fail').length,
+        checks,
+      });
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Validation failed');
     }
@@ -47,9 +78,9 @@ export default function DataValidationScreen() {
           <Ionicons name="checkmark-done-outline" size={24} color="#166534" />
           <Text style={styles.cardTitle}>Data Validation</Text>
         </View>
-        <Text style={styles.muted}>Run integrity checks on election data: vote totals, accreditation counts, duplicate detection.</Text>
+        <Text style={styles.muted}>Review validation-rule results for election data: vote totals, accreditation counts, duplicates.</Text>
         <TouchableOpacity style={styles.button} onPress={runValidation} disabled={loading} activeOpacity={0.8}>
-          <Text style={styles.buttonText}>{loading ? 'Validating...' : 'Run Validation Suite'}</Text>
+          <Text style={styles.buttonText}>{loading ? 'Loading...' : 'Load Validation Results'}</Text>
         </TouchableOpacity>
       </View>
 

@@ -25,7 +25,7 @@ export default function AuditScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const data = await api<{ entries: AuditEntry[] }>('/audit/log?limit=50');
+      const data = await api<{ entries: AuditEntry[] }>('/audit/trail?limit=50');
       setEntries(data.entries || []);
     } catch { /* ignore */ }
     setLoading(false);
@@ -91,7 +91,7 @@ export default function AuditScreen() {
             <Text style={styles.action}>{e.action.replace(/_/g, ' ')}</Text>
             <Text style={styles.entityInfo}>{e.entity_type} #{e.entity_id} — User {e.user_id}</Text>
             {e.block_hash && <Text style={styles.hash}>{e.block_hash.substring(0, 16)}...</Text>}
-            <Text style={styles.time}>{new Date(e.created_at).toLocaleString()}</Text>
+            <Text style={styles.time}>{new Date(e.created_at || (e as any).timestamp).toLocaleString()}</Text>
           </View>
         </View>
       ))}

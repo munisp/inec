@@ -269,7 +269,20 @@ export default function StakeholderNetworkGraph({ stakeholders }: Props) {
         const reach = n.reach >= 1000000
           ? `${(n.reach / 1000000).toFixed(1)}M`
           : `${(n.reach / 1000).toFixed(0)}K`;
-        tip.innerHTML = `<div class="font-bold text-sm mb-1">${n.label}</div><div class="text-xs opacity-70">Priority Score: ${n.score.toFixed(1)}/10</div><div class="text-xs opacity-70">Est. Reach: ~${reach} voters</div>`;
+        // R4-40: build the tooltip with textContent (never innerHTML) so a
+        // hostile stakeholder label like `<img src=x onerror=…>` renders as
+        // inert text instead of executing as markup.
+        tip.replaceChildren();
+        const title = document.createElement("div");
+        title.className = "font-bold text-sm mb-1";
+        title.textContent = n.label;
+        const scoreLine = document.createElement("div");
+        scoreLine.className = "text-xs opacity-70";
+        scoreLine.textContent = `Priority Score: ${n.score.toFixed(1)}/10`;
+        const reachLine = document.createElement("div");
+        reachLine.className = "text-xs opacity-70";
+        reachLine.textContent = `Est. Reach: ~${reach} voters`;
+        tip.append(title, scoreLine, reachLine);
         tip.style.display = "block";
         tip.style.left = `${(ev as MouseEvent).offsetX + 12}px`;
         tip.style.top = `${(ev as MouseEvent).offsetY - 10}px`;

@@ -4,18 +4,19 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 
+// R4-52: /biometric/status never existed; real route is GET /biometric/stats.
 interface BiometricStatus {
   total_profiles: number;
-  verified_count: number;
-  pending_count: number;
-  deduplication_status?: string;
+  matches: number;
+  no_matches: number;
+  duplicates_flagged: number;
 }
 
+// Real POST /biometric/verify response shape.
 interface VerifyResult {
-  match: boolean;
-  score: number;
-  quality_score: number;
-  pad_score: number;
+  result: string;
+  match_score: number;
+  latency_ms: number;
   vin: string;
 }
 
@@ -29,7 +30,7 @@ export default function BiometricsScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const res = await apiCall<BiometricStatus>('/biometric/status');
+      const res = await apiCall<BiometricStatus>('/biometric/stats');
       setStatus(res);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Failed to load biometric status');
@@ -43,11 +44,10 @@ export default function BiometricsScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const form = new FormData();
-      form.append('vin', vinToVerify);
-      form.append('biometric_type', 'fingerprint');
-      const res = await apiCall<VerifyResult>('/biometric/verify', { method: 'POST', body: form });
-      setVerifyResult(res);
+      // The backend requires a live probe template captured from a biometric
+      // device; this screen has no capture hardware, so it cannot produce a
+      // match decision. Fail honestly instead of posting a fake template.
+      throw new Error('Biometric verification requires a live capture device; use the enrollment kiosk hardware.');
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Verification failed');
     }
@@ -74,12 +74,12 @@ export default function BiometricsScreen() {
               <Text style={styles.statLabel}>Total Profiles</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#166534' }]}>{status.verified_count}</Text>
+              <Text style={[styles.statNumber, { color: '#166534' }]}>{status.matches}</Text>
               <Text style={styles.statLabel}>Verified</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#f59e0b' }]}>{status.pending_count}</Text>
-              <Text style={styles.statLabel}>Pending</Text>
+              <Text style={[styles.statNumber, { color: '#f59e0b' }]}>{status.no_matches}</Text>
+              <Text style={styles.statLabel}>No Match</Text>
             </View>
           </View>
         )}
@@ -122,16 +122,14 @@ export default function BiometricsScreen() {
           </TouchableOpacity>
         )}
         {verifyResult && (
-          <View style={[styles.resultBanner, { backgroundColor: verifyResult.match ? '#dcfce7' : '#fef2f2' }]}>
-            <Ionicons name={verifyResult.match ? 'checkmark-circle' : 'close-circle'} size={28} color={verifyResult.match ? '#166534' : '#dc2626'} />
+          <View style={[styles.resultBanner, { backgroundColor: verifyResult.result === 'match' ? '#dcfce7' : '#fef2f2' }]}>
+            <Ionicons name={verifyResult.result === 'match' ? 'checkmark-circle' : 'close-circle'} size={28} color={verifyResult.result === 'match' ? '#166534' : '#dc2626'} />
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={{ fontSize: 16, fontWeight: '700', color: verifyResult.match ? '#166534' : '#dc2626' }}>
-                {verifyResult.match ? 'Identity Verified' : 'No Match Found'}
+              <Text style={{ fontSize: 16, fontWeight: '700', color: verifyResult.result === 'match' ? '#166534' : '#dc2626' }}>
+                {verifyResult.result === 'match' ? 'Identity Verified' : 'No Match Found'}
               </Text>
               <View style={styles.scoreRow}>
-                <Text style={styles.scoreLabel}>Match: {(verifyResult.score * 100).toFixed(0)}%</Text>
-                <Text style={styles.scoreLabel}>Quality: {(verifyResult.quality_score * 100).toFixed(0)}%</Text>
-                <Text style={styles.scoreLabel}>Liveness: {(verifyResult.pad_score * 100).toFixed(0)}%</Text>
+                <Text style={styles.scoreLabel}>Match: {(verifyResult.match_score * 100).toFixed(0)}%</Text>
               </View>
               <Text style={[styles.muted, { marginTop: 4 }]}>VIN: {verifyResult.vin}</Text>
             </View>

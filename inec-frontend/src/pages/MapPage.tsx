@@ -35,6 +35,13 @@ type TileMode = 'street' | 'satellite';
 
 function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
 
+// R4-56: glyphs endpoint is configurable so production deployments can point
+// at their own hosted font service instead of the public demo tiles. The
+// default preserves prior behavior; set VITE_MAP_GLYPHS_URL to override
+// (see .env.example).
+const MAP_GLYPHS_URL: string = (import.meta as any).env.VITE_MAP_GLYPHS_URL
+  || 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
+
 const STATUS_COLORS: Record<string, string> = {
   finalized: '#16a34a',
   validated: '#2563eb',
@@ -757,7 +764,7 @@ export default function MapPage() {
       container: mapContainer.current,
       style: {
         version: 8,
-        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        glyphs: MAP_GLYPHS_URL,
         sources: { 'base-tiles': getTileSource(tileMode) },
         layers: [{
           id: 'base-tiles',
@@ -1012,7 +1019,7 @@ export default function MapPage() {
       container: mapContainerB.current,
       style: {
         version: 8,
-        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        glyphs: MAP_GLYPHS_URL,
         sources: { 'base-tiles-b': getTileSource(tileMode) },
         layers: [{ id: 'base-tiles-b', type: 'raster', source: 'base-tiles-b', minzoom: 0, maxzoom: 19 }],
       },
@@ -1638,7 +1645,7 @@ export default function MapPage() {
               <div className="flex items-center justify-between">
                 <span className="text-xs flex items-center gap-1"><Shield className="w-3 h-3" /> Geofences</span>
                 <Button size="sm" variant={showGeofences ? 'default' : 'outline'} className="h-6 text-xs px-2"
-                  onClick={() => { setShowGeofences(!showGeofences); if (!showGeofences) { api.seedGeofenceZones().catch(err => logger.error("API error:", err)); } }}>
+                  onClick={() => setShowGeofences(!showGeofences)}>
                   {showGeofences ? 'Hide' : 'Show'}
                 </Button>
               </div>
