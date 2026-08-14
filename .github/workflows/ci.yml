@@ -7,6 +7,16 @@ on:
     branches: [main, inec-platform]
 
 jobs:
+  supply-chain-pins:
+    name: Supply Chain - Image Pin Gate (R4-39d)
+    # Early gate: fails fast if any compose/Dockerfile image reference is
+    # unpinned (no tag) or uses the mutable :latest tag.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check image pins
+        run: bash scripts/check_image_pins.sh
+
   backend-lint-build:
     name: Go Backend - Lint & Build
     runs-on: ubuntu-latest
