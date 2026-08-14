@@ -80,7 +80,24 @@ func NewService(db *sql.DB, cfg Config) *Service {
 	return &Service{db: db, config: cfg}
 }
 
+// InitTables ensures the account-lockout columns backing MaxLoginAttempts /
+// LockoutDuration exist (they are also added by migration 000029). Idempotent.
+func (s *Service) InitTables(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+	`)
+	return err
+}
+
 // Login authenticates a user and returns a token pair.
+//
+// Brute-force defense (R4-08): MaxLoginAttempts and LockoutDuration were
+// configured but never enforced. Now each password failure increments
+// users.failed_login_attempts; reaching the threshold locks the account for
+// LockoutDuration (users.locked_until); a successful login clears both.
+// Enforcement fails CLOSED: if the lockout state cannot be read or written,
+// the login is rejected rather than silently skipping the control.
 func (s *Service) Login(ctx context.Context, username, password string) (*TokenPair, error) {
 	username = strings.TrimSpace(strings.ToLower(username))
 	if username == "" || password == "" {
@@ -90,11 +107,15 @@ func (s *Service) Login(ctx context.Context, username, password string) (*TokenP
 	var user User
 	var passwordHash string
 	var isActive int
+	var failedAttempts int
+	var lockedUntil sql.NullTime
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, full_name, role, COALESCE(staff_id,''), COALESCE(state_code,''), COALESCE(is_active, 1)
+		`SELECT id, username, password_hash, full_name, role, COALESCE(staff_id,''), COALESCE(state_code,''), COALESCE(is_active, 1),
+		        COALESCE(failed_login_attempts, 0), locked_until
 		 FROM users WHERE LOWER(username) = $1`, username).
-		Scan(&user.ID, &user.Username, &passwordHash, &user.FullName, &user.Role, &user.StaffID, &user.State, &isActive)
+		Scan(&user.ID, &user.Username, &passwordHash, &user.FullName, &user.Role, &user.StaffID, &user.State, &isActive,
+			&failedAttempts, &lockedUntil)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invalid credentials")
 	}
@@ -104,13 +125,43 @@ func (s *Service) Login(ctx context.Context, username, password string) (*TokenP
 	if isActive != 1 {
 		return nil, fmt.Errorf("account is disabled")
 	}
+	if lockedUntil.Valid && time.Now().Before(lockedUntil.Time) {
+		return nil, fmt.Errorf("account is temporarily locked until %s after repeated failed login attempts",
+			lockedUntil.Time.UTC().Format(time.RFC3339))
+	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		lockAfter := s.config.MaxLoginAttempts
+		if lockAfter <= 0 {
+			lockAfter = 5
+		}
+		lockSecs := int(s.config.LockoutDuration / time.Second)
+		if lockSecs <= 0 {
+			lockSecs = 900
+		}
+		if _, dbErr := s.db.ExecContext(ctx,
+			`UPDATE users SET
+			   failed_login_attempts = CASE WHEN COALESCE(failed_login_attempts,0) + 1 >= $2 THEN 0 ELSE COALESCE(failed_login_attempts,0) + 1 END,
+			   locked_until = CASE WHEN COALESCE(failed_login_attempts,0) + 1 >= $2 THEN NOW() + make_interval(secs => $3) ELSE locked_until END
+			 WHERE id = $1`, user.ID, lockAfter, lockSecs); dbErr != nil {
+			// Fail closed: an unenforceable lockout must not become a silent
+			// bypass of the brute-force control.
+			log.Error().Err(dbErr).Int("user_id", user.ID).Msg("failed to record login failure / lockout state")
+			return nil, fmt.Errorf("authentication service error")
+		}
+		if failedAttempts+1 >= lockAfter {
+			return nil, fmt.Errorf("account locked for %s after %d failed login attempts", s.config.LockoutDuration, lockAfter)
+		}
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	// Update login count
-	_, _ = s.db.ExecContext(ctx, `UPDATE users SET login_count = COALESCE(login_count,0) + 1 WHERE id = $1`, user.ID)
+	// Success: clear lockout state and update login count.
+	if _, dbErr := s.db.ExecContext(ctx,
+		`UPDATE users SET login_count = COALESCE(login_count,0) + 1, failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
+		user.ID); dbErr != nil {
+		log.Error().Err(dbErr).Int("user_id", user.ID).Msg("failed to clear lockout state on successful login")
+		return nil, fmt.Errorf("authentication service error")
+	}
 
 	pair, err := s.issueTokenPair(&user)
 	if err != nil {

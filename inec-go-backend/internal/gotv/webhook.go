@@ -11,12 +11,56 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
+
+// ValidateWebhookURL validates a subscriber-supplied webhook URL before it is
+// stored (SSRF defense, R4-43): https is required in production (plain http is
+// tolerated only outside production for local development), and the host must
+// not be or resolve to a loopback, RFC1918/RFC4193 private, link-local, or
+// otherwise non-routable address.
+func ValidateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid webhook URL")
+	}
+	if u.Scheme != "https" {
+		if u.Scheme != "http" || IsProductionEnv() {
+			return fmt.Errorf("webhook URL must use https (http allowed only outside production)")
+		}
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return fmt.Errorf("webhook URL host %q is not allowed", host)
+	}
+	blocked := func(ip net.IP) bool {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if blocked(ip) {
+			return fmt.Errorf("webhook URL must not target a loopback/private/link-local address")
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("webhook URL host does not resolve")
+	}
+	for _, ip := range ips {
+		if blocked(ip) {
+			return fmt.Errorf("webhook URL resolves to a loopback/private/link-local address")
+		}
+	}
+	return nil
+}
 
 // WebhookEvent types
 const (
@@ -48,6 +92,7 @@ type WebhookManager struct {
 type retryItem struct {
 	url     string
 	secret  string
+	event   string
 	payload []byte
 	attempt int
 }
@@ -111,7 +156,7 @@ func (wm *WebhookManager) StartRetryWorker(ctx context.Context) {
 					backoff = 5 * time.Minute
 				}
 				time.Sleep(backoff)
-				wm.deliver(item.url, item.secret, item.payload, item.attempt)
+				wm.deliver(item.url, item.secret, item.event, item.payload, item.attempt)
 			}
 		}
 	}()
@@ -149,11 +194,22 @@ func (wm *WebhookManager) Emit(partyID int, event string, data interface{}) {
 		if err := rows.Scan(&url, &secret); err != nil {
 			continue
 		}
-		go wm.deliver(url, secret, body, 0)
+		go wm.deliver(url, secret, event, body, 0)
 	}
 }
 
-func (wm *WebhookManager) deliver(url, secret string, body []byte, attempt int) {
+// deliver posts the signed payload to one subscriber.
+//
+// The HMAC is computed with the webhook secret AS REGISTERED (raw value,
+// R4-43): subscribers verify X-GOTV-Signature as hex(HMAC-SHA256(body,
+// secret)). MIGRATION NOTE: webhooks registered before this fix stored
+// sha256(secret) instead of the raw secret, so their signatures can never
+// verify — they must be re-registered.
+//
+// X-GOTV-Event carries ONLY the event type. Previously it carried the entire
+// JSON payload, leaking event data into HTTP headers (logged by proxies) and
+// risking header injection via payload control characters.
+func (wm *WebhookManager) deliver(url, secret, event string, body []byte, attempt int) {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	signature := hex.EncodeToString(mac.Sum(nil))
@@ -165,13 +221,13 @@ func (wm *WebhookManager) deliver(url, secret string, body []byte, attempt int) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GOTV-Signature", signature)
-	req.Header.Set("X-GOTV-Event", string(body))
+	req.Header.Set("X-GOTV-Event", event)
 
 	resp, err := wm.client.Do(req)
 	if err != nil {
 		if attempt < 5 {
 			select {
-			case wm.retryQ <- retryItem{url: url, secret: secret, payload: body, attempt: attempt + 1}:
+			case wm.retryQ <- retryItem{url: url, secret: secret, event: event, payload: body, attempt: attempt + 1}:
 			default:
 				log.Warn().Str("url", url).Msg("webhook: retry queue full")
 			}
@@ -185,7 +241,7 @@ func (wm *WebhookManager) deliver(url, secret string, body []byte, attempt int) 
 	} else if attempt < 5 {
 		wm.db.Exec("UPDATE gotv_webhooks SET last_failure_at=NOW(), failure_count=failure_count+1 WHERE url=$1", url)
 		select {
-		case wm.retryQ <- retryItem{url: url, secret: secret, payload: body, attempt: attempt + 1}:
+		case wm.retryQ <- retryItem{url: url, secret: secret, event: event, payload: body, attempt: attempt + 1}:
 		default:
 		}
 	} else {

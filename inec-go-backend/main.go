@@ -195,6 +195,7 @@ func main() {
 	initOperationalSettlementSchema(db)
 	startFabricAnchorWorker()
 	startExternalIntegrationDeliveryWorker()
+	startDataRetentionWorker()
 	initKYBSchema()
 	initDataSecuritySchema()
 	initElectionFSMSchema()
@@ -1008,6 +1009,7 @@ func main() {
 	// Stop durable workers before releasing middleware or database dependencies.
 	stopExternalIntegrationDeliveryWorker()
 	stopFabricAnchorWorker()
+	stopDataRetentionWorker()
 
 	// Close middleware connections
 	if mwHub != nil {

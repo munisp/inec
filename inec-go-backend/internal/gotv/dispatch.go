@@ -18,8 +18,10 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +29,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,7 +157,34 @@ func (d *DispatchEngine) LaunchCampaign(ctx context.Context, campaignID string, 
 	adapter, ok := d.adapters[channel]
 	d.mu.RUnlock()
 	if !ok {
-		adapter = &LogAdapter{}
+		// SECURITY (fail loud): never silently substitute the LogAdapter.
+		// LogAdapter.Send reports Status:"delivered" without sending anything,
+		// so a missing provider would fabricate delivery for an entire
+		// campaign (R4-01). The LogAdapter is available ONLY behind an
+		// explicit dev-only opt-in (GOTV_ALLOW_LOG_ADAPTER=true) and never in
+		// production. Otherwise fail the campaign and every queued message
+		// with an explicit error so operators see the misconfiguration.
+		if os.Getenv("GOTV_ALLOW_LOG_ADAPTER") == "true" && !IsProductionEnv() {
+			log.Warn().Str("campaign", campaignID).Str("channel", channel).
+				Msg("GOTV_ALLOW_LOG_ADAPTER=true: messages will be logged, NOT sent (dev only, never production)")
+			adapter = &LogAdapter{}
+		} else {
+			errNoProvider := fmt.Sprintf("no provider configured for channel %q", channel)
+			d.db.ExecContext(ctx,
+				`UPDATE gotv_outreach_log SET status='failed', error_detail=$2 WHERE campaign_id=$1 AND status IN ('queued','pending')`,
+				campaignID, errNoProvider)
+			d.db.ExecContext(ctx,
+				`UPDATE gotv_campaigns SET status='failed', completed_at=NOW() WHERE campaign_id=$1`,
+				campaignID)
+			if d.hub != nil {
+				d.hub.Broadcast("campaign.progress", partyID, map[string]interface{}{
+					"campaign_id": campaignID, "status": "failed", "error": errNoProvider,
+				})
+			}
+			log.Error().Str("campaign", campaignID).Str("channel", channel).Int("party", partyID).
+				Msg("GOTV dispatch refused: " + errNoProvider)
+			return fmt.Errorf("gotv dispatch: %s — configure provider credentials (e.g. AFRICASTALKING_API_KEY for sms) or, for development only, set GOTV_ALLOW_LOG_ADAPTER=true", errNoProvider)
+		}
 	}
 
 	// Fetch party name for personalization
@@ -667,20 +698,22 @@ func (a *LogAdapter) Send(_ context.Context, msg OutboundMessage) DeliveryResult
 
 // SMSAdapter sends SMS via Africa's Talking or Twilio.
 type SMSAdapter struct {
-	Provider   string // "africastalking" or "twilio"
-	APIURL     string
-	APIKey     string
-	SenderID   string
+	Provider    string // "africastalking" or "twilio"
+	APIURL      string
+	APIKey      string
+	SenderID    string
+	Username    string // Africa's Talking app username (AFRICASTALKING_USERNAME); required when Provider == "africastalking"
 	CallbackURL string
-	client     *http.Client
+	client      *http.Client
 }
 
-func NewSMSAdapter(provider, apiURL, apiKey, senderID string) *SMSAdapter {
+func NewSMSAdapter(provider, apiURL, apiKey, senderID, username string) *SMSAdapter {
 	return &SMSAdapter{
 		Provider: provider,
 		APIURL:   apiURL,
 		APIKey:   apiKey,
 		SenderID: senderID,
+		Username: username,
 		client:   &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -696,8 +729,15 @@ func (a *SMSAdapter) Send(ctx context.Context, msg OutboundMessage) DeliveryResu
 
 	switch a.Provider {
 	case "africastalking":
+		// SECURITY (fail closed, R4-02): the username selects the AT
+		// application. Hardcoding "sandbox" against the production base URL
+		// authenticates against the wrong app and silently drops every
+		// message — refuse to send instead.
+		if a.Username == "" {
+			return DeliveryResult{Status: "failed", Error: "AFRICASTALKING_USERNAME not configured (required for provider=africastalking)", Latency: time.Since(start)}
+		}
 		params := url.Values{
-			"username": {"sandbox"},
+			"username": {a.Username},
 			"to":       {msg.Phone},
 			"message":  {msg.Template},
 			"from":     {a.SenderID},
@@ -1275,10 +1315,20 @@ func InitWebhookSecrets(atSecret, twilioToken, whatsappSecret string) {
 	webhookSecretWhatsApp = whatsappSecret
 }
 
+// WebhookSecretsConfigured reports which provider webhook secrets are set, so
+// public webhook routes can refuse requests with 503 (misconfiguration)
+// instead of silently accepting or rejecting (R4-03).
+func WebhookSecretsConfigured() (at, twilio, whatsapp bool) {
+	return webhookSecretAT != "", webhookSecretTwilio != "", webhookSecretWhatsApp != ""
+}
+
 // VerifyATSignature verifies Africa's Talking delivery receipt HMAC.
+// SECURITY (fail closed, R4-03): when the shared secret is not configured the
+// signature can never be verified — return false (callers map this to 503 at
+// the route level so the misconfiguration is visible).
 func VerifyATSignature(body []byte, signature string) bool {
-	if webhookSecretAT == "" {
-		return true // verification disabled
+	if webhookSecretAT == "" || signature == "" {
+		return false
 	}
 	mac := hmac.New(sha256.New, []byte(webhookSecretAT))
 	mac.Write(body)
@@ -1286,38 +1336,43 @@ func VerifyATSignature(body []byte, signature string) bool {
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
-// VerifyTwilioSignature verifies Twilio request signature (X-Twilio-Signature).
+// VerifyTwilioSignature verifies a Twilio request signature (X-Twilio-Signature).
+//
+// Algorithm per Twilio docs (https://www.twilio.com/docs/usage/security#validating-requests):
+//  1. concatenate the full request URL with every POST parameter, sorted by
+//     parameter name, as name+value pairs (no separators);
+//  2. HMAC-SHA1 that string with the account Auth Token;
+//  3. Base64-encode the digest and compare against the X-Twilio-Signature
+//     header in constant time.
+//
+// (A previous implementation used HMAC-SHA256/hex, which no real Twilio
+// request ever matches — fixed in R4-03.)
+// SECURITY (fail closed): an unset auth token means verification always fails.
 func VerifyTwilioSignature(requestURL string, params map[string]string, signature string) bool {
-	if webhookSecretTwilio == "" {
-		return true
+	if webhookSecretTwilio == "" || signature == "" {
+		return false
 	}
-	// Twilio signature: HMAC-SHA1 of URL + sorted POST params
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		keys = append(keys, k)
 	}
-	// Sort keys
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if keys[i] > keys[j] {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
-		}
-	}
+	sort.Strings(keys)
 	data := requestURL
 	for _, k := range keys {
 		data += k + params[k]
 	}
-	mac := hmac.New(sha256.New, []byte(webhookSecretTwilio))
+	mac := hmac.New(sha1.New, []byte(webhookSecretTwilio))
 	mac.Write([]byte(data))
-	expected := hex.EncodeToString(mac.Sum(nil))
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
-// VerifyWhatsAppSignature verifies Meta webhook payload (X-Hub-Signature-256).
+// VerifyWhatsAppSignature verifies a Meta webhook payload (X-Hub-Signature-256).
+// SECURITY (fail closed, R4-03): an unset app secret means verification always
+// fails — never accept unsigned webhooks.
 func VerifyWhatsAppSignature(body []byte, signature string) bool {
-	if webhookSecretWhatsApp == "" {
-		return true
+	if webhookSecretWhatsApp == "" || signature == "" {
+		return false
 	}
 	mac := hmac.New(sha256.New, []byte(webhookSecretWhatsApp))
 	mac.Write(body)

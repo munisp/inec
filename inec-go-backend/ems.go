@@ -1139,6 +1139,19 @@ func handleElectionLifecycle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"election_id": eid, "current_phase": currentPhase, "phases": phases})
 }
 
+// emsLifecyclePhaseOrder is the canonical election lifecycle phase sequence
+// (mirrors the CHECK constraint in migrations/000022_election_management.up.sql).
+var emsLifecyclePhaseOrder = []string{"created", "configured", "staff_deployed", "materials_deployed", "monitoring", "voting_open", "voting_closed", "collation", "declaration", "certified", "archived"}
+
+func emsPhaseIndex(phase string) int {
+	for i, p := range emsLifecyclePhaseOrder {
+		if p == phase {
+			return i
+		}
+	}
+	return -1
+}
+
 func handleTransitionElection(w http.ResponseWriter, r *http.Request) {
 	if _, err := requireRole(r, "admin"); err != nil {
 		writeError(w, 403, err.Error())
@@ -1154,7 +1167,29 @@ func handleTransitionElection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FSM validation (R4-20): lifecycle phases form an ordered state machine.
+	// Previously any string was appended unconditionally, allowing arbitrary /
+	// backwards / fabricated lifecycle states. Now the phase must be known and
+	// strictly FORWARD of the election's current phase.
+	targetIdx := emsPhaseIndex(req.Phase)
+	if targetIdx < 0 {
+		writeError(w, 400, fmt.Sprintf("unknown lifecycle phase %q (valid: %v)", req.Phase, emsLifecyclePhaseOrder))
+		return
+	}
 	eidInt, _ := strconv.Atoi(eid)
+	var currentPhase sql.NullString
+	db.QueryRow("SELECT phase FROM election_lifecycle WHERE election_id=? ORDER BY transitioned_at DESC, id DESC LIMIT 1", eidInt).Scan(&currentPhase)
+	if currentPhase.Valid {
+		curIdx := emsPhaseIndex(currentPhase.String)
+		if targetIdx <= curIdx {
+			writeError(w, 409, fmt.Sprintf("invalid lifecycle transition: cannot move from %q back to %q (phases are strictly forward)", currentPhase.String, req.Phase))
+			return
+		}
+	} else if targetIdx != 0 {
+		writeError(w, 409, fmt.Sprintf("invalid lifecycle transition: first phase must be %q, got %q", emsLifecyclePhaseOrder[0], req.Phase))
+		return
+	}
+
 	dbExecLog("election_lifecycle", "INSERT INTO election_lifecycle (election_id, phase, transitioned_by, notes) VALUES (?,?,1,?)", eidInt, req.Phase, req.Notes)
 	logAudit("ELECTION_TRANSITION", "election", eid, 0, map[string]interface{}{"phase": req.Phase})
 	writeJSON(w, 200, M{"election_id": eid, "phase": req.Phase, "message": "Election transitioned"})

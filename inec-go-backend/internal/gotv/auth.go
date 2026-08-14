@@ -67,6 +67,10 @@ func NewAuthMiddleware(db *sql.DB, config AuthConfig) *AuthMiddleware {
 	}
 	secret := os.Getenv("INTERNAL_SERVICE_SECRET")
 	if secret == "" {
+		// Canonical Wave-A name for the same shared secret.
+		secret = os.Getenv("GOTV_INTERNAL_TOKEN")
+	}
+	if secret == "" {
 		// Legacy alias kept for existing deployments.
 		secret = os.Getenv("GOTV_GATEWAY_SECRET")
 	}

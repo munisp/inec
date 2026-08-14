@@ -103,9 +103,17 @@ func (bl *tokenBlacklist) revokeToken(jti string, userID int, expiresAt time.Tim
 		}
 	}
 
-	// Persist to DB
-	_, err := db.Exec(convertPlaceholders(
-		"INSERT OR REPLACE INTO token_blacklist (jti, user_id, revoked_at, expires_at, reason) VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?)"),
+	// Persist to DB. Explicit PostgreSQL upsert (R4-07): the previous
+	// "INSERT OR REPLACE" SQLite dialect only worked because the pgcompat
+	// shim rewrote it to ON CONFLICT DO NOTHING — which silently dropped
+	// re-revocation updates. Use an explicit ON CONFLICT DO UPDATE so the
+	// revocation record is always refreshed.
+	_, err := db.Exec(
+		`INSERT INTO token_blacklist (jti, user_id, revoked_at, expires_at, reason)
+		 VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4)
+		 ON CONFLICT (jti) DO UPDATE SET
+		   user_id=EXCLUDED.user_id, revoked_at=CURRENT_TIMESTAMP,
+		   expires_at=EXCLUDED.expires_at, reason=EXCLUDED.reason`,
 		jti, userID, expiresAt, reason)
 	if err != nil {
 		log.Error().Err(err).Str("jti", jti).Msg("Failed to persist token revocation")

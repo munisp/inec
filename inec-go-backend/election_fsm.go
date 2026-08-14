@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -154,9 +155,23 @@ func guardDispute(ctx context.Context, electionID int) error {
 }
 
 // TransitionElection attempts to move an election from its current state to the target state.
+//
+// Concurrency (R4-21): the read-check-update runs inside a single transaction
+// with SELECT ... FOR UPDATE, so two concurrent transitions on the same
+// election serialize on the row lock — exactly one can observe a given
+// source state and win; the loser re-reads the new state and gets an
+// "invalid transition" error. Previously this was an unlocked
+// SELECT-then-UPDATE, allowing both racers to pass the FSM check and the
+// last write to silently win.
 func TransitionElection(ctx context.Context, electionID int, event string, actor string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("transition failed: %w", err)
+	}
+	defer tx.Rollback()
+
 	var currentStatus string
-	err := db.QueryRowContext(ctx, "SELECT status FROM elections WHERE id=?", electionID).Scan(&currentStatus)
+	err = tx.QueryRowContext(ctx, convertPlaceholders("SELECT status FROM elections WHERE id=? FOR UPDATE"), electionID).Scan(&currentStatus)
 	if err != nil {
 		return fmt.Errorf("election %d not found", electionID)
 	}
@@ -170,12 +185,16 @@ func TransitionElection(ctx context.Context, electionID int, event string, actor
 					return fmt.Errorf("guard failed for %s→%s: %w", t.From, t.To, err)
 				}
 			}
-			_, err := dbExecCtx(ctx, "UPDATE elections SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", string(t.To), electionID)
-			if err != nil {
+			if _, err := tx.ExecContext(ctx, convertPlaceholders("UPDATE elections SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"), string(t.To), electionID); err != nil {
 				return fmt.Errorf("transition failed: %w", err)
 			}
-			dbExecLog("fsm_audit", "INSERT INTO election_state_log (election_id, from_state, to_state, event, actor, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
-				electionID, string(t.From), string(t.To), event, actor)
+			if _, err := tx.ExecContext(ctx, convertPlaceholders("INSERT INTO election_state_log (election_id, from_state, to_state, event, actor, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)"),
+				electionID, string(t.From), string(t.To), event, actor); err != nil {
+				return fmt.Errorf("transition audit log failed: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("transition commit failed: %w", err)
+			}
 			log.Info().Int("election_id", electionID).Str("from", string(t.From)).Str("to", string(t.To)).Str("event", event).Msg("election state transition")
 
 			if mwHub != nil && mwHub.Kafka != nil {
@@ -801,6 +820,19 @@ func handleWebhookCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF defense (R4-43): validate subscriber URLs at registration time —
+	// https-only in production, and no loopback/RFC1918/link-local targets
+	// (isPrivateURL resolves the host and blocks internal addresses).
+	if u, perr := url.Parse(req.URL); perr != nil || u.Host == "" ||
+		(u.Scheme != "https" && (u.Scheme != "http" || isProductionLike())) {
+		writeError(w, 400, "webhook url must be a valid URL (https required in production)")
+		return
+	}
+	if isPrivateURL(req.URL) {
+		writeError(w, 400, "webhook url must not target a loopback/private/link-local address")
+		return
+	}
+
 	eventsJSON, _ := json.Marshal(req.Events)
 	id := insertReturningID(db, "INSERT INTO webhook_subscriptions (url, events, secret, is_active, created_at) VALUES (?,?,?,1,CURRENT_TIMESTAMP)",
 		req.URL, string(eventsJSON), req.Secret)
@@ -889,11 +921,16 @@ func dispatchWebhook(event string, payload interface{}) {
 }
 
 func computeHMAC(data []byte, secret string) string {
-	// HMAC-SHA256 signature for webhook verification
-	h := sha256.New()
-	h.Write([]byte(secret))
-	h.Write(data)
-	return fmt.Sprintf("sha256=%x", h.Sum(nil))
+	// Real HMAC-SHA256 keyed with the raw registered secret (R4-43 fix:
+	// previously this was sha256(secret‖data) — not an HMAC and vulnerable
+	// to length-extension). Subscribers verify as:
+	//   expected = "sha256=" + hex(HMAC-SHA256(body, secret))
+	// MIGRATION NOTE: signatures produced before this fix used the ad-hoc
+	// sha256(secret‖data) construction; subscribers verifying with standard
+	// HMAC must use deliveries made after this change.
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(data)
+	return fmt.Sprintf("sha256=%x", mac.Sum(nil))
 }
 
 func initWebhookSchema() {

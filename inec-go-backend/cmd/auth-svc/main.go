@@ -55,6 +55,13 @@ func main() {
 
 	cfg := auth.DefaultConfig([]byte(*jwtSecret))
 	svc := auth.NewService(db, cfg)
+	// Ensure the account-lockout columns backing MaxLoginAttempts /
+	// LockoutDuration exist (also covered by migration 000029). Fatal on
+	// error: login lockout enforcement fails closed, so the schema must be
+	// present before serving traffic.
+	if err := svc.InitTables(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("auth-svc: failed to ensure lockout schema")
+	}
 	mfaSvc := auth.NewMFAService(db, "INEC Platform")
 	mfaSvc.InitTables(context.Background())
 
