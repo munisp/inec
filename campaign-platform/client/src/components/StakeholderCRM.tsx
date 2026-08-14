@@ -15,6 +15,35 @@ import type { CRMContact, Stakeholder } from "./StakeholderTypes";
 
 const LOCAL_STORAGE_KEY = "inec_crm_contacts";
 
+// R4-47: localStorage persistence is gated behind the VITE_ENABLE_LOCAL_PERSIST
+// build-time flag. Default: enabled in dev builds, OFF in production builds.
+// When disabled — or when storage is unavailable (private mode, quota, blocked
+// cookies) — contacts fall back to an in-memory store for the session only.
+const LOCAL_PERSIST_ENABLED =
+  (import.meta.env.VITE_ENABLE_LOCAL_PERSIST ??
+    (import.meta.env.PROD ? "false" : "true")) === "true";
+
+const memoryStore = new Map<string, string>();
+
+function storageGet(key: string): string | null {
+  if (!LOCAL_PERSIST_ENABLED) return memoryStore.get(key) ?? null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return memoryStore.get(key) ?? null;
+  }
+}
+
+function storageSet(key: string, value: string): void {
+  // Always retain the in-memory copy so reads keep working when storage is
+  // blocked or disabled.
+  memoryStore.set(key, value);
+  if (!LOCAL_PERSIST_ENABLED) return;
+  try {
+    localStorage.setItem(key, value);
+  } catch { /* storage full/blocked — in-memory copy retained */ }
+}
+
 const STATUS_CONFIG = {
   "Not Started":        { color: "oklch(0.55 0.01 240)",  bg: "oklch(0.22 0.01 240)",  icon: <Clock className="w-3 h-3" /> },
   "Contacted":          { color: "oklch(0.75 0.18 280)",  bg: "oklch(0.22 0.08 280)",  icon: <Phone className="w-3 h-3" /> },
@@ -88,7 +117,7 @@ function crmToServer(c: CRMContact, profileId: number) {
 
 function loadLocalContacts(): CRMContact[] {
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const raw = storageGet(LOCAL_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -243,10 +272,11 @@ export default function StakeholderCRM({ stakeholders, onContactsChange, profile
     onContactsChange?.(contacts);
   }, [contacts, onContactsChange]);
 
-  // Persist local-only contacts with read-back
+  // Persist local-only contacts with read-back (R4-47: gated by
+  // VITE_ENABLE_LOCAL_PERSIST; in-memory fallback otherwise)
   useEffect(() => {
     if (!serverBacked) {
-      try { localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(localContacts)); } catch { /* storage full/blocked */ }
+      storageSet(LOCAL_STORAGE_KEY, JSON.stringify(localContacts));
     }
   }, [serverBacked, localContacts]);
 
