@@ -145,7 +145,10 @@ func TestR458_WalklistProximityOrdering(t *testing.T) {
 	if dbConn == nil {
 		t.Skip("requires database")
 	}
-	// Polling units at known coordinates.
+	// Polling units at known coordinates + the party FK target.
+	if _, err := dbConn.Exec(`INSERT INTO parties (id, code, name) VALUES (999058, 'R458', 'R4 Walklist Party') ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("seed party: %v", err)
+	}
 	if _, err := dbConn.Exec(`INSERT INTO polling_units (code, latitude, longitude) VALUES
 		('R458-NEAR', 6.4500, 3.3900),
 		('R458-FAR', 9.0500, 7.4900)

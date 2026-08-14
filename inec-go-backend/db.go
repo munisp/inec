@@ -24,6 +24,7 @@ func initDB(db *sql.DB) {
 		state_code TEXT,
 		lga_code TEXT,
 		polling_unit_code TEXT,
+		party_id INTEGER,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		is_active INTEGER DEFAULT 1
 	);

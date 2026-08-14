@@ -35,6 +35,9 @@ func r4MonolithTestDB(t *testing.T) *sql.DB {
 	}
 	prevDB, prevReader, prevWriter := db, dbReader, dbWriter
 	db, dbReader, dbWriter = testDB, testDB, testDB
+	if dbMetrics == nil {
+		dbMetrics = newDBMetrics()
+	}
 	t.Cleanup(func() {
 		db, dbReader, dbWriter = prevDB, prevReader, prevWriter
 		testDB.Close()
@@ -126,7 +129,7 @@ func TestR420_PatchElectionRejectsStatus(t *testing.T) {
 }
 
 func TestR420_EMSLifecycleForwardOnly(t *testing.T) {
-	testDB := r4MonolithTestDB(t)
+	r4MonolithTestDB(t)
 
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS election_lifecycle (
 		id SERIAL PRIMARY KEY, election_id INTEGER NOT NULL, phase TEXT NOT NULL,
@@ -167,7 +170,7 @@ func TestR420_EMSLifecycleForwardOnly(t *testing.T) {
 // ─── R4-21: concurrent FSM transitions — exactly one wins ───────────────────
 
 func TestR421_ConcurrentTransitionSerialized(t *testing.T) {
-	testDB := r4MonolithTestDB(t)
+	r4MonolithTestDB(t)
 
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS elections (
 		id SERIAL PRIMARY KEY, title TEXT, election_type TEXT, election_date TEXT,
@@ -226,7 +229,7 @@ func TestR421_ConcurrentTransitionSerialized(t *testing.T) {
 // ─── R4-07: jti revocation end-to-end on real PostgreSQL ────────────────────
 
 func TestR407_RevokedTokenRejectedAndPersisted(t *testing.T) {
-	testDB := r4MonolithTestDB(t)
+	r4MonolithTestDB(t)
 
 	// Real PG DDL (note: NOT via the pgcompat shim — this proves the
 	// blacklist SQL is valid PostgreSQL, R4-07c).
@@ -288,24 +291,44 @@ func TestR407_RevokedTokenRejectedAndPersisted(t *testing.T) {
 // ─── R4-05: monolith GOTV party tenancy ──────────────────────────────────────
 
 func TestR405_GOTVPartyHeaderMustMatchMembership(t *testing.T) {
-	testDB := r4MonolithTestDB(t)
+	r4MonolithTestDB(t)
 
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, party_id INTEGER)`); err != nil {
 		t.Fatalf("ddl users: %v", err)
 	}
+	// The scratch DB may already have a users table from another package's
+	// test schema — ensure the membership column exists either way.
+	if _, err := db.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS party_id INTEGER`); err != nil {
+		t.Fatalf("alter users: %v", err)
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS parties (
 		id SERIAL PRIMARY KEY, code TEXT, name TEXT, is_active INTEGER DEFAULT 1)`); err != nil {
 		t.Fatalf("ddl parties: %v", err)
 	}
-	db.Exec(`INSERT INTO parties (id, code, name) VALUES (999051,'A','Party A'), (999052,'B','Party B') ON CONFLICT DO NOTHING`)
-	db.Exec(`INSERT INTO users (username, party_id) VALUES ('r405admin', 999051) ON CONFLICT (username) DO UPDATE SET party_id=999051`)
+	// Normalize is_active to the monolith's INTEGER convention (the shared
+	// scratch DB may carry a BOOLEAN variant created by gotv-svc tests).
+	for _, stmt := range []string{
+		`ALTER TABLE parties ALTER COLUMN is_active DROP DEFAULT`,
+		`ALTER TABLE parties ALTER COLUMN is_active TYPE INTEGER USING CASE WHEN is_active THEN 1 ELSE 0 END`,
+		`ALTER TABLE parties ALTER COLUMN is_active SET DEFAULT 1`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("normalize parties.is_active: %v", err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO parties (id, code, name) VALUES (999051,'A','Party A'), (999052,'B','Party B') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatalf("seed parties: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, party_id) VALUES ('r405admin', 999051) ON CONFLICT (username) DO UPDATE SET party_id=999051`); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
 
 	token, _ := createAccessToken(map[string]interface{}{
 		"sub": "1", "username": "r405admin", "role": "party_admin",
 	})
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
-	call := func(partyHeader string) int {
+	call := func(partyHeader string) (int, string) {
 		req := httptest.NewRequest("GET", "/gotv/contacts", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		if partyHeader != "" {
@@ -313,19 +336,19 @@ func TestR405_GOTVPartyHeaderMustMatchMembership(t *testing.T) {
 		}
 		rr := httptest.NewRecorder()
 		gotvAuthMiddleware(next).ServeHTTP(rr, req)
-		return rr.Code
+		return rr.Code, rr.Body.String()
 	}
 
 	// Own party → allowed.
-	if code := call("999051"); code != 200 {
-		t.Fatalf("own party rejected: %d", code)
+	if code, body := call("999051"); code != 200 {
+		t.Fatalf("own party rejected: %d %s", code, body)
 	}
 	// Other party → 403 (was: silently trusted).
-	if code := call("999052"); code != http.StatusForbidden {
-		t.Fatalf("R4-05: cross-party X-Party-ID returned %d, want 403", code)
+	if code, body := call("999052"); code != http.StatusForbidden {
+		t.Fatalf("R4-05: cross-party X-Party-ID returned %d, want 403: %s", code, body)
 	}
 	// No header → falls back to membership party.
-	if code := call(""); code != 200 {
-		t.Fatalf("no-header membership fallback rejected: %d", code)
+	if code, body := call(""); code != 200 {
+		t.Fatalf("no-header membership fallback rejected: %d %s", code, body)
 	}
 }
