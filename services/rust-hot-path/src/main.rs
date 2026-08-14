@@ -14,6 +14,7 @@ mod opensearch;
 mod fluvio_smart;
 mod pipeline;
 mod metrics;
+mod wal;
 
 use std::sync::Arc;
 use axum::{Router, routing::get, Json};

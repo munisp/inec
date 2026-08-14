@@ -43,9 +43,13 @@ impl PersistenceLayer {
         self.write_failures.load(Ordering::Relaxed)
     }
 
+    /// Persistence remains fire-and-forget by design (the in-memory engine
+    /// must not block on backend latency), but failures are OBSERVABLE: each
+    /// one is logged at error level and counted in `write_failures`, which is
+    /// surfaced on /health and /gotv-engine/stats.
     fn record_failure(&self, url: &str, err: &str) {
         let n = self.write_failures.fetch_add(1, Ordering::Relaxed) + 1;
-        tracing::warn!(url = %url, error = %err, total_failures = n, "persistence write failed");
+        tracing::error!(url = %url, error = %err, total_failures = n, "persistence write failed");
     }
 
     /// POST JSON, logging and counting any failure instead of discarding it.
@@ -357,4 +361,42 @@ pub fn haversine_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     let a = (dlat / 2.0).sin().powi(2)
         + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlng / 2.0).sin().powi(2);
     r * 2.0 * a.sqrt().asin()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R4-28 regression: a failed persistence write must be counted and
+    /// observable — never silently swallowed. Uses a scratch DATABASE_URL so
+    /// the layer is "enabled" and an unroutable backend address so the POST
+    /// deterministically fails (connection refused).
+    #[tokio::test]
+    async fn failed_write_increments_failure_counter() {
+        // Point the backend at a port nothing listens on.
+        std::env::set_var("DATABASE_URL", "postgres://localhost:1/x");
+        std::env::set_var("GOTV_BACKEND_URL", "http://127.0.0.1:1");
+        let layer = PersistenceLayer::new();
+        assert!(layer.is_enabled());
+        let before = layer.write_failures();
+
+        layer.save_ride_match("ride-1", "vol-1", 1.5).await;
+        layer.save_volunteer_position("vol-1", 7, 6.5, 3.4).await;
+
+        assert_eq!(
+            layer.write_failures(),
+            before + 2,
+            "both failed writes must be counted"
+        );
+        std::env::remove_var("GOTV_BACKEND_URL");
+        std::env::remove_var("DATABASE_URL");
+
+        // Disabled layer (no DATABASE_URL): writes are no-ops and the counter
+        // stays at zero — silence is correct only when nothing was claimed.
+        let layer = PersistenceLayer::new();
+        assert!(!layer.is_enabled());
+        layer.save_ride_match("ride-2", "vol-2", 0.5).await;
+        assert_eq!(layer.write_failures(), 0);
+    }
+
 }

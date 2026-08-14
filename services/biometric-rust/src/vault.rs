@@ -760,7 +760,9 @@ mod tests {
     use super::*;
 
     // Tests require a running PostgreSQL instance provided via TEST_DATABASE_URL.
-    // Run with: TEST_DATABASE_URL=postgresql://... cargo test -- --ignored
+    // Run with: TEST_DATABASE_URL=postgresql://... cargo test -- --ignored --test-threads=1
+    // (serial: the tests share one scratch DB and the single-active-key
+    // invariant, so parallel runs can race on key creation/rotation).
     // No credentials are committed to the repository — tests skip when unset.
     async fn test_pool() -> Option<sqlx::PgPool> {
         let url = std::env::var("TEST_DATABASE_URL").ok()?;
@@ -810,6 +812,98 @@ mod tests {
 
         let decrypted = vault.decrypt_template(&encrypted.template_id, "test").await.unwrap();
         assert_eq!(decrypted, template_data);
+    }
+
+    /// R4-10b regression: a mid-rotation failure must leave the vault
+    /// consistent — every template stays either fully on the old key or fully
+    /// on the new key (per-template transaction rolls back on error), and
+    /// re-running the rotation resumes and completes.
+    ///
+    /// Failure is injected by corrupting one template's integrity hash so its
+    /// decrypt-with-old-key step fails inside the per-template transaction.
+    #[tokio::test]
+    #[ignore]
+    async fn test_rotate_key_mid_loop_failure_rolls_back_and_resumes() {
+        let Some(pool) = test_pool().await else {
+            eprintln!("TEST_DATABASE_URL not set — skipping PostgreSQL integration test");
+            return;
+        };
+        let vault = BiometricVault::new(pool.clone()).await.unwrap();
+
+        // Two templates on the current active key.
+        let t1 = vault
+            .encrypt_template("VIN-ROT-A", "fingerprint", b"template-a", "test")
+            .await
+            .unwrap();
+        let t2 = vault
+            .encrypt_template("VIN-ROT-B", "fingerprint", b"template-b", "test")
+            .await
+            .unwrap();
+        let old_key = t1.key_id.clone();
+        assert_eq!(old_key, t2.key_id, "both templates must start on the same key");
+
+        // Snapshot t2's integrity hash, then corrupt it to force a mid-loop
+        // decrypt failure inside that template's transaction.
+        let (saved_hash,): (String,) = sqlx::query_as(
+            "SELECT integrity_hash FROM vault_templates WHERE template_id = $1",
+        )
+        .bind(&t2.template_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE vault_templates SET integrity_hash = 'corrupted' WHERE template_id = $1")
+            .bind(&t2.template_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Rotation must fail on the corrupted template.
+        let outcome = vault.rotate_key(&old_key, "test").await;
+        assert!(outcome.is_err(), "rotation must fail loudly on undecryptable template");
+
+        // The corrupted template's transaction rolled back: its row still
+        // points at the old key with the (corrupted) ciphertext untouched —
+        // never a half-written mixed-key record.
+        let (t2_key, t2_hash): (String, String) = sqlx::query_as(
+            "SELECT key_id, integrity_hash FROM vault_templates WHERE template_id = $1",
+        )
+        .bind(&t2.template_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(t2_key, old_key, "failed template must roll back to the old key");
+        assert_eq!(t2_hash, "corrupted");
+
+        // The uncorrupted template is consistent regardless of processing
+        // order: it decrypts to the original plaintext under whichever key
+        // its (committed or never-started) transaction left it on.
+        let p1 = vault.decrypt_template(&t1.template_id, "test").await.unwrap();
+        assert_eq!(p1, b"template-a");
+
+        // Heal the corruption and re-run: rotation resumes and completes.
+        sqlx::query("UPDATE vault_templates SET integrity_hash = $1 WHERE template_id = $2")
+            .bind(&saved_hash)
+            .bind(&t2.template_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let new_key = vault.rotate_key(&old_key, "test").await.unwrap();
+        assert_ne!(new_key, old_key);
+
+        let p1 = vault.decrypt_template(&t1.template_id, "test").await.unwrap();
+        let p2 = vault.decrypt_template(&t2.template_id, "test").await.unwrap();
+        assert_eq!(p1, b"template-a");
+        assert_eq!(p2, b"template-b");
+
+        // No template remains on the old key after a successful rotation.
+        let (remaining,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM vault_templates WHERE key_id = $1",
+        )
+        .bind(&old_key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[tokio::test]

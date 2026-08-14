@@ -1,5 +1,25 @@
 # inec-inference-engine (inference-engine-v2)
 
+> **Canonicality note (R4-34 / R4-54 reconciliation, audit Round 4).**
+> Two Rust inference services coexist: `services/inference-engine` (**v1**)
+> and `services/inference-engine-v2` (**this crate**).
+>
+> - **v1 is the deployed/canonical service today**: all compose references
+>   (`docker-compose.yml`, `docker-compose.ml.yml`) build and route to
+>   `inference-engine`, not v2.
+> - **v2 is a functional superset** (it adds `/liveness/predict`,
+>   `/face/compare`, `/graph/neighborhood`, `/gps/spoof-detect`), but it is
+>   NOT referenced by any compose/k8s manifest.
+> - **Route parity gap:** `docker-compose.yml` sets
+>   `BIOMETRIC_LIVENESS_URL=http://inference-engine:8091/liveness/predict`,
+>   but **v1 has no `/liveness/predict` route** — that URL 404s against v1.
+>   Either v1 must grow `/liveness/predict` parity, or compose must point at
+>   v2. This is a product/deployment decision; v2 is deliberately NOT deleted
+>   until that decision is recorded.
+> - v2 unit tests are ENV_BLOCKED in the audit sandbox: the prebuilt ONNX
+>   Runtime binary requires glibc >= 2.38 (sandbox: Debian 12 / glibc 2.36).
+>   `cargo check` passes; `cargo test` must run on a glibc >= 2.38 runner.
+
 Rust ML inference service (v2): ONNX Runtime (CPU) serving for the anomaly
 XGBoost model, face-embedding comparison (ArcFace), CDCN liveness
 detection, Neo4j graph neighborhood queries and GPS spoof detection. Axum

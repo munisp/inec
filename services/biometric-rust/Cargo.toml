@@ -12,13 +12,12 @@ hmac = "0.12"
 hkdf = "0.12"
 rand = "0.8"
 zeroize = { version = "1.7", features = ["derive"] }
-argon2 = "0.5"
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+# NOTE: argon2, x25519-dalek and bincode were removed — they were declared
+# but never used in this crate (bincode 1.x is unmaintained, RUSTSEC-2025-0141).
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-bincode = "1.3"
 base64 = "0.22"
 hex = "0.4"
 
@@ -27,22 +26,25 @@ axum = { version = "0.7", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
-hyper = "1.0"
 
 # Database (required — all state persists to PostgreSQL)
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
+# sqlx 0.8: RUSTSEC-2024-0363 (0.7.x binary-protocol truncation/overflow
+# casts). 0.8 also pulls rustls 0.23 / rustls-webpki 0.102, clearing the
+# webpki 0.101 advisories (RUSTSEC-2026-0098/-0099/-0104).
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
 
 # Metrics / logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-prometheus = "0.13"
+# NOTE: prometheus was removed — declared but never used; it pinned
+# protobuf 2.28 (RUSTSEC-2024-0437, no 2.x fix). Re-add prometheus 0.14+
+# (protobuf 3.x) if metrics are ever wired.
 
 # Misc
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 thiserror = "1.0"
 rayon = "1.8"
-crossbeam-channel = "0.5"
 
 [features]
 default = []
@@ -52,3 +54,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }

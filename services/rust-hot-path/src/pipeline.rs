@@ -48,6 +48,11 @@ pub struct Config {
 
     // Pipeline
     pub channel_capacity: usize,     // internal channel buffer size
+
+    // Durable retry (R4-25): failed sink batches are appended to a local
+    // write-ahead log and replayed on startup. See wal.rs for the honest
+    // at-least-once caveat.
+    pub wal_dir: std::path::PathBuf,
 }
 
 impl Config {
@@ -80,8 +85,25 @@ impl Config {
             // Default 5k batches (not 1M): a million-deep buffer of 10k-message
             // batches is an unbounded-memory footgun, not backpressure.
             channel_capacity: env_usize("CHANNEL_CAPACITY", 5_000),
+            // --wal-dir <path> CLI flag wins over WAL_DIR; default /tmp.
+            wal_dir: std::path::PathBuf::from(wal_dir_from_args()
+                .unwrap_or_else(|| env_str("WAL_DIR", "/tmp/inec-hot-path-wal"))),
         }
     }
+}
+
+/// Parse `--wal-dir <path>` from process arguments (minimal, flag-only).
+fn wal_dir_from_args() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--wal-dir" {
+            return args.next();
+        }
+        if let Some(v) = arg.strip_prefix("--wal-dir=") {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 /// Core transaction type flowing through the hot path.
@@ -147,6 +169,9 @@ pub struct Engine {
     // Internal channels (lock-free MPMC)
     tx_sender: channel::Sender<Vec<Transaction>>,
     tx_receiver: channel::Receiver<Vec<Transaction>>,
+
+    // Durable retry log for failed sink batches (R4-25).
+    wal: Option<Arc<crate::wal::WriteAheadLog>>,
 }
 
 impl Engine {
@@ -162,6 +187,20 @@ impl Engine {
 
         let (tx_sender, tx_receiver) = channel::bounded(config.channel_capacity);
 
+        // WAL failure is not fatal at boot only in the sense that the
+        // pipeline still runs — but it is logged at error level because
+        // without the WAL failed batches are dropped again.
+        let wal = match crate::wal::WriteAheadLog::open(&config.wal_dir) {
+            Ok(w) => Some(Arc::new(w)),
+            Err(e) => {
+                tracing::error!(
+                    "failed to open WAL dir {}: {e:#} — failed sink batches will NOT be durably retried",
+                    config.wal_dir.display()
+                );
+                None
+            }
+        };
+
         Ok(Self {
             config,
             start_time: Instant::now(),
@@ -174,6 +213,7 @@ impl Engine {
             sink_fluvio: Arc::new(SinkStats::default()),
             tx_sender,
             tx_receiver,
+            wal,
         })
     }
 
@@ -203,6 +243,10 @@ impl Engine {
         let os = Arc::new(OpenSearchBulkWriter::new(&config));
         let fluvio = Arc::new(FluvioSmartProcessor::new(&config));
 
+        // R4-25: replay batches that failed during a previous run BEFORE new
+        // traffic is processed. Batches that fail again are kept in the WAL.
+        self.replay_wal(&redis, &tb, &os, &fluvio).await;
+
         // Spawn N processor workers
         let mut handles = Vec::new();
         for worker_id in 0..num_cpus::get().min(32) {
@@ -218,6 +262,7 @@ impl Engine {
             let sink_tigerbeetle = self.sink_tigerbeetle.clone();
             let sink_opensearch = self.sink_opensearch.clone();
             let sink_fluvio = self.sink_fluvio.clone();
+            let wal = self.wal.clone();
 
             handles.push(tokio::spawn(async move {
                 loop {
@@ -249,6 +294,21 @@ impl Engine {
 
                             if failed {
                                 errors.fetch_add(batch_len, Ordering::Relaxed);
+                                // R4-25: never silently drop a failed batch —
+                                // persist it for replay on next startup.
+                                if let Some(wal) = &wal {
+                                    let mut failed_sinks = Vec::new();
+                                    if r1.is_err() { failed_sinks.push("redis"); }
+                                    if r2.is_err() { failed_sinks.push("tigerbeetle"); }
+                                    if r3.is_err() { failed_sinks.push("opensearch"); }
+                                    if r4.is_err() { failed_sinks.push("fluvio"); }
+                                    if let Err(e) = wal.append(&failed_sinks, &batch_arc) {
+                                        tracing::error!(
+                                            "WAL append failed: {e:#} — batch of {} is LOST (no durable fallback left)",
+                                            batch_len
+                                        );
+                                    }
+                                }
                             } else {
                                 processed.fetch_add(batch_len, Ordering::Relaxed);
                             }
@@ -267,6 +327,71 @@ impl Engine {
             let _ = h.await;
         }
         Ok(())
+    }
+
+    /// Replay WAL-persisted failed batches through the same fan-out path.
+    /// Batches that fail again are rewritten into the WAL for the next
+    /// restart; succeeded batches are counted as processed. At-least-once:
+    /// see wal.rs module docs for the delivery-semantics caveat.
+    async fn replay_wal(
+        &self,
+        redis: &Arc<RedisClusterPipeline>,
+        tb: &Arc<TigerBeetleDirectClient>,
+        os: &Arc<OpenSearchBulkWriter>,
+        fluvio: &Arc<FluvioSmartProcessor>,
+    ) {
+        let Some(wal) = &self.wal else { return };
+        let records = match wal.read_all() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("WAL replay: failed to read {}: {e:#}", wal.path().display());
+                return;
+            }
+        };
+        if records.is_empty() {
+            return;
+        }
+        tracing::info!("WAL replay: retrying {} failed batch(es) from previous run", records.len());
+
+        let mut still_failed: Vec<crate::wal::WalRecord> = Vec::new();
+        for mut record in records {
+            let batch_len = record.transactions.len() as u64;
+            let batch = Arc::new(record.transactions.clone());
+            let (r1, r2, r3, r4) = tokio::join!(
+                redis.pipeline_batch(batch.clone()),
+                tb.batch_transfer(batch.clone()),
+                os.bulk_index(batch.clone()),
+                fluvio.produce_batch(batch.clone()),
+            );
+            self.sink_redis.record(r1.is_ok(), batch_len);
+            self.sink_tigerbeetle.record(r2.is_ok(), batch_len);
+            self.sink_opensearch.record(r3.is_ok(), batch_len);
+            self.sink_fluvio.record(r4.is_ok(), batch_len);
+
+            record.failed_sinks.clear();
+            if let Err(e) = &r1 { record.failed_sinks.push(format!("redis: {e}")); }
+            if let Err(e) = &r2 { record.failed_sinks.push(format!("tigerbeetle: {e}")); }
+            if let Err(e) = &r3 { record.failed_sinks.push(format!("opensearch: {e}")); }
+            if let Err(e) = &r4 { record.failed_sinks.push(format!("fluvio: {e}")); }
+
+            if record.failed_sinks.is_empty() {
+                self.processed.fetch_add(batch_len, Ordering::Relaxed);
+            } else {
+                self.errors.fetch_add(batch_len, Ordering::Relaxed);
+                still_failed.push(record);
+            }
+        }
+        if let Err(e) = wal.rewrite(&still_failed) {
+            tracing::error!(
+                "WAL replay: failed to rewrite {}: {e:#} — {} record(s) may be replayed twice on next start (at-least-once)",
+                wal.path().display(),
+                still_failed.len()
+            );
+        }
+        tracing::info!(
+            "WAL replay complete: {} record(s) still failing and retained",
+            still_failed.len()
+        );
     }
 
     pub fn prometheus_metrics(&self) -> String {
