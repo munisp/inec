@@ -6,9 +6,13 @@ Each state INEC office trains a local model on its own data without sharing
 raw data. Only model weight updates (gradients) are shared with the central
 aggregator, which uses FedAvg to produce a global model.
 
-Privacy guarantees:
+Privacy guarantees (HONEST accounting):
   - Raw voting data never leaves the state office
-  - Differential privacy noise added to gradients before sharing
+  - Client weight updates ARE visible to this server in the clear; DP noise
+    and clipping are applied SERVER-SIDE by the aggregator during FedAvg
+    (federated_averaging), NOT by clients before sharing. The earlier claim
+    that "noise is added to gradients before sharing" was inaccurate — treat
+    this as central-DP, not local-DP.
   - The global model improves from all states' experience
 
 Architecture:
@@ -29,7 +33,7 @@ import numpy as np
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 _PRODUCTION = APP_ENV == "production"
@@ -62,8 +66,14 @@ app.add_middleware(
 # endpoint FAILS CLOSED when it is unset.
 # KEY ROTATION: comma-separated keys are accepted; any constant-time match
 # authenticates so operators can rotate without downtime.
+# FEDERATED_SUBMIT_TOKEN is the canonical name; FEDERATED_SUBMIT_KEY is kept
+# as a backward-compatible alias for existing deployments.
 FEDERATED_SUBMIT_KEYS: list[str] = [
-    k.strip() for k in os.getenv("FEDERATED_SUBMIT_KEY", "").split(",") if k.strip()
+    k.strip()
+    for k in os.getenv(
+        "FEDERATED_SUBMIT_TOKEN", os.getenv("FEDERATED_SUBMIT_KEY", "")
+    ).split(",")
+    if k.strip()
 ]
 # Reject model-poisoning updates whose weight norm is implausibly large.
 FEDERATED_MAX_UPDATE_NORM = float(os.getenv("FEDERATED_MAX_UPDATE_NORM", "100.0"))
@@ -232,7 +242,9 @@ class ModelUpdate(BaseModel):
     round_number: int
     weights: list[float]  # Local model weights (length = FEATURE_DIM)
     bias: float
-    num_samples: int
+    # SECURITY: ge=1 — a 0 here across clients caused a ZeroDivisionError
+    # (500) in FedAvg, and negatives allowed weight manipulation.
+    num_samples: int = Field(ge=1)
     loss: float
     accuracy: float
 
@@ -276,7 +288,7 @@ async def submit_model_update(update: ModelUpdate, _auth=Depends(require_submit_
     # submitting repeatedly within the same aggregation round.
     if update.state_code in {u["state_code"] for u in client_updates}:
         raise HTTPException(
-            status_code=429,
+            status_code=409,
             detail=f"state {update.state_code} already submitted an update this round",
         )
 
