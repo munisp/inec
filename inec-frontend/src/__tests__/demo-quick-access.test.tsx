@@ -32,7 +32,7 @@ describe('DemoQuickAccess (R4-41)', () => {
   it('source of LoginPage gates on import.meta.env.DEV', async () => {
     // Guard against regressions where the gate is dropped from LoginPage.
     const fs = await import('node:fs/promises');
-    const src = await fs.readFile(new URL('../pages/LoginPage.tsx', import.meta.url), 'utf8');
+    const src = await fs.readFile('src/pages/LoginPage.tsx', 'utf8');
     expect(src).toContain('enabled={import.meta.env.DEV}');
     expect(src).not.toContain("quickLogin('admin'");
   });

@@ -532,9 +532,14 @@ export interface Voter {
 }
 
 export const voterApi = {
-  search: (query: string) => api<Voter[]>(`/voters/search?q=${encodeURIComponent(query)}`),
+  // R4-52: /voters/search never existed; real route is GET /ems/voters?search=
+  // which returns { voters, total, limit, offset }. Caller unwraps .voters.
+  search: async (query: string): Promise<Voter[]> => {
+    const res = await api<{ voters: Voter[]; total: number }>(`/ems/voters?search=${encodeURIComponent(query)}`);
+    return res.voters || [];
+  },
   register: (data: { full_name: string; state: string; lga: string; ward: string; polling_unit_code: string; date_of_birth: string; gender: string }) =>
-    api<Voter>('/voter/register', { method: 'POST', body: JSON.stringify(data) }),
+    api<Voter>('/ems/voters/register', { method: 'POST', body: JSON.stringify(data) }),
 };
 
 // ── Middleware Status API ──
@@ -560,7 +565,7 @@ export const geoApi = {
     if (params?.state_code) p.set('state_code', params.state_code);
     return api<{ landmarks: Array<{ id: number; name: string; category: string; latitude: number; longitude: number; address: string; icon: string }> }>(`/geo/landmarks?${p}`);
   },
-  seedLandmarks: () => api<{ seeded: number }>('/geo/landmarks/seed', { method: 'POST' }),
+  // R4-56: removed seedLandmarks/seedTracking/seedGeofenceZones — no backend routes.
   heatmap: (electionId: number, metric?: string) =>
     api<{ features: Array<{ geometry: { coordinates: number[] }; properties: { intensity: number; name: string } }> }>(
       `/geo/heatmap?election_id=${electionId}${metric ? `&metric=${metric}` : ''}`
@@ -590,7 +595,6 @@ export const geoApi = {
     if (params?.recent_minutes) p.set('recent_minutes', String(params.recent_minutes));
     return api<{ reports: Array<{ pu_code: string; latitude: number; longitude: number; head_count: number; density_level: string; queue_length: number; wait_time_min: number; pu_name: string }>; summary: Record<string, number> }>(`/geo/crowd/density?${p}`);
   },
-  seedTracking: () => api<{ officials_seeded: number; crowd_reports_seeded: number }>('/geo/tracking/seed', { method: 'POST' }),
   // Advanced Geo (#2-#30)
   getTrackingReplay: (staffId?: string, hours?: number) => {
     const p = new URLSearchParams();
@@ -601,7 +605,6 @@ export const geoApi = {
   getGeofenceZones: (stateCode?: string) =>
     api<{ zones: any }>(`/geo/geofence/zones${stateCode ? `?state_code=${stateCode}` : ''}`),
   getGeofenceViolations: () => api<{ violations: any[] }>('/geo/geofence/violations'),
-  seedGeofenceZones: () => api<{ seeded: number }>('/geo/geofence/zones/seed', { method: 'POST' }),
   getCrowdAlerts: (severity?: string) =>
     api<{ alerts: Array<{ id: number; pu_code: string; severity: string; message: string; created_at: string }> }>(`/geo/crowd/alerts${severity ? `?severity=${severity}` : ''}`),
   getWeatherOverlay: (lat?: number, lng?: number) =>

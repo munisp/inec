@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { api } from '../src/lib/api';
 
 export default function ProductionScreen() {
   const [health, setHealth] = useState<any>(null);
@@ -9,10 +9,12 @@ export default function ProductionScreen() {
 
   const load = async () => {
     try {
+      // R4-52: /scale/pool-stats never existed; real route is GET /db/pool
+      // ({ primary: { open_connections, in_use, idle, ... }, replica? }).
       const [h, m, s] = await Promise.all([
-        fetch(`${API}/scale/health`).then(r => r.ok ? r.json() : null),
-        fetch(`${API}/middleware/modes`).then(r => r.ok ? r.json() : null),
-        fetch(`${API}/scale/pool-stats`).then(r => r.ok ? r.json() : null),
+        api<any>('/scale/health').catch(() => null),
+        api<any>('/middleware/modes').catch(() => null),
+        api<any>('/db/pool').catch(() => null),
       ]);
       setHealth({ health: h, middleware: m, pool: s });
     } catch (e) { console.error(e); }
@@ -51,9 +53,9 @@ export default function ProductionScreen() {
 
       <View style={s.card}>
         <Text style={s.cardTitle}>Connection Pool</Text>
-        <Text style={s.sub}>Open: {health?.pool?.open_connections || 0}</Text>
-        <Text style={s.sub}>In Use: {health?.pool?.in_use || 0}</Text>
-        <Text style={s.sub}>Idle: {health?.pool?.idle || 0}</Text>
+        <Text style={s.sub}>Open: {health?.pool?.primary?.open_connections ?? 0}</Text>
+        <Text style={s.sub}>In Use: {health?.pool?.primary?.in_use ?? 0}</Text>
+        <Text style={s.sub}>Idle: {health?.pool?.primary?.idle ?? 0}</Text>
       </View>
     </ScrollView>
   );

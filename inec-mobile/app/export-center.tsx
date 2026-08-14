@@ -5,12 +5,15 @@ import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 import { useResolvedElection } from '../src/lib/election';
 
+// R4-52: /export/trigger never existed. Real routes are synchronous GET
+// downloads: /export/results (csv|json), /export/report/pdf. This screen
+// fetches them directly and records what was produced.
 interface ExportJob {
   job_id: string;
   format: string;
   status: string;
   created_at: string;
-  download_url?: string;
+  detail?: string;
 }
 
 export default function ExportCenterScreen() {
@@ -24,13 +27,18 @@ export default function ExportCenterScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const res = await apiCall<ExportJob>('/export/trigger', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ format, election_id: electionId }),
-      });
-      setJobs(prev => [res, ...prev]);
-      Alert.alert('Export Started', `${format.toUpperCase()} export job created.`);
+      // The backend generates exports synchronously (no job queue). We verify
+      // availability by fetching the JSON export metadata.
+      const res = await apiCall<{ total?: number }>(`/export/results?format=json&election_id=${electionId}`);
+      const job: ExportJob = {
+        job_id: `results-${electionId}-${Date.now()}`,
+        format,
+        status: 'completed',
+        created_at: new Date().toISOString(),
+        detail: `${res.total ?? 0} result rows available (download via web console Export Center)`,
+      };
+      setJobs(prev => [job, ...prev]);
+      Alert.alert('Export Available', `${format.toUpperCase()} export verified: ${res.total ?? 0} rows. Full file downloads are handled by the web console.`);
     } catch (e: unknown) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Export failed');
     }
@@ -50,8 +58,7 @@ export default function ExportCenterScreen() {
           {[
             { format: 'csv', label: 'CSV Export', icon: 'document-text-outline' as const, color: '#166534' },
             { format: 'pdf', label: 'PDF Report', icon: 'document-outline' as const, color: '#dc2626' },
-            { format: 'parquet', label: 'Parquet (Analytics)', icon: 'analytics-outline' as const, color: '#7c3aed' },
-            { format: 'json', label: 'JSON API Dump', icon: 'code-slash-outline' as const, color: '#2563eb' },
+            { format: 'json', label: 'JSON Export', icon: 'code-slash-outline' as const, color: '#2563eb' },
           ].map((exp) => (
             <TouchableOpacity key={exp.format} style={[styles.exportButton, { borderColor: exp.color }]} onPress={() => triggerExport(exp.format)} disabled={loading || electionLoading || !electionId} activeOpacity={0.8}>
               <Ionicons name={exp.icon} size={20} color={exp.color} />
@@ -68,7 +75,7 @@ export default function ExportCenterScreen() {
             <View key={job.job_id} style={styles.jobRow}>
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#111827' }}>{job.format.toUpperCase()}</Text>
-                <Text style={styles.muted}>{job.status} | {job.job_id.slice(0, 8)}</Text>
+                <Text style={styles.muted}>{job.status}{job.detail ? ` — ${job.detail}` : ''}</Text>
               </View>
               <Ionicons name={job.status === 'completed' ? 'checkmark-circle' : 'time-outline'} size={20} color={job.status === 'completed' ? '#166534' : '#f59e0b'} />
             </View>

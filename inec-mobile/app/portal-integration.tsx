@@ -1,16 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { api } from '../src/lib/api';
 
-interface Integration { name: string; status: string; type: string; last_sync: string; records_synced: number; }
+// R4-52: /integrations never existed; real route is
+// GET /integrations/delivery/status (outbox counts + sink health).
+interface Integration { name: string; status: string; type: string; }
+interface DeliveryStatus {
+  delivery: Record<string, number>;
+  sinks: Record<string, string>;
+}
 
 export default function PortalIntegrationScreen() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const [delivery, setDelivery] = useState<Record<string, number>>({});
   const load = async () => {
-    try { const r = await fetch(`${API}/integrations`); if (r.ok) { const d = await r.json(); setIntegrations(Array.isArray(d) ? d : d.integrations || []); } } catch (e) { console.error(e); }
+    try {
+      const d = await api<DeliveryStatus>('/integrations/delivery/status');
+      setIntegrations(Object.entries(d.sinks || {}).map(([name, status]) => ({ name, status: String(status), type: 'delivery sink' })));
+      setDelivery(d.delivery || {});
+    } catch (e) { console.error(e); }
     setLoading(false); setRefreshing(false);
   };
 
@@ -22,7 +33,13 @@ export default function PortalIntegrationScreen() {
   return (
     <ScrollView style={s.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}>
       <Text style={s.title}>Portal Integrations</Text>
-      <Text style={s.subtitle}>External system connections and data sync status</Text>
+      <Text style={s.subtitle}>External delivery sinks and outbox status</Text>
+      {Object.keys(delivery).length > 0 && (
+        <View style={s.card}>
+          <Text style={s.name}>Outbox</Text>
+          <Text style={s.sub}>{Object.entries(delivery).map(([k, v]) => `${k}: ${v}`).join(' · ')}</Text>
+        </View>
+      )}
       {integrations.map((item, i) => (
         <View key={i} style={s.card}>
           <View style={s.row}>
@@ -30,8 +47,6 @@ export default function PortalIntegrationScreen() {
             <View style={[s.dot, { backgroundColor: statusColors[item.status] || '#6b7280' }]} />
           </View>
           <Text style={s.sub}>Type: {item.type} · Status: {item.status}</Text>
-          <Text style={s.sub}>Records synced: {(item.records_synced || 0).toLocaleString()}</Text>
-          {item.last_sync && <Text style={s.sub}>Last sync: {item.last_sync}</Text>}
         </View>
       ))}
     </ScrollView>

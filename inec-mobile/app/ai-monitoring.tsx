@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { api } from '../src/lib/api';
 
 export default function AIMonitoringScreen() {
   const [data, setData] = useState<any>(null);
@@ -9,8 +9,12 @@ export default function AIMonitoringScreen() {
 
   const load = async () => {
     try {
-      const res = await fetch(`${API}/ai/models/info`);
-      if (res.ok) setData(await res.json());
+      // R4-52: /ai/models/info never existed; real route is /ai/registry/models
+      // which returns { models, production } maps keyed by model name.
+      const d = await api<{ models: Record<string, unknown> | unknown[]; production: Record<string, unknown> }>('/ai/registry/models');
+      const raw = d?.models;
+      const models = Array.isArray(raw) ? raw : Object.entries(raw || {}).map(([name, v]) => ({ name, ...(typeof v === 'object' && v !== null ? v as Record<string, unknown> : {}) }));
+      setData({ models, production: d?.production });
     } catch (e) { console.error('AI monitoring load:', e); }
     setLoading(false); setRefreshing(false);
   };
@@ -23,7 +27,7 @@ export default function AIMonitoringScreen() {
   return (
     <ScrollView style={s.container} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}>
       <Text style={s.title}>AI/ML Monitoring</Text>
-      <Text style={s.subtitle}>Model performance, drift detection, inference stats</Text>
+      <Text style={s.subtitle}>Model registry and production pins</Text>
 
       {models.map((m: any, i: number) => (
         <View key={i} style={s.card}>
@@ -40,10 +44,10 @@ export default function AIMonitoringScreen() {
       ))}
 
       <View style={s.card}>
-        <Text style={s.cardTitle}>Inference Stats</Text>
-        <Text style={s.sub}>Total predictions: {data?.total_predictions || 0}</Text>
-        <Text style={s.sub}>Avg latency: {data?.avg_latency_ms || 0}ms</Text>
-        <Text style={s.sub}>Anomalies detected: {data?.anomalies_detected || 0}</Text>
+        <Text style={s.cardTitle}>Production Models</Text>
+        <Text style={s.sub}>{data?.production && Object.keys(data.production).length > 0
+          ? Object.entries(data.production).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' · ')
+          : 'No production model pins reported'}</Text>
       </View>
     </ScrollView>
   );

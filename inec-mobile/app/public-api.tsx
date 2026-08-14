@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
-import { API_URL as API } from '../src/lib/api';
+import { api } from '../src/lib/api';
 
 export default function PublicAPIScreen() {
   const [spec, setSpec] = useState<any>(null);
@@ -8,7 +8,7 @@ export default function PublicAPIScreen() {
 
   useEffect(() => {
     (async () => {
-      try { const r = await fetch(`${API}/api/spec`); if (r.ok) setSpec(await r.json()); } catch (e) { console.error(e); }
+      try { setSpec(await api<Record<string, unknown>>('/api/openapi.json')); } catch (e) { console.error(e); }
       setLoading(false);
     })();
   }, []);

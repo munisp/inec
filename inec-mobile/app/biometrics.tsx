@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
@@ -12,18 +12,8 @@ interface BiometricStatus {
   duplicates_flagged: number;
 }
 
-// Real POST /biometric/verify response shape.
-interface VerifyResult {
-  result: string;
-  match_score: number;
-  latency_ms: number;
-  vin: string;
-}
-
 export default function BiometricsScreen() {
   const [status, setStatus] = useState<BiometricStatus | null>(null);
-  const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
-  const [vin, setVin] = useState('');
   const [loading, setLoading] = useState(false);
 
   const loadStatus = async () => {
@@ -38,23 +28,9 @@ export default function BiometricsScreen() {
     setLoading(false);
   };
 
-  // Production verification: requires a scanned/entered VIN — never posts
-  // hardcoded demo identifiers.
-  const runVerify = async (vinToVerify: string) => {
-    setLoading(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    try {
-      // The backend requires a live probe template captured from a biometric
-      // device; this screen has no capture hardware, so it cannot produce a
-      // match decision. Fail honestly instead of posting a fake template.
-      throw new Error('Biometric verification requires a live capture device; use the enrollment kiosk hardware.');
-    } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Verification failed');
-    }
-    setLoading(false);
-  };
-
-  const vinEntered = vin.trim().length > 0;
+  // R4-52: POST /biometric/verify requires a live probe template captured from
+  // biometric hardware; this screen has no capture path, so verification is
+  // honestly unavailable here rather than posting a fabricated template.
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -91,50 +67,7 @@ export default function BiometricsScreen() {
           <Ionicons name="scan-outline" size={24} color="#7c3aed" />
           <Text style={styles.cardTitle}>Biometric Verification</Text>
         </View>
-        <Text style={styles.muted}>Verify voter identity using fingerprint or face biometrics against the ABIS database.</Text>
-        <TextInput
-          style={styles.input}
-          value={vin}
-          onChangeText={setVin}
-          placeholder="Voter Identification Number (VIN)"
-          autoCapitalize="characters"
-          autoCorrect={false}
-        />
-        {!vinEntered && (
-          <Text style={styles.hint}>Scan or enter a VIN first</Text>
-        )}
-        <TouchableOpacity
-          style={[styles.button, { backgroundColor: '#7c3aed' }, !vinEntered && styles.buttonDisabled]}
-          onPress={() => runVerify(vin.trim())}
-          disabled={loading || !vinEntered}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.buttonText}>Run Verification</Text>
-        </TouchableOpacity>
-        {__DEV__ && (
-          <TouchableOpacity
-            style={[styles.button, styles.demoButton]}
-            onPress={() => { setVin('VIN-DEMO-001'); runVerify('VIN-DEMO-001'); }}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.buttonText}>DEMO — Verify sample VIN</Text>
-          </TouchableOpacity>
-        )}
-        {verifyResult && (
-          <View style={[styles.resultBanner, { backgroundColor: verifyResult.result === 'match' ? '#dcfce7' : '#fef2f2' }]}>
-            <Ionicons name={verifyResult.result === 'match' ? 'checkmark-circle' : 'close-circle'} size={28} color={verifyResult.result === 'match' ? '#166534' : '#dc2626'} />
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={{ fontSize: 16, fontWeight: '700', color: verifyResult.result === 'match' ? '#166534' : '#dc2626' }}>
-                {verifyResult.result === 'match' ? 'Identity Verified' : 'No Match Found'}
-              </Text>
-              <View style={styles.scoreRow}>
-                <Text style={styles.scoreLabel}>Match: {(verifyResult.match_score * 100).toFixed(0)}%</Text>
-              </View>
-              <Text style={[styles.muted, { marginTop: 4 }]}>VIN: {verifyResult.vin}</Text>
-            </View>
-          </View>
-        )}
+        <Text style={styles.muted}>Verify voter identity using fingerprint or face biometrics against the ABIS database. Verification requires a live capture device — use the enrollment kiosk hardware; this screen cannot produce a match decision.</Text>
       </View>
 
       {/* Capabilities */}
