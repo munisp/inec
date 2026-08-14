@@ -161,7 +161,9 @@ export default function EndorsementTracker() {
           <div className="text-center py-20 text-gray-500">
             <BadgeCheck size={48} className="mx-auto mb-4 opacity-30"/>
             <p className="font-semibold">No endorsements yet</p>
-            <p className="text-sm mt-1">Add endorsements from the button above, or seed sample data from the Home page.</p>
+            {/* R4-55: honest copy — endorsements come from the campaign database
+                via trpc.endorsements.list; no demo seed button exists anymore. */}
+            <p className="text-sm mt-1">Endorsements are recorded in the campaign database. Add one with the "Add Endorsement" button above.</p>
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">

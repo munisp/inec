@@ -145,7 +145,9 @@
 
 - [x] MediaMonitoring: wire to trpc.media.list/add (add sourceType, reach, zone columns to schema + migrate)
 - [x] MediaMonitoring: add "Add Mention" form + "Seed Sample Media" button with 20 realistic Nigerian media items
+  - **Annotation (R4-56):** the "Seed Sample Media" button was later removed; seeding is server-side only (`trpc.seed.all`, fixture-gated).
 - [x] EndorsementTracker: remove DEMO_ENDORSEMENTS, wire to trpc.endorsements.list + add seed button
+  - **Annotation (R4-55/R4-56):** the seed button no longer exists; the page is DB-backed only and its empty-state copy was corrected in the R4 mop-up.
 - [x] Stakeholders: add stakeholders DB table + tRPC CRUD + seed 15 realistic stakeholder contacts
 - [x] LegalCompliance: add days-remaining countdown badges (green/yellow/red) + overdue alert
 - [x] BudgetPlanner: add reconciliation bar chart (budgeted vs spent per category)
@@ -161,5 +163,7 @@
 - [x] ElectionDayWarRoom: add incident escalation workflow (escalate button → notify owner)
 - [x] ManifestoBuilder: add section reorder (up/down arrows) + publish preview modal
 - [x] Global seed procedure: trpc.seed.all — seeds all modules with realistic Nigerian election data
+  - **Annotation (R4-55):** `trpc.seed.all` remains defined but is never called by the client; it is a destructive fixture write gated to non-production runtimes (`db.isFixtureSeedingAllowed()`), owner role only.
 - [x] Home.tsx: add "Seed Demo Data" button for first-time users
+  - **Annotation (R4-56):** the "Seed Demo Data" button was removed from Home.tsx; this line describes historical behavior only.
 - [x] TypeScript: 0 errors
