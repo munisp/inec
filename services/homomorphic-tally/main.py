@@ -9,8 +9,15 @@ that no individual vote can be linked to a voter.
 Properties:
   - Additive homomorphism: E(a) * E(b) = E(a + b)
   - Individual votes remain encrypted throughout the counting process
-  - Only the final aggregate is decrypted by a threshold of key holders
-  - Provides cryptographic proof of correct tallying
+  - Only the final aggregate is decrypted (single-key today; a threshold
+    scheme is NOT implemented — one configured token = full decrypt authority)
+
+SECURITY / HONESTY NOTE: clients submit PLAINTEXT per-party vote counts over
+TLS; encryption happens SERVER-SIDE on receipt (see /api/v1/tally/submit).
+Plaintext counts are never persisted — only ciphertexts are stored — but the
+plaintext does traverse the wire to this service, so transport security and
+the submit bearer token are the confidentiality boundary, not client-side
+encryption. The earlier "client-side encryption" claim was inaccurate.
 
 This service is used as a second-layer verification of the physical count.
 
@@ -228,6 +235,20 @@ private_key: Optional[PaillierPrivateKey] = None
 # Structure: {election_id: {party_code: encrypted_total}}
 encrypted_tallies: dict[str, dict[str, int]] = {}
 
+# Idempotency: (election_id, polling_unit_id) pairs already accepted.
+# Mirrored to Postgres (tally_submissions) when DATABASE_URL is set so a
+# restart cannot wipe the dedup record and re-admit a double-count.
+_submitted_pus: set[tuple[str, str]] = set()
+
+# SECURITY: when TALLY_REQUIRE_PERSISTENCE is truthy, submissions are refused
+# (503) unless a durable persistence layer (DATABASE_URL/Postgres) is live —
+# an in-memory-only dedup set would allow double-counting after a restart.
+TALLY_REQUIRE_PERSISTENCE = os.getenv("TALLY_REQUIRE_PERSISTENCE", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
 # PostgreSQL persistence (optional in development, mandatory in production).
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
@@ -249,11 +270,53 @@ async def _init_tally_store() -> None:
             )
         """)
         rows = await conn.fetch("SELECT election_id, party_code, ciphertext FROM tally")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tally_submissions (
+                election_id     TEXT NOT NULL,
+                polling_unit_id TEXT NOT NULL,
+                submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (election_id, polling_unit_id)
+            )
+        """)
+        pu_rows = await conn.fetch(
+            "SELECT election_id, polling_unit_id FROM tally_submissions"
+        )
     for row in rows:
         encrypted_tallies.setdefault(row["election_id"], {})[row["party_code"]] = int(
             row["ciphertext"]
         )
+    for row in pu_rows:
+        _submitted_pus.add((row["election_id"], row["polling_unit_id"]))
     print(f"[HomomorphicTally] Loaded {len(rows)} persisted tally ciphertexts from Postgres")
+    print(f"[HomomorphicTally] Loaded {len(pu_rows)} persisted polling-unit submission records")
+
+
+async def _record_submission(election_id: str, polling_unit_id: str) -> bool:
+    """Atomically record a polling-unit submission. Returns False if duplicate.
+
+    With Postgres this is an INSERT ... ON CONFLICT DO NOTHING, so concurrent
+    re-POSTs cannot both pass; without Postgres the in-memory set is used
+    (development only — see TALLY_REQUIRE_PERSISTENCE).
+    """
+    key = (election_id, polling_unit_id)
+    if _pg_pool is not None:
+        async with _pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO tally_submissions (election_id, polling_unit_id, submitted_at)
+                   VALUES ($1, $2, NOW())
+                   ON CONFLICT (election_id, polling_unit_id) DO NOTHING
+                   RETURNING election_id""",
+                election_id,
+                polling_unit_id,
+            )
+        if row is None:
+            return False
+        _submitted_pus.add(key)
+        return True
+    if key in _submitted_pus:
+        return False
+    _submitted_pus.add(key)
+    return True
 
 
 async def _persist_tally(election_id: str, party_code: str, ciphertext: int) -> None:
@@ -361,7 +424,8 @@ async def startup():
 
 @app.get("/api/v1/tally/public-key")
 async def get_public_key():
-    """Return the public key for client-side encryption."""
+    """Return the Paillier public key (parameters of the key this server uses
+    for its server-side encryption of submitted counts)."""
     if not public_key:
         raise HTTPException(status_code=503, detail="Key not yet generated")
     return {"n": str(public_key.n), "g": str(public_key.g)}
@@ -371,12 +435,36 @@ async def get_public_key():
 async def submit_encrypted_vote(vote: EncryptedVote, _auth=Depends(require_submit_token)):
     """
     Accept a polling unit result and homomorphically add it to the running tally.
-    The individual result is encrypted and never stored in plaintext.
+
+    HONESTY NOTE: the request carries PLAINTEXT per-party vote counts supplied
+    by the client; encryption happens HERE, server-side, on receipt. The
+    plaintext counts are never stored — only the resulting ciphertexts are
+    persisted — so transport (TLS) and the bearer token protect the plaintext
+    in flight. Each (election_id, polling_unit_id) may be submitted exactly
+    once; re-submission returns 409 so retries cannot double-count.
     """
     if not public_key:
         raise HTTPException(status_code=503, detail="Encryption service not ready")
 
+    if TALLY_REQUIRE_PERSISTENCE and _pg_pool is None:
+        # Fail closed: without durable submission records a restart would wipe
+        # the dedup set and silently re-admit double-counted polling units.
+        raise HTTPException(
+            status_code=503,
+            detail="durable submission persistence required (TALLY_REQUIRE_PERSISTENCE) "
+            "but DATABASE_URL/Postgres is not available",
+        )
+
     election_id = vote.election_id
+    if not await _record_submission(election_id, vote.polling_unit_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"polling unit {vote.polling_unit_id!r} has already submitted a "
+                f"result for election {election_id!r}; re-submission refused to "
+                "prevent double-counting"
+            ),
+        )
     if election_id not in encrypted_tallies:
         encrypted_tallies[election_id] = {}
 

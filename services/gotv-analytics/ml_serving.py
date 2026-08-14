@@ -5,6 +5,7 @@ Supports: fraud detection, voter engagement scoring, GNN anomaly detection.
 Includes: model registry queries, monitoring, drift detection, A/B testing.
 """
 
+import asyncio
 import hmac
 import json
 import os
@@ -87,7 +88,7 @@ def _load_fraud_model():
     model.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
     model.eval()
 
-    scaler = joblib.load(scaler_path) if scaler_path.exists() else None
+    scaler = _joblib_load_trusted(scaler_path) if scaler_path.exists() else None
     _fraud_model = model
     _fraud_scaler = scaler
     logger.info("fraud_model_loaded", weights=str(weights_path))
@@ -114,7 +115,7 @@ def _load_voter_model():
     model.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
     model.eval()
 
-    scaler = joblib.load(scaler_path) if scaler_path.exists() else None
+    scaler = _joblib_load_trusted(scaler_path) if scaler_path.exists() else None
     # INTEGRITY: the target normalization stats MUST come from the training
     # pipeline artifact. Previously a fabricated mean=50/std=15 fallback was
     # used, silently presenting arbitrary scores as model output. Without the
@@ -122,7 +123,7 @@ def _load_voter_model():
     if not norm_path.exists():
         logger.warning("voter_model_target_norm_missing", path=str(norm_path))
         return None, None, None
-    target_norm = joblib.load(norm_path)
+    target_norm = _joblib_load_trusted(norm_path)
     _voter_model = model
     _voter_scaler = scaler
     _voter_target_norm = target_norm
@@ -149,11 +150,29 @@ def _load_gnn_model():
     model.load_state_dict(torch.load(weights_path, map_location="cpu", weights_only=True))
     model.eval()
 
-    scaler = joblib.load(scaler_path) if scaler_path.exists() else None
+    scaler = _joblib_load_trusted(scaler_path) if scaler_path.exists() else None
     _gnn_model = model
     _gnn_scaler = scaler
     logger.info("gnn_model_loaded")
     return model, scaler
+
+
+def _joblib_load_trusted(path: Path):
+    """joblib.load wrapper with a path-restriction check.
+
+    SECURITY: joblib.load is pickle-based — loading an attacker-influenced
+    file executes arbitrary code. Only files inside the configured MODELS_DIR
+    (operator-controlled model artifact directory) may be deserialized.
+    """
+    import joblib
+
+    resolved = Path(path).resolve()
+    root = MODELS_DIR.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise RuntimeError(
+            f"refusing to joblib.load a file outside the trusted models dir: {path}"
+        )
+    return joblib.load(resolved)
 
 
 # ── Request/Response schemas ──
@@ -309,14 +328,22 @@ async def predict_anomaly(req: FraudPredictionRequest):
 
 # ── Registry & Monitoring ──
 
+async def _read_json_file(path: Path):
+    """Read a JSON file without blocking the event loop (ruff ASYNC230)."""
+    def _load():
+        with open(path) as f:
+            return json.load(f)
+
+    return await asyncio.to_thread(_load)
+
+
 @router.get("/models")
 async def list_models():
     """List all registered models."""
     registry_path = MODELS_DIR / "registry" / "model_registry.json"
     if not registry_path.exists():
         return {"models": {}, "production": {}}
-    with open(registry_path) as f:
-        return json.load(f)
+    return await _read_json_file(registry_path)
 
 
 @router.get("/monitoring")
@@ -325,8 +352,7 @@ async def get_monitoring():
     monitor_path = MODELS_DIR / "registry" / "monitoring.json"
     if not monitor_path.exists():
         return {"predictions": 0, "alerts": [], "drift_checks": []}
-    with open(monitor_path) as f:
-        data = json.load(f)
+    data = await _read_json_file(monitor_path)
     return {
         "total_predictions": len(data.get("predictions", [])),
         "active_alerts": len(data.get("alerts", [])),

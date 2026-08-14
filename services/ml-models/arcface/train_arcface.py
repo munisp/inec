@@ -373,6 +373,18 @@ class ArcFacePredictor:
         Returns:
             L2-normalized 512-dimensional embedding vector
         """
+        # cv2 is imported lazily: it is only needed on this inference
+        # preprocessing path, and the training path must remain usable
+        # without opencv installed. Previously cv2 was referenced with no
+        # import at all — a NameError on any grayscale/RGBA input (F821).
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError(
+                "ArcFaceInference.extract_embedding requires opencv-python "
+                "(cv2) for image colorspace conversion and resizing"
+            ) from exc
+
         if len(image.shape) == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
         elif image.shape[2] == 4:
@@ -447,7 +459,8 @@ def main():
     
     # Load pretrained if available
     if args.pretrained and (MODEL_DIR / "arcface_best.pth").exists():
-        checkpoint = torch.load(MODEL_DIR / "arcface_best.pth", map_location=device)
+        # SECURITY: weights_only=True — state_dicts + scalar metrics only.
+        checkpoint = torch.load(MODEL_DIR / "arcface_best.pth", map_location=device, weights_only=True)
         model.load_state_dict(checkpoint['model_state_dict'])
         arc_margin.load_state_dict(checkpoint['arc_margin_state_dict'])
         print(f"Loaded pretrained model (Accuracy: {checkpoint['val_accuracy']:.4f})")

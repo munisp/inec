@@ -428,7 +428,8 @@ def main():
     
     # Load pretrained if requested
     if args.pretrained and (MODEL_DIR / "cdc_best.pth").exists():
-        checkpoint = torch.load(MODEL_DIR / "cdc_best.pth", map_location=device)
+        # SECURITY: weights_only=True — state_dict + scalar metrics only.
+        checkpoint = torch.load(MODEL_DIR / "cdc_best.pth", map_location=device, weights_only=True)
         model.load_state_dict(checkpoint['model_state_dict'])
         print(f"Loaded pretrained model (AUC: {checkpoint['val_auc']:.4f})")
         

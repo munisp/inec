@@ -392,12 +392,12 @@ def get_configured_api_keys() -> list[str]:
 
     KEY ROTATION: GOTV_ANALYTICS_API_KEY accepts a comma-separated list; any
     constant-time match authenticates so operators can rotate without downtime.
+    GOTV_ANALYTICS_TOKEN is accepted as a canonical alias.
     """
-    return [
-        k.strip()
-        for k in os.getenv("GOTV_ANALYTICS_API_KEY", "").split(",")
-        if k.strip()
-    ]
+    raw = os.getenv("GOTV_ANALYTICS_TOKEN", "").strip() or os.getenv(
+        "GOTV_ANALYTICS_API_KEY", ""
+    )
+    return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 def _load_party_keys() -> dict[str, int]:

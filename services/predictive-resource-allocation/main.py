@@ -136,7 +136,13 @@ class ModelState:
     def load(self) -> bool:
         if not self.path.exists():
             return False
-        payload = joblib.load(self.path)
+        # SECURITY: joblib.load is pickle-based (arbitrary code execution on
+        # malicious files) — restrict deserialization to the configured
+        # MODEL_DIR and refuse anything that resolves outside it.
+        resolved = self.path.resolve()
+        if MODEL_DIR is None or MODEL_DIR.resolve() not in (resolved, *resolved.parents):
+            raise RuntimeError("refusing to joblib.load outside the trusted MODEL_DIR")
+        payload = joblib.load(resolved)
         if payload.get("feature_names") != FEATURE_NAMES:
             raise RuntimeError("persisted resource allocation model uses an incompatible feature schema")
         self.model = payload["model"]
