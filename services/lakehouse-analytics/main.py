@@ -519,7 +519,7 @@ def require_dapr_ingress(request: Request) -> None:
 async def dapr_subscriptions():
     return [{
         "pubsubname": os.getenv("DAPR_PUBSUB_NAME", "pubsub"),
-        "topic": os.getenv("DAPR_EXTERNAL_DEVICE_TOPIC", "inec.bvas.device-event.v1"),
+        "topic": os.getenv("DAPR_EXTERNAL_DEVICE_TOPIC", "inec.bvas.device-events.v1"),
         "route": "/dapr/events/external-device",
     }]
 
