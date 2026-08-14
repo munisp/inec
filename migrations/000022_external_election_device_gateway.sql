@@ -2,6 +2,12 @@
 -- Stores device trust and integration provenance; raw biometrics, voter identity values,
 -- EC8A media, private keys, and external credentials are deliberately excluded.
 
+-- R4-39c fix: the go-backend base schema (inec-go-backend/migrations/000001) declares
+-- bvas_devices.id with no PRIMARY KEY/UNIQUE, so the FK below could never resolve and
+-- this migration failed on every real database (the failure was hidden by provision.sh's
+-- `|| true`). Ensure the referenced key is unique before creating dependent tables.
+CREATE UNIQUE INDEX IF NOT EXISTS bvas_devices_id_unique ON bvas_devices(id);
+
 CREATE TABLE IF NOT EXISTS bvas_device_enrollments (
     device_id TEXT PRIMARY KEY REFERENCES bvas_devices(id) ON DELETE RESTRICT,
     election_id INTEGER NOT NULL REFERENCES elections(id) ON DELETE RESTRICT,

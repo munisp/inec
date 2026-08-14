@@ -69,16 +69,39 @@ else
   echo "Running migrations..."
 fi
 
-# Run schema migrations
+# Run schema migrations — FAIL LOUD (R4-39c): a failed migration aborts
+# provisioning. Errors are NOT swallowed; stderr is shown. Escape hatch:
+# pass --allow-partial to keep going after a failure (loud warning).
+ALLOW_PARTIAL=0
+for arg in "$@"; do
+  [ "$arg" = "--allow-partial" ] && ALLOW_PARTIAL=1
+done
 if [ -d "migrations" ]; then
+  MIGRATION_FAILURES=()
   for f in migrations/*.sql; do
     echo "  Applying: $(basename "$f")"
-    psql "${DATABASE_URL:-postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable}" -f "$f" 2>/dev/null || true
+    if ! psql "${DATABASE_URL:-postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable}" -v ON_ERROR_STOP=1 -f "$f"; then
+      echo "ERROR: migration $(basename "$f") FAILED" >&2
+      MIGRATION_FAILURES+=("$(basename "$f")")
+      if [ "$ALLOW_PARTIAL" -ne 1 ]; then
+        echo "ERROR: aborting provisioning due to failed migration (R4-39c)." >&2
+        echo "       Re-run with --allow-partial to continue past failures (NOT for production)." >&2
+        exit 1
+      fi
+    fi
   done
+  if [ ${#MIGRATION_FAILURES[@]} -gt 0 ]; then
+    echo "WARNING: --allow-partial in effect; ${#MIGRATION_FAILURES[@]} migration(s) FAILED:" >&2
+    printf '  - %s\n' "${MIGRATION_FAILURES[@]}" >&2
+    echo "WARNING: the database schema is INCOMPLETE. Do not run production workloads." >&2
+  fi
 fi
 
-# Enable PostGIS
-psql "${DATABASE_URL:-postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable}" -c "CREATE EXTENSION IF NOT EXISTS postgis;" 2>/dev/null || true
+# Enable PostGIS (optional: warn loudly instead of silently swallowing when
+# the extension is unavailable in this PostgreSQL build)
+if ! psql "${DATABASE_URL:-postgresql://ngapp:ngapp@localhost:5432/ngapp?sslmode=disable}" -c "CREATE EXTENSION IF NOT EXISTS postgis;"; then
+  echo "WARNING: postgis extension could not be enabled (unavailable in this build?)" >&2
+fi
 
 # Redis setup
 echo ""

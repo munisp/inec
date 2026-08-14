@@ -114,13 +114,15 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'fk_task_volunteer'
   ) THEN
-    UPDATE gotv_tasks SET assigned_volunteer_id = NULL
-    WHERE assigned_volunteer_id IS NOT NULL
-      AND assigned_volunteer_id NOT IN (SELECT volunteer_id FROM gotv_volunteers);
+    -- R4-39c fix: the real column is volunteer_id (see inec-go-backend/migrations/000026:403
+    -- and runtime DDL gotv.go:263); assigned_volunteer_id never existed.
+    UPDATE gotv_tasks SET volunteer_id = NULL
+    WHERE volunteer_id IS NOT NULL
+      AND volunteer_id NOT IN (SELECT volunteer_id FROM gotv_volunteers);
 
     ALTER TABLE gotv_tasks
       ADD CONSTRAINT fk_task_volunteer
-      FOREIGN KEY (assigned_volunteer_id) REFERENCES gotv_volunteers(volunteer_id)
+      FOREIGN KEY (volunteer_id) REFERENCES gotv_volunteers(volunteer_id)
       ON DELETE SET NULL;
   END IF;
 END $$;
