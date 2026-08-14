@@ -15,21 +15,20 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(database_url)
         .await?;
 
-    // Run migrations. R4-39c fix: the whole file cannot go through a single
-    // sqlx::query call (PostgreSQL's extended query protocol rejects
-    // multi-statement strings), and the previous `.ok()` silently discarded
-    // every failure — a fresh database ended up with NO tables. Execute the
-    // statements one by one and fail startup on the first error.
-    for statement in include_str!("../migrations/001_biometric_tables.sql").split(';') {
-        let statement = statement.trim();
-        if statement.is_empty() {
-            continue;
-        }
-        sqlx::query(statement).execute(&pool).await.map_err(|e| {
+    // Run the embedded migration. `sqlx::query` uses the extended protocol and
+    // silently executes ONLY the first statement of a multi-statement file —
+    // that is why the tables previously "applied" but never actually existed.
+    // `raw_sql` uses the simple protocol (multi-statement capable). 001 is the
+    // single source of truth: it defines every table the code queries, all
+    // with IF NOT EXISTS. Any failure aborts startup — a biometric service
+    // without its vault tables must fail loudly, never serve 500s at runtime.
+    sqlx::raw_sql(include_str!("../migrations/001_biometric_tables.sql"))
+        .execute(&pool)
+        .await
+        .map_err(|e| {
             tracing::error!(error = %e, "biometric vault migration failed");
             e
         })?;
-    }
 
     Ok(pool)
 }
