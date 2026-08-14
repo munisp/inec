@@ -398,8 +398,11 @@ class GNNPredictor:
         if model_path is None:
             model_path = str(GNN_MODEL_PATH)
         
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
+        # SECURITY: weights_only=True — this checkpoint carries only a
+        # state_dict + scalars; unrestricted pickle loading is an
+        # arbitrary-code-execution surface if artifacts are attacker-influenced.
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+
         self.model = EnhancedGNNAnomalyDetection(
             num_features=4,
             hidden_channels=64,
@@ -579,7 +582,8 @@ def main():
     
     # Load pretrained if available
     if args.pretrained and GNN_MODEL_PATH.exists():
-        checkpoint = torch.load(GNN_MODEL_PATH, map_location=device)
+        # SECURITY: weights_only=True — state_dict + scalar metrics only.
+        checkpoint = torch.load(GNN_MODEL_PATH, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint['model_state_dict'])
         print(f"Loaded pretrained model (AUC: {checkpoint['val_auc']:.4f})")
     

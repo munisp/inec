@@ -9,8 +9,8 @@ Implements a unified model serving layer that supports:
 - Batch and real-time inference
 
 Usage:
-    from model_serving import ModelServer, ModelRouter
-    server = ModelServer(models_dir="services/biometric-python/models")
+    from model_serving import ModelServer, ModelRouter, DEFAULT_MODELS_DIR
+    server = ModelServer(models_dir=str(DEFAULT_MODELS_DIR))  # or MODELS_DIR env
     server.start()
     
     router = ModelRouter(server)
@@ -37,6 +37,18 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+
+
+# Model artifact directory. The real artifacts ship in the repo under
+# services/ml-models/biometric-python/models (cdc_pad.onnx,
+# arcface_embedding.onnx, arcface_best.pth). The previous default
+# ("services/biometric-python/models") pointed at a directory that does NOT
+# exist, so every model load failed (R4-54). Override with MODELS_DIR.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MODELS_DIR = Path(
+    os.getenv("MODELS_DIR", "").strip()
+    or (_REPO_ROOT / "services" / "ml-models" / "biometric-python" / "models")
+)
 
 
 class ModelStatus(Enum):
@@ -165,8 +177,23 @@ class TorchModelWrapper:
         
         self.model_path = model_path
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        checkpoint = torch.load(model_path, map_location=self.device)
+
+        # SECURITY: torch.load is pickle-based (arbitrary code execution on a
+        # malicious checkpoint). weights_only=True cannot be used here because
+        # this checkpoint format embeds a live `model` object
+        # (checkpoint['model']), which weights_only rejects — so instead the
+        # load is restricted to the trusted models directory (MODELS_DIR env
+        # or the in-repo default). Operators MUST treat that directory as
+        # integrity-protected artifact storage.
+        resolved = Path(model_path).resolve()
+        trusted_root = DEFAULT_MODELS_DIR.resolve()
+        if resolved != trusted_root and trusted_root not in resolved.parents:
+            raise RuntimeError(
+                f"refusing to torch.load a checkpoint outside the trusted "
+                f"models dir ({trusted_root}): {model_path}"
+            )
+
+        checkpoint = torch.load(resolved, map_location=self.device)
         
         if 'model_state_dict' in checkpoint:
             self.model = checkpoint['model']
@@ -256,11 +283,11 @@ class ModelServer:
     
     def __init__(
         self,
-        models_dir: str = "services/biometric-python/models",
+        models_dir: str = None,
         cache_size: int = 10000,
         batch_size: int = 1,
     ):
-        self.models_dir = Path(models_dir)
+        self.models_dir = Path(models_dir) if models_dir else DEFAULT_MODELS_DIR
         self.model_registry = ModelRegistry()
         self.model_cache = ModelCache(max_size=cache_size)
         self.model_wrappers: Dict[str, Any] = {}
@@ -465,26 +492,27 @@ def main():
     print("=" * 60)
     
     print("\nExample usage:")
-    print("""
-    from model_serving import ModelServer, ModelRouter
-    
-    # Initialize server
+    print(f"""
+    from model_serving import ModelServer, ModelRouter, DEFAULT_MODELS_DIR
+
+    # Initialize server (defaults to MODELS_DIR env or the in-repo
+    # services/ml-models/biometric-python/models directory)
     server = ModelServer(
-        models_dir="services/biometric-python/models",
+        models_dir=str(DEFAULT_MODELS_DIR),
         cache_size=10000,
     )
-    
+
     # Load models
     server.load_model(
         model_id="biometric-cdcn",
-        model_path="services/biometric-python/models/cdc_pad.onnx",
+        model_path=str(DEFAULT_MODELS_DIR / "cdc_pad.onnx"),
         version="1.0.0",
         model_type="onnx",
     )
-    
+
     server.load_model(
         model_id="face-arcface",
-        model_path="services/biometric-python/models/arcface_embedding.onnx",
+        model_path=str(DEFAULT_MODELS_DIR / "arcface_embedding.onnx"),
         version="1.0.0",
         model_type="onnx",
     )
