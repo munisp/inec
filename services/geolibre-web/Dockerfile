@@ -19,7 +19,7 @@ FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
-# NOTE: kept on the default nginx user model — the stock nginx:alpine
-# entrypoint requires root (binds :80, writes /var/cache/nginx, pid file).
+# TODO(security): requires root because the stock nginx:alpine entrypoint
+# binds :80, writes /var/cache/nginx, and creates a pid file as root.
 # Migrating to nginxinc/nginx-unprivileged is a future hardening option.
 CMD ["nginx", "-g", "daemon off;"]

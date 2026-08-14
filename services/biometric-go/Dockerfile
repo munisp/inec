@@ -16,6 +16,9 @@ RUN apk add --no-cache busybox-static
 
 FROM gcr.io/distroless/static-debian12:nonroot  # runs as uid 65532
 
+# R4-38: explicit non-root user (distroless nonroot, uid 65532).
+USER 65532:65532
+
 COPY --from=builder /abis-pipeline /abis-pipeline
 COPY --from=healthcheck-tools /bin/busybox.static /usr/bin/busybox
 
