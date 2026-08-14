@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS vault_keys (
     revoked_at      TIMESTAMPTZ
 );
 
-CREATE INDEX idx_vault_keys_active ON vault_keys (is_active, is_revoked) WHERE is_active = TRUE AND is_revoked = FALSE;
+CREATE INDEX IF NOT EXISTS idx_vault_keys_active ON vault_keys (is_active, is_revoked) WHERE is_active = TRUE AND is_revoked = FALSE;
 
 CREATE TABLE IF NOT EXISTS vault_templates (
     template_id     TEXT PRIMARY KEY,
@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS vault_templates (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_templates_voter ON vault_templates (voter_vin, modality);
-CREATE INDEX idx_vault_templates_key ON vault_templates (key_id);
+CREATE INDEX IF NOT EXISTS idx_vault_templates_voter ON vault_templates (voter_vin, modality);
+CREATE INDEX IF NOT EXISTS idx_vault_templates_key ON vault_templates (key_id);
 
 CREATE TABLE IF NOT EXISTS vault_audit_log (
     id              TEXT PRIMARY KEY,
@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS vault_audit_log (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_audit_time ON vault_audit_log (created_at DESC);
-CREATE INDEX idx_vault_audit_voter ON vault_audit_log (voter_vin) WHERE voter_vin IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_vault_audit_time ON vault_audit_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vault_audit_voter ON vault_audit_log (voter_vin) WHERE voter_vin IS NOT NULL;
 
 -- ─── Rust Cancelable Biometrics Tables ──────────────────────────
 
@@ -62,8 +62,17 @@ CREATE TABLE IF NOT EXISTS cancelable_transforms (
     revoked_at      TIMESTAMPTZ
 );
 
-CREATE INDEX idx_cancelable_voter ON cancelable_transforms (voter_vin, modality);
-CREATE INDEX idx_cancelable_active ON cancelable_transforms (is_revoked) WHERE is_revoked = FALSE;
+CREATE INDEX IF NOT EXISTS idx_cancelable_voter ON cancelable_transforms (voter_vin, modality);
+-- R4-39c fix: when the go-backend schema (inec-go-backend/migrations/000023) already
+-- created cancelable_transforms, this file's CREATE TABLE is a no-op and the table lacks the
+-- is_revoked column; create the index only when the column is present.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'cancelable_transforms' AND column_name = 'is_revoked') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_cancelable_active ON cancelable_transforms (is_revoked) WHERE is_revoked = FALSE';
+  END IF;
+END $$;
 
 -- ─── Go BVAS Device Registry Tables ────────────────────────────
 
@@ -86,8 +95,17 @@ CREATE TABLE IF NOT EXISTS bvas_devices (
     registered_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_bvas_status ON bvas_devices (status);
-CREATE INDEX idx_bvas_assigned_pu ON bvas_devices (assigned_pu) WHERE assigned_pu IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_bvas_status ON bvas_devices (status);
+-- R4-39c fix: when the go-backend schema (inec-go-backend/migrations/000023) already
+-- created bvas_devices, this file's CREATE TABLE is a no-op and the table lacks the
+-- assigned_pu column; create the index only when the column is present.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'bvas_devices' AND column_name = 'assigned_pu') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_bvas_assigned_pu ON bvas_devices (assigned_pu) WHERE assigned_pu IS NOT NULL';
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS bvas_capture_sessions (
     session_id      TEXT PRIMARY KEY,
@@ -105,9 +123,9 @@ CREATE TABLE IF NOT EXISTS bvas_capture_sessions (
     completed_at    TIMESTAMPTZ
 );
 
-CREATE INDEX idx_capture_device ON bvas_capture_sessions (device_id);
-CREATE INDEX idx_capture_voter ON bvas_capture_sessions (voter_vin);
-CREATE INDEX idx_capture_status ON bvas_capture_sessions (status);
+CREATE INDEX IF NOT EXISTS idx_capture_device ON bvas_capture_sessions (device_id);
+CREATE INDEX IF NOT EXISTS idx_capture_voter ON bvas_capture_sessions (voter_vin);
+CREATE INDEX IF NOT EXISTS idx_capture_status ON bvas_capture_sessions (status);
 
 -- ─── Go Biometric Gallery Tables ───────────────────────────────
 
@@ -125,9 +143,9 @@ CREATE TABLE IF NOT EXISTS biometric_gallery (
     UNIQUE (voter_vin, modality)
 );
 
-CREATE INDEX idx_gallery_voter ON biometric_gallery (voter_vin);
-CREATE INDEX idx_gallery_hash ON biometric_gallery (template_hash);
-CREATE INDEX idx_gallery_modality ON biometric_gallery (modality);
+CREATE INDEX IF NOT EXISTS idx_gallery_voter ON biometric_gallery (voter_vin);
+CREATE INDEX IF NOT EXISTS idx_gallery_hash ON biometric_gallery (template_hash);
+CREATE INDEX IF NOT EXISTS idx_gallery_modality ON biometric_gallery (modality);
 
 -- ─── Go LSH Index Tables ───────────────────────────────────────
 
@@ -139,8 +157,8 @@ CREATE TABLE IF NOT EXISTS lsh_index (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_lsh_lookup ON lsh_index (table_num, hash_value);
-CREATE INDEX idx_lsh_voter ON lsh_index (voter_vin);
+CREATE INDEX IF NOT EXISTS idx_lsh_lookup ON lsh_index (table_num, hash_value);
+CREATE INDEX IF NOT EXISTS idx_lsh_voter ON lsh_index (voter_vin);
 
 -- ─── Go Audit Log ──────────────────────────────────────────────
 
@@ -153,8 +171,8 @@ CREATE TABLE IF NOT EXISTS abis_audit_log (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_abis_audit_time ON abis_audit_log (created_at DESC);
-CREATE INDEX idx_abis_audit_voter ON abis_audit_log (voter_vin);
+CREATE INDEX IF NOT EXISTS idx_abis_audit_time ON abis_audit_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_abis_audit_voter ON abis_audit_log (voter_vin);
 
 -- ─── Python Biometric Processing Audit ─────────────────────────
 
@@ -174,9 +192,9 @@ CREATE TABLE IF NOT EXISTS biometric_processing_log (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_processing_log_time ON biometric_processing_log (created_at DESC);
-CREATE INDEX idx_processing_log_voter ON biometric_processing_log (voter_vin) WHERE voter_vin IS NOT NULL;
-CREATE INDEX idx_processing_log_op ON biometric_processing_log (operation);
+CREATE INDEX IF NOT EXISTS idx_processing_log_time ON biometric_processing_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_processing_log_voter ON biometric_processing_log (voter_vin) WHERE voter_vin IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_processing_log_op ON biometric_processing_log (operation);
 
 -- ─── Enrollment State (TypeScript kiosk → Go pipeline) ─────────
 
@@ -199,5 +217,5 @@ CREATE TABLE IF NOT EXISTS enrollment_sessions (
     metadata_json   JSONB
 );
 
-CREATE INDEX idx_enrollment_voter ON enrollment_sessions (voter_vin);
-CREATE INDEX idx_enrollment_status ON enrollment_sessions (status);
+CREATE INDEX IF NOT EXISTS idx_enrollment_voter ON enrollment_sessions (voter_vin);
+CREATE INDEX IF NOT EXISTS idx_enrollment_status ON enrollment_sessions (status);

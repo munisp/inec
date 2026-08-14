@@ -227,17 +227,38 @@ ALTER TABLE "gotv_cpi_history" DROP COLUMN IF EXISTS "sentiment";
 ALTER TABLE "gotv_cpi_history" DROP COLUMN IF EXISTS "voting_intention";
 
 -- gotv_field_reports
-ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "lga_code";
-ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "media_url";
-ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "report_type";
-ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "state_code";
+DO $$
+BEGIN
+  -- R4-39c fix: gotv_field_reports is created by the later migration 000026 whose down has
+  -- already dropped it by the time this down runs; skip when absent.
+  IF to_regclass('gotv_field_reports') IS NOT NULL THEN
+    ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "lga_code";
+    ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "media_url";
+    ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "report_type";
+    ALTER TABLE "gotv_field_reports" DROP COLUMN IF EXISTS "state_code";
+  END IF;
+END $$;
 
 -- gotv_ride_requests
-ALTER TABLE "gotv_ride_requests" DROP COLUMN IF EXISTS "created_at";
-ALTER TABLE "gotv_ride_requests" DROP COLUMN IF EXISTS "notes";
+DO $$
+BEGIN
+  -- R4-39c fix: gotv_ride_requests is created by the later migration 000026 whose down has
+  -- already dropped it by the time this down runs; skip when absent.
+  IF to_regclass('gotv_ride_requests') IS NOT NULL THEN
+    ALTER TABLE "gotv_ride_requests" DROP COLUMN IF EXISTS "created_at";
+    ALTER TABLE "gotv_ride_requests" DROP COLUMN IF EXISTS "notes";
+  END IF;
+END $$;
 
 -- gotv_volunteers
-ALTER TABLE "gotv_volunteers" DROP COLUMN IF EXISTS "vetting_status";
+DO $$
+BEGIN
+  -- R4-39c fix: gotv_volunteers is created by the later migration 000026 whose down has
+  -- already dropped it by the time this down runs; skip when absent.
+  IF to_regclass('gotv_volunteers') IS NOT NULL THEN
+    ALTER TABLE "gotv_volunteers" DROP COLUMN IF EXISTS "vetting_status";
+  END IF;
+END $$;
 
 -- grievances
 ALTER TABLE "grievances" DROP COLUMN IF EXISTS "category";
@@ -364,11 +385,25 @@ ALTER TABLE "sms_verifications" DROP COLUMN IF EXISTS "purpose";
 ALTER TABLE "sms_verifications" DROP COLUMN IF EXISTS "verified";
 
 -- stablecoin_ledger
-ALTER TABLE "stablecoin_ledger" DROP COLUMN IF EXISTS "amount";
-ALTER TABLE "stablecoin_ledger" DROP COLUMN IF EXISTS "balance_after";
+DO $$
+BEGIN
+  -- R4-39c fix: stablecoin_ledger is created by the later migration 000026 whose down has
+  -- already dropped it by the time this down runs; skip when absent.
+  IF to_regclass('stablecoin_ledger') IS NOT NULL THEN
+    ALTER TABLE "stablecoin_ledger" DROP COLUMN IF EXISTS "amount";
+    ALTER TABLE "stablecoin_ledger" DROP COLUMN IF EXISTS "balance_after";
+  END IF;
+END $$;
 
 -- stablecoin_wallets
-ALTER TABLE "stablecoin_wallets" DROP COLUMN IF EXISTS "balance";
+DO $$
+BEGIN
+  -- R4-39c fix: stablecoin_wallets is created by the later migration 000026 whose down has
+  -- already dropped it by the time this down runs; skip when absent.
+  IF to_regclass('stablecoin_wallets') IS NOT NULL THEN
+    ALTER TABLE "stablecoin_wallets" DROP COLUMN IF EXISTS "balance";
+  END IF;
+END $$;
 
 -- stakeholders
 ALTER TABLE "stakeholders" DROP COLUMN IF EXISTS "contact_person";

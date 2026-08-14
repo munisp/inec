@@ -137,7 +137,7 @@
 ### B. HARDCODED METRICS ❌
 - `auth.go:24` — JWT secret hardcoded: `"inec-election-platform-secret-key-2027"`
 - `seed.go` — Demo passwords hardcoded: `admin123`, `officer123`, `observer123`
-- `mw_apisix.go` — APISIX API key hardcoded in docker-compose: `edd1c9f034335f136f87ad84b625c8f1`
+- `mw_apisix.go` — APISIX API key hardcoded in docker-compose: `edd1c9f0…(redacted; rotated — see R4-39b)`
 - `biometric_engine.go` — AES encryption key derived from hardcoded constant
 - Middleware status latencies report `"0.0ms"` for all embedded components (cosmetic, not measured)
 - Dashboard stats partially derived from seed data, not live computation

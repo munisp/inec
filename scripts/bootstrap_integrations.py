@@ -16,8 +16,8 @@ Usage:
 
 Environment:
     APISIX_ADMIN_URL   default http://localhost:9180
-    APISIX_ADMIN_KEY   default: APISIX_API_KEY, then the compose dev key
-    APISIX_API_KEY     fallback for APISIX_ADMIN_KEY
+    APISIX_ADMIN_KEY   REQUIRED (APISIX_API_KEY accepted as alias). No default:
+                       the script refuses to run without an explicit key.
     APISIX_DATA_URL    default http://localhost:9080 (data-plane smoke check)
     ROUTES_FILE        default <repo>/config/apisix/routes.json
 
@@ -30,9 +30,14 @@ import time
 import urllib.error
 import urllib.request
 
-DEV_KEY = "edd1c9f034335f136f87ad84b625c8f1"
 ADMIN_URL = os.environ.get("APISIX_ADMIN_URL", "http://localhost:9180").rstrip("/")
-API_KEY = os.environ.get("APISIX_ADMIN_KEY") or os.environ.get("APISIX_API_KEY") or DEV_KEY
+API_KEY = os.environ.get("APISIX_ADMIN_KEY") or os.environ.get("APISIX_API_KEY")
+if not API_KEY:
+    sys.exit(
+        "[bootstrap] FAIL: APISIX_ADMIN_KEY (or APISIX_API_KEY) is not set. "
+        "Refusing to use a hardcoded/default admin key (R4-39b). "
+        "Set APISIX_ADMIN_KEY to the deployment's admin key and retry."
+    )
 DATA_URL = os.environ.get("APISIX_DATA_URL", "http://localhost:9080").rstrip("/")
 ROUTES_FILE = os.environ.get(
     "ROUTES_FILE",

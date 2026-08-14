@@ -10,6 +10,8 @@ RUN CGO_ENABLED=0 go build -o /abis-pipeline .
 FROM alpine:3.21 AS healthcheck-tools
 # Static busybox supplies wget for the compose healthcheck; the distroless
 # runtime image contains no shell, curl, or wget of its own.
+# R4-39d: distro-managed pins — apk resolves within the pinned alpine tag;
+# ca-certificates carries an explicit version floor. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apk add --no-cache busybox-static
 
 FROM gcr.io/distroless/static-debian12:nonroot  # runs as uid 65532

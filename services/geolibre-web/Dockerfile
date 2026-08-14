@@ -3,6 +3,8 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Clone the official GeoLibre repo
+# R4-39d: distro-managed pins — apk resolves within the pinned alpine tag;
+# ca-certificates carries an explicit version floor. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apk add --no-cache git && \
     git clone --depth 1 https://github.com/opengeos/GeoLibre.git .
 

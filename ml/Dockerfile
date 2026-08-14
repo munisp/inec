@@ -2,6 +2,9 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
+# R4-39d: distro-managed pins — package versions are bounded by the pinned
+# base-image tag; security-sensitive packages (ca-certificates/openssl/libssl) are
+# listed explicitly so they receive distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 curl \
     && rm -rf /var/lib/apt/lists/*
@@ -11,6 +14,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.12-slim
 
+# R4-39d: distro-managed pins — package versions are bounded by the pinned
+# base-image tag; security-sensitive packages (ca-certificates/openssl/libssl) are
+# listed explicitly so they receive distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libsm6 libxrender1 libxext6 \
     && rm -rf /var/lib/apt/lists/* \

@@ -7,10 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
+
+// resultChaincodesEnabled gates invocations of result-validation-cc and
+// aggregation-cc (R4-50): those chaincodes do NOT exist in this repository
+// (only fabric/chaincode/evidence-anchor does), so submitting to them is a
+// phantom invocation. They stay disabled unless the operator has actually
+// deployed the chaincode and opts in with FABRIC_RESULT_CC_ENABLED=true.
+func resultChaincodesEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("FABRIC_RESULT_CC_ENABLED")), "true")
+}
 
 var (
 	fabricNetwork   *HyperledgerFabricNetwork
@@ -324,6 +334,9 @@ func (c *ChaincodeExecutionEngine) ExecuteResultValidation(resultID int, puCode 
 		fmt.Sprintf("%v", allPassed),
 	}
 
+	if !resultChaincodesEnabled() {
+		return nil, fmt.Errorf("chaincode result-validation-cc is not deployed on this network; refusing phantom invocation (set FABRIC_RESULT_CC_ENABLED=true only after deploying the chaincode)")
+	}
 	txID, blockNum, err := c.fabric.SubmitTransaction("inec-results", "result-validation-cc", "ValidateResult", args, "INECMSP")
 	if err != nil {
 		return nil, err
@@ -351,6 +364,9 @@ func (c *ChaincodeExecutionEngine) ExecuteAggregation(level, areaCode string, el
 	defer c.mu.Unlock()
 
 	args := []string{level, areaCode, fmt.Sprintf("%d", electionID)}
+	if !resultChaincodesEnabled() {
+		return nil, fmt.Errorf("chaincode aggregation-cc is not deployed on this network; refusing phantom invocation (set FABRIC_RESULT_CC_ENABLED=true only after deploying the chaincode)")
+	}
 	txID, blockNum, err := c.fabric.SubmitTransaction("inec-results", "aggregation-cc", "AggregateResults", args, "INECMSP")
 	if err != nil {
 		return nil, err
@@ -437,10 +453,16 @@ func seedBlockchainProduction(database *sql.DB) {
 	}
 
 	chaincode := []struct{ id, ver, ch, policy string }{
-		{"result-validation-cc", "2.1", "inec-results", "AND('INECMSP.peer','Org1MSP.peer')"},
-		{"aggregation-cc", "1.5", "inec-results", "OR('INECMSP.peer','Org1MSP.peer')"},
 		{"audit-cc", "1.3", "inec-audit", "AND('INECMSP.peer','Org2MSP.peer')"},
 		{"dispute-resolution-cc", "1.0", "inec-results", "OutOf(3,'INECMSP.peer','Org1MSP.peer','Org2MSP.peer','Org3MSP.peer')"},
+	}
+	// R4-50: only advertise result-validation-cc / aggregation-cc as deployed when
+	// the operator has enabled them; they are not present in this repository.
+	if resultChaincodesEnabled() {
+		chaincode = append(chaincode,
+			struct{ id, ver, ch, policy string }{"result-validation-cc", "2.1", "inec-results", "AND('INECMSP.peer','Org1MSP.peer')"},
+			struct{ id, ver, ch, policy string }{"aggregation-cc", "1.5", "inec-results", "OR('INECMSP.peer','Org1MSP.peer')"},
+		)
 	}
 	for _, cc := range chaincode {
 		database.Exec(`INSERT INTO fabric_chaincode (chaincode_id, version, channel_id, endorsement_policy) VALUES (?,?,?,?)`,

@@ -1,5 +1,8 @@
 FROM rust:1.88-bookworm AS builder
 WORKDIR /app
+# R4-39d: distro-managed pins — package versions are bounded by the pinned
+# base-image tag; security-sensitive packages (ca-certificates/openssl/libssl) are
+# listed explicitly so they receive distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./

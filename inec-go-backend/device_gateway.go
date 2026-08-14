@@ -562,7 +562,7 @@ func persistDeviceGatewayEnvelope(ctx context.Context, envelope DeviceGatewayEnv
 	redactedPayload, _ := json.Marshal(redactedDeviceAnalyticsPayload(envelope, observedAt, payloadHash, inboxID, verification))
 	if _, err := tx.ExecContext(ctx, `INSERT INTO external_integration_outbox (correlation_id,source_type,aggregate_type,aggregate_id,event_type,event_version,partition_key,payload_redacted,payload_sha256,required_sinks,delivery_status)
 		VALUES (?,?,?,?,?,'v1',?,?,?,'["kafka","dapr","fluvio","opensearch"]','pending') ON CONFLICT DO NOTHING`,
-		correlationID, "bvas_gateway", "device_gateway_inbox", fmt.Sprintf("%d", inboxID), "inec.bvas.device-event.v1", envelope.DeviceID, string(redactedPayload), sha256Hex(redactedPayload)); err != nil {
+		correlationID, "bvas_gateway", "device_gateway_inbox", fmt.Sprintf("%d", inboxID), "inec.bvas.device-events.v1", envelope.DeviceID, string(redactedPayload), sha256Hex(redactedPayload)); err != nil {
 		return 0, "", fmt.Errorf("enqueue device event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
