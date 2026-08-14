@@ -2311,7 +2311,7 @@ func deliverVotingSessionOTP(ctx context.Context, partyID int, phoneHash sql.Nul
 	// Prefer SMS (Africa's Talking), fall back to WhatsApp.
 	if smsKey := os.Getenv("AFRICASTALKING_API_KEY"); smsKey != "" {
 		adapter := gotv.NewSMSAdapter("africastalking",
-			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER"))
+			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER"), os.Getenv("AFRICASTALKING_USERNAME"))
 		res := adapter.Send(ctx, gotv.OutboundMessage{
 			PartyID: partyID, Phone: phone, Template: text, Channel: "sms",
 		})

@@ -65,7 +65,7 @@ func (s *Service) InitTables(ctx context.Context) error {
 		name TEXT NOT NULL,
 		description TEXT,
 		campaign_type TEXT NOT NULL CHECK(campaign_type IN ('sms','ussd','push','whatsapp','whatsapp_interactive','email','door_to_door','phone_bank','ride_to_polls','twitter','facebook','instagram','tiktok')),
-		status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','scheduled','active','paused','completed','cancelled')),
+		status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','scheduled','active','paused','completed','cancelled','failed')),
 		target_state TEXT,
 		target_lga TEXT,
 		target_ward TEXT,

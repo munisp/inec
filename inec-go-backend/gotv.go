@@ -489,17 +489,35 @@ func gotvAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		username, _ := claims["username"].(string)
 		role, _ := claims["role"].(string)
 
+		// The user's authoritative party membership comes from the users
+		// table, never from a client-supplied header (R4-05).
+		var userParty sql.NullInt64
+		db.QueryRow("SELECT party_id FROM users WHERE username=$1", username).Scan(&userParty)
+
 		// Get party_id from user's party association or from header
 		partyIDStr := r.Header.Get("X-Party-ID")
 		if partyIDStr == "" {
 			// Try to get from user's profile
-			var pid sql.NullInt64
-			db.QueryRow("SELECT party_id FROM users WHERE username=$1", username).Scan(&pid)
-			if !pid.Valid {
+			if !userParty.Valid {
 				http.Error(w, `{"error":"no_party","message":"user not associated with a party"}`, http.StatusForbidden)
 				return
 			}
-			partyIDStr = strconv.FormatInt(pid.Int64, 10)
+			partyIDStr = strconv.FormatInt(userParty.Int64, 10)
+		} else if role != "admin" {
+			// Tenancy enforcement (R4-05): a party_admin (or any non-admin)
+			// presenting an X-Party-ID header must be a member of THAT party
+			// per the users table. Previously the header was trusted blindly,
+			// letting any party_admin impersonate any other party across all
+			// 84 monolith GOTV routes. Global admins may act cross-party.
+			headerParty, herr := strconv.Atoi(partyIDStr)
+			if herr != nil {
+				http.Error(w, `{"error":"invalid_party_id"}`, http.StatusBadRequest)
+				return
+			}
+			if !userParty.Valid || userParty.Int64 != int64(headerParty) {
+				http.Error(w, `{"error":"party_mismatch","message":"X-Party-ID does not match your party membership"}`, http.StatusForbidden)
+				return
+			}
 		}
 
 		partyID, err := strconv.Atoi(partyIDStr)

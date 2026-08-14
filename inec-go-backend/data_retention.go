@@ -5,10 +5,69 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
+
+// ── Retention worker (R4-57) ───────────────────────────────────────────────
+// RunDataRetention previously had zero call sites — purge policies were
+// defined but never executed. This wires it into startup as a daily ticker,
+// following the fabric_anchor.go worker pattern.
+//
+// Failure modes:
+//   - A failing policy is logged and skipped; other policies still run
+//     (per-policy isolation inside RunDataRetention).
+//   - RETENTION_WORKER_ENABLED=false disables the worker entirely.
+//   - RETENTION_DRY_RUN=true logs what would be purged without deleting.
+
+var (
+	dataRetentionWorkerStartOnce sync.Once
+	dataRetentionWorkerStopOnce  sync.Once
+	dataRetentionStopChannel     chan struct{}
+)
+
+func dataRetentionWorkerEnabled() bool {
+	return os.Getenv("RETENTION_WORKER_ENABLED") != "false"
+}
+
+func startDataRetentionWorker() {
+	if !dataRetentionWorkerEnabled() {
+		log.Info().Msg("data retention worker disabled (RETENTION_WORKER_ENABLED=false)")
+		return
+	}
+	dataRetentionWorkerStartOnce.Do(func() {
+		dataRetentionStopChannel = make(chan struct{})
+		go func() {
+			dryRun := os.Getenv("RETENTION_DRY_RUN") == "true"
+			// First sweep shortly after startup, then daily.
+			first := time.NewTimer(1 * time.Minute)
+			defer first.Stop()
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-first.C:
+					RunDataRetention(dryRun)
+				case <-ticker.C:
+					RunDataRetention(dryRun)
+				case <-dataRetentionStopChannel:
+					return
+				}
+			}
+		}()
+		log.Info().Bool("dry_run", os.Getenv("RETENTION_DRY_RUN") == "true").Msg("data retention worker started (daily)")
+	})
+}
+
+func stopDataRetentionWorker() {
+	dataRetentionWorkerStopOnce.Do(func() {
+		if dataRetentionStopChannel != nil {
+			close(dataRetentionStopChannel)
+		}
+	})
+}
 
 // DataRetentionPolicy defines purge rules for each data category.
 type DataRetentionPolicy struct {
@@ -57,8 +116,7 @@ func envIntOr(key string, fallback int) int {
 }
 
 // RunDataRetention executes purge policies. Called by a cron or startup hook.
-func RunDataRetention(dryRun bool) {
-	policies := defaultRetentionPolicies()
+func RunDataRetention(dryRun bool) {	policies := defaultRetentionPolicies()
 	log.Info().Bool("dry_run", dryRun).Int("policies", len(policies)).Msg("Starting data retention sweep")
 
 	for _, p := range policies {

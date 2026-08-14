@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -79,7 +79,7 @@ func main() {
 		if *encKey == "" {
 			missing = append(missing, "GOTV_ENCRYPTION_KEY")
 		}
-		if os.Getenv("INTERNAL_SERVICE_SECRET") == "" && os.Getenv("GOTV_GATEWAY_SECRET") == "" {
+		if os.Getenv("INTERNAL_SERVICE_SECRET") == "" && os.Getenv("GOTV_INTERNAL_TOKEN") == "" && os.Getenv("GOTV_GATEWAY_SECRET") == "" {
 			missing = append(missing, "INTERNAL_SERVICE_SECRET")
 		}
 		if os.Getenv("GOTV_MOBILE_JWT_SECRET") == "" {
@@ -143,7 +143,7 @@ func main() {
 	dispatcher = gotv.NewDispatchEngine(db, svc, wsHub, 10)
 	if smsKey := os.Getenv("AFRICASTALKING_API_KEY"); smsKey != "" {
 		dispatcher.RegisterAdapter(gotv.NewSMSAdapter("africastalking",
-			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER")))
+			"https://api.africastalking.com/version1", smsKey, os.Getenv("AFRICASTALKING_SENDER"), os.Getenv("AFRICASTALKING_USERNAME")))
 	}
 	if pushKey := os.Getenv("FCM_SERVER_KEY"); pushKey != "" {
 		dispatcher.RegisterAdapter(gotv.NewPushAdapter(pushKey, os.Getenv("FCM_PROJECT_ID")))
@@ -188,9 +188,16 @@ func main() {
 		dispatcher.RegisterAdapter(gotv.NewWhatsAppInteractiveAdapter(
 			"https://graph.facebook.com/v18.0", waToken, os.Getenv("WHATSAPP_PHONE_ID")))
 	}
-	// Webhook signature verification secrets
+	// Webhook signature verification secrets.
+	// AFRICASTALKING_WEBHOOK_SECRET is the canonical name; AT_WEBHOOK_SECRET
+	// is accepted as a legacy alias. All provider webhooks FAIL CLOSED when
+	// their secret is unset (routes return 503; verification never passes).
+	atWebhookSecret := os.Getenv("AFRICASTALKING_WEBHOOK_SECRET")
+	if atWebhookSecret == "" {
+		atWebhookSecret = os.Getenv("AT_WEBHOOK_SECRET")
+	}
 	gotv.InitWebhookSecrets(
-		os.Getenv("AT_WEBHOOK_SECRET"),
+		atWebhookSecret,
 		os.Getenv("TWILIO_AUTH_TOKEN"),
 		os.Getenv("WHATSAPP_APP_SECRET"),
 	)
@@ -279,13 +286,8 @@ func main() {
 	// Health
 	r.HandleFunc("/health", handleHealth).Methods("GET")
 
-	// Dev auth endpoints (for frontend login flow)
-	r.HandleFunc("/auth/login", handleDevLogin).Methods("POST")
-	r.HandleFunc("/auth/me", handleDevMe).Methods("GET")
-	r.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	}).Methods("POST")
+	// Dev auth endpoints are registered only in explicit dev mode (R4-04).
+	maybeRegisterDevAuthRoutes(r)
 
 	// WebSocket (real-time events)
 	r.HandleFunc("/gotv/ws", handleWebSocket).Methods("GET")
@@ -724,6 +726,24 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":  "healthy",
 		"version": "1.0.0",
 	})
+}
+
+// maybeRegisterDevAuthRoutes registers the dev-only auth endpoints.
+// SECURITY (R4-04): these routes vend admin-role tokens WITHOUT checking
+// credentials, so they exist ONLY under explicit dev mode
+// (--dev / GOTV_DEV_MODE=true, itself forbidden in production at startup).
+// With dev mode off the routes are not registered at all — /auth/login
+// returns 404, not 403, so the backdoor's presence is undiscoverable.
+func maybeRegisterDevAuthRoutes(r *mux.Router) {
+	if !devModeEnabled {
+		return
+	}
+	r.HandleFunc("/auth/login", handleDevLogin).Methods("POST")
+	r.HandleFunc("/auth/me", handleDevMe).Methods("GET")
+	r.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}).Methods("POST")
 }
 
 func handleDevLogin(w http.ResponseWriter, r *http.Request) {
@@ -2155,8 +2175,24 @@ func handleGeoCanvassTrails(w http.ResponseWriter, r *http.Request) {
 func handleCanvassWalklist(w http.ResponseWriter, r *http.Request) {
 	pid, _ := getParty(r)
 	volID := r.URL.Query().Get("volunteer_id")
-	lat, _ := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
-	lng, _ := strconv.ParseFloat(r.URL.Query().Get("lng"), 64)
+
+	// Proximity sort (R4-58): honored ONLY when both lat and lng are present
+	// and parse as finite floats; previously the params were parsed and then
+	// silently discarded (`_ = lat`), despite the promised ordering.
+	latStr, lngStr := r.URL.Query().Get("lat"), r.URL.Query().Get("lng")
+	proximity := latStr != "" && lngStr != ""
+	var lat, lng float64
+	if proximity {
+		var perr error
+		lat, perr = strconv.ParseFloat(latStr, 64)
+		if perr != nil || math.IsNaN(lat) || math.IsInf(lat, 0) {
+			proximity = false
+		}
+		lng, perr = strconv.ParseFloat(lngStr, 64)
+		if perr != nil || math.IsNaN(lng) || math.IsInf(lng, 0) {
+			proximity = false
+		}
+	}
 
 	// Get volunteer's assigned area
 	var assignedState, assignedLGA, assignedWard string
@@ -2165,21 +2201,36 @@ func handleCanvassWalklist(w http.ResponseWriter, r *http.Request) {
 		volID, pid).Scan(&assignedState, &assignedLGA, &assignedWard)
 
 	// Fetch contacts in assigned area, sorted by proximity if lat/lng provided
-	query := `SELECT contact_id, phone_encrypted, full_name_encrypted, state_code, lga_code, ward_code, voter_status
-	          FROM gotv_contacts WHERE party_id=$1 AND opted_out=FALSE`
+	query := `SELECT c.contact_id, c.phone_encrypted, c.full_name_encrypted, c.state_code, c.lga_code, c.ward_code, c.voter_status
+	          FROM gotv_contacts c`
 	args := []interface{}{pid}
 	idx := 2
+	if proximity {
+		// Haversine distance (km) to the contact's polling unit; contacts
+		// whose PU has no coordinates sort last, then by recency.
+		query += " LEFT JOIN polling_units pu ON pu.code = c.polling_unit_code"
+	}
+	query += " WHERE c.party_id=$1 AND c.opted_out=FALSE"
 	if assignedState != "" {
-		query += fmt.Sprintf(" AND state_code=$%d", idx)
+		query += fmt.Sprintf(" AND c.state_code=$%d", idx)
 		args = append(args, assignedState)
 		idx++
 	}
 	if assignedLGA != "" {
-		query += fmt.Sprintf(" AND lga_code=$%d", idx)
+		query += fmt.Sprintf(" AND c.lga_code=$%d", idx)
 		args = append(args, assignedLGA)
 		idx++
 	}
-	query += " ORDER BY created_at LIMIT 200"
+	if proximity {
+		query += fmt.Sprintf(` ORDER BY (6371.0 * 2 * ASIN(SQRT(
+			POWER(SIN(RADIANS(($%d - pu.latitude) / 2)), 2) +
+			COS(RADIANS($%d)) * COS(RADIANS(pu.latitude)) *
+			POWER(SIN(RADIANS(($%d - pu.longitude) / 2)), 2)
+		))) ASC NULLS LAST, c.created_at LIMIT 200`, idx, idx, idx+1)
+		args = append(args, lat, lng)
+	} else {
+		query += " ORDER BY c.created_at LIMIT 200"
+	}
 
 	rows, err := svc.DB.Query(query, args...)
 	if err != nil {
@@ -2220,8 +2271,6 @@ func handleCanvassWalklist(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	_ = lat
-	_ = lng
 	jsonResp(w, map[string]interface{}{"walklist": list, "total": len(list)})
 }
 
@@ -2408,11 +2457,23 @@ func handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hash the webhook secret before storing (never store plaintext secrets)
-	secretHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.Secret)))
+	// SSRF defense (R4-43): webhook URLs are validated at registration, not
+	// just at delivery time — https-only in production, and never
+	// loopback/RFC1918/link-local targets.
+	if err := gotv.ValidateWebhookURL(req.URL); err != nil {
+		jsonErr(w, "webhook url rejected: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Store the RAW secret: delivery signs payloads as
+	// hex(HMAC-SHA256(body, secret)) so subscribers can verify with the
+	// secret they registered (R4-43). MIGRATION NOTE: webhooks registered
+	// before this fix stored sha256(secret) and can never verify — they must
+	// be re-registered. Treat the column as a secret at rest (DB-level
+	// encryption / restricted grants), same as an API key.
 	_, err := svc.DB.Exec(
 		"INSERT INTO gotv_webhooks (party_id, url, secret, event_types) VALUES ($1,$2,$3,$4)",
-		pid, req.URL, secretHash, pq.Array(req.EventTypes))
+		pid, req.URL, req.Secret, pq.Array(req.EventTypes))
 	if err != nil {
 		jsonErr(w, "create failed", http.StatusInternalServerError)
 		return
@@ -2868,6 +2929,13 @@ func parsePagination(r *http.Request) (limit, offset int) {
 // ─── Delivery Receipt Webhook Handlers ──────────────────────────────────
 
 func handleDeliveryReceiptAT(w http.ResponseWriter, r *http.Request) {
+	// Fail closed with a loud 503 when the shared secret is not configured:
+	// accepting unsigned delivery receipts would let anyone forge delivery
+	// status (R4-03).
+	if atOK, _, _ := gotv.WebhookSecretsConfigured(); !atOK {
+		http.Error(w, `{"error":"africastalking webhook secret not configured (AFRICASTALKING_WEBHOOK_SECRET) — endpoint disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -2891,6 +2959,12 @@ func handleDeliveryReceiptAT(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDeliveryReceiptTwilio(w http.ResponseWriter, r *http.Request) {
+	// Fail closed with a loud 503 when the Twilio auth token is not
+	// configured (R4-03).
+	if _, twOK, _ := gotv.WebhookSecretsConfigured(); !twOK {
+		http.Error(w, `{"error":"twilio webhook secret not configured (TWILIO_AUTH_TOKEN) — endpoint disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -2928,6 +3002,12 @@ func handleDeliveryReceiptWhatsApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fail closed with a loud 503 when the Meta app secret is not configured
+	// (R4-03).
+	if _, _, waOK := gotv.WebhookSecretsConfigured(); !waOK {
+		http.Error(w, `{"error":"whatsapp webhook secret not configured (WHATSAPP_APP_SECRET) — endpoint disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -2953,17 +3033,36 @@ func handleDeliveryReceiptWhatsApp(w http.ResponseWriter, r *http.Request) {
 // ─── Inbound SMS Opt-Out Handler ────────────────────────────────────────
 
 func handleInboundSMS(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	// SECURITY (R4-03): this endpoint processes opt-out requests (STOP etc.)
+	// that silently disenfranchise voters from campaign contact. It MUST
+	// verify the provider signature before acting — an unauthenticated POST
+	// must never be able to opt out an arbitrary phone number.
+	// Fail closed with 503 when the shared secret is not configured.
+	if atOK, _, _ := gotv.WebhookSecretsConfigured(); !atOK {
+		http.Error(w, `{"error":"inbound SMS webhook secret not configured (AFRICASTALKING_WEBHOOK_SECRET) — endpoint disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	phone := r.FormValue("from")
-	if phone == "" {
-		phone = r.FormValue("From") // Twilio uses "From"
+	if !gotv.VerifyATSignature(body, r.Header.Get("X-AT-Signature")) {
+		http.Error(w, "invalid signature", http.StatusForbidden)
+		return
 	}
-	text := strings.ToUpper(strings.TrimSpace(r.FormValue("text")))
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	phone := form.Get("from")
+	if phone == "" {
+		phone = form.Get("From") // Twilio uses "From"
+	}
+	text := strings.ToUpper(strings.TrimSpace(form.Get("text")))
 	if text == "" {
-		text = strings.ToUpper(strings.TrimSpace(r.FormValue("Body"))) // Twilio uses "Body"
+		text = strings.ToUpper(strings.TrimSpace(form.Get("Body"))) // Twilio uses "Body"
 	}
 
 	optOutKeywords := map[string]bool{"STOP": true, "UNSUBSCRIBE": true, "OPT OUT": true, "OPTOUT": true, "CANCEL": true, "END": true, "QUIT": true}

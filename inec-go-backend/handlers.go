@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 )
 
@@ -84,12 +86,21 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Include state_code + staff_id so write handlers can enforce
 	// state-level tenancy without extra lookups or trusting the request body.
+	// The jti is generated here (not inside createAccessToken) so the session
+	// can be recorded and later revoked by jti (R4-07).
+	accessJTI := generateJTI()
 	claims := map[string]interface{}{
 		"sub": fmt.Sprintf("%d", id), "username": username, "role": role, "full_name": fullName,
 		"staff_id": nullStr(staffID), "state_code": nullStr(stateCode),
+		"jti": accessJTI,
 	}
 	token, _ := createAccessToken(claims)
 	refresh, _ := createRefreshToken(claims)
+
+	// Record the session so /auth/sessions reflects reality and logout /
+	// revocation can target this token (previously recordSession had zero
+	// call sites and the session list was always empty).
+	recordSession(accessJTI, id, time.Now().Add(1*time.Hour), r)
 
 	// Set httpOnly cookies for XSS-resistant auth
 	secure := isProductionLike()
@@ -333,9 +344,15 @@ func handleUpdateElection(w http.ResponseWriter, r *http.Request) {
 		updates = append(updates, "title=?")
 		vals = append(vals, v)
 	}
+	// FSM enforcement (R4-20): election status is a lifecycle state machine
+	// (draft→scheduled→active→…, see election_fsm.go). Writing it directly
+	// here would bypass transition guards and the audit trail, so PATCH
+	// rejects the field; callers must use POST /elections/{id}/transition
+	// (or /ems/elections/{id}/fsm/transition) which routes through
+	// TransitionElection.
 	if v, ok := req["status"]; ok && v != nil {
-		updates = append(updates, "status=?")
-		vals = append(vals, v)
+		writeError(w, 400, "status cannot be set via PATCH — use POST /elections/{id}/transition (FSM-guarded)")
+		return
 	}
 	if v, ok := req["description"]; ok && v != nil {
 		updates = append(updates, "description=?")
@@ -394,6 +411,30 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── Results ──
+
+// computeEC8AHash derives the tamper-evidence hash for a submitted EC8A
+// result (R4-23). It binds the actual vote content, not just the polling
+// unit code. Canonical preimage:
+//
+//	election_id | polling_unit_code | "PARTY:votes,..." (sorted by party
+//	code) | accredited_voters | rejected_votes
+//
+// Two different result sets for the same PU hash differently; identical
+// re-submissions hash identically (idempotency). Previously this was
+// sha256(polling_unit_code) — identical for every result from a PU and
+// binding nothing.
+func computeEC8AHash(electionID int, pollingUnitCode string, partyScores []PartyVoteEntry, accredited, rejected int) string {
+	sortedScores := make([]PartyVoteEntry, len(partyScores))
+	copy(sortedScores, partyScores)
+	sort.Slice(sortedScores, func(i, j int) bool { return sortedScores[i].PartyCode < sortedScores[j].PartyCode })
+	var scoreParts []string
+	for _, ps := range sortedScores {
+		scoreParts = append(scoreParts, fmt.Sprintf("%s:%d", ps.PartyCode, ps.Votes))
+	}
+	preimage := fmt.Sprintf("%d|%s|%s|%d|%d", electionID, pollingUnitCode,
+		strings.Join(scoreParts, ","), accredited, rejected)
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(preimage)))
+}
 
 func logAudit(action, entityType, entityID string, userID int, details map[string]interface{}) {
 	logAuditCtx(context.Background(), action, entityType, entityID, userID, details)
@@ -500,7 +541,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ec8aHash := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(req.PollingUnitCode)))
+	ec8aHash := computeEC8AHash(req.ElectionID, req.PollingUnitCode, partyEntries, req.AccreditedVoters, req.RejectedVotes)
 	userSub, _ := user["sub"].(string)
 	userID, _ := strconv.Atoi(userSub)
 
@@ -520,13 +561,30 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "database transaction error")
 		return
 	}
-	resultID := insertReturningID(tx, `INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
-			total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
-			ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+	// Insert with explicit error handling (R4-22): the UNIQUE constraint on
+	// results(election_id, polling_unit_code) (migration 000028) closes the
+	// TOCTOU race where two concurrent submissions both passed the COUNT
+	// pre-check. A unique violation follows the existing duplicate semantics
+	// — the result is already recorded — reported as 409 Conflict instead of
+	// a 500 (insertReturningID previously swallowed the error, returning 0).
+	var resultID int64
+	err = tx.QueryRowContext(r.Context(), convertPlaceholders(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
+		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
+		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`),
 		req.ElectionID, req.PollingUnitCode, userID, "pending",
 		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
-		ec8aHash, nil, "NOT_APPLICABLE", "PENDING")
+		ec8aHash, nil, "NOT_APPLICABLE", "PENDING").Scan(&resultID)
+	if err != nil {
+		tx.Rollback()
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "Result already submitted for this polling unit")
+			return
+		}
+		log.Error().Err(err).Int("election_id", req.ElectionID).Str("pu", req.PollingUnitCode).Msg("result insert failed")
+		writeError(w, 500, "failed to save result")
+		return
+	}
 
 	// Batch insert party scores (single multi-value INSERT on PostgreSQL)
 	if err := batchInsertPartyScores(tx, resultID, req.PartyScores); err != nil {

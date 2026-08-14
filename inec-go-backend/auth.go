@@ -20,32 +20,42 @@ import (
 
 var jwtSecret []byte
 
+// resolveJWTSecret implements the fail-closed JWT secret policy (R4-42) as a
+// pure function so it is regression-testable: outside an explicit
+// INEC_ENV=development (or a `go test` binary), a missing or short (<32 char)
+// secret is an ERROR — never an empty/weak HMAC key. In development an
+// ephemeral random key is generated instead.
+func resolveJWTSecret(secret, inecEnv string, isTestBinary bool) (key []byte, err error) {
+	dev := inecEnv == "development" || isTestBinary
+	if secret == "" {
+		if !dev {
+			return nil, fmt.Errorf("JWT_SECRET environment variable is required (set INEC_ENV=development to allow ephemeral dev keys)")
+		}
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return nil, fmt.Errorf("failed to generate random JWT secret: %w", err)
+		}
+		return []byte(base64.RawURLEncoding.EncodeToString(b)), nil
+	}
+	if len(secret) < 32 && !dev {
+		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters")
+	}
+	return []byte(secret), nil
+}
+
 func init() {
 	// SECURITY: refuse to boot with a missing/short HMAC key anywhere except an
 	// explicit INEC_ENV=development. Previously this only logged an error and
 	// proceeded with an empty key, silently forging/accepting tokens in prod.
-	s := os.Getenv("JWT_SECRET")
-	dev := os.Getenv("INEC_ENV") == "development"
-	if !dev && strings.HasSuffix(os.Args[0], ".test") {
-		// `go test` binaries never serve traffic; allow ephemeral keys so the
-		// test suite can run without exporting secrets.
-		dev = true
+	isTest := strings.HasSuffix(os.Args[0], ".test")
+	key, err := resolveJWTSecret(os.Getenv("JWT_SECRET"), os.Getenv("INEC_ENV"), isTest)
+	if err != nil {
+		log.Fatal().Err(err).Msg("JWT secret policy violation — refusing to start")
 	}
-	if s == "" {
-		if !dev {
-			log.Fatal().Msg("JWT_SECRET environment variable is required (set INEC_ENV=development to allow ephemeral dev keys)")
-		}
+	if os.Getenv("JWT_SECRET") == "" {
 		log.Warn().Msg("JWT_SECRET not set — generating ephemeral key (INEC_ENV=development only)")
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			log.Fatal().Err(err).Msg("failed to generate random JWT secret")
-		}
-		s = base64.RawURLEncoding.EncodeToString(b)
 	}
-	if len(s) < 32 && !dev {
-		log.Fatal().Msg("JWT_SECRET must be at least 32 characters")
-	}
-	jwtSecret = []byte(s)
+	jwtSecret = key
 }
 
 func hashPassword(password string) string {
