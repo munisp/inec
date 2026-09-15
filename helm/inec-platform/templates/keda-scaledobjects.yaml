@@ -20,7 +20,7 @@ spec:
     {{- if .Values.keda.kafka.enabled }}
     - type: kafka
       metadata:
-        bootstrapServers: {{ .Values.keda.kafka.bootstrapServers }}
+        bootstrapServers: {{ tpl .Values.keda.kafka.bootstrapServers . }}
         consumerGroup: {{ .Release.Name }}-backend
         topic: {{ .Values.keda.kafka.topic | default "inec.results.submitted" }}
         lagThreshold: {{ .Values.keda.kafka.lagThreshold | default "100" | quote }}
