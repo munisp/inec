@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"net/http"
@@ -19,6 +20,65 @@ import (
 )
 
 var jwtSecret []byte
+
+// ── JWT key rotation (R5-047) ────────────────────────────────────────────
+// Tokens carry a `kid` header naming the signing key so a compromised or
+// scheduled key can be rotated: the NEW secret goes in JWT_SECRET, the OLD
+// one moves to JWT_SECRET_PREVIOUS for the overlap window, then is removed.
+// Verification accepts current+previous only; an unknown kid fails closed.
+// The kid is a public fingerprint of the key (truncated SHA-256), never the
+// key material itself.
+
+type jwtKey struct {
+	kid string
+	key []byte
+}
+
+var jwtCurrent jwtKey
+var jwtPrevious *jwtKey // nil unless JWT_SECRET_PREVIOUS is set
+
+func jwtKID(key []byte) string {
+	h := sha256.Sum256(key)
+	return hex.EncodeToString(h[:])[:16]
+}
+
+func initJWTRotation() {
+	jwtCurrent = jwtKey{kid: jwtKID(jwtSecret), key: jwtSecret}
+	if prev := os.Getenv("JWT_SECRET_PREVIOUS"); prev != "" {
+		isTest := strings.HasSuffix(os.Args[0], ".test")
+		pkey, err := resolveJWTSecret(prev, os.Getenv("INEC_ENV"), isTest)
+		if err != nil {
+			log.Fatal().Err(err).Msg("JWT_SECRET_PREVIOUS policy violation — refusing to start")
+		}
+		jwtPrevious = &jwtKey{kid: jwtKID(pkey), key: pkey}
+		if jwtPrevious.kid == jwtCurrent.kid {
+			log.Fatal().Msg("JWT_SECRET and JWT_SECRET_PREVIOUS are identical — not a rotation")
+		}
+		log.Warn().Str("previous_kid", jwtPrevious.kid).Msg("JWT key rotation window active — previous key accepted for verification only")
+	}
+}
+
+// jwtKeyForToken resolves the verification key from the token's kid header.
+// Legacy tokens (no kid) verify against the CURRENT key. Unknown kids fail
+// closed.
+func jwtKeyForToken(t *jwt.Token) ([]byte, error) {
+	kid, _ := t.Header["kid"].(string)
+	switch {
+	case kid == "" || kid == jwtCurrent.kid:
+		return jwtCurrent.key, nil
+	case jwtPrevious != nil && kid == jwtPrevious.kid:
+		return jwtPrevious.key, nil
+	default:
+		return nil, fmt.Errorf("unknown JWT key id — token rejected")
+	}
+}
+
+// signJWT signs claims with the current key and stamps the kid header.
+func signJWT(mc jwt.MapClaims) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, mc)
+	token.Header["kid"] = jwtCurrent.kid
+	return token.SignedString(jwtCurrent.key)
+}
 
 // resolveJWTSecret implements the fail-closed JWT secret policy (R4-42) as a
 // pure function so it is regression-testable: outside an explicit
@@ -56,6 +116,7 @@ func init() {
 		log.Warn().Msg("JWT_SECRET not set — generating ephemeral key (INEC_ENV=development only)")
 	}
 	jwtSecret = key
+	initJWTRotation()
 }
 
 func hashPassword(password string) string {
@@ -118,8 +179,7 @@ func createAccessToken(claims map[string]interface{}) (string, error) {
 	}
 	mc["exp"] = time.Now().Add(1 * time.Hour).Unix()
 	mc["type"] = "access"
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, mc)
-	return token.SignedString(jwtSecret)
+	return signJWT(mc)
 }
 
 func createRefreshToken(claims map[string]interface{}) (string, error) {
@@ -132,8 +192,7 @@ func createRefreshToken(claims map[string]interface{}) (string, error) {
 	}
 	mc["exp"] = time.Now().Add(7 * 24 * time.Hour).Unix()
 	mc["type"] = "refresh"
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, mc)
-	return token.SignedString(jwtSecret)
+	return signJWT(mc)
 }
 
 func decodeToken(tokenStr string) (jwt.MapClaims, error) {
@@ -141,7 +200,9 @@ func decodeToken(tokenStr string) (jwt.MapClaims, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
-		return jwtSecret, nil
+		// R5-047: key selected by the token's kid header (current+previous
+		// only; unknown kid fails closed).
+		return jwtKeyForToken(t)
 	})
 	if err != nil {
 		return nil, err

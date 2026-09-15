@@ -5,6 +5,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -19,13 +20,48 @@ import (
 
 // Config holds authentication service configuration.
 type Config struct {
-	JWTSecret        []byte
-	AccessTokenTTL   time.Duration
-	RefreshTokenTTL  time.Duration
-	BcryptCost       int
-	MaxLoginAttempts int
-	LockoutDuration  time.Duration
-	TokenIssuer      string
+	JWTSecret []byte
+	// JWTSecretPrevious (R5-047): the outgoing key during a rotation window —
+	// accepted for VERIFICATION only, never for signing. Sourced from
+	// JWT_SECRET_PREVIOUS by the service entrypoint.
+	JWTSecretPrevious []byte
+	AccessTokenTTL    time.Duration
+	RefreshTokenTTL   time.Duration
+	BcryptCost        int
+	MaxLoginAttempts  int
+	LockoutDuration   time.Duration
+	TokenIssuer       string
+}
+
+// jwtKID is a public fingerprint of a signing key (truncated SHA-256) —
+// safe to emit in token headers, identifies the key without revealing it.
+func jwtKID(key []byte) string {
+	h := sha256.Sum256(key)
+	return hex.EncodeToString(h[:])[:16]
+}
+
+func (c Config) currentKID() string { return jwtKID(c.JWTSecret) }
+
+// verificationKey resolves the HMAC key for a token from its kid header
+// (R5-047). Legacy kid-less tokens verify against the current key; an
+// unknown kid fails closed.
+func (c Config) verificationKey(t *jwt.Token) ([]byte, error) {
+	kid, _ := t.Header["kid"].(string)
+	switch {
+	case kid == "" || kid == c.currentKID():
+		return c.JWTSecret, nil
+	case len(c.JWTSecretPrevious) > 0 && kid == jwtKID(c.JWTSecretPrevious):
+		return c.JWTSecretPrevious, nil
+	default:
+		return nil, fmt.Errorf("unknown JWT key id — token rejected")
+	}
+}
+
+// sign stamps the current kid and signs with the current key.
+func (c Config) sign(claims jwt.Claims) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["kid"] = c.currentKID()
+	return token.SignedString(c.JWTSecret)
 }
 
 // DefaultConfig returns production-safe defaults.
@@ -183,7 +219,7 @@ func (s *Service) ValidateToken(tokenStr string) (*Claims, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return s.config.JWTSecret, nil
+		return s.config.verificationKey(t)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("token validation failed: %w", err)
@@ -275,8 +311,7 @@ func (s *Service) issueTokenPair(user *User) (*TokenPair, error) {
 		JTI:      jti,
 	}
 
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessStr, err := accessToken.SignedString(s.config.JWTSecret)
+	accessStr, err := s.config.sign(accessClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -297,8 +332,7 @@ func (s *Service) issueTokenPair(user *User) (*TokenPair, error) {
 		JTI:      refreshJTI,
 	}
 
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshStr, err := refreshToken.SignedString(s.config.JWTSecret)
+	refreshStr, err := s.config.sign(refreshClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +415,7 @@ func (s *Service) Revoke(ctx context.Context, tokenStr string) error {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return s.config.JWTSecret, nil
+		return s.config.verificationKey(t)
 	})
 	if err != nil {
 		return fmt.Errorf("revoke: token parse failed: %w", err)
