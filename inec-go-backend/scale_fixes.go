@@ -155,6 +155,11 @@ func (q *RingBufferQueue) Stats() map[string]int {
 	return stats
 }
 
+// Deprecated (R5-003): the ring buffer was initialized but never referenced —
+// the live ingestion queue in ingestion.go is now DB-backed, prunes terminal
+// jobs, and caps in-flight work only, making this structure unnecessary. The
+// init call in main.go (W2-owned) should be removed; this remains only to
+// keep that call compiling.
 var ringQueue *RingBufferQueue
 
 func initRingBufferQueue() {
