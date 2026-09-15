@@ -3,6 +3,7 @@ import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { useAuth } from '@/lib/auth';
+import { useI18n } from '@/lib/i18n';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -27,6 +28,7 @@ interface ResultItem {
 function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
 
 export default function ResultsPage() {
+  const { t } = useI18n();
   const { user } = useAuth();
   const [results, setResults] = useState<ResultItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -123,20 +125,20 @@ export default function ResultsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3" role="toolbar" aria-label="Result filters">
         <div className="flex items-center gap-3">
           <Select value={filterState} onValueChange={setFilterState}>
-            <SelectTrigger className="w-40"><SelectValue placeholder="All States" /></SelectTrigger>
+            <SelectTrigger className="w-40"><SelectValue placeholder={t('results_all_states')} /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All States</SelectItem>
+              <SelectItem value="all">{t('results_all_states')}</SelectItem>
               {states.map(s => <SelectItem key={s.code} value={s.code}>{s.name}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={filterStatus} onValueChange={setFilterStatus}>
-            <SelectTrigger className="w-36"><SelectValue placeholder="All Status" /></SelectTrigger>
+            <SelectTrigger className="w-36"><SelectValue placeholder={t('results_all_status')} /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
-              <SelectItem value="validated">Validated</SelectItem>
-              <SelectItem value="finalized">Finalized</SelectItem>
-              <SelectItem value="disputed">Disputed</SelectItem>
+              <SelectItem value="all">{t('results_all_status')}</SelectItem>
+              <SelectItem value="pending">{t('pending')}</SelectItem>
+              <SelectItem value="validated">{t('validated')}</SelectItem>
+              <SelectItem value="finalized">{t('finalized')}</SelectItem>
+              <SelectItem value="disputed">{t('disputed')}</SelectItem>
             </SelectContent>
           </Select>
           <Badge variant="outline" aria-live="polite">{total} results</Badge>
@@ -144,7 +146,7 @@ export default function ResultsPage() {
         {canUpload && (
           <Dialog open={showUpload} onOpenChange={setShowUpload}>
             <DialogTrigger asChild>
-              <Button className="bg-green-700 hover:bg-green-800 gap-1"><Plus className="w-4 h-4" /> Upload Result</Button>
+              <Button className="bg-green-700 hover:bg-green-800 gap-1"><Plus className="w-4 h-4" /> {t('results_upload')}</Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Submit Polling Unit Result</DialogTitle></DialogHeader>

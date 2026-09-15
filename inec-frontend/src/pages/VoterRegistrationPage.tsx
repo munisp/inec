@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Users, Search, UserPlus, CreditCard, MapPin, BarChart3, ExternalLink } from 'lucide-react';
+import { Users, Search, UserPlus, CreditCard, MapPin, BarChart3, ExternalLink, Accessibility } from 'lucide-react';
+import { useI18n } from '@/lib/i18n';
 
 interface VoterStats {
   total: number; active: number; verified: number; registered: number;
@@ -27,6 +28,7 @@ interface VoterServicesResponse {
 }
 
 export default function VoterRegistrationPage() {
+  const { t } = useI18n();
   const [stats, setStats] = useState<VoterStats | null>(null);
   const [voters, setVoters] = useState<any[]>([]);
   const [centers, setCenters] = useState<any[]>([]);
@@ -83,8 +85,8 @@ export default function VoterRegistrationPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-zinc-900">Voter Registration</h1>
-          <p className="text-sm text-zinc-500">Manage voter roll, PVC collection, and registration centers</p>
+          <h1 className="text-2xl font-bold text-zinc-900">{t('voter_registration_title')}</h1>
+          <p className="text-sm text-zinc-500">{t('voter_registration_subtitle')}</p>
         </div>
         <div className="flex gap-2">
           {(['stats','voters','centers'] as const).map(t => (
@@ -197,7 +199,7 @@ export default function VoterRegistrationPage() {
                 <thead><tr className="border-b text-left text-zinc-500">
                   <th className="pb-2 pr-4">VIN</th><th className="pb-2 pr-4">Name</th><th className="pb-2 pr-4">Gender</th>
                   <th className="pb-2 pr-4">DOB</th><th className="pb-2 pr-4">State</th><th className="pb-2 pr-4">PU Code</th>
-                  <th className="pb-2 pr-4">PVC</th><th className="pb-2">Status</th>
+                  <th className="pb-2 pr-4">{t('voter_disability')}</th><th className="pb-2 pr-4">PVC</th><th className="pb-2">Status</th>
                 </tr></thead>
                 <tbody>
                   {voters.map((v: any) => (
@@ -208,6 +210,15 @@ export default function VoterRegistrationPage() {
                       <td className="py-2 pr-4">{v.date_of_birth}</td>
                       <td className="py-2 pr-4">{v.state_code}</td>
                       <td className="py-2 pr-4 font-mono text-xs">{v.polling_unit_code}</td>
+                      <td className="py-2 pr-4">
+                        {v.disability_type ? (
+                          <span className="inline-flex items-center gap-1 text-xs">
+                            <Accessibility className="w-3.5 h-3.5 text-indigo-600" aria-hidden="true" />
+                            {v.disability_type}
+                            {v.assistance_needed ? <Badge className="bg-indigo-100 text-indigo-800 text-xs">{t('voter_assistance')}</Badge> : null}
+                          </span>
+                        ) : <span className="text-xs text-zinc-400">—</span>}
+                      </td>
                       <td className="py-2 pr-4">{v.pvc_collected === 1 ? <Badge className="bg-green-100 text-green-800 text-xs">Collected</Badge> : <Badge variant="outline" className="text-xs">Pending</Badge>}</td>
                       <td className="py-2"><Badge className={`text-xs ${statusColor(v.status)}`}>{v.status}</Badge></td>
                     </tr>

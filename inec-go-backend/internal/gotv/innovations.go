@@ -362,7 +362,158 @@ type USSDHandler struct {
 	DB *sql.DB
 }
 
-// HandleUSSDCallback processes a USSD session step.
+// ussdLangs are the languages offered at the top of the GOTV USSD menu
+// (level-0 language selection, R5-077). Menu digits 1-5 map to this order.
+var ussdLangs = []string{"en", "ha", "yo", "ig", "pcm"}
+
+// ussdStrings holds localized GOTV USSD menu chrome. Diacritics are
+// intentionally avoided: GSM-7 USSD transport cannot carry them reliably.
+var ussdStrings = map[string]map[string]string{
+	"en": {
+		"lang_menu":     "CON Select Language / Zabi Harshe / Yan Ede / Horo Asusu\n1. English\n2. Hausa\n3. Yoruba\n4. Igbo\n5. Naija (Pidgin)",
+		"main_menu":     "CON GOTV Voter Connect\n1. Pledge to Vote\n2. Request Ride to Polls\n3. Find My Polling Unit\n4. Report an Issue\n5. Check Election Date",
+		"pledge_state":  "CON Pledge to Vote!\nEnter your State (e.g. Lagos, Kano, Rivers):",
+		"ride_location": "CON Request a Ride\nEnter your pickup location (area name):",
+		"pu_vin":        "CON Find Your Polling Unit\nEnter your Voter Card Number:",
+		"issue_menu":    "CON Report an Issue\n1. Voter intimidation\n2. Missing materials\n3. Late opening\n4. Other",
+		"pledge_ok":     "END Thank you for pledging to vote! Your state: %s. We'll send you a reminder on election day.",
+		"ride_ok":       "END Ride requested from %s! A volunteer will contact you on election day.",
+		"issue_ok":      "END Issue reported. Thank you for helping ensure a free and fair election!",
+		"election_date": "END Next Election: Check INEC website www.inec.gov.ng for dates.",
+		"pu_found":      "END Your polling unit: %s\nWard: %s\nVoting: 8am - 5pm",
+		"pu_not_found":  "END No registration found for that voter card number. Visit your nearest INEC office.",
+		"service_down":  "END Service unavailable, please try again later.",
+		"invalid":       "END Invalid option. Dial again to restart.",
+		"invalid_lang":  "END Invalid selection. Dial again and choose 1-5 for language.",
+	},
+	"ha": {
+		"lang_menu":     "CON Select Language / Zabi Harshe / Yan Ede / Horo Asusu\n1. English\n2. Hausa\n3. Yoruba\n4. Igbo\n5. Naija (Pidgin)",
+		"main_menu":     "CON Hadin Masu Jefa Kuri'a\n1. Yi alkawarin jefa kuri'a\n2. Nemi mota zuwa rumfa\n3. Nemo rumfar zabena\n4. Ba da rahoto\n5. Ranar zabe",
+		"pledge_state":  "CON Alkawarin Jefa Kuri'a!\nShigar da jiharka (misali Lagos, Kano, Rivers):",
+		"ride_location": "CON Neman Mota\nShigar da inda za a dauke ka (sunan yanki):",
+		"pu_vin":        "CON Nemo Rumfar Zabenka\nShigar da lambar katin zabenka:",
+		"issue_menu":    "CON Ba da Rahoto\n1. Tsoratar da masu jefa kuri'a\n2. Kayan zabe bai isa ba\n3. Bude rumfa a makare\n4. Sauran",
+		"pledge_ok":     "END Na gode da alkawarin jefa kuri'a! Jiharka: %s. Za mu tura maka tunatarwa a ranar zabe.",
+		"ride_ok":       "END An nemi mota daga %s! Wani sa-kai zai tuntube ka a ranar zabe.",
+		"issue_ok":      "END An karbi rahoto. Na gode da taimakawa wajen tabbatar da zabe na adalci!",
+		"election_date": "END Zabe na gaba: Duba shafin INEC www.inec.gov.ng don ranaku.",
+		"pu_found":      "END Rumfar zabenka: %s\nWardi: %s\nJefa kuri'a: 8am - 5pm",
+		"pu_not_found":  "END Ba a sami rajista da wannan lambar kati ba. Ziyarci ofishin INEC mafi kusa.",
+		"service_down":  "END Sabis ba ya aiki yanzu, sake gwadawa daga baya.",
+		"invalid":       "END Zabi ba daidai ba. Sake dailawa don farawa.",
+		"invalid_lang":  "END Zabi ba daidai ba. Sake dailawa ka zabi 1-5 don harshe.",
+	},
+	"yo": {
+		"lang_menu":     "CON Select Language / Zabi Harshe / Yan Ede / Horo Asusu\n1. English\n2. Hausa\n3. Yoruba\n4. Igbo\n5. Naija (Pidgin)",
+		"main_menu":     "CON Asopo Oludibo\n1. Se ileri lati dibo\n2. Beere oko si ile-idibo\n3. Wa ile-idibo mi\n4. Jabo isoro\n5. Ojo idibo",
+		"pledge_state":  "CON Ileri lati Dibo!\nTe ipinle re (fun apeere Lagos, Kano, Rivers):",
+		"ride_location": "CON Beere Oko\nTe ibi ti won ma gba e (oruko agbegbe):",
+		"pu_vin":        "CON Wa Ile-idibo Re\nTe nomba kaadi oludibo re:",
+		"issue_menu":    "CON Jabo Isoro\n1. Ipayas oludibo\n2. Ohun elo idibo ko de\n3. Ile-idibo pe laa\n4. Omiiran",
+		"pledge_ok":     "END E dupe fun ileri lati dibo! Ipinle re: %s. A o ran ibaralowo si e ni ojo idibo.",
+		"ride_ok":       "END A ti beere oko lati %s! Onise agbedemeji yoo kan si e ni ojo idibo.",
+		"issue_ok":      "END A ti gba ijabo. E dupe fun iranlowo lati ni idibo ominira ati ododo!",
+		"election_date": "END Idibo to nbo: Wo oju-ipo INEC www.inec.gov.ng fun awon ojo.",
+		"pu_found":      "END Ile-idibo re: %s\nWadi: %s\nIdibo: 8am - 5pm",
+		"pu_not_found":  "END A ko ri iforukosile fun nomba kaadi yen. Sabewo si ofisi INEC to sunmo.",
+		"service_down":  "END Ise ko wa fun igba die, gbiyanju leekansi.",
+		"invalid":       "END Asayan ko to. Pe pada lati bere.",
+		"invalid_lang":  "END Asayan ko to. Pe pada ki o yan 1-5 fun ede.",
+	},
+	"ig": {
+		"lang_menu":     "CON Select Language / Zabi Harshe / Yan Ede / Horo Asusu\n1. English\n2. Hausa\n3. Yoruba\n4. Igbo\n5. Naija (Pidgin)",
+		"main_menu":     "CON Njiko Ndi Vootu\n1. Kwe nkwa i vootu\n2. Rio ugbo ga-ebe vootu\n3. Chota ebe ntuli aka m\n4. Koo nsogbu\n5. Ubochi ntuli aka",
+		"pledge_state":  "CON Nkwa I Vootu!\nTinye steeti gi (dika Lagos, Kano, Rivers):",
+		"ride_location": "CON Rio Ugbo\nTinye ebe a ga-akuru gi (aha mpaghara):",
+		"pu_vin":        "CON Chota Ebe Ntuli Aka Gi\nTinye nomba kaadi vootu gi:",
+		"issue_menu":    "CON Koo Nsogbu\n1. Iji egwu gba ndi vootu\n2. Ihe eji eme ntuli aka adighi\n3. Mmeghe ebe ntuli aka gbachara\n4. Ihe ozo",
+		"pledge_ok":     "END Daalu maka nkwa i vootu! Steeti gi: %s. Anyi ga-ezitere gi ncheta n'ubochi ntuli aka.",
+		"ride_ok":       "END Arioala ugbo site %s! Onye oru onwe ga-akpotu gi n'ubochi ntuli aka.",
+		"issue_ok":      "END Enatabara akuko. Daalu maka inyere aka inwe ntuli aka na-adighi ajo!",
+		"election_date": "END Ntuli aka na-abia: Lelee webusaiti INEC www.inec.gov.ng maka ubochi.",
+		"pu_found":      "END Ebe ntuli aka gi: %s\nWard: %s\nNtuli aka: 8am - 5pm",
+		"pu_not_found":  "END Achotaghi ndebanye aha maka nomba kaadi ahu. Gaa ulo oru INEC kacha nso.",
+		"service_down":  "END Oru adighi ugbu a, nwaa ozo ma e mechaa.",
+		"invalid":       "END Nhoro ezighi ezi. Kpoo ozo iji malite.",
+		"invalid_lang":  "END Nhoro ezighi ezi. Kpoo ozo horo 1-5 maka asusu.",
+	},
+	"pcm": {
+		"lang_menu":     "CON Select Language / Zabi Harshe / Yan Ede / Horo Asusu\n1. English\n2. Hausa\n3. Yoruba\n4. Igbo\n5. Naija (Pidgin)",
+		"main_menu":     "CON GOTV Voter Connect\n1. Pledge say you go vote\n2. Ask for ride go poll\n3. Find my polling unit\n4. Report wahala\n5. Check election date",
+		"pledge_state":  "CON Pledge to Vote!\nEnter your State (e.g. Lagos, Kano, Rivers):",
+		"ride_location": "CON Request Ride\nEnter where dem go pick you (area name):",
+		"pu_vin":        "CON Find Your Polling Unit\nEnter your Voter Card Number:",
+		"issue_menu":    "CON Report Wahala\n1. Dem dey intimidate voters\n2. Materials no dey\n3. Polling unit open late\n4. Other",
+		"pledge_ok":     "END Thank you for pledging to vote! Your state: %s. We go remind you on election day.",
+		"ride_ok":       "END Ride don dey requested from %s! Volunteer go contact you on election day.",
+		"issue_ok":      "END We don receive your report. Thank you for helping make di election free and fair!",
+		"election_date": "END Next Election: Check INEC website www.inec.gov.ng for dates.",
+		"pu_found":      "END Your polling unit: %s\nWard: %s\nVoting na 8am - 5pm",
+		"pu_not_found":  "END We no see registration for dat card number. Go di INEC office near you.",
+		"service_down":  "END Service no dey now, try again later.",
+		"invalid":       "END Dat one no correct. Dial again to start over.",
+		"invalid_lang":  "END Dat one no correct. Dial again pick 1-5 for language.",
+	},
+}
+
+// ussdText returns the localized GOTV USSD string, falling back to English
+// for any missing key (never returns empty).
+func ussdText(lang, key string) string {
+	if d, ok := ussdStrings[lang]; ok {
+		if s, ok := d[key]; ok && s != "" {
+			return s
+		}
+	}
+	return ussdStrings["en"][key]
+}
+
+// ussdLangOf resolves the language digit at the head of the cumulative USSD
+// text to a language code, defaulting to English.
+func ussdLangOf(langDigit string) string {
+	for i, l := range ussdLangs {
+		if langDigit == fmt.Sprintf("%d", i+1) {
+			return l
+		}
+	}
+	return "en"
+}
+
+// lookupVoterPollingUnit queries the voter registry (shared platform
+// database) for a voter's polling unit by voter card number (PVC / VIN).
+// found=false means no registration exists; err!=nil means the lookup
+// itself failed and the caller must say so honestly.
+func (u *USSDHandler) lookupVoterPollingUnit(ctx context.Context, voterCardNumber string) (puLabel, wardName string, found bool, err error) {
+	if u.DB == nil {
+		return "", "", false, fmt.Errorf("voter registry unavailable")
+	}
+	value := strings.TrimSpace(voterCardNumber)
+	if value == "" {
+		return "", "", false, nil
+	}
+	var puCode, puName string
+	err = u.DB.QueryRowContext(ctx,
+		`SELECT v.polling_unit_code, COALESCE(pu.name,''), COALESCE(w.name, v.ward_code)
+		 FROM voters v
+		 LEFT JOIN polling_units pu ON pu.code = v.polling_unit_code
+		 LEFT JOIN wards w ON w.code = v.ward_code
+		 WHERE v.pvc_number = $1 OR v.vin = $1`, value).
+		Scan(&puCode, &puName, &wardName)
+	if err == sql.ErrNoRows {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	puLabel = puName
+	if puLabel == "" {
+		puLabel = puCode
+	}
+	return puLabel, wardName, true, nil
+}
+
+// HandleUSSDCallback processes a USSD session step. Level 0 is a language
+// menu; the chosen language travels in the cumulative session text so the
+// handler stays stateless.
 func (u *USSDHandler) HandleUSSDCallback(ctx context.Context, sessionID, phone, text string) (response string, endSession bool) {
 	parts := strings.Split(text, "*")
 	level := len(parts)
@@ -372,59 +523,78 @@ func (u *USSDHandler) HandleUSSDCallback(ctx context.Context, sessionID, phone, 
 
 	switch level {
 	case 0:
-		// Main menu
-		return "CON Welcome to GOTV Voter Connect\n1. Pledge to Vote\n2. Request Ride to Polls\n3. Find My Polling Unit\n4. Report an Issue\n5. Check Election Date", false
+		// Language selection
+		return ussdText("en", "lang_menu"), false
 
 	case 1:
-		switch parts[0] {
-		case "1":
-			return "CON Pledge to Vote!\nEnter your State (e.g. Lagos, Kano, Rivers):", false
-		case "2":
-			return "CON Request a Ride\nEnter your pickup location (area name):", false
-		case "3":
-			return "CON Find Your Polling Unit\nEnter your registered LGA:", false
-		case "4":
-			return "CON Report an Issue\n1. Voter intimidation\n2. Missing materials\n3. Late opening\n4. Other", false
-		case "5":
-			return "END Next Election: Check INEC website www.inec.gov.ng for dates.", true
+		for i := range ussdLangs {
+			if parts[0] == fmt.Sprintf("%d", i+1) {
+				return ussdText(ussdLangs[i], "main_menu"), false
+			}
 		}
+		return ussdText("en", "invalid_lang"), true
 
 	case 2:
-		switch parts[0] {
+		lang := ussdLangOf(parts[0])
+		switch parts[1] {
+		case "1":
+			return ussdText(lang, "pledge_state"), false
+		case "2":
+			return ussdText(lang, "ride_location"), false
+		case "3":
+			return ussdText(lang, "pu_vin"), false
+		case "4":
+			return ussdText(lang, "issue_menu"), false
+		case "5":
+			return ussdText(lang, "election_date"), true
+		}
+
+	case 3:
+		lang := ussdLangOf(parts[0])
+		switch parts[1] {
 		case "1":
 			// Pledge confirmed with state
-			state := strings.TrimSpace(parts[1])
+			state := strings.TrimSpace(parts[2])
 			u.DB.ExecContext(ctx,
 				`INSERT INTO gotv_pledges (pledge_id, contact_id, party_id, status, created_at)
 				 VALUES (gen_random_uuid()::text, $1, 0, 'confirmed', NOW())
 				 ON CONFLICT DO NOTHING`, phone)
-			return fmt.Sprintf("END Thank you for pledging to vote! Your state: %s. We'll send you a reminder on election day.", state), true
+			return fmt.Sprintf(ussdText(lang, "pledge_ok"), state), true
 		case "2":
 			// Ride request with location
-			location := strings.TrimSpace(parts[1])
+			location := strings.TrimSpace(parts[2])
 			u.DB.ExecContext(ctx,
 				`INSERT INTO gotv_ride_requests (request_id, party_id, contact_id, status, notes, created_at)
 				 VALUES (gen_random_uuid()::text, 0, $1, 'pending', $2, NOW())`, phone, "USSD: "+location)
-			return fmt.Sprintf("END Ride requested from %s! A volunteer will contact you on election day.", location), true
+			return fmt.Sprintf(ussdText(lang, "ride_ok"), location), true
 		case "3":
-			// PU lookup
-			lga := strings.TrimSpace(parts[1])
-			return fmt.Sprintf("END Polling Units in %s: Visit www.inec.gov.ng/voter-info or text PU to 20120", lga), true
+			// PU lookup against the real voter registry — never a web redirect
+			// (feature-phone users have no browser, R5-081).
+			puLabel, wardName, found, err := u.lookupVoterPollingUnit(ctx, parts[2])
+			switch {
+			case err != nil:
+				log.Error().Err(err).Msg("gotv ussd: PU lookup failed")
+				return ussdText(lang, "service_down"), true
+			case !found:
+				return ussdText(lang, "pu_not_found"), true
+			default:
+				return fmt.Sprintf(ussdText(lang, "pu_found"), puLabel, wardName), true
+			}
 		case "4":
 			// Issue report
 			issueTypes := map[string]string{"1": "voter_intimidation", "2": "missing_materials", "3": "late_opening", "4": "other"}
-			issueType := issueTypes[parts[1]]
+			issueType := issueTypes[parts[2]]
 			if issueType == "" {
 				issueType = "other"
 			}
 			u.DB.ExecContext(ctx,
 				`INSERT INTO gotv_field_reports (report_id, issue_type, source, phone, resolved, created_at)
 				 VALUES (gen_random_uuid()::text, $1, 'ussd', $2, FALSE, NOW())`, issueType, phone)
-			return "END Issue reported. Thank you for helping ensure a free and fair election!", true
+			return ussdText(lang, "issue_ok"), true
 		}
 	}
 
-	return "END Invalid option. Dial again to restart.", true
+	return ussdText(ussdLangOf(parts[0]), "invalid"), true
 }
 
 // ─── INNOVATE #25: Multi-Party Alliance Mode ──────────────────────────────

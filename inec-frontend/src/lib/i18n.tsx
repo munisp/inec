@@ -26,6 +26,14 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     try { localStorage.setItem('lang', l); } catch {}
   };
 
+  // WCAG 3.1.1: keep <html lang> in sync with the UI language so screen
+  // readers apply the right pronunciation rules (R5-080).
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  // Fallback strategy: current language → English → raw key. A missing
+  // translation never renders blank or crashes (R5-075).
   const t = useMemo(() => (k: string) => {
     const d = DICTS[lang] || DICTS.en;
     return d[k] || DICTS.en[k] || k;

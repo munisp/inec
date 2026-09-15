@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useI18n } from '@/lib/i18n';
 import { logger } from '@/lib/utils';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -56,6 +57,8 @@ export default function MapPage() {
   const mapContainerB = useRef<HTMLDivElement>(null);
   const mapRefB = useRef<maplibregl.Map | null>(null);
   const { electionId: resolvedElectionId } = useResolvedElection();
+  const { t } = useI18n();
+  const [showTableView, setShowTableView] = useState(false);
   const [loading, setLoading] = useState(true);
   const [states, setStates] = useState<StateData[]>([]);
   const [pus, setPus] = useState<PUData[]>([]);
@@ -1198,6 +1201,7 @@ export default function MapPage() {
 
   return (
     <div className="space-y-3">
+      <p className="sr-only">{t('map_sr_summary')}</p>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           {selectedState && (
@@ -1221,6 +1225,9 @@ export default function MapPage() {
           </div>
           <Button variant={compareMode ? 'default' : 'outline'} size="sm" onClick={() => setCompareMode(!compareMode)} className="gap-1 h-8">
             Compare
+          </Button>
+          <Button variant={showTableView ? 'default' : 'outline'} size="sm" onClick={() => setShowTableView(v => !v)} className="gap-1 h-8" aria-label={t('map_table_view')}>
+            {t('map_table_view')}
           </Button>
           <Select value={mapMode} onValueChange={(v) => setMapMode(v as MapMode)}>
             <SelectTrigger className="w-40 h-8">
@@ -1265,6 +1272,72 @@ export default function MapPage() {
           </div>
         </div>
       </div>
+
+      {/* R5-079: text alternative to the WebGL map — the same data in a
+          keyboard-navigable table for screen-reader users. */}
+      {showTableView && (
+        <Card>
+          <CardContent className="p-4">
+            <h2 className="text-sm font-semibold mb-2">{t('map_table_caption')}</h2>
+            <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
+              {selectedState ? (
+                <table className="w-full text-sm" role="grid">
+                  <caption className="sr-only">{t('map_table_caption')}</caption>
+                  <thead>
+                    <tr className="border-b text-left text-zinc-500">
+                      <th className="pb-2 pr-4">{t('map_col_code')}</th>
+                      <th className="pb-2 pr-4">{t('name')}</th>
+                      <th className="pb-2 pr-4">{t('lga')}</th>
+                      <th className="pb-2 pr-4">{t('status')}</th>
+                      <th className="pb-2 pr-4">{t('map_col_registered')}</th>
+                      <th className="pb-2">{t('votes')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pus.slice(0, 300).map((p) => (
+                      <tr key={p.code} className="border-b border-zinc-100 dark:border-zinc-800">
+                        <td className="py-1.5 pr-4 font-mono text-xs">{p.code}</td>
+                        <td className="py-1.5 pr-4">{p.name}</td>
+                        <td className="py-1.5 pr-4">{p.lga_name}</td>
+                        <td className="py-1.5 pr-4">{p.status || 'no_result'}</td>
+                        <td className="py-1.5 pr-4">{formatNumber(p.registered_voters || 0)}</td>
+                        <td className="py-1.5">{formatNumber(p.total_valid_votes || 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="w-full text-sm" role="grid">
+                  <caption className="sr-only">{t('map_table_caption')}</caption>
+                  <thead>
+                    <tr className="border-b text-left text-zinc-500">
+                      <th className="pb-2 pr-4">{t('state')}</th>
+                      <th className="pb-2 pr-4">{t('zone')}</th>
+                      <th className="pb-2 pr-4">{t('polling_units')}</th>
+                      <th className="pb-2 pr-4">{t('results')}</th>
+                      <th className="pb-2">{t('map_col_leading')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {states.map((st) => (
+                      <tr key={st.code} className="border-b border-zinc-100 dark:border-zinc-800">
+                        <td className="py-1.5 pr-4 font-medium">{st.name}</td>
+                        <td className="py-1.5 pr-4">{st.geo_zone}</td>
+                        <td className="py-1.5 pr-4">{formatNumber(st.total_pus)}</td>
+                        <td className="py-1.5 pr-4">{formatNumber(st.reported_pus)}</td>
+                        <td className="py-1.5">{st.leading_party ? st.leading_party.abbreviation : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {selectedState && pus.length > 300 && (
+              <p className="text-xs text-zinc-500 mt-2">Showing first 300 of {pus.length} polling units — use the CSV export for the full list.</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="relative">
         <div>
