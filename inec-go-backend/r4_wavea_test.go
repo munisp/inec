@@ -108,6 +108,13 @@ func r4ProvisionScratch(baseDSN string) {
 				return
 			}
 		}
+		// Current production uniqueness arbiter for results (000036): the
+		// partial index the canonical apply's ON CONFLICT targets. (000028's
+		// plain constraint was superseded by 000036.)
+		if _, err := raw.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS results_canonical_pu_unique ON results (election_id, polling_unit_code) WHERE status <> ALL (ARRAY['superseded','voided'])`); err != nil {
+			r4ScratchErr = fmt.Errorf("results canonical unique index: %w", err)
+			return
+		}
 		r4ScratchDSN = dsn
 	})
 }
@@ -384,4 +391,3 @@ func TestR407_RevokedTokenRejectedAndPersisted(t *testing.T) {
 		t.Fatalf("R4-07: revoked token accepted (%d), want 401", code)
 	}
 }
-

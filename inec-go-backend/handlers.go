@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -739,8 +740,6 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ec8aHash := computeEC8AHash(req.ElectionID, req.PollingUnitCode, partyEntries, req.AccreditedVoters, req.RejectedVotes)
-
 	userRole, _ := user["role"].(string)
 	if !checkPermission(userRole, "submit_result") {
 		writeError(w, 403, "Permission denied by Permify")
@@ -751,93 +750,64 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	// Result integrity is governed by the immutable evidence chain and approved
 	// cryptographic controls, not an operational-settlement ledger.
 
-	// Use transaction for atomic result + party scores insert
+	// W1 handoff (R5-001): the interactive submit path goes through the SAME
+	// canonical apply as queue ingestion — one transaction covering the
+	// results row, party scores, policy version, and immutable evidence
+	// event; one implementation of idempotency (R5-025), override
+	// flag-for-review (R5-017), and first-writer-wins conflict handling.
 	tx, txErr := db.BeginTx(r.Context(), nil)
 	if txErr != nil {
 		writeError(w, 500, "database transaction error")
 		return
 	}
-	// Insert with explicit error handling (R4-22): the UNIQUE constraint on
-	// results(election_id, polling_unit_code) (migration 000028) closes the
-	// TOCTOU race where two concurrent submissions both passed the COUNT
-	// pre-check. A unique violation follows the existing duplicate semantics
-	// — the result is already recorded — reported as 409 Conflict instead of
-	// a 500 (insertReturningID previously swallowed the error, returning 0).
-	// Overridden results enter as 'disputed' so collation officers must review
-	// the anomaly before the figures can count (R5-017 flag-for-review path).
-	initialStatus := "pending"
-	if overridden {
-		initialStatus = "disputed"
-	}
-	var resultID int64
-	err = tx.QueryRowContext(r.Context(), convertPlaceholders(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
-		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
-		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status, idempotency_key, correction_reason)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`),
-		req.ElectionID, req.PollingUnitCode, userID, initialStatus,
-		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
-		ec8aHash, nil, "NOT_APPLICABLE", "PENDING", nilIfEmpty(req.IdempotencyKey), nilIfEmpty(req.OverrideReason)).Scan(&resultID)
-	if err != nil {
+	outcome, resultID, applyErr := applyResultTx(r.Context(), tx, ingestedResult{
+		ElectionID:       req.ElectionID,
+		PollingUnitCode:  req.PollingUnitCode,
+		PartyScores:      partyEntries,
+		AccreditedVoters: req.AccreditedVoters,
+		RejectedVotes:    req.RejectedVotes,
+		SubmittedBy:      userID,
+		Source:           "ingestion_api",
+		SourceRef:        req.IdempotencyKey,
+		IdempotencyKey:   req.IdempotencyKey,
+		OverrideReason:   req.OverrideReason,
+	})
+	if applyErr != nil {
 		tx.Rollback()
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			// Unique-violation on idempotency key = committed retry; on
-			// (election, PU) = a canonical result already exists.
-			if req.IdempotencyKey != "" {
-				var existingID int64
-				var existingStatus string
-				if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE idempotency_key=?", req.IdempotencyKey).Scan(&existingID, &existingStatus); qerr == nil {
-					writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
-					return
-				}
+		// The UNIQUE constraint on results.idempotency_key (R5-025) surfaces
+		// as 23505 when a committed retry races our replay pre-check.
+		var pqErr *pq.Error
+		if errors.As(applyErr, &pqErr) && pqErr.Code == "23505" && req.IdempotencyKey != "" {
+			var existingID int64
+			var existingStatus string
+			if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE idempotency_key=?", req.IdempotencyKey).Scan(&existingID, &existingStatus); qerr == nil {
+				writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
+				return
 			}
-			logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
-				map[string]interface{}{"reason": "duplicate_submission_race", "election_id": req.ElectionID})
-			writeError(w, http.StatusConflict, "Result already submitted for this polling unit; use the correction flow to amend it")
+		}
+		if strings.Contains(applyErr.Error(), "evidence could not be recorded") {
+			writeError(w, http.StatusServiceUnavailable, applyErr.Error())
 			return
 		}
-		log.Error().Err(err).Int("election_id", req.ElectionID).Str("pu", req.PollingUnitCode).Msg("result insert failed")
+		log.Error().Err(applyErr).Int("election_id", req.ElectionID).Str("pu", req.PollingUnitCode).Msg("result apply failed")
 		writeError(w, 500, "failed to save result")
 		return
 	}
-
-	// Batch insert party scores (single multi-value INSERT on PostgreSQL)
-	if err := batchInsertPartyScores(tx, resultID, req.PartyScores); err != nil {
+	if outcome != resultApplied {
+		// The COUNT pre-check above already rejected non-race duplicates; an
+		// outcome here means a concurrent submission won the race (R4-22).
 		tx.Rollback()
-		writeError(w, 500, "failed to save party scores")
-		return
-	}
-
-	// A submission is not considered an integrity-controlled lifecycle event until
-	// it has an immutable evidence record. In production this also requires an
-	// approved policy version and a reachable Ed25519 signing service.
-	policyVersionID, err := requirePolicyVersion(r.Context(), tx, req.ElectionID)
-	if err != nil {
-		tx.Rollback()
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
-		ResultID:        resultID,
-		EventType:       "RESULT_SUBMITTED",
-		PolicyVersionID: policyVersionID,
-		Visibility:      integrityVisibilityObserver,
-		CreatedBy:       userID,
-		PublicPayload: M{
-			"polling_unit_code": req.PollingUnitCode,
-			"status":            "pending",
-			"total_votes_cast":  totalCast,
-		},
-		PrivatePayload: M{
-			"election_id":       req.ElectionID,
-			"polling_unit_code": req.PollingUnitCode,
-			"party_scores":      req.PartyScores,
-			"accredited_voters": req.AccreditedVoters,
-			"rejected_votes":    req.RejectedVotes,
-			"ec8a_hash":         ec8aHash,
-		},
-	}); err != nil {
-		tx.Rollback()
-		writeError(w, http.StatusServiceUnavailable, "result evidence could not be recorded: "+err.Error())
+		if outcome == resultDuplicate && req.IdempotencyKey != "" {
+			var existingID int64
+			var existingStatus string
+			if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE election_id=? AND polling_unit_code=?", req.ElectionID, req.PollingUnitCode).Scan(&existingID, &existingStatus); qerr == nil {
+				writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
+				return
+			}
+		}
+		logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
+			map[string]interface{}{"reason": "duplicate_submission_race", "election_id": req.ElectionID, "outcome": string(outcome)})
+		writeError(w, http.StatusConflict, "Result already submitted for this polling unit; use the correction flow to amend it")
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -881,7 +851,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	invalidateCollationCache(req.ElectionID)
 
-	writeJSON(w, 200, M{"id": resultID, "status": initialStatus, "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "overridden": overridden, "message": "Result submitted. Proceeding to Edge Validation."})
+	writeJSON(w, 200, M{"id": resultID, "status": submittedStatus(overridden), "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "overridden": overridden, "message": "Result submitted. Proceeding to Edge Validation."})
 }
 
 func handleValidateResult(w http.ResponseWriter, r *http.Request) {

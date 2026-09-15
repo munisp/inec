@@ -753,9 +753,38 @@ func handleBVASSyncSubmit(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		_, err := db.Exec(`INSERT INTO bvas_sync_queue (device_id, sync_type, payload, priority, status, synced_at) VALUES (?,?,?,?,'synced', CURRENT_TIMESTAMP)`,
-			req.DeviceID, syncType, string(payload), priority)
-		if err != nil {
+		// W1 handoff: route the item through the durable ingestion queue so it
+		// is actually APPLIED to the canonical store — previously every row
+		// was marked 'synced' without the result/accreditation ever landing
+		// (ingestion theater). 'synced' now means durably handed to the
+		// at-least-once ingestion pipeline (its own idempotency key dedupes
+		// retries); an enqueue failure stays 'failed' so the device retries.
+		rowStatus := "synced"
+		jobType := ""
+		switch syncType {
+		case "result":
+			jobType = "result_submission"
+		case "accreditation":
+			jobType = "accreditation_sync"
+		}
+		if jobType != "" {
+			item["device_id"] = req.DeviceID
+			if _, ok := item["source"]; !ok {
+				item["source"] = "offline_sync"
+			}
+			if _, ok := item["source_ref"]; !ok {
+				item["source_ref"] = req.DeviceID
+			}
+			if _, _, err := enqueueJob(jobType, item, deriveOfflineSyncKey(req.DeviceID, syncType, item)); err != nil {
+				log.Error().Err(err).Str("device_id", req.DeviceID).Str("sync_type", syncType).
+					Msg("SECURITY: offline sync item could not be handed to the ingestion queue")
+				rowStatus = "failed"
+			}
+		}
+
+		_, err := db.Exec(`INSERT INTO bvas_sync_queue (device_id, sync_type, payload, priority, status, synced_at) VALUES (?,?,?,?,?, CASE WHEN ?='synced' THEN CURRENT_TIMESTAMP ELSE NULL END)`,
+			req.DeviceID, syncType, string(payload), priority, rowStatus, rowStatus)
+		if err != nil || rowStatus == "failed" {
 			failed++
 		} else {
 			synced++
