@@ -18,9 +18,21 @@ spec:
         app.kubernetes.io/name: {{ .Release.Name }}-db-migrate
     spec:
       restartPolicy: Never
+      securityContext:
+        # inec-go-backend/Dockerfile creates uid/gid 10001 (`app`).
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: migrate
           image: "{{ .Values.global.imageRegistry }}/{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Values.global.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The job runs a shell wrapper that only writes to /tmp — but the
+            # backend binary may need /data in dev mode; keep writable to be safe.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
           # R5-087: the previous revision invoked `./inec-go-backend
           # --migrate-only` with RUN_MIGRATIONS_ONLY=true — neither the flag
           # nor the env var is read anywhere in the Go code, so the binary

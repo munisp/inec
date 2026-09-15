@@ -26,7 +26,13 @@ spec:
     spec:
       containers:
         - name: model-serving
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/inec-model-serving:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-model-serving:latest
+          # R5-093: image runs as non-root (services/model-serving/Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Python image: writes interpreter temp files
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8501
           env:
