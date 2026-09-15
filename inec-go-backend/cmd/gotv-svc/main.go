@@ -1838,6 +1838,60 @@ func handleUpdateRideStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R5-100: a driver no-show/cancellation must not strand the voter. When the
+	// ride carries a live assignment, clear the dead volunteer, return the
+	// request to 'pending', re-invoke the matcher, and notify coordinators —
+	// instead of a bare status flip that keeps the dead volunteer_id forever.
+	// The no_show/cancelled fact is preserved in the audit log and ride events.
+	if req.Status == "no_show" || req.Status == "cancelled" {
+		var contactID, prevVolunteer string
+		var pickupLat, pickupLng float64
+		scanErr := svc.DB.QueryRow(
+			`WITH old AS (
+				SELECT request_id, volunteer_id FROM gotv_ride_requests
+				WHERE request_id=$1 AND party_id=$2
+			), upd AS (
+				UPDATE gotv_ride_requests r SET volunteer_id=NULL, matched_at=NULL, status='pending'
+				FROM old
+				WHERE r.request_id=old.request_id AND r.volunteer_id IS NOT NULL
+				  AND r.status IN ('matched','en_route')
+				RETURNING r.contact_id, r.pickup_latitude, r.pickup_longitude, old.volunteer_id
+			) SELECT contact_id, pickup_latitude, pickup_longitude, volunteer_id FROM upd`,
+			id, pid,
+		).Scan(&contactID, &pickupLat, &pickupLng, &prevVolunteer)
+		if scanErr == nil {
+			svc.Audit(pid, user, "ride_"+req.Status, "ride", id)
+			publishEvent(TopicGOTVRideEvent, id, map[string]interface{}{
+				"event": "ride_" + req.Status, "ride_id": id, "party_id": pid,
+				"contact_id": contactID, "previous_volunteer_id": prevVolunteer,
+				"action":    "returned_to_pending_for_rematch",
+				"timestamp": time.Now().UTC(),
+			})
+			// Re-invoke the matcher with the same CAS guard used at creation:
+			// only a still-pending request is re-matched, so a coordinator's
+			// manual match in the meantime is never clobbered.
+			go func() {
+				if match, mErr := invokeRustMatchRide(id, pickupLat, pickupLng, pid); mErr == nil {
+					if volID, ok := match["volunteer_id"].(string); ok && volID != "" {
+						res, _ := svc.DB.Exec(
+							"UPDATE gotv_ride_requests SET volunteer_id=$1, status='matched', matched_at=NOW() WHERE request_id=$2 AND status='pending'",
+							volID, id)
+						if rows, _ := res.RowsAffected(); rows > 0 {
+							publishEvent(TopicGOTVRideEvent, id, map[string]interface{}{
+								"event": "ride_rematched", "ride_id": id, "volunteer_id": volID,
+							})
+						}
+					}
+				}
+			}()
+			cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+			jsonResp(w, map[string]interface{}{"updated": true, "rematch": "pending"})
+			return
+		}
+		// No live assignment (e.g. voter cancelled a still-pending ride):
+		// fall through to the plain terminal status update below.
+	}
+
 	var timeCol string
 	switch req.Status {
 	case "picked_up":
