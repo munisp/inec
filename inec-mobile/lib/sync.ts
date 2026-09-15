@@ -5,12 +5,46 @@
 import NetInfo from '@react-native-community/netinfo';
 import {
   getPendingDoorKnocks, markDoorKnockSynced, markDoorKnockFailed,
-  getPendingPledges, markPledgeSynced,
+  getPendingPledges, markPledgeSynced, markPledgeFailed,
   getPendingLocations, markLocationsSynced,
   logConflict, setSyncMeta, getPendingCounts,
   type PendingDoorKnock, type PendingPledge, type PendingLocationUpdate,
 } from './storage';
 import { getMobileToken, GOTV_API } from './gotv-auth';
+
+// R5-114: conflicts are surfaced to the UI instead of being silently
+// swallowed. NOTE (HANDOFF): gotv-svc has no conflict-ingest endpoint, so
+// the server still cannot learn about conflicts — the record is parked
+// locally (sync_status='failed') + logged + the user is prompted.
+export interface ConflictNotice {
+  table: string;
+  recordId: string;
+  serverData: string;
+}
+
+type ConflictListener = (notice: ConflictNotice) => void;
+const conflictListeners = new Set<ConflictListener>();
+
+export function onConflict(listener: ConflictListener): () => void {
+  conflictListeners.add(listener);
+  return () => conflictListeners.delete(listener);
+}
+
+function notifyConflict(notice: ConflictNotice): void {
+  conflictListeners.forEach((l) => {
+    try { l(notice); } catch { /* listener errors must not break sync */ }
+  });
+}
+
+/** Safely read a 409 response body for the conflict log. */
+async function readConflictBody(res: Response): Promise<string> {
+  try {
+    const text = await res.text();
+    return text || '(empty conflict response body)';
+  } catch {
+    return '(unreadable conflict response body)';
+  }
+}
 
 // Use GOTV mobile backend (standalone from INEC portal). GOTV_API throws at
 // startup in non-dev builds when EXPO_PUBLIC_GOTV_API_URL is unset.
@@ -125,10 +159,13 @@ class SyncManager {
         if (res.ok) {
           await markDoorKnockSynced(knock.id);
         } else if (res.status === 409) {
-          // Conflict — server has newer data
-          const serverData = await res.json();
-          await logConflict('door_knocks', String(knock.id), JSON.stringify(knock), JSON.stringify(serverData));
-          await markDoorKnockSynced(knock.id); // Mark synced to avoid re-trying
+          // R5-114: conflict — the local record LOSES but must not be
+          // silently discarded: park it (failed), log both versions, and
+          // prompt the user. Never mark a conflicted record 'synced'.
+          const serverData = await readConflictBody(res);
+          await logConflict('door_knocks', String(knock.id), JSON.stringify(knock), serverData);
+          await markDoorKnockFailed(knock.id);
+          notifyConflict({ table: 'door_knocks', recordId: String(knock.id), serverData });
         } else {
           await markDoorKnockFailed(knock.id);
         }
@@ -156,9 +193,17 @@ class SyncManager {
           }),
         });
 
-        if (res.ok || res.status === 409) {
+        if (res.ok) {
           await markPledgeSynced(pledge.id);
+        } else if (res.status === 409) {
+          // R5-114: read the server body before deciding; a conflicted
+          // pledge is parked for review, not marked synced.
+          const serverData = await readConflictBody(res);
+          await logConflict('pledges', String(pledge.id), JSON.stringify(pledge), serverData);
+          await markPledgeFailed(pledge.id);
+          notifyConflict({ table: 'pledges', recordId: String(pledge.id), serverData });
         }
+        // Other non-OK statuses: leave pending for the next sync cycle.
       } catch {
         throw new Error('Network error during pledge sync');
       }

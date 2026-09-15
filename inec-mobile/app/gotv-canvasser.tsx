@@ -16,7 +16,7 @@ import {
   getCachedContacts, getPendingCounts,
   type CachedContact,
 } from '../lib/storage';
-import { syncManager, type SyncState } from '../lib/sync';
+import { syncManager, onConflict, type SyncState } from '../lib/sync';
 import { getMobileUser, isAuthenticated, logout, type GOTVUser } from '../lib/gotv-auth';
 import { setAuthMode } from '../lib/auth-context';
 
@@ -122,8 +122,17 @@ export default function GOTVCanvasserScreen() {
       setSyncState(state);
       setPendingCount(pending);
     });
+    // R5-114: a conflicting record is no longer silently dropped — the
+    // canvasser is told their data lost a conflict and was kept for review.
+    const unsubConflict = onConflict((notice) => {
+      const what = notice.table === 'pledges' ? 'pledge' : 'door-knock record';
+      Alert.alert(
+        'Sync Conflict',
+        `Your ${what} conflicted with newer server data and was kept on this device for review. It was NOT uploaded.`,
+      );
+    });
     syncManager.start();
-    return () => { unsub(); syncManager.stop(); };
+    return () => { unsub(); unsubConflict(); syncManager.stop(); };
   }, []);
 
   // ─── Load Walklist ──────────────────────────────────────────────────────
