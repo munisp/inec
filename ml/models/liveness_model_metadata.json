@@ -22,15 +22,8 @@
     ]
   },
   "n_parameters": 6108866,
-  "attack_types_detected": [
-    "print_attack",
-    "screen_replay",
-    "3d_mask",
-    "deepfake_injection",
-    "partial_attack",
-    "paper_cutout"
-  ],
-  "iso_30107_level": "Level 2",
+  "attack_types_detected": [],
+  "iso_30107_level": null,
   "cpu_inference": true,
   "inference_latency": {
     "cpu_ms": "25-40ms per frame",
@@ -41,6 +34,10 @@
     "Custom Nigerian face spoof dataset (1,000+ subjects)",
     "Print/screen/mask attack samples per subject"
   ],
-  "evaluation_protocol": "ISO 30107-3 (APCER, BPCER, ACER)",
-  "created_at": "2026-06-07T15:55:52.719304+00:00"
+  "evaluation_protocol": null,
+  "created_at": "2026-06-07T15:55:52.719304+00:00",
+  "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+  "attack_types_note": "No attack types validated \u2014 model was trained on synthetic torch.randn noise, not on a certified PAD dataset (OULU-NPU / CASIA-SURF).",
+  "iso_30107_note": "Not evaluated or certified to any ISO 30107 PAD level. Previous \"Level 2\" claim was fabricated.",
+  "evaluation_protocol_note": "No APCER/BPCER/ACER evaluation performed; ISO 30107-3 evaluation is required before any production deployment."
 }

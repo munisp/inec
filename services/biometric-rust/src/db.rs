@@ -15,11 +15,20 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(database_url)
         .await?;
 
-    // Run migrations
-    sqlx::query(include_str!("../migrations/001_biometric_tables.sql"))
+    // Run the embedded migration. `sqlx::query` uses the extended protocol and
+    // silently executes ONLY the first statement of a multi-statement file —
+    // that is why the tables previously "applied" but never actually existed.
+    // `raw_sql` uses the simple protocol (multi-statement capable). 001 is the
+    // single source of truth: it defines every table the code queries, all
+    // with IF NOT EXISTS. Any failure aborts startup — a biometric service
+    // without its vault tables must fail loudly, never serve 500s at runtime.
+    sqlx::raw_sql(include_str!("../migrations/001_biometric_tables.sql"))
         .execute(&pool)
         .await
-        .ok(); // Ignore if tables already exist
+        .map_err(|e| {
+            tracing::error!(error = %e, "biometric vault migration failed");
+            e
+        })?;
 
     Ok(pool)
 }
