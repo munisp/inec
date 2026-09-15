@@ -344,7 +344,9 @@ func main() {
 	r.HandleFunc("/dashboard/metrics/client/recent", readAuth(handleRecentClientMetrics)).Methods("GET")
 
 	// Audit — read auth for viewing
-	r.HandleFunc("/audit/trail", readAuth(handleAuditTrail)).Methods("GET")
+	// R5-051/R5-066: the audit trail exposes staff identities and internal
+	// workflow metadata — staff roles only, not any self-registered account.
+	r.HandleFunc("/audit/trail", staffOnly(handleAuditTrail)).Methods("GET")
 	r.HandleFunc("/audit/verify/{id:[0-9]+}", readAuth(handleVerifyResult)).Methods("GET")
 	r.HandleFunc("/audit/stats", readAuth(handleAuditStats)).Methods("GET")
 
@@ -377,6 +379,9 @@ func main() {
 	r.HandleFunc("/bvas/devices/{id}", readAuth(handleGetBVASDevice)).Methods("GET")
 	r.HandleFunc("/bvas/devices", writeAuth(handleRegisterBVASDevice)).Methods("POST")
 	r.HandleFunc("/bvas/devices/{id}", writeAuth(handleUpdateBVASDevice)).Methods("PATCH")
+	// R5-048: fleet revocation — lost/stolen devices are killed fleet-wide
+	// with a mandatory reason (accreditation fails closed on non-active).
+	r.HandleFunc("/bvas/devices/{id}/revoke", adminOnly(handleRevokeBVASDevice)).Methods("POST")
 	r.HandleFunc("/bvas/accreditation", writeAuth(handleBVASAccreditation)).Methods("POST")
 	r.HandleFunc("/bvas/accreditation/feed", readAuth(handleBVASAccreditationFeed)).Methods("GET")
 	r.HandleFunc("/bvas/accreditation/timeline", readAuth(handleBVASAccreditationTimeline)).Methods("GET")

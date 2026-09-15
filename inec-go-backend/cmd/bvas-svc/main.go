@@ -140,7 +140,14 @@ func accredit(svc *bvas.Service) http.HandlerFunc {
 			http.Error(w, `{"error":"invalid body"}`, 400)
 			return
 		}
-		result, err := svc.Accredit(r.Context(), req.DeviceID, req.ElectionID, req.VoterVIN, req.PollingUnitCode, req.MatchScore)
+		// R5-040 officer-binding: the caller identity comes from verified
+		// JWT claims, never the request body.
+		claims, ok := authmw.Claims(r)
+		if !ok {
+			http.Error(w, `{"error":"authentication required"}`, 401)
+			return
+		}
+		result, err := svc.Accredit(r.Context(), req.DeviceID, req.ElectionID, req.VoterVIN, req.PollingUnitCode, req.MatchScore, authmw.UserID(claims))
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), 400)
 			return

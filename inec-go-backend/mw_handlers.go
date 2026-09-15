@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 func handleMiddlewareStatus(w http.ResponseWriter, r *http.Request) {
@@ -288,15 +289,28 @@ func cacheDel(keys ...string) {
 	mwHub.Redis.Del(ctx, keys...)
 }
 
+// checkPermission gates authorization decisions. R5-050: the backend error
+// was previously DISCARDED (`allowed, _ :=`) — a Permify outage silently
+// denied (or, worse, left callers assuming an explicit deny). The failure
+// mode is now explicit: FAIL CLOSED with a loud security error on every
+// occurrence, plus a timeout so a hung backend cannot stall the hot path.
 func checkPermission(role, permission string) bool {
-	ctx := context.Background()
-	allowed, _ := mwHub.Permify.Check(ctx, PermifyCheck{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	allowed, err := mwHub.Permify.Check(ctx, PermifyCheck{
 		Subject:      role,
 		SubjectType:  role,
 		Permission:   permission,
 		Resource:     "*",
 		ResourceType: "election",
 	})
+	if err != nil {
+		log.Error().Err(err).
+			Str("role", role).
+			Str("permission", permission).
+			Msg("SECURITY: permission-check backend error — FAILING CLOSED (request denied)")
+		return false
+	}
 	return allowed
 }
 

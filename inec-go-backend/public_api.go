@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 // apiVersionMiddleware adds API version headers and handles deprecation warnings.
@@ -53,27 +54,86 @@ func initPublicAPITables(database *sql.DB) {
 		b := make([]byte, 32)
 		rand.Read(b)
 		demoKey := "inec_" + hex.EncodeToString(b[:16])
+		// R5-046: only the SHA-256 hash is stored — a DB leak must not leak
+		// usable credentials.
 		database.Exec(`INSERT INTO api_keys (key_hash, name, owner, permissions, rate_limit)
-			VALUES (?, 'Demo API Key', 'system', 'read', 1000)`, demoKey)
+			VALUES (?, 'Demo API Key', 'system', 'read', 1000)`, hashAPIKey(demoKey))
+		log.Warn().Msg("SECURITY: demo API key created with read permissions — rotate or deactivate before production use")
 	}
+	migrateAPIKeysToHashed(database)
+}
+
+// migrateAPIKeysToHashed (R5-046) converts legacy rows that stored the RAW
+// API key in api_keys.key_hash to SHA-256 hashes. Idempotent: SHA-256 hex
+// digests are exactly 64 lowercase-hex chars, longer raw keys or prefixed
+// formats are converted. A legacy raw key that itself happens to be 64
+// lowercase-hex chars is indistinguishable from a digest and is left as-is
+// (documented limitation; such keys keep working as hash-of-themselves is
+// never computed).
+func migrateAPIKeysToHashed(database *sql.DB) {
+	rows, err := database.Query("SELECT id, key_hash FROM api_keys")
+	if err != nil {
+		log.Error().Err(err).Msg("SECURITY: API-key hash migration scan failed")
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		id   int
+		hash string
+	}
+	var pending []row
+	for rows.Next() {
+		var r row
+		if rows.Scan(&r.id, &r.hash) == nil && !isSHA256Hex(r.hash) {
+			pending = append(pending, r)
+		}
+	}
+	for _, r := range pending {
+		if _, err := database.Exec("UPDATE api_keys SET key_hash=? WHERE id=?", hashAPIKey(r.hash), r.id); err != nil {
+			log.Error().Err(err).Int("id", r.id).Msg("SECURITY: API-key hash migration failed for row")
+		}
+	}
+	if len(pending) > 0 {
+		log.Warn().Int("converted", len(pending)).Msg("SECURITY: migrated raw API keys to SHA-256 hashes (R5-046)")
+	}
+}
+
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func apiKeyAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// R5-046: credentials are header-only. The ?api_key= query parameter
+		// was accepted before, leaking bearer credentials into access logs,
+		// proxies and browser history — it is now rejected outright.
+		if r.URL.Query().Get("api_key") != "" {
+			writeJSON(w, 401, M{"error": "API keys in URLs are not accepted; use the X-API-Key header"})
+			return
+		}
 		key := r.Header.Get("X-API-Key")
 		if key == "" {
-			key = r.URL.Query().Get("api_key")
-		}
-		if key == "" {
-			writeJSON(w, 401, M{"error": "API key required. Pass X-API-Key header or api_key query param."})
+			writeJSON(w, 401, M{"error": "API key required. Pass the X-API-Key header."})
 			return
 		}
 
+		// R5-046: only SHA-256 hashes are stored; the presented key is hashed
+		// before lookup (a DB leak no longer leaks usable credentials, and
+		// lookup-by-hash gives constant-time-equivalent comparison).
+		keyHash := hashAPIKey(key)
 		var keyID int
 		var name, permissions string
 		var rateLimit int
 		var isActive int
-		err := db.QueryRow("SELECT id, name, permissions, rate_limit, is_active FROM api_keys WHERE key_hash=?", key).
+		err := db.QueryRow("SELECT id, name, permissions, rate_limit, is_active FROM api_keys WHERE key_hash=?", keyHash).
 			Scan(&keyID, &name, &permissions, &rateLimit, &isActive)
 		if err != nil || isActive == 0 {
 			writeJSON(w, 403, M{"error": "Invalid or inactive API key"})

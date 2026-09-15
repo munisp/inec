@@ -235,7 +235,12 @@ func initAPIKeyRotation(database *sql.DB) {
 	)`)
 }
 
-// rotateAPIKey creates a new key and marks the old one as expired.
+// rotateAPIKey creates a new key and revokes the old one. R5-046: rotation
+// previously wrote ONLY api_key_metadata — a table no auth path reads
+// ("rotation theater"): the compromised key kept working in api_keys. The
+// rotation now (a) deactivates the old hash in api_keys — the table
+// apiKeyAuth actually checks — and (b) inserts the new key (hashed) there,
+// atomically with the metadata record.
 func rotateAPIKey(oldKeyHash string, ownerID int, name string) (string, error) {
 	// Generate new key
 	b := make([]byte, 32)
@@ -249,14 +254,31 @@ func rotateAPIKey(oldKeyHash string, ownerID int, name string) (string, error) {
 		return "", err
 	}
 
-	// Deactivate old key
+	// Revoke the old key in the LIVE table (apiKeyAuth's source of truth) —
+	// a named old key that does not exist fails the rotation loudly rather
+	// than minting an extra unrevoked credential.
 	if oldKeyHash != "" {
-		_, err = tx.Exec(convertPlaceholders(
-			"UPDATE api_key_metadata SET is_active = false WHERE key_hash = ?"), oldKeyHash)
+		res, err := tx.Exec(convertPlaceholders(
+			"UPDATE api_keys SET is_active = 0 WHERE key_hash = ?"), oldKeyHash)
 		if err != nil {
 			tx.Rollback()
 			return "", err
 		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			tx.Rollback()
+			return "", fmt.Errorf("old key not found in api_keys — nothing rotated")
+		}
+		// Best-effort metadata consistency (table predates live-table auth).
+		tx.Exec(convertPlaceholders(
+			"UPDATE api_key_metadata SET is_active = false WHERE key_hash = ?"), oldKeyHash)
+	}
+
+	// Activate the new key in the LIVE table (hash stored, never the raw key).
+	if _, err = tx.Exec(convertPlaceholders(
+		"INSERT INTO api_keys (key_hash, name, owner, permissions, rate_limit, is_active) VALUES (?, ?, ?, 'read', 100, 1)"),
+		newKeyHash, name, fmt.Sprintf("user:%d", ownerID)); err != nil {
+		tx.Rollback()
+		return "", err
 	}
 
 	// Insert new key

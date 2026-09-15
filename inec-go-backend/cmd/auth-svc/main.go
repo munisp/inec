@@ -55,6 +55,15 @@ func main() {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	cfg := auth.DefaultConfig([]byte(*jwtSecret))
+	// R5-047: during a rotation window the outgoing key is accepted for
+	// verification only (tokens carry a kid header naming the signer).
+	if prev := os.Getenv("JWT_SECRET_PREVIOUS"); prev != "" {
+		if prev == *jwtSecret {
+			log.Fatal().Msg("JWT_SECRET and JWT_SECRET_PREVIOUS are identical — not a rotation")
+		}
+		cfg.JWTSecretPrevious = []byte(prev)
+		log.Warn().Msg("JWT key rotation window active — previous key accepted for verification only")
+	}
 	svc := auth.NewService(db, cfg)
 	// Ensure the account-lockout columns backing MaxLoginAttempts /
 	// LockoutDuration exist (also covered by migration 000029). Fatal on

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -61,7 +62,7 @@ func (s *Service) GetDevice(ctx context.Context, deviceID string) (*Device, erro
 	var d Device
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, serial_number, status, COALESCE(polling_unit_code,''),
-		 COALESCE(firmware_version,''), COALESCE(battery_level,0), last_sync_at, COALESCE(assigned_to,'')
+		 COALESCE(firmware_version,''), COALESCE(battery_level,0), last_sync_at, COALESCE(assigned_officer::text,'')
 		 FROM bvas_devices WHERE id = $1`, deviceID).
 		Scan(&d.ID, &d.SerialNumber, &d.Status, &d.PollingUnitCode,
 			&d.FirmwareVersion, &d.BatteryLevel, &d.LastSyncAt, &d.AssignedTo)
@@ -74,7 +75,7 @@ func (s *Service) GetDevice(ctx context.Context, deviceID string) (*Device, erro
 // ListDevices returns all BVAS devices, optionally filtered by status.
 func (s *Service) ListDevices(ctx context.Context, statusFilter string) ([]Device, error) {
 	query := `SELECT id, serial_number, status, COALESCE(polling_unit_code,''),
-	           COALESCE(firmware_version,''), COALESCE(battery_level,0), last_sync_at, COALESCE(assigned_to,'')
+	           COALESCE(firmware_version,''), COALESCE(battery_level,0), last_sync_at, COALESCE(assigned_officer::text,'')
 	           FROM bvas_devices`
 	var args []interface{}
 	if statusFilter != "" {
@@ -99,7 +100,9 @@ func (s *Service) ListDevices(ctx context.Context, statusFilter string) ([]Devic
 }
 
 // Accredit performs voter accreditation through a BVAS device.
-func (s *Service) Accredit(ctx context.Context, deviceID string, electionID int, voterVIN, puCode string, matchScore float64) (*AccreditationResult, error) {
+// officerID is the authenticated caller's user id (from verified JWT
+// claims); officer-binding is fail-closed (R5-040 residual).
+func (s *Service) Accredit(ctx context.Context, deviceID string, electionID int, voterVIN, puCode string, matchScore float64, officerID int) (*AccreditationResult, error) {
 	// Validate device status
 	device, err := s.GetDevice(ctx, deviceID)
 	if err != nil {
@@ -107,6 +110,17 @@ func (s *Service) Accredit(ctx context.Context, deviceID string, electionID int,
 	}
 	if device.Status != StatusActive {
 		return nil, fmt.Errorf("device %s is '%s' — must be 'active' for accreditation", deviceID, device.Status)
+	}
+
+	// R5-040 officer-bound (fail closed): the device must be assigned to the
+	// authenticated officer presenting it. An unassigned device may accredit
+	// for NOBODY — a found/stolen device is useless without the fleet
+	// assignment, and one officer cannot borrow another's device.
+	if device.AssignedTo == "" {
+		return nil, fmt.Errorf("device %s is not assigned to an officer — assignment required before accreditation", deviceID)
+	}
+	if device.AssignedTo != strconv.Itoa(officerID) {
+		return nil, fmt.Errorf("device %s is assigned to a different officer", deviceID)
 	}
 
 	// Validate election status

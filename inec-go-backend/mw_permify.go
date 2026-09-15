@@ -202,19 +202,27 @@ func newPGPermify() *pgPermify {
 }
 
 func (p *pgPermify) Check(_ context.Context, check PermifyCheck) (bool, error) {
+	// R5-050: query errors were silently ignored (Scan error → count stays
+	// 0 → static-RBAC fallback). A broken permify_relationships table then
+	// silently degraded authorization to the static map. Backend errors now
+	// propagate; the caller (checkPermission) fails closed with a loud log.
 	// Check direct relationship in PG
 	var count int
-	db.QueryRow(`SELECT COUNT(*) FROM permify_relationships 
+	if err := db.QueryRow(`SELECT COUNT(*) FROM permify_relationships
 		WHERE subject=$1 AND subject_type=$2 AND relation=$3 AND resource=$4 AND resource_type=$5`,
-		check.Subject, check.SubjectType, check.Permission, check.Resource, check.ResourceType).Scan(&count)
+		check.Subject, check.SubjectType, check.Permission, check.Resource, check.ResourceType).Scan(&count); err != nil {
+		return false, fmt.Errorf("permify relationship check failed: %w", err)
+	}
 	if count > 0 {
 		return true, nil
 	}
 
 	// Check role-based wildcard relationships
-	db.QueryRow(`SELECT COUNT(*) FROM permify_relationships 
+	if err := db.QueryRow(`SELECT COUNT(*) FROM permify_relationships
 		WHERE subject=$1 AND subject_type=$2 AND relation=$3 AND resource='*' AND resource_type=$4`,
-		check.Subject, check.SubjectType, check.Permission, check.ResourceType).Scan(&count)
+		check.Subject, check.SubjectType, check.Permission, check.ResourceType).Scan(&count); err != nil {
+		return false, fmt.Errorf("permify wildcard check failed: %w", err)
+	}
 	if count > 0 {
 		return true, nil
 	}

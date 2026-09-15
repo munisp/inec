@@ -4,6 +4,7 @@
 package main
 
 import (
+	"github.com/gorilla/mux"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -62,5 +63,46 @@ func TestR5039_DeskGroupAdmitsCoordinator(t *testing.T) {
 	handler(w, req)
 	if w.Code != 200 || !called {
 		t.Fatalf("registration-desk op should admit coordinator, got %d", w.Code)
+	}
+}
+
+// TestR5039_PrimariesRoutesUnauthenticatedRejected: end-to-end through the
+// registered routes — an authenticated-but-roleless caller (party identity
+// present, no server-issued role) is rejected from every management verb.
+func TestR5039_PrimariesRoutesUnauthenticatedRejected(t *testing.T) {
+	r := mux.NewRouter()
+	// Simulate the auth middleware having authenticated a party identity
+	// WITHOUT issuing a role (no membership row — fail closed, R5-036).
+	auth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Del("X-GOTV-Role") // middleware strips client value
+			r.Header.Set("X-GOTV-Party-ID", "1")
+			r.Header.Set("X-GOTV-User", "user@party.ng")
+			next(w, r)
+		}
+	}
+	registerPrimaryRoutes(r, auth)
+
+	management := []struct{ method, path string }{
+		{"POST", "/gotv/primaries/aspirants"},
+		{"POST", "/gotv/primaries/delegates"},
+		{"POST", "/gotv/primaries/delegates/d1/accredit"},
+		{"POST", "/gotv/primaries/rounds"},
+		{"POST", "/gotv/primaries/rounds/1/open"},
+		{"POST", "/gotv/primaries/rounds/1/tally"},
+		{"POST", "/gotv/primaries/rounds/1/certify"},
+		{"POST", "/gotv/primaries/crypto/keys"},
+		{"POST", "/gotv/primaries/crypto/decrypt"},
+		{"POST", "/gotv/primaries/disputes/1/resolve"},
+	}
+	for _, tc := range management {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		// Client ALSO spoofs a role header — middleware must have stripped it.
+		req.Header.Set("X-GOTV-Role", "party_admin")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: roleless caller got %d, want 401", tc.method, tc.path, w.Code)
+		}
 	}
 }
