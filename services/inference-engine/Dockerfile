@@ -1,5 +1,8 @@
 FROM rust:1.88-bookworm AS builder
 WORKDIR /app
+# R4-39d: distro-managed pins — package versions are bounded by the pinned
+# base-image tag; security-sensitive packages (ca-certificates/openssl/libssl) are
+# listed explicitly so they receive distro security updates on rebuild. See docs/SUPPLY_CHAIN_PINS.md.
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -13,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/inec-inference-engine /usr/local/bin/
+# Run as a non-root user; models are mounted read-only.
+RUN useradd -u 10001 app
+USER app
 EXPOSE 8091
 ENV RUST_LOG=info
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

@@ -13,7 +13,7 @@ if [ ! -f "$PGDATA/PG_VERSION" ]; then
 
     rm -rf "$PGDATA"/*
 
-    PGPASSWORD="${REPLICATOR_PASSWORD:-changeme}" pg_basebackup \
+    PGPASSWORD="${REPLICATOR_PASSWORD:?REPLICATOR_PASSWORD must be set}" pg_basebackup \
         -h pg-primary \
         -p 5432 \
         -U replicator \
@@ -25,7 +25,7 @@ if [ ! -f "$PGDATA/PG_VERSION" ]; then
 
 # --- Replica Settings ---
 hot_standby = on
-primary_conninfo = 'host=pg-primary port=5432 user=replicator password=${REPLICATOR_PASSWORD:-changeme} application_name=pg-replica'
+primary_conninfo = 'host=pg-primary port=5432 user=replicator password=${REPLICATOR_PASSWORD:?REPLICATOR_PASSWORD must be set} application_name=pg-replica'
 primary_slot_name = 'replica_slot_1'
 shared_buffers = 256MB
 effective_cache_size = 768MB

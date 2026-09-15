@@ -1,9 +1,9 @@
 package main
 
 import (
-	"os"
 	"context"
 	"database/sql"
+	"os"
 )
 
 func querySingleRow(query string, args ...interface{}) (M, error) {
@@ -21,7 +21,6 @@ func querySingleRowCtx(ctx context.Context, query string, args ...interface{}) (
 	}
 	return all[0], nil
 }
-
 
 // envString returns the value of an environment variable or a fallback default.
 func envString(key, fallback string) string {
