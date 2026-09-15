@@ -33,9 +33,15 @@ func initDB(db *sql.DB) {
 		title TEXT NOT NULL,
 		election_type TEXT NOT NULL CHECK(election_type IN ('presidential','gubernatorial','senatorial','house_of_reps','state_assembly','local_government')),
 		election_date TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming','active','completed','cancelled','draft','scheduled','voting','collating','closed','disputed')),
+		status TEXT NOT NULL DEFAULT 'upcoming' CHECK(status IN ('upcoming','active','completed','cancelled','draft','scheduled','voting','collating','closed','disputed','suspended','postponed','declared')),
 		description TEXT,
 		total_registered_voters INTEGER DEFAULT 0,
+		declared_at TIMESTAMP,
+		declared_by TEXT,
+		winner_payload TEXT,
+		declaration_notes TEXT,
+		parent_election_id INTEGER,
+		election_kind TEXT NOT NULL DEFAULT 'general' CHECK(election_kind IN ('general','rerun','supplementary','by_election')),
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
@@ -84,7 +90,7 @@ func initDB(db *sql.DB) {
 		election_id INTEGER NOT NULL,
 		polling_unit_code TEXT NOT NULL,
 		presiding_officer_id INTEGER,
-		status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','validated','finalized','disputed','voided')),
+		status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','validated','finalized','disputed','voided','superseded')),
 		total_valid_votes INTEGER DEFAULT 0,
 		rejected_votes INTEGER DEFAULT 0,
 		total_votes_cast INTEGER DEFAULT 0,
@@ -92,16 +98,40 @@ func initDB(db *sql.DB) {
 		ec8a_hash TEXT,
 		tigerbeetle_transfer_id TEXT,
 		hyperledger_tx_id TEXT,
-		tigerbeetle_status TEXT DEFAULT 'PENDING' CHECK(tigerbeetle_status IN ('PENDING','POSTED','VOIDED')),
-		hyperledger_status TEXT DEFAULT 'PENDING' CHECK(hyperledger_status IN ('PENDING','CONFIRMED','FAILED')),
+		tigerbeetle_status TEXT DEFAULT 'PENDING' CHECK(tigerbeetle_status IN ('PENDING','POSTED','VOIDED','NOT_APPLICABLE')),
+		hyperledger_status TEXT DEFAULT 'PENDING' CHECK(hyperledger_status IN ('PENDING','CONFIRMED','FAILED','NOT_CONFIGURED')),
+		supersedes_result_id INTEGER,
+		correction_reason TEXT,
+		idempotency_key TEXT,
 		ipfs_cid TEXT,
 		submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		validated_at TIMESTAMP,
 		finalized_at TIMESTAMP,
 		FOREIGN KEY (election_id) REFERENCES elections(id),
 		FOREIGN KEY (polling_unit_code) REFERENCES polling_units(code),
-		FOREIGN KEY (presiding_officer_id) REFERENCES users(id),
-		UNIQUE(election_id, polling_unit_code)
+		FOREIGN KEY (presiding_officer_id) REFERENCES users(id)
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS results_canonical_pu_unique ON results(election_id, polling_unit_code) WHERE status NOT IN ('superseded','voided');
+	CREATE TABLE IF NOT EXISTS result_corrections (
+		id SERIAL PRIMARY KEY,
+		election_id INTEGER NOT NULL REFERENCES elections(id),
+		polling_unit_code TEXT NOT NULL,
+		superseded_result_id INTEGER NOT NULL REFERENCES results(id),
+		new_result_id INTEGER NOT NULL REFERENCES results(id),
+		reason TEXT NOT NULL,
+		dispute_id INTEGER,
+		corrected_by TEXT NOT NULL,
+		corrected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE IF NOT EXISTS rerun_scopes (
+		id SERIAL PRIMARY KEY,
+		election_id INTEGER NOT NULL REFERENCES elections(id),
+		scope_type TEXT NOT NULL CHECK(scope_type IN ('polling_unit','lga','ward')),
+		area_code TEXT NOT NULL,
+		reason TEXT,
+		created_by TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE (election_id, scope_type, area_code)
 	);
 	CREATE TABLE IF NOT EXISTS result_party_scores (
 		id SERIAL PRIMARY KEY,

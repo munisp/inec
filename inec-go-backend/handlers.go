@@ -476,6 +476,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		RejectedVotes    int      `json:"rejected_votes"`
 		DeviceLat        *float64 `json:"device_lat"`
 		DeviceLng        *float64 `json:"device_lng"`
+		DeviceAccuracy   *float64 `json:"device_accuracy"`
 		DeviceID         string   `json:"device_id"`
 		IdempotencyKey   string   `json:"idempotency_key"`
 		OverrideReason   string   `json:"override_reason"`
@@ -525,7 +526,13 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		spoofKey = fmt.Sprintf("user-%d", userID)
 	}
 	if mwHub != nil && mwHub.Redis != nil {
-		current := &GPSTrackPoint{Lat: *req.DeviceLat, Lng: *req.DeviceLng, Timestamp: time.Now()}
+		// Accuracy is optional sensor data: absent means "not reported" (-1,
+		// no accuracy-based scoring); an explicit 0 stays a mock indicator.
+		accuracy := -1.0
+		if req.DeviceAccuracy != nil {
+			accuracy = *req.DeviceAccuracy
+		}
+		current := &GPSTrackPoint{Lat: *req.DeviceLat, Lng: *req.DeviceLng, Timestamp: time.Now(), Accuracy: accuracy}
 		var previous *GPSTrackPoint
 		if prevJSON, gerr := mwHub.Redis.Get(r.Context(), "gps:last:"+spoofKey); gerr == nil && prevJSON != "" {
 			previous = &GPSTrackPoint{}

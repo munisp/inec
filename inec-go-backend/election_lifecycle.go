@@ -532,6 +532,13 @@ func handleCorrectResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ec8aHash := computeEC8AHash(electionID, puCode, partyEntries, req.AccreditedVoters, req.RejectedVotes)
+	// Supersede FIRST: the partial unique index admits only one canonical
+	// result per (election, PU), so the old row must become history before
+	// its replacement is inserted.
+	if _, err := tx.ExecContext(ctx, "UPDATE results SET status='superseded' WHERE id=$1", id); err != nil {
+		writeError(w, 500, "failed to supersede old result")
+		return
+	}
 	var newResultID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
@@ -553,10 +560,6 @@ func handleCorrectResult(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "failed to save corrected party scores")
 			return
 		}
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE results SET status='superseded' WHERE id=$1", id); err != nil {
-		writeError(w, 500, "failed to supersede old result")
-		return
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO result_corrections (election_id, polling_unit_code, superseded_result_id, new_result_id, reason, dispute_id, corrected_by)

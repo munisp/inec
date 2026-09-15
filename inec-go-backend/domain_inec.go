@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -320,7 +321,11 @@ JOIN wards w ON w.code = pu.ward_code
 JOIN lgas l ON l.code = w.lga_code
 WHERE ` + filter + `
 GROUP BY rps.party_code`
-	rows, err := db.QueryContext(ctx, q, electionID, areaCode)
+	args := []interface{}{electionID}
+	if level != "national" {
+		args = append(args, areaCode)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -356,7 +361,11 @@ func resultStatusCounts(ctx context.Context, electionID int, level, areaCode str
 	LEFT JOIN results r ON r.polling_unit_code = pu.code AND r.election_id = $1 AND r.status <> 'superseded'
 	WHERE ` + filter + `
 	GROUP BY COALESCE(r.status,'none')`
-	rows, err := db.QueryContext(ctx, q, electionID, areaCode)
+	args := []interface{}{electionID}
+	if level != "national" {
+		args = append(args, areaCode)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -542,14 +551,23 @@ JOIN polling_units pu ON pu.code = c.pu_code
 JOIN wards w ON w.code = pu.ward_code
 JOIN lgas l ON l.code = w.lga_code
 WHERE ` + filter
-	if err := db.QueryRowContext(ctx, aggQ, electionID, areaCode).Scan(&registered, &accredited, &cast, &rejected); err != nil {
+	aggArgs := []interface{}{electionID}
+	if level != "national" {
+		aggArgs = append(aggArgs, areaCode)
+	}
+	if err := db.QueryRowContext(ctx, aggQ, aggArgs...).Scan(&registered, &accredited, &cast, &rejected); err != nil {
 		return err
 	}
 	// Total registered voters covers ALL PUs in the area, not just reported ones.
 	var areaRegistered int64
 	regQ := `SELECT COALESCE(SUM(pu.registered_voters),0) FROM polling_units pu
-		JOIN wards w ON w.code = pu.ward_code JOIN lgas l ON l.code = w.lga_code WHERE ` + filter
-	if err := db.QueryRowContext(ctx, regQ, electionID, areaCode).Scan(&areaRegistered); err == nil {
+		JOIN wards w ON w.code = pu.ward_code JOIN lgas l ON l.code = w.lga_code WHERE ` +
+		strings.Replace(filter, "$2", "$1", 1)
+	if level == "national" {
+		if err := db.QueryRowContext(ctx, regQ).Scan(&areaRegistered); err == nil {
+			registered = areaRegistered
+		}
+	} else if err := db.QueryRowContext(ctx, regQ, areaCode).Scan(&areaRegistered); err == nil {
 		registered = areaRegistered
 	}
 

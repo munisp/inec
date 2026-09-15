@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -46,6 +47,7 @@ func setupLifecycleTestDB(t *testing.T) {
 		testDSN = dsn + " dbname=" + dbName
 	}
 	db = openDatabase(testDSN)
+	initScaledDB(db)
 	if err := runMigrations(db); err != nil {
 		t.Fatalf("migrations failed: %v", err)
 	}
@@ -72,10 +74,6 @@ func setupLifecycleTestDB(t *testing.T) {
 	exec("INSERT INTO parties (code, name, abbreviation) VALUES ('APC','All Progressives Congress','APC'),('PDP','Peoples Democratic Party','PDP'),('LP','Labour Party','LP')")
 	exec("INSERT INTO users (username, password_hash, full_name, role, state_code) VALUES ('officer1','x','Officer One','presiding_officer','AB'),('ro1','x','Returning Officer','collation_officer',NULL),('admin1','x','Admin','admin',NULL)")
 	lifecycleTestReady = true
-}
-
-func claimsCtx(r *httptest.ResponseRecorder, req *httptest.Request, claims jwt.MapClaims) {
-	*req = *req.WithContext(context.WithValue(req.Context(), userContextKey, claims))
 }
 
 func doRequest(handler http.HandlerFunc, method, path, body string, claims jwt.MapClaims, vars map[string]string) *httptest.ResponseRecorder {
@@ -279,11 +277,11 @@ func TestRerunMergeMath(t *testing.T) {
 	// Finalize the rerun result through the normal pipeline.
 	var resID string
 	db.QueryRow("SELECT id FROM results WHERE election_id=$1 AND polling_unit_code='PU-004'", rerunID).Scan(&resID)
-	w = doRequest(handleValidateResult, "POST", "", "{}", roClaims, map[string]string{"id": resID})
+	w = doRequest(handleValidateResult, "POST", "/results/"+resID+"/validate", "{}", adminClaims, map[string]string{"id": resID})
 	if w.Code != 200 {
 		t.Fatalf("validate rerun result: %d: %s", w.Code, w.Body.String())
 	}
-	w = doRequest(handleFinalizeResult, "POST", "", "{}", adminClaims, map[string]string{"id": resID})
+	w = doRequest(handleFinalizeResult, "POST", "/results/"+resID+"/finalize", "{}", adminClaims, map[string]string{"id": resID})
 	if w.Code != 200 {
 		t.Fatalf("finalize rerun result: %d: %s", w.Code, w.Body.String())
 	}
