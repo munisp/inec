@@ -853,6 +853,8 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	dbReadQueryRow(r.Context(), `SELECT s.code FROM polling_units pu
 		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code
 		JOIN states s ON s.code=l.state_code WHERE pu.code=?`, req.PollingUnitCode).Scan(&puStateCode)
+	// W6 handoff: metric emission point for the result-submission hot path.
+	resultsSubmitted.WithLabelValues(puStateCode, "submitted").Inc()
 	go broadcastWSSharded(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID, "state_code": puStateCode}, puStateCode)
 
 	// Broadcast to SSE observers

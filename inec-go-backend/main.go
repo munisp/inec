@@ -213,6 +213,15 @@ func main() {
 		log.Info().Msg("Seeding declared E2E fixtures in explicit non-production environment")
 		seedDatabase(db)
 	}
+	// W6 handoff: --migrate-only runs schema init + migrations and exits
+	// cleanly (for deploy init containers / CI schema gates) — no HTTP
+	// server, no background workers.
+	for _, arg := range os.Args[1:] {
+		if arg == "--migrate-only" {
+			log.Info().Msg("--migrate-only: schema init and migrations complete, exiting")
+			os.Exit(0)
+		}
+	}
 	initOpenAPIRoutes()
 
 	// Production compliance, stablecoin, and USSD engines
