@@ -424,7 +424,14 @@ func processJob(jobID string) {
 	for i := range ingestionQueue {
 		if ingestionQueue[i].ID == jobID {
 			ingestionQueue[i].Status = "in_progress"
-			job = &ingestionQueue[i]
+			// Take the job BY VALUE. A pointer into the slice aliases
+			// whatever element removeJobFromQueueLocked's in-place shift
+			// moves into slot i, so a concurrent terminal job would swap
+			// this processor's payload/status with a different job's
+			// (observed: job completed with another job's PU applied and
+			// its own result never written — R5-008 race).
+			jobCopy := ingestionQueue[i]
+			job = &jobCopy
 			break
 		}
 	}
