@@ -454,12 +454,29 @@ func main() {
 	r.HandleFunc("/security/data-classification", adminOnly(handleDataClassificationList)).Methods("GET")
 	r.HandleFunc("/security/events", adminOnly(handleSecurityEvents)).Methods("GET")
 
-	// SMS/USSD Gateway — auth required
-	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
+	// SMS/USSD Gateway — W5_HANDOFF §1: telco aggregator callbacks cannot
+	// carry JWTs; they authenticate via the provider HMAC guard
+	// (telcoProviderAuth, fail-closed on TELCO_WEBHOOK_SECRET).
+	r.HandleFunc("/sms/verify", telcoProviderAuth(handleSMSVerify)).Methods("POST")
 	r.HandleFunc("/sms/stats", readAuth(handleSMSStats)).Methods("GET")
-	r.HandleFunc("/ussd/gateway", authRequired(handleUSSDGateway)).Methods("POST")
-	r.HandleFunc("/ussd/session", authRequired(handleUSSDSession)).Methods("POST")
+	r.HandleFunc("/ussd/gateway", telcoProviderAuth(handleUSSDGateway)).Methods("POST")
+	r.HandleFunc("/ussd/session", telcoProviderAuth(handleUSSDSession)).Methods("POST")
 	r.HandleFunc("/ussd/dashboard", adminOnly(handleUSSDDashboard)).Methods("GET")
+
+	// W5 voter-channel routes (R5-071/072/073/078).
+	r.HandleFunc("/sms/inbound", telcoProviderAuth(handleSMSVerify)).Methods("POST") // MO-SMS webhook (RESULT/VERIFY/STATUS)
+	r.HandleFunc("/ussd/voter", telcoProviderAuth(USSDHandler)).Methods("POST")       // AT-form multilingual voter-services USSD
+	r.HandleFunc("/ivr/start", telcoProviderAuth(IVRStartHandler)).Methods("POST")
+	r.HandleFunc("/ivr/action", telcoProviderAuth(IVRActionHandler)).Methods("POST")
+	r.HandleFunc("/ivr/incidents", readAuth(IVRIncidentsHandler)).Methods("GET")
+
+	// Public voter complaint channel (self-rate-limited; no auth wall by design).
+	r.HandleFunc("/public/incidents", handlePublicIncident).Methods("POST")
+	r.HandleFunc("/public/incidents/meta", handlePublicIncidentMeta).Methods("GET")
+
+	// WhatsApp voter self-service (X-Hub-Signature-256 checked inside the
+	// handler; GET is Meta's webhook verification).
+	r.HandleFunc("/webhooks/whatsapp", handleWhatsAppVoterWebhook).Methods("GET", "POST")
 
 	// AI Analytics (proxy to Python service) — auth required
 	r.HandleFunc("/ai/anomalies", readAuth(handleAIAnomalies)).Methods("GET")
