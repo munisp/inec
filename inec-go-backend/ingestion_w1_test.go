@@ -60,6 +60,7 @@ func w1ProvisionScratch(baseDSN string) {
 			"migrations/000022_election_management.up.sql", // result_party_scores
 			"migrations/000028_results_unique_constraint.up.sql",
 			"../migrations/000019_election_evidence_integrity.sql", // result_evidence_events
+			"migrations/000023_biometric.up.sql",                   // biometric_profiles, offline_enrollment_queue
 			"migrations/000033_ingestion_apply_and_idempotency.up.sql",
 		} {
 			ddl, err := os.ReadFile(f)
@@ -490,6 +491,49 @@ func TestW1AccreditationSyncAppliesAndDedupes(t *testing.T) {
 	db.QueryRow("SELECT COUNT(*) FROM bvas_accreditations WHERE voter_pvc_hash=?", hash).Scan(&count)
 	if count != 1 {
 		t.Fatalf("duplicate accreditation rows: %d", count)
+	}
+}
+
+// ─── R5-009: offline enrollment sync actually applies enrollments ───────────
+
+func TestW1OfflineEnrollmentTriggerSyncApplies(t *testing.T) {
+	testDB := w1TestDB(t)
+	if _, err := testDB.Exec(`INSERT INTO offline_enrollment_queue (device_id, voter_vin, modality, template_data_hash)
+		VALUES ('BVAS-E1','VIN-001','fingerprint','hash-aaa'), ('BVAS-E1','VIN-002','facial','hash-bbb')`); err != nil {
+		t.Fatalf("seed queue: %v", err)
+	}
+	q := NewOfflineEnrollmentQueue(testDB)
+	out := q.TriggerSync("BVAS-E1")
+	if out["synced_count"].(int) != 2 || out["failed_count"].(int) != 0 {
+		t.Fatalf("unexpected sync outcome: %+v", out)
+	}
+	// The enrollment must EXIST in biometric_profiles — not just a status flip.
+	var fpHash string
+	if err := testDB.QueryRow("SELECT fingerprint_hash FROM biometric_profiles WHERE voter_vin='VIN-001'").Scan(&fpHash); err != nil || fpHash != "hash-aaa" {
+		t.Fatalf("R5-009 regression: enrollment not applied (hash=%q err=%v)", fpHash, err)
+	}
+	var faceHash string
+	if err := testDB.QueryRow("SELECT facial_hash FROM biometric_profiles WHERE voter_vin='VIN-002'").Scan(&faceHash); err != nil || faceHash != "hash-bbb" {
+		t.Fatalf("facial enrollment not applied: %v", err)
+	}
+	// Conflict: a different fingerprint template for the same voter is flagged,
+	// never overwritten.
+	if _, err := testDB.Exec(`INSERT INTO offline_enrollment_queue (device_id, voter_vin, modality, template_data_hash)
+		VALUES ('BVAS-E1','VIN-001','fingerprint','hash-DIFFERENT')`); err != nil {
+		t.Fatal(err)
+	}
+	out = q.TriggerSync("BVAS-E1")
+	if out["conflict_count"].(int) != 1 {
+		t.Fatalf("expected 1 conflict, got %+v", out)
+	}
+	testDB.QueryRow("SELECT fingerprint_hash FROM biometric_profiles WHERE voter_vin='VIN-001'").Scan(&fpHash)
+	if fpHash != "hash-aaa" {
+		t.Fatal("conflicting template overwrote the enrolled one")
+	}
+	var flagged int
+	testDB.QueryRow("SELECT conflict_detected FROM offline_enrollment_queue WHERE template_data_hash='hash-DIFFERENT'").Scan(&flagged)
+	if flagged != 1 {
+		t.Fatal("conflict not flagged for manual review")
 	}
 }
 
