@@ -226,7 +226,23 @@ func logout(svc *auth.Service) http.HandlerFunc {
 		if len(token) > 7 {
 			token = token[7:]
 		}
-		svc.Revoke(context.Background(), token)
+		// R5-041: revocation failures were silently discarded (and the INSERT
+		// itself violated a NOT NULL constraint) — logout was a no-op. Errors
+		// now surface in the log and the response.
+		if err := svc.Revoke(context.Background(), token); err != nil {
+			log.Error().Err(err).Msg("SECURITY: logout token revocation failed")
+			http.Error(w, `{"error":"logout failed"}`, 500)
+			return
+		}
+		// Kill every other recorded session for this user too (logout must
+		// not spare rotated/parallel sessions).
+		if claims, err := svc.ValidateToken(token); err == nil {
+			if uid, err := strconv.Atoi(claims.Subject); err == nil && uid > 0 {
+				if _, err := svc.RevokeAllForUser(context.Background(), uid); err != nil {
+					log.Error().Err(err).Int("user_id", uid).Msg("SECURITY: logout revoke-all failed")
+				}
+			}
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name: "inec_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		})

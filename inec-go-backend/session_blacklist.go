@@ -121,12 +121,49 @@ func (bl *tokenBlacklist) revokeToken(jti string, userID int, expiresAt time.Tim
 	return err
 }
 
-// revokeAllForUser revokes all active tokens for a user.
+// revokeAllForUser revokes all active tokens for a user. R5-038: previously
+// this only wrote DB rows that the (in-memory/Redis) isBlacklisted check
+// never saw until a restart — the revocation was not actually enforced.
+// Now the jtis are loaded into the checked memory map and Redis first.
 func (bl *tokenBlacklist) revokeAllForUser(userID int) error {
-	_, err := db.Exec(convertPlaceholders(
-		"INSERT INTO token_blacklist (jti, user_id, expires_at, reason) SELECT jti, ?, expires_at, 'bulk_revocation' FROM active_sessions WHERE user_id = ? AND expires_at > CURRENT_TIMESTAMP"),
+	type entry struct {
+		jti string
+		exp time.Time
+	}
+	var entries []entry
+	rows, err := db.Query(convertPlaceholders(
+		"SELECT jti, expires_at FROM active_sessions WHERE user_id = ? AND expires_at > CURRENT_TIMESTAMP"), userID)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", userID).Msg("SECURITY: bulk revocation lookup failed (fail closed)")
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.jti, &e.exp); err == nil {
+			entries = append(entries, e)
+		}
+	}
+	now := time.Now()
+	for _, e := range entries {
+		bl.mu.Lock()
+		bl.tokens[e.jti] = e.exp
+		bl.mu.Unlock()
+		if mwHub != nil && mwHub.Redis != nil {
+			if ttl := time.Until(e.exp); ttl > 0 {
+				mwHub.Redis.Set(context.Background(), "blacklist:"+e.jti, "1", ttl)
+			}
+		}
+	}
+	_, err = db.Exec(convertPlaceholders(
+		"INSERT INTO token_blacklist (jti, user_id, expires_at, reason) SELECT jti, ?, expires_at, 'bulk_revocation' FROM active_sessions WHERE user_id = ? AND expires_at > CURRENT_TIMESTAMP ON CONFLICT (jti) DO UPDATE SET revoked_at=CURRENT_TIMESTAMP, reason='bulk_revocation'"),
 		userID, userID)
-	return err
+	if err != nil {
+		log.Error().Err(err).Int("user_id", userID).Msg("SECURITY: bulk revocation persist failed")
+		return err
+	}
+	log.Info().Int("user_id", userID).Int("tokens", len(entries)).Time("at", now).Msg("SECURITY: all user sessions revoked")
+	return nil
 }
 
 // periodicCleanup removes expired entries every 5 minutes.

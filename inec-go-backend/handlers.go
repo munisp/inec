@@ -227,17 +227,57 @@ func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Reject revoked refresh tokens (logout / session revocation by jti).
-	if jti, _ := claims["jti"].(string); jti != "" && blacklist.isBlacklisted(jti) {
+	oldJTI, _ := claims["jti"].(string)
+	if oldJTI != "" && blacklist.isBlacklisted(oldJTI) {
 		writeError(w, 401, "refresh token has been revoked")
 		return
 	}
-	// Issue new access + refresh tokens (preserving tenancy claims)
+
+	// R5-038: re-validate the ACCOUNT on every refresh. Previously the
+	// role/state/staff claims were copied from the old token verbatim, so a
+	// disabled or demoted insider (or a thief of the 7-day refresh token)
+	// kept minting fully-privileged tokens. The users table is now
+	// authoritative: disabled accounts are rejected and role/tenancy claims
+	// are re-read (demotion takes effect at the next refresh, not after 7
+	// days).
+	userSub, _ := claims["sub"].(string)
+	uid, _ := strconv.Atoi(userSub)
+	var dbRole, dbState, dbStaff string
+	var dbActive int
+	userErr := dbQueryRowCtx(r.Context(),
+		"SELECT role, COALESCE(state_code,''), COALESCE(staff_id,''), COALESCE(is_active,1) FROM users WHERE id=?",
+		uid).Scan(&dbRole, &dbState, &dbStaff, &dbActive)
+	if userErr != nil {
+		logAudit("TOKEN_REFRESH_REJECTED", "user", userSub, uid, map[string]interface{}{"reason": "account_not_found"})
+		writeError(w, 401, "account no longer exists")
+		return
+	}
+	if dbActive == 0 {
+		logAudit("TOKEN_REFRESH_REJECTED", "user", userSub, uid, map[string]interface{}{"reason": "account_disabled"})
+		writeError(w, 401, "account is disabled")
+		return
+	}
+
+	// R5-038 rotation: the presented refresh token is revoked as part of the
+	// exchange, so each refresh token is single-use and a stolen predecessor
+	// dies on its first replay.
+	newJTI := generateJTI()
 	baseClaims := map[string]interface{}{
-		"sub": claims["sub"], "username": claims["username"], "role": claims["role"], "full_name": claims["full_name"],
-		"staff_id": claims["staff_id"], "state_code": claims["state_code"],
+		"sub": claims["sub"], "username": claims["username"], "role": dbRole, "full_name": claims["full_name"],
+		"staff_id": dbStaff, "state_code": dbState,
+		"jti": newJTI,
 	}
 	newAccess, _ := createAccessToken(baseClaims)
 	newRefresh, _ := createRefreshToken(baseClaims)
+	if oldJTI != "" {
+		expiry := time.Now().Add(7 * 24 * time.Hour)
+		if expF, ok := claims["exp"].(float64); ok && expF > 0 {
+			expiry = time.Unix(int64(expF), 0)
+		}
+		blacklist.revokeToken(oldJTI, uid, expiry, "refresh_rotation")
+	}
+	// Record the rotated session so logout/revocation can target it.
+	recordSession(newJTI, uid, time.Now().Add(7*24*time.Hour), r)
 	writeJSON(w, 200, M{
 		"access_token": newAccess, "refresh_token": newRefresh, "token_type": "bearer", "expires_in": 3600,
 	})
@@ -266,6 +306,16 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	if jti != "" {
 		expiresAt := time.Now().Add(24 * time.Hour)
 		blacklist.revokeToken(jti, userID, expiresAt, "user_logout")
+	}
+
+	// R5-038: logout must also kill the REFRESH token (and any rotated
+	// predecessor sessions) — previously only the presented access token's
+	// jti was blacklisted, so a held refresh token silently survived logout
+	// for up to 7 days. Revoke every recorded session jti for this user.
+	if userID > 0 {
+		if err := blacklist.revokeAllForUser(userID); err != nil {
+			log.Error().Err(err).Int("user_id", userID).Msg("SECURITY: logout bulk revocation failed")
+		}
 	}
 
 	// Remove all sessions for this user from active sessions
