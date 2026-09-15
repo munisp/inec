@@ -421,14 +421,10 @@ export const api = {
   getBlockchainAudit: (limit?: number) =>
     request(`/blockchain/audit?limit=${limit || 50}`),
 
-  getBlockchainProductionStats: () => request('/blockchain/production/stats'),
   getFabricAnchorHealth: () => request('/integrity/fabric/health'),
-  getIPFSStats: () => request('/blockchain/ipfs/stats'),
-  storeIPFS: (data: string, contentType?: string) =>
-    request('/blockchain/ipfs/store', { method: 'POST', body: JSON.stringify({ data, content_type: contentType }) }),
-  verifyIPFS: (cid: string) => request(`/blockchain/ipfs/verify?cid=${cid}`),
-  getIPFSObjects: (limit?: number, contentType?: string) =>
-    request(`/blockchain/ipfs/objects?limit=${limit || 50}${contentType ? `&content_type=${contentType}` : ''}`),
+  // NOTE: /blockchain/ipfs/* and /blockchain/production/stats client fns were
+  // removed (R5-065 follow-up) — those routes return an honest 503 because
+  // the external Fabric/IPFS gateway is unconfigured, and no UI called them.
   getLedgerStats: () => request('/blockchain/ledger/stats'),
   getLedgerAccounts: () => request('/blockchain/ledger/accounts'),
   getLedgerTransfers: (accountId?: string, limit?: number) =>

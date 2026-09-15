@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Link2, RefreshCw, ShieldCheck } from 'lucide-react';
-import { api } from '@/lib/api';
+import { AlertTriangle, CheckCircle2, Link2, RefreshCw, ShieldCheck, Unplug } from 'lucide-react';
+import { api, ApiError } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 interface FabricAnchorHealth {
@@ -24,16 +24,25 @@ export default function BlockchainPage() {
   const [health, setHealth] = useState<FabricAnchorHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // R5-065/W9b: the external consortium gateway is an EXTERNAL dependency —
+  // when the backend honestly answers 503 the UI must say "not configured",
+  // not spin or show a generic failure.
+  const [notConfigured, setNotConfigured] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError('');
+    setNotConfigured(null);
     try {
       const response = await api.getFabricAnchorHealth() as FabricAnchorHealth;
       setHealth(response);
     } catch (caught: unknown) {
       setHealth(null);
-      setError((caught as Error).message || 'Consortium gateway health is unavailable.');
+      if (caught instanceof ApiError && caught.status === 503) {
+        setNotConfigured(caught.message || 'The consortium anchoring service is not configured for this deployment.');
+      } else {
+        setError((caught as Error).message || 'Consortium gateway health is unavailable.');
+      }
     } finally {
       setLoading(false);
     }
@@ -54,6 +63,19 @@ export default function BlockchainPage() {
       </header>
 
       {error ? <div role="alert" className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-100"><div className="flex gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><div><p className="font-semibold">Consortium confirmation is unavailable</p><p className="mt-1">{error}</p></div></div></div> : null}
+
+      {notConfigured ? (
+        <div role="status" className="border border-zinc-300 bg-zinc-50 p-4 text-sm text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-100">
+          <div className="flex gap-2">
+            <Unplug className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-semibold">Consortium anchoring service is not configured</p>
+              <p className="mt-1">This deployment has no external Hyperledger Fabric gateway configured (an external infrastructure dependency). Signed evidence remains available in the governed evidence system; no anchoring metrics are shown rather than placeholder data.</p>
+              {notConfigured !== 'The consortium anchoring service is not configured for this deployment.' ? <p className="mt-1 text-xs text-zinc-500">{notConfigured}</p> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card><CardContent className="pt-5"><p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Gateway state</p><p className={`mt-2 text-xl font-bold capitalize ${healthy ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>{loading ? 'Checking…' : statusLabel(health?.status)}</p></CardContent></Card>
