@@ -68,8 +68,11 @@ func w4EnsureSchema(t *testing.T) {
 			t.Fatalf("schema setup: %v", err)
 		}
 	}
-	// Apply W4 migrations 000033/000034 (idempotent).
-	for _, version := range []int{33, 34} {
+	// Apply W4 migration 000034 (audit/signature/retention schema, idempotent).
+	// NOTE: 000033 is W1's ingestion migration (renumbered) — it requires the
+	// full production schema (ingestion_jobs from 000012) and must not be
+	// applied to this minimal harness.
+	for _, version := range []int{34} {
 		migrations, err := loadMigrations()
 		if err != nil {
 			t.Fatalf("load migrations: %v", err)
