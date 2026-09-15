@@ -13,9 +13,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -26,6 +29,39 @@ type MobileAuth struct {
 	db        *sql.DB
 	svc       *Service
 	jwtSecret []byte // HMAC-SHA256 key for self-issued JWT
+	// R5-042: per-IP fixed-window throttle for the unauthenticated OTP
+	// endpoints (per-process; see HANDOFF note re multi-replica deployments).
+	ipMu      sync.Mutex
+	ipWindows map[string]*ipWindow
+}
+
+type ipWindow struct {
+	count       int
+	windowStart time.Time
+}
+
+// allowIP enforces a fixed-window per-IP request limit (limit per hour).
+func (ma *MobileAuth) allowIP(r *http.Request, bucket string, limit int) bool {
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		ip = strings.TrimSpace(strings.Split(fwd, ",")[0])
+	}
+	key := bucket + "|" + ip
+	ma.ipMu.Lock()
+	defer ma.ipMu.Unlock()
+	if ma.ipWindows == nil {
+		ma.ipWindows = make(map[string]*ipWindow)
+	}
+	win, ok := ma.ipWindows[key]
+	if !ok || time.Since(win.windowStart) >= time.Hour {
+		ma.ipWindows[key] = &ipWindow{count: 1, windowStart: time.Now()}
+		return true
+	}
+	win.count++
+	return win.count <= limit
 }
 
 // NewMobileAuth creates a mobile auth handler.
@@ -92,10 +128,85 @@ func (ma *MobileAuth) HandleRequestOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R5-042: per-IP request throttle (the endpoints are unauthenticated by
+	// design, so IP is the only pre-identity signal). In-memory per-process;
+	// deployments with multiple replicas should front this with the gateway
+	// limiter — see HANDOFF.
+	if !ma.allowIP(r, "request-otp", 10) {
+		mobileJSONErr(w, "too many requests from this address, try again later", http.StatusTooManyRequests)
+		return
+	}
+
 	phoneHash := ma.svc.PhoneHash(phone)
 	phoneEnc, err := ma.svc.Encrypt(phone)
 	if err != nil {
 		mobileJSONErr(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// R5-042 self-enrollment gate: previously ANY phone+party_code upserted a
+	// new account (unauthenticated self-enrollment into arbitrary parties).
+	// New enrollments now require a pre-registered, non-opted-out contact
+	// with that phone in the party's register; GOTV_MOBILE_OPEN_ENROLLMENT
+	// re-enables open enrollment for development and is FORBIDDEN in
+	// production (fail closed).
+	var existingUser string
+	userErr := ma.db.QueryRow(
+		"SELECT user_id FROM gotv_mobile_users WHERE party_id=$1 AND phone_hash=$2",
+		partyID, phoneHash).Scan(&existingUser)
+	if userErr == sql.ErrNoRows {
+		enrolled := false
+		var contactCount int
+		if err := ma.db.QueryRow(
+			"SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND phone_hash=$2 AND (opted_out IS NULL OR opted_out=FALSE)",
+			partyID, phoneHash).Scan(&contactCount); err == nil && contactCount > 0 {
+			enrolled = true
+		}
+		if !enrolled && os.Getenv("GOTV_MOBILE_OPEN_ENROLLMENT") == "true" && !IsProductionEnv() {
+			enrolled = true
+		}
+		if !enrolled {
+			log.Warn().Str("party_code", req.PartyCode).Msg("SECURITY: GOTV mobile self-enrollment rejected (phone not pre-registered)")
+			mobileJSONErr(w, "this phone number is not registered with the party; contact your ward coordinator", http.StatusForbidden)
+			return
+		}
+	} else if userErr != nil {
+		mobileJSONErr(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// R5-042: honor an active lockout BEFORE issuing anything (the old code
+	// reset otp_attempts=0 on every re-request — unlimited guesses). The
+	// comparisons run in SQL so the database clock is authoritative (the
+	// columns are TIMESTAMP without tz; Go-side comparisons would mix
+	// session-timezone writes with UTC reads).
+	var locked, cooling bool
+	ma.db.QueryRow(
+		`SELECT (otp_locked_until IS NOT NULL AND otp_locked_until > NOW()),
+		        (otp_last_sent_at IS NOT NULL AND otp_last_sent_at > NOW() - INTERVAL '1 minute')
+		 FROM gotv_mobile_users WHERE party_id=$1 AND phone_hash=$2`,
+		partyID, phoneHash).Scan(&locked, &cooling)
+	if locked {
+		mobileJSONErr(w, "account temporarily locked after failed attempts, try again later", http.StatusTooManyRequests)
+		return
+	}
+	// Send cooldown: one OTP per 60s per phone.
+	if cooling {
+		mobileJSONErr(w, "OTP already sent, please wait before requesting another", http.StatusTooManyRequests)
+		return
+	}
+
+	// R5-042: REAL request rate limit — a counter column in a one-hour
+	// window (the previous limit counted rows per phone, which the upsert
+	// pinned at 1: dead code).
+	var reqCount int
+	var windowActive bool
+	ma.db.QueryRow(
+		`SELECT otp_request_count, (otp_request_window_start IS NOT NULL AND otp_request_window_start > NOW() - INTERVAL '1 hour')
+		 FROM gotv_mobile_users WHERE party_id=$1 AND phone_hash=$2`,
+		partyID, phoneHash).Scan(&reqCount, &windowActive)
+	if windowActive && reqCount >= 5 {
+		mobileJSONErr(w, "too many OTP requests, try again later", http.StatusTooManyRequests)
 		return
 	}
 
@@ -108,18 +219,8 @@ func (ma *MobileAuth) HandleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	otpHash := hashOTP(otp, ma.jwtSecret)
 	expiresAt := time.Now().Add(10 * time.Minute)
 
-	// Rate limit: max 3 OTP requests per phone per hour
-	var recentOTPs int
-	ma.db.QueryRow(
-		"SELECT COUNT(*) FROM gotv_mobile_users WHERE party_id=$1 AND phone_hash=$2 AND otp_expires_at > NOW() - INTERVAL '1 hour'",
-		partyID, phoneHash,
-	).Scan(&recentOTPs)
-	if recentOTPs >= 5 {
-		mobileJSONErr(w, "too many OTP requests, try again later", http.StatusTooManyRequests)
-		return
-	}
-
-	// Upsert user record
+	// Upsert user record. R5-042: otp_attempts is NOT reset on re-request —
+	// failed guesses survive until success or lockout.
 	sessionID := "msess-" + randHex(16)
 	displayName := req.Name
 	if displayName == "" {
@@ -127,10 +228,19 @@ func (ma *MobileAuth) HandleRequestOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = ma.db.Exec(`
-		INSERT INTO gotv_mobile_users (user_id, party_id, phone_hash, phone_encrypted, display_name, otp_code_hash, otp_expires_at, otp_attempts, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW())
+		INSERT INTO gotv_mobile_users (user_id, party_id, phone_hash, phone_encrypted, display_name, otp_code_hash, otp_expires_at, otp_attempts, otp_last_sent_at, otp_request_count, otp_request_window_start, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 0, NOW(), 1, NOW(), NOW())
 		ON CONFLICT (party_id, phone_hash)
-		DO UPDATE SET otp_code_hash=$6, otp_expires_at=$7, otp_attempts=0, updated_at=NOW()`,
+		DO UPDATE SET otp_code_hash=$6, otp_expires_at=$7, otp_last_sent_at=NOW(),
+			otp_request_count = CASE
+				WHEN gotv_mobile_users.otp_request_window_start IS NULL
+				  OR gotv_mobile_users.otp_request_window_start < NOW() - INTERVAL '1 hour'
+				THEN 1 ELSE gotv_mobile_users.otp_request_count + 1 END,
+			otp_request_window_start = CASE
+				WHEN gotv_mobile_users.otp_request_window_start IS NULL
+				  OR gotv_mobile_users.otp_request_window_start < NOW() - INTERVAL '1 hour'
+				THEN NOW() ELSE gotv_mobile_users.otp_request_window_start END,
+			updated_at=NOW()`,
 		sessionID, partyID, phoneHash, phoneEnc, displayName, otpHash, expiresAt,
 	)
 	if err != nil {
@@ -210,9 +320,31 @@ func (ma *MobileAuth) HandleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check attempts (max 5)
+	// R5-042: per-IP verify throttle — online guessing is distributed, so
+	// per-attempt accounting (below) is the real control, but a single
+	// address hammering verify is capped too.
+	if !ma.allowIP(r, "verify-otp", 30) {
+		mobileJSONErr(w, "too many requests from this address, try again later", http.StatusTooManyRequests)
+		return
+	}
+
+	// R5-042: lockout check FIRST (attempts are no longer reset by
+	// re-request, so this actually engages now). DB-side clock comparison.
+	var locked bool
+	ma.db.QueryRow("SELECT (otp_locked_until IS NOT NULL AND otp_locked_until > NOW()) FROM gotv_mobile_users WHERE party_id=$1 AND phone_hash=$2",
+		partyID, phoneHash).Scan(&locked)
+	if locked {
+		mobileJSONErr(w, "account temporarily locked after failed attempts, try again later", http.StatusTooManyRequests)
+		return
+	}
+
+	// Check attempts (max 5, then 15-minute lockout + OTP invalidation).
 	if attempts >= 5 {
-		mobileJSONErr(w, "too many failed attempts, request a new OTP", http.StatusTooManyRequests)
+		ma.db.Exec(`UPDATE gotv_mobile_users SET otp_locked_until=NOW() + INTERVAL '15 minutes',
+			otp_attempts=0, otp_code_hash=NULL, otp_expires_at=NULL
+			WHERE party_id=$1 AND phone_hash=$2`, partyID, phoneHash)
+		log.Warn().Str("party_code", req.PartyCode).Msg("SECURITY: GOTV mobile OTP locked after repeated failures")
+		mobileJSONErr(w, "too many failed attempts, request a new OTP after the lockout period", http.StatusTooManyRequests)
 		return
 	}
 
@@ -225,7 +357,24 @@ func (ma *MobileAuth) HandleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	// Verify OTP (constant-time)
 	incomingHash := hashOTP(req.OTPCode, ma.jwtSecret)
 	if !hmacEqual(storedOTPHash, incomingHash) {
-		ma.db.Exec("UPDATE gotv_mobile_users SET otp_attempts=otp_attempts+1 WHERE party_id=$1 AND phone_hash=$2", partyID, phoneHash)
+		// R5-042: reaching the attempt cap locks IMMEDIATELY (15 min) and
+		// invalidates the OTP — the attacker never gets a 6th guess, and
+		// re-requesting does not reopen the window.
+		var newAttempts int
+		if err := ma.db.QueryRow(`UPDATE gotv_mobile_users SET
+			otp_attempts=otp_attempts+1,
+			otp_locked_until=CASE WHEN otp_attempts+1 >= 5 THEN NOW() + INTERVAL '15 minutes' ELSE otp_locked_until END,
+			otp_code_hash=CASE WHEN otp_attempts+1 >= 5 THEN NULL ELSE otp_code_hash END,
+			otp_expires_at=CASE WHEN otp_attempts+1 >= 5 THEN NULL ELSE otp_expires_at END
+			WHERE party_id=$1 AND phone_hash=$2
+			RETURNING otp_attempts`, partyID, phoneHash).Scan(&newAttempts); err != nil {
+			log.Error().Err(err).Msg("GOTV mobile: failed to record OTP failure")
+		}
+		if newAttempts >= 5 {
+			log.Warn().Str("party_code", req.PartyCode).Msg("SECURITY: GOTV mobile OTP locked after repeated failures")
+			mobileJSONErr(w, "too many failed attempts, account locked", http.StatusTooManyRequests)
+			return
+		}
 		mobileJSONErr(w, "invalid OTP code", http.StatusUnauthorized)
 		return
 	}
@@ -236,7 +385,7 @@ func (ma *MobileAuth) HandleVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	refreshHash := sha256Hex(refreshToken)
 
 	ma.db.Exec(`UPDATE gotv_mobile_users SET
-		otp_code_hash=NULL, otp_expires_at=NULL, otp_attempts=0,
+		otp_code_hash=NULL, otp_expires_at=NULL, otp_attempts=0, otp_locked_until=NULL,
 		jwt_refresh_token=$1, jwt_expires_at=$2,
 		last_login_at=NOW(), updated_at=NOW()
 		WHERE party_id=$3 AND phone_hash=$4`,
