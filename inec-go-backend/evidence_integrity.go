@@ -344,6 +344,42 @@ func canonicalJSON(value interface{}) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+// merkleRootEventHashes (R5-068) computes a Merkle root over the
+// last_event_hash of every child in a collation bundle. Leaf hashes are
+// sorted for canonical ordering; an odd node is promoted (not duplicated) at
+// each level. Any added, dropped, or substituted child changes the root, so a
+// verifier can prove bundle completeness.
+func merkleRootEventHashes(children []M) string {
+	leaves := make([]string, 0, len(children))
+	for _, child := range children {
+		if hash, ok := child["last_event_hash"].(string); ok && hash != "" {
+			leaves = append(leaves, hash)
+		}
+	}
+	if len(leaves) == 0 {
+		return ""
+	}
+	sort.Strings(leaves)
+	level := make([][]byte, len(leaves))
+	for i, leaf := range leaves {
+		sum := sha256.Sum256([]byte("leaf:" + leaf))
+		level[i] = sum[:]
+	}
+	for len(level) > 1 {
+		next := make([][]byte, 0, (len(level)+1)/2)
+		for i := 0; i < len(level); i += 2 {
+			if i+1 == len(level) {
+				next = append(next, level[i])
+				continue
+			}
+			sum := sha256.Sum256(append(append([]byte("node:"), level[i]...), level[i+1]...))
+			next = append(next, sum[:])
+		}
+		level = next
+	}
+	return hex.EncodeToString(level[0])
+}
+
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -1369,12 +1405,12 @@ func handleBuildCollationEvidenceBundle(w http.ResponseWriter, r *http.Request) 
 	aggregateJSON, _ := canonicalJSON(M{"party_totals": partyTotals, "child_count": len(children)})
 	childSHA := sha256Hex(childJSON)
 	aggregateSHA := sha256Hex(aggregateJSON)
-	eventRoot := ""
-	if len(children) > 0 {
-		if hash, ok := children[len(children)-1]["last_event_hash"].(string); ok {
-			eventRoot = hash
-		}
-	}
+	// R5-068: the "event root" was previously just the LAST child's
+	// last_event_hash, which cannot prove bundle completeness (dropping middle
+	// children left the same "root"). It is now a real Merkle root over every
+	// child's last_event_hash (sorted for canonical ordering), so any missing
+	// or substituted child changes the root.
+	eventRoot := merkleRootEventHashes(children)
 	bundlePayload := M{
 		"election_id": request.ElectionID, "level": request.Level, "area_code": request.AreaCode,
 		"children": children, "party_totals": partyTotals, "child_results_sha256": childSHA,

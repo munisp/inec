@@ -110,6 +110,9 @@ class KafkaArrowConsumer:
                         await output_queue.put(records)
                         self.total_consumed += len(records)
                         self.total_batches += 1
+                        # R5-062: commit offsets only AFTER the batch reached
+                        # the processing queue (at-least-once delivery).
+                        await asyncio.to_thread(consumer.commit, asynchronous=False)
                     except asyncio.QueueFull:
                         log.warning("output queue full, applying backpressure",
                                     queue_size=output_queue.qsize())
