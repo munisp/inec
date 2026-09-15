@@ -53,6 +53,18 @@
         }
     }
 
+    # GOTV/campaign API — frontend calls /gotv/* same-origin; previously
+    # fell through to the SPA static server (R5-089). Via APISIX for the
+    # edge rate limit / real-ip policy.
+    handle /gotv/* {
+        reverse_proxy apisix:9080 {
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up Host {host}
+        }
+    }
+
     handle /auth/* {
         reverse_proxy keycloak:8080 {
             header_up Host {host}

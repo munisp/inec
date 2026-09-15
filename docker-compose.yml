@@ -377,6 +377,51 @@ services:
     volumes:
     - app-data:/data
 
+  # GOTV/campaign API service (R5-089): the frontend calls /gotv/* same-origin
+  # and Caddy routes those paths via APISIX to this service; without it the
+  # documented production topology had no /gotv backend at all.
+  gotv-svc:
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
+    build:
+      context: ./inec-go-backend
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: gotv-svc
+    depends_on:
+      pgpool:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+    environment:
+    - APP_ENV=${APP_ENV:?APP_ENV must be set}
+    - INEC_ENV=${INEC_ENV:?INEC_ENV must be set}
+    - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
+    - REDIS_URL=redis://redis:6379/2
+    - KAFKA_BROKERS=kafka:29092
+    - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+    # gotv-svc fail-fast requirements in production (see cmd/gotv-svc/main.go)
+    - INTERNAL_SERVICE_SECRET=${INTERNAL_SERVICE_SECRET:?INTERNAL_SERVICE_SECRET must be set}
+    - GOTV_MOBILE_JWT_SECRET=${GOTV_MOBILE_JWT_SECRET:?GOTV_MOBILE_JWT_SECRET must be set}
+    - GOTV_ENCRYPTION_KEY=${GOTV_ENCRYPTION_KEY:?GOTV_ENCRYPTION_KEY must be set}
+    healthcheck:
+      interval: 15s
+      retries: 3
+      start_period: 20s
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - http://localhost:8103/health
+      timeout: 5s
+    networks:
+    - inec-network
+    expose:
+    - "8103"
+
   document-ai:
     build:
       context: ./services/document-ai

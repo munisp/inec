@@ -7,6 +7,37 @@
 # gateway entirely). JWT authentication/authorization is enforced by the
 # go-backend middleware (see config/apisix/routes.json); APISIX handles edge
 # concerns only.
+#
+# R5-082 (rate-limit keying): traffic arrives via Caddy, so the TCP peer of
+# every request is CADDY, and a limit-req keyed on a raw remote_addr becomes
+# ONE GLOBAL BUCKET for the whole country (the previous /results/* budget of
+# 20 req/s + burst 10 was national, not per-client). The global real-ip rule
+# below restores the client address from X-Forwarded-For — but ONLY when the
+# immediate peer is in trusted_addresses (the Docker bridge ranges Caddy runs
+# on), so direct clients cannot spoof XFF to evade the limiter. After this
+# rule, remote_addr in limit-req IS the forwarded client identity.
+#
+# Trusted-peer note: inec-network is a private bridge carrying only platform
+# containers; Caddy is the only ingress. Tighten trusted_addresses to the
+# exact Caddy container IP/subnet in production deployments.
+global_rules:
+  - plugins:
+      real-ip:
+        source: http_x_forwarded_for
+        trusted_addresses:
+          - "172.16.0.0/12"   # docker default bridge pool (inec-network)
+          - "10.0.0.0/8"      # private overlay/swarm ranges
+          - "192.168.0.0/16"
+#
+# PER-ENDPOINT BUDGETS (per restored client IP, per second) — election-day
+# sizing (see loadtest/k6_election_day.js header):
+#   ~176,846 polling units; 80% reporting within a 4h window ≈ 10 rps
+#   national average, ~200 rps national peak (20x peak-to-average).
+#   Carrier NAT concentrates officers: assume a busy LGA with ~2,000 PUs
+#   behind ONE egress IP reporting within 2h ≈ 0.3 rps average, <10 rps
+#   peak per IP. Budgets below are >=2.5x that per-IP peak and are now
+#   PER CLIENT IP, so the national envelope is sum-over-IPs, not a single
+#   global bucket.
 routes:
 - plugins:
     cors: {}
@@ -32,10 +63,30 @@ routes:
       go-backend:8088: 1
     type: roundrobin
   uri: /elections/*
+# Result write/read path (EC8A submissions). Budget per client IP — a busy
+# LGA behind one carrier-NAT egress peaks at <10 req/s (see header); the
+# previous global 20 req/s would have 429'd legitimate submissions
+# nationwide at peak. Backend additionally enforces its own per-identity
+# limits (see ops/HANDOFF-W6.md, R5-091).
 - plugins:
     cors: {}
     limit-req:
-      burst: 10
+      burst: 50
+      key: remote_addr
+      key_type: var
+      rate: 25
+  upstream:
+    nodes:
+      go-backend:8088: 1
+    type: roundrobin
+  uri: /results/*
+# Offline/batch ingestion from field devices (BVAS backlog sync). Previously
+# had NO edge route at all (traffic fell through to 404) and no budget.
+# Batch uploads are bursty but device-scoped; 20 req/s per client IP.
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 40
       key: remote_addr
       key_type: var
       rate: 20
@@ -43,7 +94,21 @@ routes:
     nodes:
       go-backend:8088: 1
     type: roundrobin
-  uri: /results/*
+  uri: /ingestion/*
+# GOTV/campaign API served by gotv-svc (R5-089: previously unrouted — the
+# frontend's same-origin /gotv/* calls fell through to the SPA).
+- plugins:
+    cors: {}
+    limit-req:
+      burst: 60
+      key: remote_addr
+      key_type: var
+      rate: 30
+  upstream:
+    nodes:
+      gotv-svc:8103: 1
+    type: roundrobin
+  uri: /gotv/*
 - plugins:
     cors: {}
     limit-req:
