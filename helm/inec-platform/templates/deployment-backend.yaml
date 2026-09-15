@@ -42,7 +42,10 @@ spec:
           env:
             {{- range $key, $value := .Values.backend.env }}
             - name: {{ $key }}
-              value: {{ $value | quote }}
+              # tpl: values.yaml embeds {{ .Release.Name }} references in env
+              # values; render them (plain `quote` passes the literal braces
+              # through to the container — R5-093).
+              value: {{ tpl $value $ | quote }}
             {{- end }}
             - name: DB_PASSWORD
               valueFrom:
@@ -54,9 +57,14 @@ spec:
                 secretKeyRef:
                   name: inec-jwt-secret
                   key: secret
+          # Probe paths MUST match routes registered by the backend:
+          #   /healthz   -> handleDeepHealthCheck (inec-go-backend/main.go)
+          #   /readiness -> handleReadinessCheck  (inec-go-backend/main.go)
+          # The app registers no /health or /ready route; using them leaves
+          # pods permanently unready (R5-083).
           startupProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -64,7 +72,7 @@ spec:
             timeoutSeconds: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 0
             periodSeconds: 15
@@ -72,7 +80,7 @@ spec:
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /readiness
               port: http
             initialDelaySeconds: 0
             periodSeconds: 10
