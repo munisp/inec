@@ -391,8 +391,15 @@ func (s *Service) Register(ctx context.Context, username, password, fullName, ro
 	if err != nil {
 		return nil, err
 	}
+	// R5-051: self-registration is restricted to least-privilege roles. The
+	// default was "observer" (broad read access) and ANY client-supplied
+	// role was accepted — including "admin". Elevated roles must be assigned
+	// by an administrator through the monolith's promote flow.
 	if role == "" {
-		role = "observer"
+		role = "public"
+	}
+	if role != "public" && role != "observer" {
+		return nil, fmt.Errorf("self-registration is restricted to 'public' and 'observer' roles")
 	}
 	var id int
 	err = s.db.QueryRowContext(ctx,

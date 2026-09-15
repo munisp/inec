@@ -365,6 +365,18 @@ func handleListObserverReports(w http.ResponseWriter, r *http.Request) {
 	q := "SELECT id, observer_id, polling_unit_code, election_id, report_type, description, photo_url, latitude, longitude, status, created_at FROM observer_reports WHERE 1=1"
 	var params []interface{}
 
+	// R5-051: readAuth previously meant ANY self-registered account could
+	// enumerate every observer report (WHERE 1=1 + optional filters). Staff
+	// roles keep the full view; observer/public accounts are scoped to their
+	// OWN reports — there is no accreditation registry to scope further.
+	if user, err := getCurrentUser(r); err == nil {
+		role, _ := user["role"].(string)
+		if role != "admin" && role != "collation_officer" && role != "presiding_officer" {
+			q += " AND observer_id=?"
+			params = append(params, claimUserID(user))
+		}
+	}
+
 	if electionID != "" {
 		q += " AND election_id=?"
 		params = append(params, electionID)

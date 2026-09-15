@@ -344,7 +344,9 @@ func main() {
 	r.HandleFunc("/dashboard/metrics/client/recent", readAuth(handleRecentClientMetrics)).Methods("GET")
 
 	// Audit — read auth for viewing
-	r.HandleFunc("/audit/trail", readAuth(handleAuditTrail)).Methods("GET")
+	// R5-051/R5-066: the audit trail exposes staff identities and internal
+	// workflow metadata — staff roles only, not any self-registered account.
+	r.HandleFunc("/audit/trail", staffOnly(handleAuditTrail)).Methods("GET")
 	r.HandleFunc("/audit/verify/{id:[0-9]+}", readAuth(handleVerifyResult)).Methods("GET")
 	r.HandleFunc("/audit/stats", readAuth(handleAuditStats)).Methods("GET")
 
