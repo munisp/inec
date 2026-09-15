@@ -931,15 +931,31 @@ Make it personal, specific to their location, and include a clear call to action
         priority: z.enum(["low", "medium", "high", "critical"]).optional(),
         notes: z.string().optional(),
       }))
-      .mutation(({ input }) => db.upsertBudgetItem(input as any)),
+      .mutation(({ input, ctx }) => db.upsertBudgetItem(input as any, ctx.user?.username)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         // SECURITY: destructive op — owner only, profile resolved from row id.
         const { budgetItems } = await import("../drizzle/schema");
         await assertRowAccess(ctx.user, budgetItems, input.id, "owner");
-        return db.deleteBudgetItem(input.id);
+        return db.deleteBudgetItem(input.id, ctx.user?.username);
       }),
+    // R5-101: statutory caps (viewer reads; owner configures) and the
+    // append-only ledger of every budget mutation.
+    caps: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(() => db.getBudgetCaps()),
+    setCap: profileScopedProcedure("owner")
+      .input(z.object({
+        profileId: z.number(),
+        office: z.enum(["President", "Governor", "Senator", "House", "LGA"]),
+        capAmount: z.number().positive(),
+        notes: z.string().max(500).optional(),
+      }))
+      .mutation(({ input }) => db.upsertBudgetCap(input.office, input.capAmount, input.notes)),
+    ledger: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(({ input }) => db.getBudgetLedger(input.profileId)),
   }),
   // ─── Media Monitoring ──────────────────────────────────────────────────────
   media: router({

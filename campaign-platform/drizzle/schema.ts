@@ -382,6 +382,34 @@ export const budgetItems = pgTable("budget_items", {
 });
 export type BudgetItem = typeof budgetItems.$inferSelect;
 
+// ─── R5-101: Statutory campaign-spend caps + append-only budget ledger ───────
+// Electoral Act 2022 §88 caps per office, seeded by migration 0004 and
+// administrable (owner) so amendments/INEC regulations can adjust them.
+export const budgetStatutoryCaps = pgTable("budget_statutory_caps", {
+  office: officeEnum("office").primaryKey(),
+  capAmount: numeric("cap_amount", { precision: 15, scale: 2, mode: "number" }).notNull(),
+  notes: text("notes"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type BudgetStatutoryCap = typeof budgetStatutoryCaps.$inferSelect;
+
+// Every budget mutation (create/update/spend change/delete) is recorded here;
+// a trigger makes the table append-only (UPDATE/DELETE raise).
+export const budgetSpendLedger = pgTable("budget_spend_ledger", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  budgetItemId: integer("budget_item_id"),
+  changeType: varchar("change_type", { length: 20 }).notNull(),
+  previousBudgeted: numeric("previous_budgeted", { precision: 15, scale: 2, mode: "number" }),
+  newBudgeted: numeric("new_budgeted", { precision: 15, scale: 2, mode: "number" }),
+  previousSpent: numeric("previous_spent", { precision: 15, scale: 2, mode: "number" }),
+  newSpent: numeric("new_spent", { precision: 15, scale: 2, mode: "number" }),
+  changedBy: varchar("changed_by", { length: 200 }),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type BudgetSpendLedgerEntry = typeof budgetSpendLedger.$inferSelect;
+
 // ─── Media Monitoring ─────────────────────────────────────────────────────────
 export const mediaItems = pgTable("media_items", {
   id: serial("id").primaryKey(),

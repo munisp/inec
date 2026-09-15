@@ -864,26 +864,159 @@ export async function getBudgetItems(profileId: number) {
     .orderBy(schema.budgetItems.category);
 }
 
-export async function upsertBudgetItem(data: typeof schema.budgetItems.$inferInsert) {
+/** R5-101: append one entry to the immutable budget ledger. */
+async function writeBudgetLedger(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  entry: Omit<typeof schema.budgetSpendLedger.$inferInsert, "id">,
+) {
+  await db.insert(schema.budgetSpendLedger).values(entry);
+}
+
+/**
+ * R5-101: statutory campaign-spend cap check (Electoral Act 2022 §88).
+ * Total SPEND (spent_amount across the profile's budget items, with the
+ * pending change applied) may not exceed the cap configured for the
+ * profile's office. Returns the projected total — throws CONFLICT over cap.
+ */
+async function assertStatutoryCap(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  profileId: number,
+  excludeItemId: number | null,
+  newSpent: number,
+) {
+  const profile = await db
+    .select({ office: schema.candidateProfiles.office })
+    .from(schema.candidateProfiles)
+    .where(eq(schema.candidateProfiles.id, profileId))
+    .limit(1);
+  const office = profile[0]?.office;
+  if (!office) return; // no office on profile → no statutory cap applies
+  const caps = await db
+    .select()
+    .from(schema.budgetStatutoryCaps)
+    .where(eq(schema.budgetStatutoryCaps.office, office))
+    .limit(1);
+  const cap = caps[0]?.capAmount;
+  if (cap == null) return; // no cap configured for this office
+  const conditions = [eq(schema.budgetItems.profileId, profileId)];
+  if (excludeItemId != null) conditions.push(sql`${schema.budgetItems.id} <> ${excludeItemId}`);
+  const totals = await db
+    .select({ total: sql<string>`COALESCE(SUM(${schema.budgetItems.spentAmount}), 0)` })
+    .from(schema.budgetItems)
+    .where(and(...conditions));
+  const projected = Number(totals[0]?.total ?? 0) + newSpent;
+  if (projected > Number(cap)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        `Statutory campaign-spend cap exceeded: ₦${projected.toLocaleString("en-NG")} ` +
+        `projected vs ₦${Number(cap).toLocaleString("en-NG")} cap for ${office} ` +
+        `(Electoral Act 2022 s.88).`,
+    });
+  }
+}
+
+export async function upsertBudgetItem(
+  data: typeof schema.budgetItems.$inferInsert,
+  actor?: string,
+) {
   const db = getDb();
   if (!db) return null;
   if (data.id) {
     // SECURITY: tenant-guarded update — never set profileId on update.
     const { id, profileId, ...rest } = data;
+    const prev = await db
+      .select()
+      .from(schema.budgetItems)
+      .where(and(eq(schema.budgetItems.id, id), eq(schema.budgetItems.profileId, requireTenantId(data.profileId))))
+      .limit(1);
+    if (!prev[0]) return assertUpdated([], "Budget item");
+    // R5-101: cap applies whenever the spend figure changes.
+    if (rest.spentAmount !== undefined && Number(rest.spentAmount) !== Number(prev[0].spentAmount ?? 0)) {
+      await assertStatutoryCap(db, requireTenantId(data.profileId), id, Number(rest.spentAmount));
+    }
     const rows = await db.update(schema.budgetItems)
       .set(rest)
       .where(and(eq(schema.budgetItems.id, id), eq(schema.budgetItems.profileId, requireTenantId(data.profileId))))
       .returning();
-    return assertUpdated(rows, "Budget item");
+    const updated = assertUpdated(rows, "Budget item");
+    await writeBudgetLedger(db, {
+      profileId: requireTenantId(data.profileId),
+      budgetItemId: id,
+      changeType: rest.spentAmount !== undefined && Number(rest.spentAmount) !== Number(prev[0].spentAmount ?? 0) ? "spend_changed" : "updated",
+      previousBudgeted: prev[0].budgetedAmount,
+      newBudgeted: updated.budgetedAmount,
+      previousSpent: prev[0].spentAmount,
+      newSpent: updated.spentAmount,
+      changedBy: actor ?? null,
+    });
+    return updated;
+  }
+  // R5-101: cap check on the initial spend figure of a new item.
+  if (data.spentAmount != null && Number(data.spentAmount) > 0) {
+    await assertStatutoryCap(db, requireTenantId(data.profileId), null, Number(data.spentAmount));
   }
   const rows = await db.insert(schema.budgetItems).values(data).returning();
+  if (rows[0]) {
+    await writeBudgetLedger(db, {
+      profileId: requireTenantId(data.profileId),
+      budgetItemId: rows[0].id,
+      changeType: "created",
+      newBudgeted: rows[0].budgetedAmount,
+      newSpent: rows[0].spentAmount,
+      changedBy: actor ?? null,
+    });
+  }
   return rows[0];
 }
 
-export async function deleteBudgetItem(id: number) {
+export async function deleteBudgetItem(id: number, actor?: string) {
   const db = getDb();
   if (!db) return;
+  // R5-101: record the deletion in the append-only ledger before removing.
+  const prev = await db.select().from(schema.budgetItems).where(eq(schema.budgetItems.id, id)).limit(1);
   await db.delete(schema.budgetItems).where(eq(schema.budgetItems.id, id));
+  if (prev[0] && prev[0].profileId != null) {
+    await writeBudgetLedger(db, {
+      profileId: prev[0].profileId,
+      budgetItemId: id,
+      changeType: "deleted",
+      previousBudgeted: prev[0].budgetedAmount,
+      previousSpent: prev[0].spentAmount,
+      changedBy: actor ?? null,
+    });
+  }
+}
+
+export async function getBudgetCaps() {
+  const db = getDb();
+  if (!db) return [];
+  return db.select().from(schema.budgetStatutoryCaps).orderBy(schema.budgetStatutoryCaps.office);
+}
+
+/** R5-101: owner-configurable statutory caps (e.g. legislative amendment). */
+export async function upsertBudgetCap(office: string, capAmount: number, notes?: string) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .insert(schema.budgetStatutoryCaps)
+    .values({ office: office as never, capAmount, notes: notes ?? null, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.budgetStatutoryCaps.office,
+      set: { capAmount, notes: notes ?? null, updatedAt: new Date() },
+    })
+    .returning();
+  return rows[0];
+}
+
+export async function getBudgetLedger(profileId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.budgetSpendLedger)
+    .where(eq(schema.budgetSpendLedger.profileId, profileId))
+    .orderBy(desc(schema.budgetSpendLedger.createdAt));
 }
 
 // ─── Media Monitoring ─────────────────────────────────────────────────────────
