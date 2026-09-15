@@ -4,6 +4,13 @@
     "taskUid": "CtKwktDiMzJRWiuqUmtDYF",
     "cron": "0 0 * * * *",
     "path": "/api/scheduled/deadline-check",
-    "description": "Hourly scan for campaign deadlines within 48 hours — sends owner notification for critical events"
+    "description": "Hourly scan for campaign deadlines within 48 hours \u2014 sends owner notification for critical events"
+  },
+  "silentAgentScan": {
+    "name": "silent-agent-scan",
+    "taskUid": "w11SilentAgentScan001",
+    "cron": "0 */15 * * * *",
+    "path": "/api/scheduled/silent-agent-scan",
+    "description": "Every 15 minutes \u2014 flag deployed field agents with no check-in inside the threshold (default 60m) as silent and notify the owner"
   }
 }

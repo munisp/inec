@@ -526,12 +526,25 @@ export const appRouter = router({
         description: z.string(),
         lga: z.string().optional(),
         pollingUnit: z.string().optional(),
+        // R5-098: category/geo/evidence/occurrence/attribution — the schema
+        // columns existed but no input path wrote them.
+        incidentType: z.enum(["violence", "vote_buying", "inec_failure", "intimidation", "logistics", "other"]).optional(),
+        latitude: z.number().min(-90).max(90).optional(),
+        longitude: z.number().min(-180).max(180).optional(),
+        evidenceUrl: z.string().max(500).optional(),
+        occurredAt: z.string().optional(),
+        oppositionEntryId: z.number().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         // FIX: war_room_incidents has `pu_name`, not `polling_unit` — map the
         // client key onto the real column instead of silently dropping it.
-        const { pollingUnit, ...rest } = input;
-        const incident = await db.addWarRoomIncident({ ...rest, puName: pollingUnit } as any);
+        const { pollingUnit, occurredAt, ...rest } = input;
+        const incident = await db.addWarRoomIncident({
+          ...rest,
+          puName: pollingUnit,
+          occurredAt: occurredAt ? new Date(occurredAt) : undefined,
+          reportedBy: ctx.user?.username ?? ctx.user?.fullName ?? undefined,
+        } as any, ctx.user?.username);
         if (input.severity === "critical" || input.severity === "high") {
           try {
             await notifyOwner({
@@ -550,13 +563,85 @@ export const appRouter = router({
         // value for authz; resolve the owning profile from the incident row.
         const { warRoomIncidents } = await import("../drizzle/schema");
         const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
-        const result = await db.updateIncidentStatus(input.id, input.status as any);
+        const result = await db.updateIncidentStatus(input.id, input.status as any, ctx.user?.username);
         broadcastWarRoomUpdate(input.profileId ?? profileId);
         return result;
+      }),
+    // R5-098: escalation workflow — assign to a responder, escalate to an
+    // external authority (timestamped, audited), resolve with audit trail.
+    assignIncident: protectedProcedure
+      .input(z.object({ id: z.number(), assignedTo: z.string().min(1).max(200), profileId: z.number().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
+        const result = await db.assignIncident(input.id, input.assignedTo, ctx.user?.username);
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
+        return result;
+      }),
+    escalateIncident: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        escalatedTo: z.enum(["security_agency", "inec", "neutral_observer", "party_hq"]),
+        note: z.string().max(1000).optional(),
+        profileId: z.number().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
+        const result = await db.escalateIncident(input.id, input.escalatedTo, input.note, ctx.user?.username);
+        try {
+          await notifyOwner({
+            title: `🚨 Incident ESCALATED to ${input.escalatedTo.replace(/_/g, " ")}`,
+            content: `Incident #${input.id} escalated by ${ctx.user?.username ?? "unknown"}${input.note ? `: ${input.note}` : ""}`,
+          });
+        } catch { /* notification failure must not block the escalation record */ }
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
+        return result;
+      }),
+    resolveIncident: protectedProcedure
+      .input(z.object({ id: z.number(), profileId: z.number().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
+        const result = await db.resolveIncident(input.id, ctx.user?.username);
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
+        return result;
+      }),
+    incidentAudit: protectedProcedure
+      .input(z.object({ incidentId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, warRoomIncidents, input.incidentId, "viewer");
+        return db.getIncidentAudit(input.incidentId);
       }),
     agents: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getFieldAgents(input.profileId)),
+    // R5-099: agent self check-in — any member of the campaign (viewer role
+    // is what field agents are enrolled as) can check in; the agent row must
+    // belong to the profile (tenant-guarded in agentCheckIn).
+    checkIn: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        agentId: z.number(),
+        votersCounted: z.number().int().min(0).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const agent = await db.agentCheckIn(input.agentId, input.profileId, input.votersCounted);
+        if (!agent) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found for this profile" });
+        }
+        broadcastWarRoomUpdate(input.profileId);
+        return agent;
+      }),
+    // R5-099: silent-agent scan surfaced to the dashboard — flags overdue
+    // agents 'silent' (idempotent) and returns the current silent set.
+    silentAgents: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        thresholdMinutes: z.number().int().min(5).max(24 * 60).default(60),
+      }))
+      .query(({ input }) => db.scanSilentAgents(input.profileId, input.thresholdMinutes)),
     upsertAgent: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
@@ -657,6 +742,21 @@ export const appRouter = router({
         // SECURITY: same scoping as `signatures` (aggregate of private data).
         await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
         return db.getPetitionSignatureCount(input.petitionId);
+      }),
+    // R5-102: per-tier signature stats (total/verified/unverified/rejected).
+    signatureStats: protectedProcedure
+      .input(z.object({ petitionId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
+        return db.getPetitionSignatureStats(input.petitionId);
+      }),
+    // R5-102: manager verifies a specific signature — signatures are never
+    // auto-verified; duplicates cannot be verified.
+    verifySignature: protectedProcedure
+      .input(z.object({ signatureId: z.number(), petitionId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await assertPetitionAccess(ctx.user, input.petitionId, "manager");
+        return db.verifyPetitionSignature(input.signatureId, input.petitionId, ctx.user!.username);
       }),
     sign: protectedProcedure
       .input(z.object({
@@ -846,15 +946,31 @@ Make it personal, specific to their location, and include a clear call to action
         priority: z.enum(["low", "medium", "high", "critical"]).optional(),
         notes: z.string().optional(),
       }))
-      .mutation(({ input }) => db.upsertBudgetItem(input as any)),
+      .mutation(({ input, ctx }) => db.upsertBudgetItem(input as any, ctx.user?.username)),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         // SECURITY: destructive op — owner only, profile resolved from row id.
         const { budgetItems } = await import("../drizzle/schema");
         await assertRowAccess(ctx.user, budgetItems, input.id, "owner");
-        return db.deleteBudgetItem(input.id);
+        return db.deleteBudgetItem(input.id, ctx.user?.username);
       }),
+    // R5-101: statutory caps (viewer reads; owner configures) and the
+    // append-only ledger of every budget mutation.
+    caps: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(() => db.getBudgetCaps()),
+    setCap: profileScopedProcedure("owner")
+      .input(z.object({
+        profileId: z.number(),
+        office: z.enum(["President", "Governor", "Senator", "House", "LGA"]),
+        capAmount: z.number().positive(),
+        notes: z.string().max(500).optional(),
+      }))
+      .mutation(({ input }) => db.upsertBudgetCap(input.office, input.capAmount, input.notes)),
+    ledger: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(({ input }) => db.getBudgetLedger(input.profileId)),
   }),
   // ─── Media Monitoring ──────────────────────────────────────────────────────
   media: router({

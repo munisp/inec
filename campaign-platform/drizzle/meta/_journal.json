@@ -22,6 +22,27 @@
       "when": 1785200000000,
       "tag": "0002_rate_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785400000000,
+      "tag": "0003_w11_incident_escalation",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785500000000,
+      "tag": "0004_w11_budget_caps_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785600000000,
+      "tag": "0005_w11_petition_verification",
+      "breakpoints": true
     }
   ]
 }

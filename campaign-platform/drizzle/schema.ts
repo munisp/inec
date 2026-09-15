@@ -1,7 +1,7 @@
 import {
   pgTable, serial, text, varchar, integer, boolean,
   timestamp, pgEnum, jsonb, real, date, unique, numeric, uniqueIndex, index,
-  primaryKey
+  primaryKey, doublePrecision
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -220,10 +220,36 @@ export const warRoomIncidents = pgTable("war_room_incidents", {
   description: text("description").notNull(),
   severity: incidentSeverityEnum("severity").default("medium"),
   status: incidentStatusEnum("status").default("open"),
+  // R5-098: geo, evidence, time-of-occurrence, escalation and rival-party
+  // attribution fields — previously the UI only captured free text + severity.
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
+  evidenceUrl: text("evidence_url"),
+  occurredAt: timestamp("occurred_at"),
+  assignedTo: varchar("assigned_to", { length: 200 }),
+  escalatedTo: varchar("escalated_to", { length: 100 }),
+  escalatedAt: timestamp("escalated_at"),
+  escalationNote: text("escalation_note"),
+  oppositionEntryId: integer("opposition_entry_id").references(() => oppositionResearch.id),
   reportedAt: timestamp("reported_at").defaultNow().notNull(),
   resolvedAt: timestamp("resolved_at"),
 });
 export type WarRoomIncident = typeof warRoomIncidents.$inferSelect;
+
+// R5-098: append-only audit trail for the incident escalation workflow —
+// every create/assign/escalate/resolve/status change is recorded with actor
+// and timestamp so election-day triage is tribunal-evidence grade.
+export const warRoomIncidentAudit = pgTable("war_room_incident_audit", {
+  id: serial("id").primaryKey(),
+  incidentId: integer("incident_id").notNull().references(() => warRoomIncidents.id),
+  action: varchar("action", { length: 30 }).notNull(),
+  actor: varchar("actor", { length: 200 }),
+  fromStatus: varchar("from_status", { length: 20 }),
+  toStatus: varchar("to_status", { length: 20 }),
+  detail: text("detail"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type WarRoomIncidentAudit = typeof warRoomIncidentAudit.$inferSelect;
 
 // ─── War Room Field Agents ────────────────────────────────────────────────────
 export const fieldAgents = pgTable("field_agents", {
@@ -288,6 +314,13 @@ export const petitionSignatures = pgTable("petition_signatures", {
   signerName: varchar("signer_name", { length: 200 }).notNull(),
   phone: varchar("phone", { length: 20 }),
   lga: varchar("lga", { length: 100 }),
+  // R5-102: identity hash for dedupe (sha256 of normalized phone|name|lga)
+  // and a verification tier — signatures are 'unverified' until a campaign
+  // manager verifies them; duplicates are flagged, never silently counted.
+  signerHash: varchar("signer_hash", { length: 64 }),
+  verificationStatus: varchar("verification_status", { length: 20 }).default("unverified").notNull(),
+  verifiedAt: timestamp("verified_at"),
+  verifiedBy: varchar("verified_by", { length: 200 }),
   signedAt: timestamp("signed_at").defaultNow().notNull(),
 });
 export type PetitionSignature = typeof petitionSignatures.$inferSelect;
@@ -355,6 +388,34 @@ export const budgetItems = pgTable("budget_items", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 export type BudgetItem = typeof budgetItems.$inferSelect;
+
+// ─── R5-101: Statutory campaign-spend caps + append-only budget ledger ───────
+// Electoral Act 2022 §88 caps per office, seeded by migration 0004 and
+// administrable (owner) so amendments/INEC regulations can adjust them.
+export const budgetStatutoryCaps = pgTable("budget_statutory_caps", {
+  office: officeEnum("office").primaryKey(),
+  capAmount: numeric("cap_amount", { precision: 15, scale: 2, mode: "number" }).notNull(),
+  notes: text("notes"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type BudgetStatutoryCap = typeof budgetStatutoryCaps.$inferSelect;
+
+// Every budget mutation (create/update/spend change/delete) is recorded here;
+// a trigger makes the table append-only (UPDATE/DELETE raise).
+export const budgetSpendLedger = pgTable("budget_spend_ledger", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  budgetItemId: integer("budget_item_id"),
+  changeType: varchar("change_type", { length: 20 }).notNull(),
+  previousBudgeted: numeric("previous_budgeted", { precision: 15, scale: 2, mode: "number" }),
+  newBudgeted: numeric("new_budgeted", { precision: 15, scale: 2, mode: "number" }),
+  previousSpent: numeric("previous_spent", { precision: 15, scale: 2, mode: "number" }),
+  newSpent: numeric("new_spent", { precision: 15, scale: 2, mode: "number" }),
+  changedBy: varchar("changed_by", { length: 200 }),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type BudgetSpendLedgerEntry = typeof budgetSpendLedger.$inferSelect;
 
 // ─── Media Monitoring ─────────────────────────────────────────────────────────
 export const mediaItems = pgTable("media_items", {

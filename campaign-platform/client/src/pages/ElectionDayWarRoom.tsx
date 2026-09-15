@@ -32,16 +32,26 @@ export default function ElectionDayWarRoom() {
       toast.success("Incident logged");
       setDesc("");
       setLga("");
+      setEvidenceUrl("");
+      setGeo(null);
     },
     onError: (e) => toast.error(e.message),
   });
-  const resolveMut = trpc.warRoom.updateIncidentStatus.useMutation({
+  const resolveMut = trpc.warRoom.resolveIncident.useMutation({
     onSuccess: () => utils.warRoom.incidents.invalidate(),
+  });
+  // R5-098: real escalation to an authority, not just a status flip.
+  const escalateMut = trpc.warRoom.escalateIncident.useMutation({
+    onSuccess: () => utils.warRoom.incidents.invalidate(),
+    onError: (e) => toast.error(e.message),
   });
 
   const [desc, setDesc] = useState("");
   const [severity, setSeverity] = useState<"low" | "medium" | "high" | "critical">("low");
   const [lga, setLga] = useState("");
+  const [incidentType, setIncidentType] = useState<"violence" | "vote_buying" | "inec_failure" | "intimidation" | "logistics" | "other">("other");
+  const [evidenceUrl, setEvidenceUrl] = useState("");
+  const [geo, setGeo] = useState<{ latitude: number; longitude: number } | null>(null);
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
   const prevCountRef = useRef(0);
@@ -82,6 +92,11 @@ export default function ElectionDayWarRoom() {
     };
     return () => es.close();
   }, [profileId, utils.warRoom.incidents]);
+
+  // R5-099: silent-agent scan surfaced on the war-room dashboard.
+  const { data: silentAgents = [] } = trpc.warRoom.silentAgents.useQuery(
+    { profileId: profileId!, thresholdMinutes: 60 }, { enabled: !!profileId, refetchInterval: 60000 }
+  );
 
   const active = incidents.filter((i: any) => i.status !== "resolved").length;
   const critical = incidents.filter((i: any) => (i.severity === "critical" || i.severity === "high") && i.status !== "resolved").length;
@@ -133,8 +148,20 @@ export default function ElectionDayWarRoom() {
             <p className="text-xs text-green-400">RESOLVED</p>
             <p className="font-mono font-bold text-green-400">{resolved}</p>
           </div>
+          <div className="text-right" title={silentAgents.map((a: any) => a.name).join(", ")}>
+            <p className="text-xs text-amber-400">SILENT AGENTS</p>
+            <p className="font-mono font-bold text-amber-400">{silentAgents.length}</p>
+          </div>
         </div>
       </header>
+
+      {silentAgents.length > 0 && (
+        <div className="px-4 py-2 text-xs text-amber-300 border-b border-amber-900/40" style={{ background: "#3B2A12" }}>
+          ⚠ {silentAgents.length} deployed agent{silentAgents.length !== 1 ? "s" : ""} silent (no check-in within 60 min):{" "}
+          {silentAgents.slice(0, 8).map((a: any) => a.name + (a.assignedPu ? ` (${a.assignedPu})` : "")).join(", ")}
+          {silentAgents.length > 8 ? `, +${silentAgents.length - 8} more` : ""}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex flex-col">
@@ -212,12 +239,12 @@ export default function ElectionDayWarRoom() {
                   <div className="flex flex-col gap-1">
                     {inc.status !== "escalated" && (
                       <Button size="sm" variant="ghost" className="text-yellow-400 text-xs hover:bg-yellow-900/20"
-                        onClick={() => resolveMut.mutate({ id: inc.id, status: "escalated", profileId: profileId! })} disabled={!canEdit}>
+                        onClick={() => escalateMut.mutate({ id: inc.id, escalatedTo: "security_agency", profileId: profileId! })} disabled={!canEdit}>
                         Escalate
                       </Button>
                     )}
                     <Button size="sm" variant="ghost" className="text-green-400 text-xs hover:bg-green-900/20"
-                      onClick={() => resolveMut.mutate({ id: inc.id, status: "resolved", profileId: profileId! })} disabled={!canEdit}>
+                      onClick={() => resolveMut.mutate({ id: inc.id, profileId: profileId! })} disabled={!canEdit}>
                       Resolve
                     </Button>
                   </div>
@@ -226,7 +253,18 @@ export default function ElectionDayWarRoom() {
             ))}
           </div>
 
-          <div className="p-4 border-t border-gray-800 flex gap-2">
+          <div className="p-4 border-t border-gray-800 flex gap-2 flex-wrap">
+            <Select value={incidentType} onValueChange={v => setIncidentType(v as typeof incidentType)}>
+              <SelectTrigger className="w-36 bg-gray-800 border-gray-700 text-white"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="violence">Violence</SelectItem>
+                <SelectItem value="vote_buying">Vote buying</SelectItem>
+                <SelectItem value="inec_failure">INEC failure</SelectItem>
+                <SelectItem value="intimidation">Intimidation</SelectItem>
+                <SelectItem value="logistics">Logistics</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={severity} onValueChange={v => setSeverity(v as "low" | "medium" | "high" | "critical")}>
               <SelectTrigger className="w-32 bg-gray-800 border-gray-700 text-white"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -243,17 +281,44 @@ export default function ElectionDayWarRoom() {
               className="w-40 bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
             />
             <Input
+              placeholder="Evidence URL (photo/video, optional)"
+              value={evidenceUrl}
+              onChange={e => setEvidenceUrl(e.target.value)}
+              className="w-56 bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              className="text-xs text-gray-300"
+              onClick={() => {
+                if (!navigator.geolocation) return;
+                navigator.geolocation.getCurrentPosition(
+                  (pos) => setGeo({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+                );
+              }}
+            >
+              {geo ? "📍 GPS captured" : "📍 Capture GPS"}
+            </Button>
+            <Input
               placeholder="Describe the incident…"
               value={desc}
               onChange={e => setDesc(e.target.value)}
               onKeyDown={e => {
                 if (e.key === "Enter" && desc.trim() && profileId)
-                  addMut.mutate({ profileId, description: desc, severity, lga });
+                  addMut.mutate({
+                    profileId, description: desc, severity, lga, incidentType,
+                    evidenceUrl: evidenceUrl || undefined,
+                    latitude: geo?.latitude, longitude: geo?.longitude,
+                  });
               }}
               className="flex-1 bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
             />
             <Button
-              onClick={() => { if (!profileId || !desc.trim() || !canEdit) return; addMut.mutate({ profileId, description: desc, severity, lga }); }}
+              onClick={() => { if (!profileId || !desc.trim() || !canEdit) return; addMut.mutate({
+                profileId, description: desc, severity, lga, incidentType,
+                evidenceUrl: evidenceUrl || undefined,
+                latitude: geo?.latitude, longitude: geo?.longitude,
+              }); }}
               disabled={!canEdit || addMut.isPending}
               style={{ background: "#C0392B", color: "white" }}
               className="gap-1.5"

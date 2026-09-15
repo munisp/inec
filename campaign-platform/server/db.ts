@@ -1,9 +1,10 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
+import { eq, desc, and, or, sql, gte, lte, lt, isNull, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import * as schema from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { createHash } from "crypto";
 import { logger } from "./_core/logger";
 
 let _pool: Pool | null = null;
@@ -503,22 +504,133 @@ export async function getWarRoomIncidents(profileId: number) {
     .orderBy(desc(schema.warRoomIncidents.reportedAt));
 }
 
-export async function addWarRoomIncident(data: typeof schema.warRoomIncidents.$inferInsert) {
+async function writeIncidentAudit(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  entry: Omit<typeof schema.warRoomIncidentAudit.$inferInsert, "id">,
+) {
+  await db.insert(schema.warRoomIncidentAudit).values(entry);
+}
+
+export async function addWarRoomIncident(
+  data: typeof schema.warRoomIncidents.$inferInsert,
+  actor?: string,
+) {
   const db = getDb();
   if (!db) return null;
   const rows = await db.insert(schema.warRoomIncidents).values(data).returning();
+  if (rows[0]) {
+    // R5-098: every lifecycle event is audited from creation onward.
+    await writeIncidentAudit(db, {
+      incidentId: rows[0].id, action: "created", actor: actor ?? null,
+      toStatus: rows[0].status ?? "open",
+      detail: `${rows[0].severity ?? "medium"}${rows[0].incidentType ? ` ${rows[0].incidentType}` : ""} incident reported${rows[0].lga ? ` in ${rows[0].lga}` : ""}`,
+    });
+  }
   return rows[0];
 }
 
-export async function updateIncidentStatus(id: number, status: "open" | "escalated" | "resolved") {
+export async function updateIncidentStatus(
+  id: number,
+  status: "open" | "escalated" | "resolved",
+  actor?: string,
+) {
+  const db = getDb();
+  if (!db) return null;
+  const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
+  const rows = await db
+    .update(schema.warRoomIncidents)
+    .set({ status, resolvedAt: status === "resolved" ? sql`now()` : null })
+    .where(eq(schema.warRoomIncidents.id, id))
+    .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "status_changed", actor: actor ?? null,
+      fromStatus: prev[0]?.status ?? null, toStatus: status,
+    });
+  }
+  return rows[0];
+}
+
+/** R5-098: assign an incident to a responder/team, with audit. */
+export async function assignIncident(id: number, assignedTo: string, actor?: string) {
   const db = getDb();
   if (!db) return null;
   const rows = await db
     .update(schema.warRoomIncidents)
-    .set({ status, resolvedAt: status === "resolved" ? new Date() : null })
+    .set({ assignedTo })
     .where(eq(schema.warRoomIncidents.id, id))
     .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "assigned", actor: actor ?? null,
+      fromStatus: rows[0].status ?? null, toStatus: rows[0].status ?? null,
+      detail: `assigned to ${assignedTo}`,
+    });
+  }
   return rows[0];
+}
+
+/**
+ * R5-098: escalate an incident to an external authority (security agency,
+ * INEC, neutral observer, party HQ). Records who was notified and when —
+ * previously escalation went nowhere and owner notification was best-effort.
+ */
+export async function escalateIncident(
+  id: number,
+  escalatedTo: string,
+  note: string | undefined,
+  actor?: string,
+) {
+  const db = getDb();
+  if (!db) return null;
+  const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
+  const rows = await db
+    .update(schema.warRoomIncidents)
+    .set({
+      status: "escalated",
+      escalatedTo,
+      escalatedAt: sql`now()`,
+      escalationNote: note ?? null,
+    })
+    .where(eq(schema.warRoomIncidents.id, id))
+    .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "escalated", actor: actor ?? null,
+      fromStatus: prev[0]?.status ?? null, toStatus: "escalated",
+      detail: `escalated to ${escalatedTo}${note ? `: ${note}` : ""}`,
+    });
+  }
+  return rows[0];
+}
+
+/** R5-098: resolve an incident with audit. */
+export async function resolveIncident(id: number, actor?: string) {
+  const db = getDb();
+  if (!db) return null;
+  const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
+  const rows = await db
+    .update(schema.warRoomIncidents)
+    .set({ status: "resolved", resolvedAt: sql`now()` })
+    .where(eq(schema.warRoomIncidents.id, id))
+    .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "resolved", actor: actor ?? null,
+      fromStatus: prev[0]?.status ?? null, toStatus: "resolved",
+    });
+  }
+  return rows[0];
+}
+
+export async function getIncidentAudit(incidentId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.warRoomIncidentAudit)
+    .where(eq(schema.warRoomIncidentAudit.incidentId, incidentId))
+    .orderBy(desc(schema.warRoomIncidentAudit.createdAt));
 }
 
 export async function getFieldAgents(profileId: number) {
@@ -528,6 +640,55 @@ export async function getFieldAgents(profileId: number) {
     .select()
     .from(schema.fieldAgents)
     .where(eq(schema.fieldAgents.profileId, profileId))
+    .orderBy(schema.fieldAgents.name);
+}
+
+/**
+ * R5-099: agent self check-in — stamps last_checkin=NOW, returns the agent
+ * to 'active', and optionally records the agent-reported voters-counted
+ * figure (previously votersCounted had no writer and check-ins went nowhere).
+ * Tenant-guarded: the agent row must belong to profileId.
+ */
+export async function agentCheckIn(agentId: number, profileId: number, votersCounted?: number) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .update(schema.fieldAgents)
+    .set({
+      lastCheckin: sql`now()`,
+      agentStatus: "active",
+      ...(votersCounted !== undefined ? { votersCounted } : {}),
+    })
+    .where(and(eq(schema.fieldAgents.id, agentId), eq(schema.fieldAgents.profileId, requireTenantId(profileId))))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * R5-099: silent-agent scan. Agents that are supposed to be deployed
+ * ('active' or 'sos') but have not checked in within thresholdMinutes are
+ * flagged 'silent' (idempotent) and returned with their staleness, so the
+ * war-room dashboard and the cron scanner share one definition of "silent".
+ * Pass profileId=null to scan every profile (cron path).
+ */
+export async function scanSilentAgents(profileId: number | null, thresholdMinutes: number) {
+  const db = getDb();
+  if (!db) return [];
+  const scope = profileId == null ? undefined : eq(schema.fieldAgents.profileId, requireTenantId(profileId));
+  // DB-side cutoff: mixing client-serialized Dates (UTC) with DB now() would
+  // break under a non-UTC database timezone.
+  const overdue = or(
+    isNull(schema.fieldAgents.lastCheckin),
+    sql`${schema.fieldAgents.lastCheckin} < now() - (${thresholdMinutes} || ' minutes')::interval`,
+  );
+  await db
+    .update(schema.fieldAgents)
+    .set({ agentStatus: "silent" })
+    .where(and(scope, inArray(schema.fieldAgents.agentStatus, ["active", "sos"]), overdue));
+  return db
+    .select()
+    .from(schema.fieldAgents)
+    .where(and(scope, eq(schema.fieldAgents.agentStatus, "silent")))
     .orderBy(schema.fieldAgents.name);
 }
 
@@ -626,10 +787,78 @@ export async function getPetitionSignatures(petitionId: number) {
     .orderBy(desc(schema.petitionSignatures.signedAt));
 }
 
+/**
+ * R5-102: canonical signer identity hash — sha256 of
+ * lower(trim(phone)) | lower(trim(name)) | lower(trim(lga)), matching the
+ * backfill in migration 0005. Used for dedupe; the raw PII stays as-is.
+ */
+export function signerIdentityHash(sig: { signerName: string; phone?: string | null; lga?: string | null }) {
+  // Phone: digits only — formatting variance ("0803 111-2222" vs
+  // "08031112222") is the classic duplicate-signature vector. Name: case-
+  // and whitespace-insensitive. Must match the 0005 backfill expression.
+  const phone = (sig.phone ?? "").replace(/\D/g, "");
+  const name = (sig.signerName ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const lga = (sig.lga ?? "").trim().toLowerCase();
+  return createHash("sha256").update(`${phone}|${name}|${lga}`).digest("hex");
+}
+
+/**
+ * R5-102: record a signature. Every signature starts 'unverified' (never
+ * auto-verified) and carries its identity hash; a second signing by the same
+ * identity on the same petition is rejected as a duplicate (CONFLICT), not
+ * silently counted.
+ */
 export async function addPetitionSignature(data: typeof schema.petitionSignatures.$inferInsert) {
   const db = getDb();
   if (!db) return null;
-  const rows = await db.insert(schema.petitionSignatures).values(data).returning();
+  const signerHash = signerIdentityHash({
+    signerName: data.signerName,
+    phone: data.phone,
+    lga: data.lga,
+  });
+  const rows = await db
+    .insert(schema.petitionSignatures)
+    .values({ ...data, signerHash, verificationStatus: "unverified" })
+    .returning()
+    .catch((err: unknown) => {
+      // drizzle wraps pg errors — check the cause chain for the unique
+      // violation on the identity-hash index.
+      let cur: unknown = err;
+      let isDup = false;
+      while (cur instanceof Error) {
+        if (String(cur.message).includes("petition_signatures_signer_hash_uniq")) { isDup = true; break; }
+        cur = (cur as { cause?: unknown }).cause;
+      }
+      if (isDup) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "This signer has already signed this petition.",
+        });
+      }
+      throw err;
+    });
+  return rows[0];
+}
+
+/** R5-102: verify a signature (manager action) — stamps who/when. */
+export async function verifyPetitionSignature(id: number, petitionId: number, actor: string) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .update(schema.petitionSignatures)
+    .set({ verificationStatus: "verified", verifiedAt: sql`now()`, verifiedBy: actor })
+    .where(and(
+      eq(schema.petitionSignatures.id, id),
+      eq(schema.petitionSignatures.petitionId, petitionId),
+      eq(schema.petitionSignatures.verificationStatus, "unverified"),
+    ))
+    .returning();
+  if (!rows[0]) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Signature not found or not in 'unverified' state (duplicates cannot be verified).",
+    });
+  }
   return rows[0];
 }
 
@@ -641,6 +870,22 @@ export async function getPetitionSignatureCount(petitionId: number) {
     .from(schema.petitionSignatures)
     .where(eq(schema.petitionSignatures.petitionId, petitionId));
   return result[0]?.count ?? 0;
+}
+
+/** R5-102: per-tier breakdown — counts distinguish pending vs verified. */
+export async function getPetitionSignatureStats(petitionId: number) {
+  const db = getDb();
+  if (!db) return { total: 0, verified: 0, unverified: 0, rejectedDuplicate: 0 };
+  const result = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      verified: sql<number>`count(*) filter (where ${schema.petitionSignatures.verificationStatus} = 'verified')::int`,
+      unverified: sql<number>`count(*) filter (where ${schema.petitionSignatures.verificationStatus} = 'unverified')::int`,
+      rejectedDuplicate: sql<number>`count(*) filter (where ${schema.petitionSignatures.verificationStatus} = 'rejected_duplicate')::int`,
+    })
+    .from(schema.petitionSignatures)
+    .where(eq(schema.petitionSignatures.petitionId, petitionId));
+  return result[0] ?? { total: 0, verified: 0, unverified: 0, rejectedDuplicate: 0 };
 }
 
 // ─── Diaspora ─────────────────────────────────────────────────────────────────
@@ -708,26 +953,159 @@ export async function getBudgetItems(profileId: number) {
     .orderBy(schema.budgetItems.category);
 }
 
-export async function upsertBudgetItem(data: typeof schema.budgetItems.$inferInsert) {
+/** R5-101: append one entry to the immutable budget ledger. */
+async function writeBudgetLedger(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  entry: Omit<typeof schema.budgetSpendLedger.$inferInsert, "id">,
+) {
+  await db.insert(schema.budgetSpendLedger).values(entry);
+}
+
+/**
+ * R5-101: statutory campaign-spend cap check (Electoral Act 2022 §88).
+ * Total SPEND (spent_amount across the profile's budget items, with the
+ * pending change applied) may not exceed the cap configured for the
+ * profile's office. Returns the projected total — throws CONFLICT over cap.
+ */
+async function assertStatutoryCap(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  profileId: number,
+  excludeItemId: number | null,
+  newSpent: number,
+) {
+  const profile = await db
+    .select({ office: schema.candidateProfiles.office })
+    .from(schema.candidateProfiles)
+    .where(eq(schema.candidateProfiles.id, profileId))
+    .limit(1);
+  const office = profile[0]?.office;
+  if (!office) return; // no office on profile → no statutory cap applies
+  const caps = await db
+    .select()
+    .from(schema.budgetStatutoryCaps)
+    .where(eq(schema.budgetStatutoryCaps.office, office))
+    .limit(1);
+  const cap = caps[0]?.capAmount;
+  if (cap == null) return; // no cap configured for this office
+  const conditions = [eq(schema.budgetItems.profileId, profileId)];
+  if (excludeItemId != null) conditions.push(sql`${schema.budgetItems.id} <> ${excludeItemId}`);
+  const totals = await db
+    .select({ total: sql<string>`COALESCE(SUM(${schema.budgetItems.spentAmount}), 0)` })
+    .from(schema.budgetItems)
+    .where(and(...conditions));
+  const projected = Number(totals[0]?.total ?? 0) + newSpent;
+  if (projected > Number(cap)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        `Statutory campaign-spend cap exceeded: ₦${projected.toLocaleString("en-NG")} ` +
+        `projected vs ₦${Number(cap).toLocaleString("en-NG")} cap for ${office} ` +
+        `(Electoral Act 2022 s.88).`,
+    });
+  }
+}
+
+export async function upsertBudgetItem(
+  data: typeof schema.budgetItems.$inferInsert,
+  actor?: string,
+) {
   const db = getDb();
   if (!db) return null;
   if (data.id) {
     // SECURITY: tenant-guarded update — never set profileId on update.
     const { id, profileId, ...rest } = data;
+    const prev = await db
+      .select()
+      .from(schema.budgetItems)
+      .where(and(eq(schema.budgetItems.id, id), eq(schema.budgetItems.profileId, requireTenantId(data.profileId))))
+      .limit(1);
+    if (!prev[0]) return assertUpdated([], "Budget item");
+    // R5-101: cap applies whenever the spend figure changes.
+    if (rest.spentAmount !== undefined && Number(rest.spentAmount) !== Number(prev[0].spentAmount ?? 0)) {
+      await assertStatutoryCap(db, requireTenantId(data.profileId), id, Number(rest.spentAmount));
+    }
     const rows = await db.update(schema.budgetItems)
       .set(rest)
       .where(and(eq(schema.budgetItems.id, id), eq(schema.budgetItems.profileId, requireTenantId(data.profileId))))
       .returning();
-    return assertUpdated(rows, "Budget item");
+    const updated = assertUpdated(rows, "Budget item");
+    await writeBudgetLedger(db, {
+      profileId: requireTenantId(data.profileId),
+      budgetItemId: id,
+      changeType: rest.spentAmount !== undefined && Number(rest.spentAmount) !== Number(prev[0].spentAmount ?? 0) ? "spend_changed" : "updated",
+      previousBudgeted: prev[0].budgetedAmount,
+      newBudgeted: updated.budgetedAmount,
+      previousSpent: prev[0].spentAmount,
+      newSpent: updated.spentAmount,
+      changedBy: actor ?? null,
+    });
+    return updated;
+  }
+  // R5-101: cap check on the initial spend figure of a new item.
+  if (data.spentAmount != null && Number(data.spentAmount) > 0) {
+    await assertStatutoryCap(db, requireTenantId(data.profileId), null, Number(data.spentAmount));
   }
   const rows = await db.insert(schema.budgetItems).values(data).returning();
+  if (rows[0]) {
+    await writeBudgetLedger(db, {
+      profileId: requireTenantId(data.profileId),
+      budgetItemId: rows[0].id,
+      changeType: "created",
+      newBudgeted: rows[0].budgetedAmount,
+      newSpent: rows[0].spentAmount,
+      changedBy: actor ?? null,
+    });
+  }
   return rows[0];
 }
 
-export async function deleteBudgetItem(id: number) {
+export async function deleteBudgetItem(id: number, actor?: string) {
   const db = getDb();
   if (!db) return;
+  // R5-101: record the deletion in the append-only ledger before removing.
+  const prev = await db.select().from(schema.budgetItems).where(eq(schema.budgetItems.id, id)).limit(1);
   await db.delete(schema.budgetItems).where(eq(schema.budgetItems.id, id));
+  if (prev[0] && prev[0].profileId != null) {
+    await writeBudgetLedger(db, {
+      profileId: prev[0].profileId,
+      budgetItemId: id,
+      changeType: "deleted",
+      previousBudgeted: prev[0].budgetedAmount,
+      previousSpent: prev[0].spentAmount,
+      changedBy: actor ?? null,
+    });
+  }
+}
+
+export async function getBudgetCaps() {
+  const db = getDb();
+  if (!db) return [];
+  return db.select().from(schema.budgetStatutoryCaps).orderBy(schema.budgetStatutoryCaps.office);
+}
+
+/** R5-101: owner-configurable statutory caps (e.g. legislative amendment). */
+export async function upsertBudgetCap(office: string, capAmount: number, notes?: string) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .insert(schema.budgetStatutoryCaps)
+    .values({ office: office as never, capAmount, notes: notes ?? null, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.budgetStatutoryCaps.office,
+      set: { capAmount, notes: notes ?? null, updatedAt: new Date() },
+    })
+    .returning();
+  return rows[0];
+}
+
+export async function getBudgetLedger(profileId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.budgetSpendLedger)
+    .where(eq(schema.budgetSpendLedger.profileId, profileId))
+    .orderBy(desc(schema.budgetSpendLedger.createdAt));
 }
 
 // ─── Media Monitoring ─────────────────────────────────────────────────────────

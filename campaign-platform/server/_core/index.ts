@@ -155,6 +155,43 @@ async function startServer() {
     }
   });
 
+  // ── R5-099: silent-agent scan heartbeat ─────────────────────────────────────
+  // Triggered periodically by a project-level Heartbeat cron (see
+  // scheduled-tasks.json). Flags deployed agents with no check-in inside the
+  // threshold as 'silent' across every profile and notifies the owner once
+  // per scan when at least one agent is silent.
+  app.post("/api/scheduled/silent-agent-scan", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user.isCron) {
+        return res.status(403).json({ error: "cron-only endpoint" });
+      }
+      const dbConn = db.getDb();
+      if (!dbConn) return res.json({ ok: true, skipped: "no-db" });
+
+      const threshold = Number(process.env.SILENT_AGENT_THRESHOLD_MINUTES ?? 60);
+      const silent = await db.scanSilentAgents(null, threshold);
+      if (silent.length > 0) {
+        try {
+          await notifyOwner({
+            title: `🔇 ${silent.length} field agent${silent.length !== 1 ? "s" : ""} silent`,
+            content: `No check-in within ${threshold} minutes: ${silent
+              .slice(0, 10)
+              .map((a) => `${a.name}${a.assignedPu ? ` (${a.assignedPu})` : ""}`)
+              .join(", ")}${silent.length > 10 ? `, +${silent.length - 10} more` : ""}`,
+          });
+        } catch { /* notification failure must not fail the scan */ }
+      }
+      return res.json({ ok: true, silentCount: silent.length });
+    } catch (err) {
+      logger.error("silent-agent-scan failed", { err });
+      return res.status(500).json({
+        error: String(err),
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
   // SSE endpoint for War Room real-time updates.
   // SECURITY: requires a verified session (same SDK verification as the rest of
   // the API — cookie, or Bearer for non-browser clients), enforces per-profile
