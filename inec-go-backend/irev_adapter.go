@@ -471,10 +471,4 @@ func normalizeIReVStatus(status string) string {
 	}
 }
 
-func handleLegacyPortalSyncDisabled(w http.ResponseWriter, r *http.Request) {
-	if _, err := requireRole(r, "admin"); err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
-		return
-	}
-	writeError(w, http.StatusServiceUnavailable, "generic portal synchronization is disabled; use the authorized IReV evidence submission workflow")
-}
+

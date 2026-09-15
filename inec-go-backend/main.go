@@ -532,7 +532,7 @@ func main() {
 	r.HandleFunc("/ems/portals/sync-log", readAuth(handlePortalSyncLog)).Methods("GET")
 	r.HandleFunc("/ems/portals/webhooks", readAuth(handlePortalWebhooks)).Methods("GET")
 	r.HandleFunc("/ems/portals/{id}", readAuth(handleGetPortal)).Methods("GET")
-	r.HandleFunc("/ems/portals/{id}/sync", adminOnly(handleLegacyPortalSyncDisabled)).Methods("POST")
+	r.HandleFunc("/ems/portals/{id}/sync", adminOnly(handlePortalSync)).Methods("POST")
 
 	// IReV — only sanctioned mutual-TLS/OAuth integration and receipt verification.
 	r.HandleFunc("/irev/status", readAuth(handleIReVStatus)).Methods("GET")
