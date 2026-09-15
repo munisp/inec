@@ -54,6 +54,11 @@ const (
 	ElectionStateClosed    ElectionState = "closed"
 	ElectionStateCancelled ElectionState = "cancelled"
 	ElectionStateDisputed  ElectionState = "disputed"
+	// R5-022: suspension (violence/logistics) and postponement are real
+	// lifecycle states, and declaration is the terminal legal act (R5-011).
+	ElectionStateSuspended ElectionState = "suspended"
+	ElectionStatePostponed ElectionState = "postponed"
+	ElectionStateDeclared  ElectionState = "declared"
 )
 
 // ElectionTransition defines a valid state transition with guards.
@@ -81,6 +86,24 @@ var electionFSM = []ElectionTransition{
 	{From: ElectionStateClosed, To: ElectionStateDisputed, Event: "dispute",
 		Guard: guardDispute},
 	{From: ElectionStateDisputed, To: ElectionStateClosed, Event: "resolve_dispute", Guard: nil},
+	// R5-022: postpone / suspend / resume. Suspension preserves the phase the
+	// election was in; resumption returns to it via the matching event.
+	{From: ElectionStateScheduled, To: ElectionStatePostponed, Event: "postpone", Guard: nil},
+	{From: ElectionStatePostponed, To: ElectionStateScheduled, Event: "reschedule",
+		Guard: guardSchedule},
+	{From: ElectionStateActive, To: ElectionStateSuspended, Event: "suspend", Guard: nil},
+	{From: ElectionStateVoting, To: ElectionStateSuspended, Event: "suspend", Guard: nil},
+	{From: ElectionStateCollating, To: ElectionStateSuspended, Event: "suspend", Guard: nil},
+	{From: ElectionStateSuspended, To: ElectionStateActive, Event: "resume_active", Guard: nil},
+	{From: ElectionStateSuspended, To: ElectionStateVoting, Event: "resume_voting", Guard: nil},
+	{From: ElectionStateSuspended, To: ElectionStateCollating, Event: "resume_collating", Guard: nil},
+	// R5-011: declaration is a guarded lifecycle event (the declare endpoint
+	// performs the full completeness/winner flow; the FSM event exists so the
+	// transition is representable and audited uniformly).
+	{From: ElectionStateCollating, To: ElectionStateDeclared, Event: "declare",
+		Guard: guardDeclare},
+	{From: ElectionStateClosed, To: ElectionStateDeclared, Event: "declare",
+		Guard: guardDeclare},
 }
 
 // Guard functions enforce preconditions for state transitions.
@@ -119,9 +142,12 @@ func guardOpenVoting(ctx context.Context, electionID int) error {
 	var dateStr string
 	db.QueryRowContext(ctx, "SELECT election_date FROM elections WHERE id=?", electionID).Scan(&dateStr)
 	date, _ := time.Parse("2006-01-02", dateStr)
-	today := time.Now().Format("2006-01-02")
-	if date.Format("2006-01-02") != today {
-		return fmt.Errorf("voting can only open on election day (scheduled: %s, today: %s)", date.Format("2006-01-02"), today)
+	// R5-022: voting may open on or after the scheduled date (a postponed or
+	// resumed election must be openable without faking the date), but never
+	// before it. Closing has no hard time bound so an election that overruns
+	// midnight keeps accepting results.
+	if date.After(time.Now().Add(24*time.Hour - time.Second)) {
+		return fmt.Errorf("voting cannot open before election day (scheduled: %s, today: %s)", date.Format("2006-01-02"), time.Now().Format("2006-01-02"))
 	}
 	return nil
 }
@@ -136,11 +162,43 @@ func guardCloseVoting(ctx context.Context, electionID int) error {
 }
 
 func guardFinalize(ctx context.Context, electionID int) error {
-	var totalPUs, submittedPUs int
+	// R5-021: closing requires EVERY polling unit to be accounted for by a
+	// canonical result (finalized, or formally voided/disputed) — not 50% of
+	// results in any status — and no unresolved disputes. Results of rerun
+	// children count toward their scoped PUs.
+	var totalPUs, accountedPUs, openDisputes int
 	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM polling_units").Scan(&totalPUs)
-	db.QueryRowContext(ctx, "SELECT COUNT(DISTINCT polling_unit_code) FROM results WHERE election_id=?", electionID).Scan(&submittedPUs)
-	if totalPUs > 0 && submittedPUs < totalPUs/2 {
-		return fmt.Errorf("cannot finalize: only %d/%d polling units have submitted results", submittedPUs, totalPUs)
+	db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT polling_unit_code) FROM results
+		WHERE election_id IN (SELECT id FROM elections WHERE id=? OR parent_election_id=?)
+		AND status IN ('finalized','voided','disputed')`, electionID, electionID).Scan(&accountedPUs)
+	db.QueryRowContext(ctx, `SELECT COUNT(*) FROM disputes
+		WHERE election_id IN (SELECT id FROM elections WHERE id=? OR parent_election_id=?)
+		AND status NOT IN ('resolved','dismissed')`, electionID, electionID).Scan(&openDisputes)
+	if openDisputes > 0 {
+		return fmt.Errorf("cannot close: %d unresolved disputes remain", openDisputes)
+	}
+	if totalPUs > 0 && accountedPUs < totalPUs {
+		return fmt.Errorf("cannot close: %d/%d polling units unaccounted for (need finalized, voided, or disputed results for all)", totalPUs-accountedPUs, totalPUs)
+	}
+	return nil
+}
+
+// guardDeclare enforces the declaration completeness gate at the FSM level
+// (the /elections/{id}/declare endpoint performs the full rules-engine
+// assessment; this guard keeps direct FSM transitions equally fail-closed).
+func guardDeclare(ctx context.Context, electionID int) error {
+	a, err := assessDeclaration(ctx, electionID)
+	if err != nil {
+		return err
+	}
+	if !a.Complete {
+		return fmt.Errorf("declaration blocked: %d polling units unaccounted for", a.MissingPUs)
+	}
+	if a.OpenDisputes > 0 {
+		return fmt.Errorf("declaration blocked: %d unresolved disputes", a.OpenDisputes)
+	}
+	if a.Inconclusive {
+		return fmt.Errorf("election inconclusive: %s", a.InconclusiveWhy)
 	}
 	return nil
 }
@@ -275,7 +333,7 @@ func handleElectionFSMDiagram(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{
 		"current_state": currentStatus,
 		"transitions":   transitions,
-		"states":        []string{"draft", "scheduled", "active", "voting", "collating", "closed", "cancelled", "disputed"},
+		"states":        []string{"draft", "scheduled", "active", "voting", "collating", "closed", "declared", "cancelled", "disputed", "suspended", "postponed"},
 	})
 }
 

@@ -90,11 +90,17 @@ func guardWrite(w http.ResponseWriter, r *http.Request, permission string, roles
 // ── Result Status Machine ──
 
 // validTransitions defines the allowed status transitions for election results.
+// 'superseded' and 'voided' are terminal history states: they are never set
+// through this FSM — supersession happens only inside the correction
+// transaction (handleCorrectResult, R5-016) and annulment only via dispute
+// resolution (R5-020) — so history can never be casually flipped.
 var validTransitions = map[string][]string{
-	"pending":   {"validated", "disputed"},
-	"validated": {"finalized", "disputed"},
-	"disputed":  {"pending", "validated"}, // Can be re-opened
-	"finalized": {},                       // Terminal state — no further transitions
+	"pending":    {"validated", "disputed"},
+	"validated":  {"finalized", "disputed"},
+	"disputed":   {"pending", "validated"}, // Can be re-opened
+	"finalized":  {},                       // Terminal — corrections use supersession, not mutation
+	"voided":     {},                       // Terminal — annulled (PU may be re-run)
+	"superseded": {},                       // Terminal — replaced by a corrected result
 }
 
 // canTransition checks if a result can move from currentStatus to newStatus.

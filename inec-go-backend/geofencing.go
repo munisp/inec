@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/http"
@@ -57,15 +58,20 @@ func validateGeofence(bvasLat, bvasLon float64, pollingUnitCode string) (*Geofen
 		pollingUnitCode).Scan(&puLat, &puLon, &radiusM)
 
 	if err != nil {
-		// If no location data, allow but log warning
-		log.Warn().Str("pu_code", pollingUnitCode).Msg("No geofence data for polling unit — allowing by default")
-		return &GeofenceResult{
-			WithinGeofence:  true,
-			DistanceMeters:  0,
-			AllowedRadiusM:  defaultGeofenceM,
-			PollingUnitCode: pollingUnitCode,
-			Message:         "no geofence configured — allowed by default",
-		}, nil
+		// Fall back to the registered coordinates on the polling unit itself
+		// before giving up (R5-024: never silently allow).
+		var lat, lng *float64
+		fallbackErr := db.QueryRow(convertPlaceholders(
+			"SELECT latitude, longitude FROM polling_units WHERE code = ?"),
+			pollingUnitCode).Scan(&lat, &lng)
+		if fallbackErr != nil || lat == nil || lng == nil {
+			// Fail closed: a polling unit without configured coordinates
+			// cannot verify device presence; submissions are blocked until
+			// an administrator configures its location.
+			log.Warn().Str("pu_code", pollingUnitCode).Msg("No geofence data for polling unit — blocking (fail-closed)")
+			return nil, fmt.Errorf("no geofence configured for polling unit %s", pollingUnitCode)
+		}
+		puLat, puLon, radiusM = *lat, *lng, defaultGeofenceM
 	}
 
 	distance := haversineDistance(bvasLat, bvasLon, puLat, puLon)
@@ -172,7 +178,7 @@ func checkAutoCollation(electionID int, pollingUnitCode string) {
 	db.QueryRow(convertPlaceholders(
 		"SELECT COUNT(*) FROM polling_units WHERE ward_code = ?"), wardCode).Scan(&totalPUs)
 	db.QueryRow(convertPlaceholders(
-		"SELECT COUNT(DISTINCT r.polling_unit_code) FROM results r JOIN polling_units pu ON r.polling_unit_code = pu.code WHERE pu.ward_code = ? AND r.election_id = ? AND r.status IN ('validated', 'finalized')"),
+		"SELECT COUNT(DISTINCT r.polling_unit_code) FROM results r JOIN polling_units pu ON r.polling_unit_code = pu.code WHERE pu.ward_code = ? AND r.election_id = ? AND r.status = '"+canonicalResultStatus+"'"),
 		wardCode, electionID).Scan(&submittedPUs)
 
 	if totalPUs > 0 && submittedPUs >= totalPUs {
@@ -187,49 +193,16 @@ func checkAutoCollation(electionID int, pollingUnitCode string) {
 	}
 }
 
-// triggerWardCollation aggregates results at the ward level.
+// triggerWardCollation persists the canonical ward rollup and cascades the
+// LGA→state→national rollup for the chain containing this ward (R5-015).
 func triggerWardCollation(electionID int, wardCode string) {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to begin ward collation transaction")
+	ctx := context.Background()
+	if err := rollupCollationHierarchy(ctx, electionID, wardCode); err != nil {
+		log.Error().Err(err).Str("ward", wardCode).Int("election_id", electionID).
+			Msg("ward collation rollup failed")
 		return
 	}
-
-	// Aggregate party votes for the ward
-	rows, err := tx.Query(convertPlaceholders(`
-		SELECT rps.party_code, SUM(rps.votes) as total_votes
-		FROM result_party_scores rps
-		JOIN results r ON rps.result_id = r.id
-		JOIN polling_units pu ON r.polling_unit_code = pu.code
-		WHERE pu.ward_code = ? AND r.election_id = ? AND r.status IN ('validated', 'finalized')
-		GROUP BY rps.party_code`), wardCode, electionID)
-	if err != nil {
-		tx.Rollback()
-		return
-	}
-	defer rows.Close()
-
-	// Store in collation_results
-	for rows.Next() {
-		var partyCode string
-		var totalVotes int
-		if err := rows.Scan(&partyCode, &totalVotes); err == nil {
-			tx.Exec(convertPlaceholders(`
-				INSERT OR REPLACE INTO collation_results (election_id, level, area_code, party_code, total_votes, collated_at)
-				VALUES (?, 'ward', ?, ?, ?, CURRENT_TIMESTAMP)`),
-				electionID, wardCode, partyCode, totalVotes)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		log.Error().Err(err).Str("ward", wardCode).Msg("Ward collation commit failed")
-		return
-	}
-
-	log.Info().Str("ward", wardCode).Int("election_id", electionID).Msg("Ward collation completed")
-
-	// Check if LGA is now complete
-	checkLGACollation(electionID, wardCode)
+	log.Info().Str("ward", wardCode).Int("election_id", electionID).Msg("Ward collation persisted (with LGA/state/national rollup)")
 }
 
 // checkLGACollation checks if all wards in the LGA have been collated.
@@ -250,6 +223,8 @@ func checkLGACollation(electionID int, wardCode string) {
 
 	if totalWards > 0 && collatedWards >= totalWards {
 		log.Info().Str("lga", lgaCode).Int("election_id", electionID).Msg("Auto-collation: LGA complete")
-		// LGA collation would follow same pattern
+		if err := persistCollationRollup(context.Background(), electionID, "lga", lgaCode); err != nil {
+			log.Error().Err(err).Str("lga", lgaCode).Msg("LGA collation persist failed")
+		}
 	}
 }
