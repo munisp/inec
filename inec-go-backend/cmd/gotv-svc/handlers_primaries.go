@@ -374,7 +374,9 @@ func registerPrimaryRoutes(r *mux.Router, auth func(http.HandlerFunc) http.Handl
 	//           auditors): unchanged auth(...) wrapping.
 	//   vote  — accredited-delegate gated inside the handlers (delegate
 	//           credential + accreditation_status + one-vote-per-round).
-	desk := func(h http.HandlerFunc) http.HandlerFunc { return requirePrimaryRole(h, RolePartyAdmin, RoleCoordinator) }
+	desk := func(h http.HandlerFunc) http.HandlerFunc {
+		return requirePrimaryRole(h, RolePartyAdmin, RoleCoordinator)
+	}
 	ro := func(h http.HandlerFunc) http.HandlerFunc { return requirePrimaryRole(h, RolePartyAdmin) }
 
 	// ─── Aspirant Management ────────────────────────────────────────────

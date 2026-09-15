@@ -480,12 +480,12 @@ type CollationLevel struct {
 	ChildCount  int              `json:"child_count"`
 	// R5-014: provisional progress and disputed PUs are reported separately
 	// from the official (finalized-only) totals.
-	StatusCounts map[string]int   `json:"status_counts"`
-	TotalPUs     int              `json:"total_pus"`
-	DisputedPUs  int              `json:"disputed_pus"`
-	Status       string           `json:"status"`
-	CollatedAt   string           `json:"collated_at"`
-	CollatedBy   string           `json:"collated_by"`
+	StatusCounts map[string]int `json:"status_counts"`
+	TotalPUs     int            `json:"total_pus"`
+	DisputedPUs  int            `json:"disputed_pus"`
+	Status       string         `json:"status"`
+	CollatedAt   string         `json:"collated_at"`
+	CollatedBy   string         `json:"collated_by"`
 }
 
 // handleHierarchicalCollation performs collation at ward → LGA → state → national levels.
