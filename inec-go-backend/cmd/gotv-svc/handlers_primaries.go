@@ -325,39 +325,90 @@ func partyOwnsRound(ctx context.Context, roundID, partyCode string) (electionID 
 // ROUTE REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════
 
+// requirePrimaryRole (R5-039) gates convention-management routes on the
+// SERVER-DERIVED GOTV role — the X-GOTV-Role header is set only by the auth
+// middleware from the party-membership/credential tables (R5-036); a
+// client-supplied value is stripped before it can reach here. Previously
+// all ~43 primaries routes were wrapped in bare auth(...): a single
+// compromised party credential could register fake delegates, accredit
+// them, open/tally/certify rounds, and custody the election keys. Denials
+// are logged as security events and fail closed (no role → 401).
+func requirePrimaryRole(next http.HandlerFunc, roles ...GOTVRole) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		role := GOTVRole(r.Header.Get("X-GOTV-Role"))
+		for _, allowed := range roles {
+			if role == allowed {
+				next(w, r)
+				return
+			}
+		}
+		pid, user := getParty(r)
+		log.Warn().
+			Int("party_id", pid).
+			Str("user", user).
+			Str("role", string(role)).
+			Str("path", r.URL.Path).
+			Msg("SECURITY: primaries RBAC denied")
+		w.Header().Set("Content-Type", "application/json")
+		if role == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "convention management requires a server-issued GOTV role (party membership)"})
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "insufficient role for this convention operation"})
+	}
+}
+
 func registerPrimaryRoutes(r *mux.Router, auth func(http.HandlerFunc) http.HandlerFunc) {
+	// R5-039 role groups:
+	//   desk  — registration-desk operations (delegate/aspirant admin):
+	//           party_admin + coordinator. Deliberately distinct from the
+	//           returning-officer group so no single non-admin role both
+	//           accredits delegates and tallies their votes.
+	//   ro    — returning-officer operations (round lifecycle, tally,
+	//           certify, key custody, dispute resolution): party_admin only.
+	//   read  — any authenticated party identity (observer/analyst act as
+	//           auditors): unchanged auth(...) wrapping.
+	//   vote  — accredited-delegate gated inside the handlers (delegate
+	//           credential + accreditation_status + one-vote-per-round).
+	desk := func(h http.HandlerFunc) http.HandlerFunc { return requirePrimaryRole(h, RolePartyAdmin, RoleCoordinator) }
+	ro := func(h http.HandlerFunc) http.HandlerFunc { return requirePrimaryRole(h, RolePartyAdmin) }
+
 	// ─── Aspirant Management ────────────────────────────────────────────
 	r.HandleFunc("/gotv/primaries/aspirants", auth(handleListAspirants)).Methods("GET")
-	r.HandleFunc("/gotv/primaries/aspirants", auth(handleCreateAspirant)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/aspirants", auth(desk(handleCreateAspirant))).Methods("POST")
 	r.HandleFunc("/gotv/primaries/aspirants/{id}", auth(handleGetAspirant)).Methods("GET")
-	r.HandleFunc("/gotv/primaries/aspirants/{id}", auth(handleUpdateAspirant)).Methods("PUT")
-	r.HandleFunc("/gotv/primaries/aspirants/{id}/screen", auth(handleScreenAspirant)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/aspirants/{id}/withdraw", auth(handleWithdrawAspirant)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/aspirants/{id}/deposit", auth(handleAspirantDeposit)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/aspirants/{id}", auth(desk(handleUpdateAspirant))).Methods("PUT")
+	r.HandleFunc("/gotv/primaries/aspirants/{id}/screen", auth(desk(handleScreenAspirant))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/aspirants/{id}/withdraw", auth(desk(handleWithdrawAspirant))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/aspirants/{id}/deposit", auth(desk(handleAspirantDeposit))).Methods("POST")
 
 	// ─── Delegate Management ────────────────────────────────────────────
 	r.HandleFunc("/gotv/primaries/delegates", auth(handleListDelegates)).Methods("GET")
-	r.HandleFunc("/gotv/primaries/delegates", auth(handleCreateDelegate)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/delegates/bulk", auth(handleBulkCreateDelegates)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/delegates", auth(desk(handleCreateDelegate))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/delegates/bulk", auth(desk(handleBulkCreateDelegates))).Methods("POST")
 	r.HandleFunc("/gotv/primaries/delegates/{id}", auth(handleGetDelegate)).Methods("GET")
-	r.HandleFunc("/gotv/primaries/delegates/{id}/credential", auth(handleIssueCredential)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/delegates/{id}/accredit", auth(handleAccreditDelegate)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/delegates/{id}/revoke", auth(handleRevokeDelegate)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/delegates/{id}/checkin", auth(handleDelegateCheckin)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/delegates/{id}/credential", auth(desk(handleIssueCredential))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/delegates/{id}/accredit", auth(desk(handleAccreditDelegate))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/delegates/{id}/revoke", auth(desk(handleRevokeDelegate))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/delegates/{id}/checkin", auth(desk(handleDelegateCheckin))).Methods("POST")
 
 	// ─── Convention & Venues ────────────────────────────────────────────
 	r.HandleFunc("/gotv/primaries/venues", auth(handleListVenues)).Methods("GET")
-	r.HandleFunc("/gotv/primaries/venues", auth(handleCreateVenue)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/venues", auth(desk(handleCreateVenue))).Methods("POST")
 	r.HandleFunc("/gotv/primaries/convention/dashboard", auth(handleConventionDashboard)).Methods("GET")
 	r.HandleFunc("/gotv/primaries/convention/quorum", auth(handleQuorumCheck)).Methods("GET")
 
 	// ─── Voting Rounds ──────────────────────────────────────────────────
 	r.HandleFunc("/gotv/primaries/rounds", auth(handleListRounds)).Methods("GET")
-	r.HandleFunc("/gotv/primaries/rounds", auth(handleCreateRound)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/rounds/{id}/open", auth(handleOpenRound)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/rounds/{id}/close", auth(handleCloseRound)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/rounds/{id}/tally", auth(handleTallyRound)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/rounds/{id}/certify", auth(handleCertifyRound)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/rounds", auth(ro(handleCreateRound))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/rounds/{id}/open", auth(ro(handleOpenRound))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/rounds/{id}/close", auth(ro(handleCloseRound))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/rounds/{id}/tally", auth(ro(handleTallyRound))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/rounds/{id}/certify", auth(ro(handleCertifyRound))).Methods("POST")
 	r.HandleFunc("/gotv/primaries/rounds/{id}/results", auth(handleRoundResults)).Methods("GET")
 
 	// ─── Ballot Casting (In-Person) ─────────────────────────────────────
@@ -373,16 +424,16 @@ func registerPrimaryRoutes(r *mux.Router, auth func(http.HandlerFunc) http.Handl
 	r.HandleFunc("/gotv/primaries/remote/coercion-vote", auth(handleCoercionVote)).Methods("POST")
 
 	// ─── Cryptographic Operations ───────────────────────────────────────
-	r.HandleFunc("/gotv/primaries/crypto/keys", auth(handleGenerateElectionKeys)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/crypto/encrypt-tally", auth(handleEncryptedTally)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/crypto/shuffle", auth(handleMixNetShuffle)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/crypto/decrypt", auth(handleThresholdDecrypt)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/crypto/keys", auth(ro(handleGenerateElectionKeys))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/crypto/encrypt-tally", auth(ro(handleEncryptedTally))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/crypto/shuffle", auth(ro(handleMixNetShuffle))).Methods("POST")
+	r.HandleFunc("/gotv/primaries/crypto/decrypt", auth(ro(handleThresholdDecrypt))).Methods("POST")
 	r.HandleFunc("/gotv/primaries/crypto/audit-trail", auth(handleCryptoAuditTrail)).Methods("GET")
 
 	// ─── Disputes ───────────────────────────────────────────────────────
 	r.HandleFunc("/gotv/primaries/disputes", auth(handleListDisputes)).Methods("GET")
 	r.HandleFunc("/gotv/primaries/disputes", auth(handleFileDispute)).Methods("POST")
-	r.HandleFunc("/gotv/primaries/disputes/{id}/resolve", auth(handleResolveDispute)).Methods("POST")
+	r.HandleFunc("/gotv/primaries/disputes/{id}/resolve", auth(ro(handleResolveDispute))).Methods("POST")
 
 	// ─── Convention Audit ───────────────────────────────────────────────
 	r.HandleFunc("/gotv/primaries/audit-log", auth(handleConventionAuditLog)).Methods("GET")
@@ -1775,6 +1826,25 @@ func handleCertifyRound(w http.ResponseWriter, r *http.Request) {
 	if !owned {
 		log.Warn().Str("round_id", id).Str("caller_party", partyCode).Msg("SECURITY: cross-party certify attempt rejected")
 		jsonErr(w, "round does not belong to your party", 403)
+		return
+	}
+
+	// R5-039 four-eyes: the officer who TALLIED a round may not also CERTIFY
+	// it — tally and certification must be distinct identities (separation
+	// of duties; the audit log is the system of record for the tally actor).
+	var tallyActor string
+	err := dbConn.QueryRowContext(r.Context(), `
+		SELECT actor_id FROM convention_audit_log
+		WHERE event_type='round_tallied' AND entity_type='round' AND entity_id=$1
+		ORDER BY id DESC LIMIT 1`, id).Scan(&tallyActor)
+	if err != nil && err != sql.ErrNoRows {
+		log.Error().Err(err).Str("round_id", id).Msg("SECURITY: tally-actor lookup failed (fail closed)")
+		jsonErr(w, "cannot verify separation of duties", 500)
+		return
+	}
+	if err == nil && tallyActor == user {
+		log.Warn().Str("round_id", id).Str("user", user).Msg("SECURITY: certify by tally actor rejected (four-eyes)")
+		jsonErr(w, "separation of duties: the tallying officer cannot certify the same round", 403)
 		return
 	}
 
