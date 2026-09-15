@@ -1,17 +1,112 @@
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
+import { parseRefreshResponse, isTerminalRefreshFailure } from './auth-refresh';
+import { observeServerDate, correctedNowIso } from './clock-sync';
 
-export const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:8088';
+// R5-113: fail fast in production builds — never silently fall back to the
+// Android-emulator loopback. Mirrors the GOTV stack (lib/gotv-auth.ts).
+// The URL is provided via eas.json build profiles (EXPO_PUBLIC_API_URL).
+const RESOLVED_API_URL =
+  process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? 'http://10.0.2.2:8088' : undefined);
+if (!RESOLVED_API_URL) {
+  throw new Error(
+    'EXPO_PUBLIC_API_URL is not set. Configure it in eas.json for this build profile; ' +
+    'a production build must never default to an emulator-loopback backend.'
+  );
+}
+export const API_URL = RESOLVED_API_URL;
+
+// R5-113: app version sent on every request so the backend min-version gate
+// (server-side endpoint is a W2 dependency) can detect/block stale APKs.
+export const APP_VERSION: string = Constants.expoConfig?.version ?? '0.0.0';
+
+const ACCESS_TOKEN_KEY = 'auth_token';
+const REFRESH_TOKEN_KEY = 'auth_refresh_token';
 
 export async function getToken(): Promise<string | null> {
-  return SecureStore.getItemAsync('auth_token');
+  return SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
 }
 
 export async function setToken(token: string): Promise<void> {
-  await SecureStore.setItemAsync('auth_token', token);
+  await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, token);
+}
+
+export async function getRefreshToken(): Promise<string | null> {
+  return SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
+}
+
+export async function setTokens(accessToken: string, refreshToken?: string | null): Promise<void> {
+  await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, accessToken);
+  if (refreshToken) {
+    await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, refreshToken);
+  }
 }
 
 export async function clearToken(): Promise<void> {
-  await SecureStore.deleteItemAsync('auth_token');
+  await SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY);
+  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+}
+
+// ── Auth-expiry notification (R5-108) ──
+// Subscribed by the root layout: when the refresh token is rejected the
+// session is unrecoverable and the user is routed back to the login screen.
+
+type AuthExpiredListener = () => void;
+const authExpiredListeners = new Set<AuthExpiredListener>();
+
+export function onAuthExpired(listener: AuthExpiredListener): () => void {
+  authExpiredListeners.add(listener);
+  return () => authExpiredListeners.delete(listener);
+}
+
+function notifyAuthExpired(): void {
+  authExpiredListeners.forEach((l) => {
+    try { l(); } catch { /* listener errors must not break the API layer */ }
+  });
+}
+
+// ── Token refresh (R5-108) ──
+// Backend issues 1-hour access tokens. Single-flight: concurrent 401s share
+// one refresh call. Handles BOTH refresh semantics (see auth-refresh.ts):
+// old (no rotation — keep stored refresh token) and new (rotated token in
+// the response replaces the stored one). A 401 from /auth/refresh means the
+// refresh token itself is dead → clear the session and fall back to
+// credentials (re-login screen).
+
+let inflightRefresh: Promise<boolean> | null = null;
+
+export async function refreshAccessToken(): Promise<boolean> {
+  if (inflightRefresh) return inflightRefresh;
+  inflightRefresh = (async () => {
+    const refresh = await getRefreshToken();
+    if (!refresh) return false;
+    try {
+      const res = await fetch(`${API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-App-Version': APP_VERSION },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+      observeServerDate(res.headers.get('date'));
+      const body = await res.json().catch(() => null);
+      const parsed = parseRefreshResponse(res.status, body, refresh);
+      if (parsed.ok) {
+        await setTokens(parsed.tokens.accessToken, parsed.tokens.refreshToken);
+        return true;
+      }
+      if (isTerminalRefreshFailure(res.status)) {
+        // Refresh token rejected — session unrecoverable, force re-login.
+        await clearToken();
+        notifyAuthExpired();
+      }
+      return false;
+    } catch {
+      // Network/transient failure — keep the session; the next call retries.
+      return false;
+    } finally {
+      inflightRefresh = null;
+    }
+  })();
+  return inflightRefresh;
 }
 
 /**
@@ -34,10 +129,7 @@ function reportApiError(path: string, status: number): void {
   } catch { /* best-effort */ }
 }
 
-export async function api<T = unknown>(
-  path: string,
-  options: RequestInit = {}
-): Promise<T> {
+async function rawRequest(path: string, options: RequestInit): Promise<Response> {
   const token = await getToken();
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string>),
@@ -50,8 +142,33 @@ export async function api<T = unknown>(
   if (!(options.body instanceof FormData)) {
     headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
+  headers['X-App-Version'] = APP_VERSION;
 
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  return fetch(`${API_URL}${path}`, { ...options, headers });
+}
+
+/** Paths that must never trigger a refresh attempt on 401. */
+function isAuthEndpoint(path: string): boolean {
+  return path.startsWith('/auth/login') || path.startsWith('/auth/refresh');
+}
+
+export async function api<T = unknown>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  let res = await rawRequest(path, options);
+  observeServerDate(res.headers.get('date'));
+
+  // R5-108: on 401, refresh the 1-hour access token and retry exactly once.
+  // If the refresh itself is rejected, refreshAccessToken clears the session
+  // and routes the user to re-login — the original error still propagates.
+  if (res.status === 401 && !isAuthEndpoint(path)) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      res = await rawRequest(path, options);
+      observeServerDate(res.headers.get('date'));
+    }
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -68,7 +185,10 @@ export async function api<T = unknown>(
 
 export interface LoginResponse {
   access_token: string;
+  /** Present on current backend; optional for tolerance of older builds. */
+  refresh_token?: string;
   token_type: string;
+  expires_in?: number;
   user: { id: number; username: string; role: string; full_name: string; staff_id: string };
 }
 
@@ -77,9 +197,12 @@ export async function login(username: string, password: string): Promise<LoginRe
     method: 'POST',
     body: JSON.stringify({ username, password }),
   });
-  await setToken(data.access_token);
+  await setTokens(data.access_token, data.refresh_token ?? null);
   return data;
 }
+
+/** Server-corrected current time (see clock-sync.ts, R5-115). */
+export { correctedNowIso } from './clock-sync';
 
 export interface ObserverStats {
   total_observers: number;
@@ -440,16 +563,8 @@ export const disputeApi = {
 
 // ── Elections & Results API ──
 
-export interface Election {
-  id: number;
-  name: string;
-  type: string;
-  date: string;
-  status: string;
-  total_polling_units: number;
-  results_submitted: number;
-  registered_voters: number;
-}
+export type { Election } from './api-types';
+import type { Election } from './api-types';
 
 export interface Result {
   id: number;

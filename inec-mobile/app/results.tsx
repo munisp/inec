@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { electionApi, Result, CollationSummary } from '../src/lib/api';
+import { useResolvedElection } from '../src/lib/election';
 import { EmptyState } from '../src/components/EmptyState';
 import { CardSkeleton } from '../src/components/SkeletonLoader';
 
@@ -20,8 +21,15 @@ type CollationLevel = 'state' | 'lga' | 'ward';
 
 export default function ResultsScreen() {
   const params = useLocalSearchParams<{ election_id: string; election_name: string }>();
-  const electionId = parseInt(params.election_id || '1', 10);
-  const electionName = params.election_name || 'Election Results';
+  // R5-112: never silently default to election id 1. Use an explicit valid
+  // route param, otherwise the shared election resolver; while unresolved,
+  // no election-scoped request fires.
+  const paramId = parseInt(params.election_id || '', 10);
+  const {
+    electionId: resolvedId, election: resolvedElection, loading: electionLoading,
+  } = useResolvedElection();
+  const electionId = Number.isFinite(paramId) && paramId > 0 ? paramId : resolvedId;
+  const electionName = params.election_name || resolvedElection?.name || 'Election Results';
 
   const [mode, setMode] = useState<ViewMode>('results');
   const [level, setLevel] = useState<CollationLevel>('state');
@@ -32,6 +40,10 @@ export default function ResultsScreen() {
   const [dashStats, setDashStats] = useState<{ total_votes: number; results_count: number; polling_units: number; rejection_rate: number } | null>(null);
 
   const loadData = useCallback(async () => {
+    if (electionId == null) {
+      setLoading(false);
+      return;
+    }
     try {
       const [r, s] = await Promise.all([
         electionApi.results(electionId),
@@ -44,6 +56,7 @@ export default function ResultsScreen() {
   }, [electionId]);
 
   const loadCollation = useCallback(async () => {
+    if (electionId == null) return;
     try {
       const data = await electionApi.collation(electionId, level);
       setCollation(data);
@@ -60,7 +73,19 @@ export default function ResultsScreen() {
     setRefreshing(false);
   }, [loadData, loadCollation, mode]);
 
-  if (loading) return <View style={styles.container}><CardSkeleton /><CardSkeleton /></View>;
+  if (loading || electionLoading) return <View style={styles.container}><CardSkeleton /><CardSkeleton /></View>;
+
+  if (electionId == null) {
+    return (
+      <View style={styles.container}>
+        <EmptyState
+          icon="alert-circle-outline"
+          title="No election selected"
+          description="Could not resolve an election. Open this screen from the Elections list or check your connection."
+        />
+      </View>
+    );
+  }
 
   return (
     <ScrollView

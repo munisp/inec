@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { clearToken } from '../../src/lib/api';
+import { useI18n } from '../../src/lib/i18n';
 
 interface MenuItem {
   id: string;
@@ -23,6 +24,7 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
     items: [
       { id: 'elections', title: 'Elections', subtitle: 'View active elections', icon: 'podium-outline', color: '#166534', bg: '#dcfce7', route: '/elections' },
       { id: 'results', title: 'Results & Collation', subtitle: 'Live results by state and LGA', icon: 'bar-chart-outline', color: '#2563eb', bg: '#dbeafe', route: '/results' },
+      { id: 'result-capture', title: 'Result Capture', subtitle: 'Capture EC8A results (offline-first)', icon: 'create-outline', color: '#166534', bg: '#dcfce7', route: '/result-capture' },
       { id: 'voters', title: 'Voter Search', subtitle: 'Look up registered voters', icon: 'people-outline', color: '#0d9488', bg: '#ccfbf1', route: '/voter-search' },
     ],
   },
@@ -74,6 +76,8 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
 ];
 
 export default function MoreScreen() {
+  // R5-116: language switch (English / Hausa) for field officers.
+  const { language, setLanguage } = useI18n();
   const handleLogout = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Alert.alert('Logout', 'Are you sure you want to logout?', [
@@ -120,6 +124,29 @@ export default function MoreScreen() {
       ))}
 
       <View style={styles.section}>
+        <View style={styles.langRow}>
+          <TouchableOpacity
+            style={[styles.langButton, language === 'en' && styles.langButtonActive]}
+            onPress={() => setLanguage('en')}
+            accessibilityLabel="Switch language to English"
+            accessibilityRole="button"
+            accessibilityState={{ selected: language === 'en' }}
+          >
+            <Text style={[styles.langText, language === 'en' && styles.langTextActive]}>English</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.langButton, language === 'ha' && styles.langButtonActive]}
+            onPress={() => setLanguage('ha')}
+            accessibilityLabel="Canza harshe zuwa Hausa"
+            accessibilityRole="button"
+            accessibilityState={{ selected: language === 'ha' }}
+          >
+            <Text style={[styles.langText, language === 'ha' && styles.langTextActive]}>Hausa</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <View style={styles.section}>
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.8}>
           <Ionicons name="log-out-outline" size={20} color="#dc2626" />
           <Text style={styles.logoutText}>Logout</Text>
@@ -142,6 +169,11 @@ const styles = StyleSheet.create({
   menuText: { flex: 1 },
   menuTitle: { fontSize: 15, fontWeight: '600', color: '#111827' },
   menuSubtitle: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
+  langRow: { flexDirection: 'row', gap: 10 },
+  langButton: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb' },
+  langButtonActive: { backgroundColor: '#166534', borderColor: '#166534' },
+  langText: { fontSize: 14, fontWeight: '600', color: '#374151' },
+  langTextActive: { color: '#fff' },
   logoutButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#fff', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#fecaca' },
   logoutText: { fontSize: 15, fontWeight: '600', color: '#dc2626' },
   version: { textAlign: 'center', fontSize: 12, color: '#d1d5db', marginTop: 24, marginBottom: 40 },

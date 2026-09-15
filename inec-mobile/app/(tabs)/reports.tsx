@@ -1,21 +1,44 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Image, Alert, Platform, Animated,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from 'expo-router';
 import { observerApi, ObserverReport } from '../../src/lib/api';
-import { getPendingReports, savePendingReport, PendingReport } from '../../src/lib/offline';
+import { useResolvedElection } from '../../src/lib/election';
+import { getCurrentLocation } from '../../src/lib/location';
+import {
+  getPendingReports, queueReport, persistCapturedPhoto, PendingReport,
+} from '../../src/lib/offline';
+import { useI18n } from '../../src/lib/i18n';
 import { EmptyState } from '../../src/components/EmptyState';
 import { FeedSkeleton } from '../../src/components/SkeletonLoader';
+
+// R5-110: crash-safe draft — the in-progress report (text + persisted photo
+// reference) survives an app crash under camera memory pressure.
+const DRAFT_KEY = 'inec_report_draft_v1';
+
+interface ReportDraft {
+  puCode: string;
+  description: string;
+  photoUri: string | null;
+  photoSha256: string | null;
+  savedAt: string;
+}
+
+interface CapturedPhoto {
+  uri: string;
+  sha256: string;
+}
 
 export default function ReportsScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [showCamera, setShowCamera] = useState(false);
-  const [photo, setPhoto] = useState<string | null>(null);
+  const [photo, setPhoto] = useState<CapturedPhoto | null>(null);
   const [puCode, setPuCode] = useState('');
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -25,6 +48,42 @@ export default function ReportsScreen() {
   const [loading, setLoading] = useState(true);
   const cameraRef = useRef<CameraView>(null);
   const buttonScale = useRef(new Animated.Value(1)).current;
+  // R5-107: the backend requires election_id — resolve it from the shared
+  // election context; submission is gated until it resolves.
+  const { electionId, loading: electionLoading, error: electionError } = useResolvedElection();
+  const { t } = useI18n();
+
+  // Restore an unsent draft after a crash/restart.
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(DRAFT_KEY);
+        if (!raw) return;
+        const draft = JSON.parse(raw) as ReportDraft;
+        if (draft.puCode) setPuCode(draft.puCode);
+        if (draft.description) setDescription(draft.description);
+        if (draft.photoUri && draft.photoSha256) {
+          setPhoto({ uri: draft.photoUri, sha256: draft.photoSha256 });
+        }
+      } catch { /* corrupt draft — start fresh */ }
+    })();
+  }, []);
+
+  // Persist the draft on every change (best-effort).
+  useEffect(() => {
+    if (!puCode && !description && !photo) return;
+    const draft: ReportDraft = {
+      puCode, description,
+      photoUri: photo?.uri ?? null,
+      photoSha256: photo?.sha256 ?? null,
+      savedAt: new Date().toISOString(),
+    };
+    AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft)).catch(() => {});
+  }, [puCode, description, photo]);
+
+  const clearDraft = useCallback(() => {
+    AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
+  }, []);
 
   const loadReports = useCallback(async () => {
     try {
@@ -56,7 +115,16 @@ export default function ReportsScreen() {
 
     const result = await cameraRef.current.takePictureAsync({ quality: 0.8 });
     if (result) {
-      setPhoto(result.uri);
+      // R5-110: the camera cache URI is volatile — persist the photo into
+      // app-owned storage and pin its SHA-256 immediately, or the queued
+      // upload can silently break/change later.
+      const persisted = await persistCapturedPhoto(result.uri);
+      if (!persisted) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Photo Error', 'Could not save the photo. Please retake it.');
+        return;
+      }
+      setPhoto(persisted);
       setShowCamera(false);
     }
   };
@@ -67,27 +135,65 @@ export default function ReportsScreen() {
       Alert.alert('Required', 'Enter the Polling Unit code');
       return;
     }
+    if (!photo) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Required', 'Take a photo of the EC8A form — the backend requires photo evidence');
+      return;
+    }
+    if (!electionId) {
+      // R5-107: never submit/queue without a resolved election id.
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Election Unavailable',
+        electionError
+          ? `Could not resolve the active election (${electionError}). Check your connection and retry.`
+          : 'Still resolving the active election — please wait a moment and retry.'
+      );
+      return;
+    }
 
     setSubmitting(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
+    const location = await getCurrentLocation().catch(() => null);
+
     try {
       const form = new FormData();
       form.append('polling_unit_code', puCode);
-      form.append('notes', description || '');
-      if (photo) {
-        const filename = photo.split('/').pop() || 'photo.jpg';
-        form.append('photo', { uri: photo, name: filename, type: 'image/jpeg' } as unknown as Blob);
+      form.append('election_id', String(electionId));
+      form.append('report_type', 'result_photo');
+      // R5-107: the backend reads `description`, not `notes`.
+      form.append('description', description || '');
+      if (location) {
+        form.append('latitude', String(location.latitude));
+        form.append('longitude', String(location.longitude));
       }
+      const filename = photo.uri.split('/').pop() || 'photo.jpg';
+      form.append('photo', { uri: photo.uri, name: filename, type: 'image/jpeg' } as unknown as Blob);
       await observerApi.submitReport(form);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setPuCode('');
       setDescription('');
       setPhoto(null);
+      clearDraft();
       loadReports();
     } catch {
-      await savePendingReport(puCode, description, photo || '');
+      // Offline/server failure — queue with the REAL election id (no sentinel).
+      await queueReport({
+        polling_unit_code: puCode,
+        election_id: electionId,
+        report_type: 'result_photo',
+        photo_uri: photo.uri,
+        photo_sha256: photo.sha256,
+        description,
+        latitude: location?.latitude ?? 0,
+        longitude: location?.longitude ?? 0,
+      });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setPuCode('');
+      setDescription('');
+      setPhoto(null);
+      clearDraft();
       const pending = await getPendingReports();
       setPendingReports(pending);
     } finally {
@@ -103,15 +209,13 @@ export default function ReportsScreen() {
             <View style={styles.permissionIcon}>
               <Ionicons name="camera" size={32} color="#166534" />
             </View>
-            <Text style={styles.permissionTitle}>Camera Access Needed</Text>
-            <Text style={styles.permissionDesc}>
-              Take photos of EC8A result sheets for verification and evidence
-            </Text>
+            <Text style={styles.permissionTitle}>{t('reports.cameraAccess')}</Text>
+            <Text style={styles.permissionDesc}>{t('reports.cameraAccessDesc')}</Text>
             <TouchableOpacity style={styles.permissionButton} onPress={requestPermission} activeOpacity={0.8}>
-              <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
+              <Text style={styles.permissionButtonText}>{t('reports.grantCamera')}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowCamera(false)}>
-              <Text style={styles.cancelText}>Cancel</Text>
+              <Text style={styles.cancelText}>{t('reports.cancel')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -126,7 +230,7 @@ export default function ReportsScreen() {
               <TouchableOpacity onPress={() => setShowCamera(false)} style={styles.cameraCloseBtn}>
                 <Ionicons name="close" size={24} color="#fff" />
               </TouchableOpacity>
-              <Text style={styles.cameraHint}>Align EC8A form within frame</Text>
+              <Text style={styles.cameraHint}>{t('reports.alignFrame')}</Text>
             </View>
             <View style={styles.cameraFrame}>
               <View style={[styles.corner, { top: 0, left: 0 }]} />
@@ -151,64 +255,86 @@ export default function ReportsScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.formCard}>
-        <Text style={styles.formTitle}>New Report</Text>
+        <Text style={styles.formTitle}>{t('reports.title')}</Text>
 
         {photo && (
           <View style={styles.photoPreview}>
-            <Image source={{ uri: photo }} style={styles.previewImage} />
-            <TouchableOpacity style={styles.removePhoto} onPress={() => { setPhoto(null); Haptics.selectionAsync(); }}>
+            <Image
+              source={{ uri: photo.uri }}
+              style={styles.previewImage}
+              accessibilityLabel="Photo of the EC8A result sheet"
+            />
+            <TouchableOpacity
+              style={styles.removePhoto}
+              onPress={() => { setPhoto(null); Haptics.selectionAsync(); }}
+              accessibilityLabel="Remove photo"
+              accessibilityRole="button"
+            >
               <Ionicons name="close-circle" size={24} color="#dc2626" />
             </TouchableOpacity>
           </View>
         )}
 
-        <TouchableOpacity style={styles.cameraButton} onPress={() => setShowCamera(true)} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.cameraButton}
+          onPress={() => setShowCamera(true)}
+          activeOpacity={0.7}
+          accessibilityLabel={photo ? 'Retake photo of EC8A form' : 'Take photo of EC8A form'}
+          accessibilityRole="button"
+        >
           <View style={styles.cameraButtonIcon}>
             <Ionicons name="camera" size={20} color="#166534" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.cameraButtonText}>{photo ? 'Retake Photo' : 'Take Photo of EC8A Form'}</Text>
-            <Text style={styles.cameraButtonHint}>Photograph the result sheet for verification</Text>
+            <Text style={styles.cameraButtonText}>{photo ? t('reports.retakePhoto') : t('reports.takePhoto')}</Text>
+            <Text style={styles.cameraButtonHint}>{t('reports.photoHint')}</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
         </TouchableOpacity>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Polling Unit Code</Text>
+          <Text style={styles.label}>{t('reports.puCode')}</Text>
           <View style={styles.inputWrapper}>
             <Ionicons name="location-outline" size={16} color="#9ca3af" style={{ marginLeft: 12 }} />
             <TextInput
               style={styles.input}
-              placeholder="e.g. PU-23-014-001"
+              placeholder={t('reports.puCodePlaceholder')}
               placeholderTextColor="#9ca3af"
               value={puCode}
               onChangeText={setPuCode}
               autoCapitalize="characters"
+              accessibilityLabel="Polling unit code"
             />
           </View>
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Description (optional)</Text>
+          <Text style={styles.label}>{t('reports.description')}</Text>
           <TextInput
             style={styles.textArea}
-            placeholder="Any observations about the results or process..."
+            placeholder={t('reports.descriptionPlaceholder')}
             placeholderTextColor="#9ca3af"
             value={description}
             onChangeText={setDescription}
             multiline
             numberOfLines={3}
+            accessibilityLabel="Report description, optional"
           />
         </View>
 
         <TouchableOpacity
-          style={[styles.submitButton, submitting && styles.submitDisabled]}
+          style={[styles.submitButton, (submitting || electionLoading) && styles.submitDisabled]}
           onPress={submit}
-          disabled={submitting}
+          disabled={submitting || electionLoading}
           activeOpacity={0.8}
+          accessibilityLabel="Submit observer report"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: submitting || electionLoading, busy: submitting }}
         >
           <Ionicons name={submitting ? 'hourglass-outline' : 'cloud-upload'} size={18} color="#fff" />
-          <Text style={styles.submitText}>{submitting ? 'Submitting...' : 'Submit Report'}</Text>
+          <Text style={styles.submitText}>
+            {submitting ? t('reports.submitting') : electionLoading ? t('reports.resolvingElection') : t('reports.submit')}
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -217,7 +343,7 @@ export default function ReportsScreen() {
           <View style={styles.sectionHeader}>
             <View style={styles.pendingBadge}>
               <Ionicons name="cloud-upload-outline" size={14} color="#92400e" />
-              <Text style={styles.pendingText}>{pendingReports.length} Pending Upload</Text>
+              <Text style={styles.pendingText}>{pendingReports.length} {t('reports.pendingUpload')}</Text>
             </View>
           </View>
           {pendingReports.map((r) => (
@@ -226,6 +352,11 @@ export default function ReportsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.pendingPU}>{r.polling_unit_code}</Text>
                 <Text style={styles.pendingDesc}>{r.description || 'No description'}</Text>
+                {r.last_error ? (
+                  <Text style={styles.pendingError} numberOfLines={1}>
+                    {r.attempts} attempt{r.attempts === 1 ? '' : 's'} — {r.last_error}
+                  </Text>
+                ) : null}
               </View>
             </View>
           ))}
@@ -233,7 +364,7 @@ export default function ReportsScreen() {
       )}
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Submitted Reports</Text>
+        <Text style={styles.sectionTitle}>{t('reports.submittedReports')}</Text>
         {loading ? <FeedSkeleton /> : reports.length > 0 ? (
           reports.map((r) => (
             <View key={r.id} style={styles.reportCard}>
@@ -254,8 +385,8 @@ export default function ReportsScreen() {
         ) : (
           <EmptyState
             icon="document-text-outline"
-            title="No reports yet"
-            description="Submit your first observer report to help verify election results"
+            title={t('reports.noReports')}
+            description={t('reports.noReportsDesc')}
           />
         )}
       </View>
@@ -367,6 +498,7 @@ const styles = StyleSheet.create({
   },
   pendingPU: { fontSize: 14, fontWeight: '600', color: '#111827' },
   pendingDesc: { fontSize: 12, color: '#6b7280', marginTop: 2 },
+  pendingError: { fontSize: 11, color: '#b45309', marginTop: 2 },
   reportCard: {
     flexDirection: 'row',
     alignItems: 'center',

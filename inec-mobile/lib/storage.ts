@@ -243,6 +243,13 @@ export async function markPledgeSynced(id: number): Promise<void> {
   await database.runAsync("UPDATE pending_pledges SET sync_status = 'synced' WHERE id = ?", id);
 }
 
+// R5-114: park a pledge that lost a conflict (or failed) instead of marking
+// it synced — the local record is retained for review, not discarded.
+export async function markPledgeFailed(id: number): Promise<void> {
+  const database = await getDB();
+  await database.runAsync("UPDATE pending_pledges SET sync_status = 'failed' WHERE id = ?", id);
+}
+
 // ─── Location Queue ────────────────────────────────────────────────────────
 
 export async function saveLocation(loc: Omit<PendingLocationUpdate, 'id' | 'sync_status'>): Promise<void> {

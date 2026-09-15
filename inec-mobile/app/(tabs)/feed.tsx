@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { fetch as expoFetch } from 'expo/fetch';
 import { observerApi, getToken, API_URL, ObserverStats } from '../../src/lib/api';
-import { syncPendingData, getPendingReportCount } from '../../src/lib/offline';
+import { syncPendingData, syncPendingResults, getPendingReportCount } from '../../src/lib/offline';
 import { EmptyState } from '../../src/components/EmptyState';
 import { StatsSkeleton } from '../../src/components/SkeletonLoader';
 
@@ -143,6 +143,7 @@ export default function FeedScreen() {
     await Promise.all([
       loadStats(),
       syncPendingData(),
+      syncPendingResults(),
       getPendingReportCount().then(setPendingCount),
     ]);
     setRefreshing(false);

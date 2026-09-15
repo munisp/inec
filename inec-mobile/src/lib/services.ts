@@ -13,7 +13,7 @@
  *   compliance-svc  → /compliance/*
  */
 
-import { api, API_URL, getToken } from './api';
+import { api } from './api';
 
 // --- Auth ---
 
@@ -48,8 +48,10 @@ export const electionService = {
 
   get: (id: number) => api<Election>(`/elections/${id}`),
 
-  submitResult: (data: Record<string, unknown>) =>
-    api('/results/submit', { method: 'POST', body: JSON.stringify(data) }),
+  // R5-106: result submission now lives in the offline-first outbox
+  // (src/lib/offline.ts → /results/submit with idempotency key, or batched
+  // through /ingestion/offline-sync). The old direct submitResult was dead
+  // code with no connectivity handling — removed.
 
   getDashboardStats: (electionId: number) =>
     api(`/dashboard/stats?election_id=${electionId}`),
