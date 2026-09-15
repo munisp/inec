@@ -30,7 +30,8 @@ Attach a tools pod to the PVC or `kubectl cp` from the most recent
 `db-backup` CronJob pod:
 
 ```sh
-kubectl get jobs -n inec -l app.kubernetes.io/component=backup
+# label matches helm/inec-platform/templates/db-backup-cronjob.yaml:
+kubectl get jobs -n inec -l app.kubernetes.io/name=<release>-db-backup
 # list available backups (from any pod mounting the PVC, or locally):
 deploy/backup/restore.sh --list --backup-dir /backups
 ```
@@ -59,6 +60,9 @@ The script:
 
 Post-cutover checklist:
 - [ ] backend pods reconnect (roll restart: `kubectl rollout restart deploy/<release>-backend`)
+- [ ] gotv-svc pods reconnect too — `helm/inec-platform/templates/deployment-gotv.yaml`
+      uses the SAME `<release>-db-credentials` DATABASE_URL, and the gateway
+      routes `/gotv/*` to it (`kubectl rollout restart deploy/<release>-gotv`)
 - [ ] `/healthz` and `/readiness` green
 - [ ] spot-check: latest result submissions present, collation totals match
       the blockchain-attested tally where available
@@ -76,6 +80,13 @@ this during an incident — rehearse in the drill from section 0.
 ## 4. What this runbook does NOT cover
 
 - Cross-region failover: no standby region exists in any committed manifest.
-- Redis: rate-limit/idempotency state — rebuilt organically; not backed up.
-- Kafka: topics are RF=3 in the compose reference topology (R5-085), but
-  message restore is not covered by database backups.
+- Redis: the helm chart deploys the Bitnami subchart with
+  `architecture: replication` and `replica.replicaCount: 3`
+  (`helm/inec-platform/values.yaml`) behind `<release>-redis-master`, so a
+  single pod loss self-heals via sentinel. Its contents (rate-limit counters,
+  idempotency keys, cache) are NOT backed up — after a full cluster loss,
+  in-flight idempotency dedup windows reset; clients must tolerate retries.
+- Kafka: topics are created RF=3 in the compose reference topology
+  (docker-compose.yml broker env + topic-init; R5-085), but message restore
+  is not covered by database backups — events between the last pg_dump and
+  the incident are lost.

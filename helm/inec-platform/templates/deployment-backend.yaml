@@ -25,13 +25,21 @@ spec:
       serviceAccountName: {{ .Release.Name }}-backend
       terminationGracePeriodSeconds: {{ .Values.backend.terminationGracePeriodSeconds | default 30 }}
       securityContext:
+        # inec-go-backend/Dockerfile creates uid/gid 10001 (`app`).
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: backend
           image: "{{ .Values.global.imageRegistry }}/{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Values.global.tag }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          # R5-093: container hardening — the Go binary only writes to the
+          # /data PVC, so the root filesystem can be read-only.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: http
@@ -42,9 +50,9 @@ spec:
           env:
             {{- range $key, $value := .Values.backend.env }}
             - name: {{ $key }}
-              # tpl: values.yaml embeds {{ .Release.Name }} references in env
-              # values; render them (plain `quote` passes the literal braces
-              # through to the container — R5-093).
+              # tpl: values.yaml embeds Release.Name references in env values;
+              # render them (plain `quote` passes the literal braces through
+              # to the container).
               value: {{ tpl $value $ | quote }}
             {{- end }}
             - name: DB_PASSWORD

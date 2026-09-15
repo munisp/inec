@@ -28,13 +28,19 @@ spec:
     spec:
       serviceAccountName: {{ .Release.Name }}-backend
       securityContext:
+        # inec-go-backend/Dockerfile creates uid/gid 10001 (`app`).
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: backend
           image: "{{ .Values.global.imageRegistry }}/{{ .Values.canary.image.repository | default .Values.backend.image.repository }}:{{ .Values.canary.image.tag | default .Values.global.tag }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: http

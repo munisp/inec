@@ -38,7 +38,13 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: gotv-svc
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/gotv-svc:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-services-gotv-svc:latest
+          # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8100
               name: http
@@ -119,7 +125,13 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: gotv-engine
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/gotv-engine:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-services-gotv-engine:latest
+          # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8095
               name: http
@@ -212,7 +224,13 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: inference-engine
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/inference-engine:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-services-inference-engine:latest
+          # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8091
               name: http
@@ -278,7 +296,13 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: fluvio-stream
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/fluvio-stream:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-services-fluvio-stream:latest
+          # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 9003
               name: http
@@ -351,7 +375,13 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: gotv-analytics
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/gotv-analytics:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-services-gotv-analytics:latest
+          # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Python image: writes interpreter temp files
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8102
               name: http
@@ -415,7 +445,13 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: lakehouse-analytics
-          image: ghcr.io/REPLACE_WITH_YOUR_ORG/lakehouse-analytics:REPLACE_WITH_RELEASE_TAG
+          image: ghcr.io/munisp/inec-analytics:latest
+          # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Python image: writes interpreter temp files
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8105
               name: http

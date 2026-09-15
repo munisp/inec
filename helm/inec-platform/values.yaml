@@ -1,14 +1,32 @@
 # INEC Platform Helm Values
 # Environment: production | staging | development
 
+# Database backup (db-backup-cronjob.yaml: 6-hourly pg_dump to a PVC)
+backup:
+  storageSize: 50Gi
+  storageClass: standard
+
+# Canary rollout (canary-deployment.yaml) — disabled by default; enable for
+# staged releases. Uses the backend image unless overridden.
+canary:
+  enabled: false
+  replicas: 1
+  image: {}
+  resources: {}
+
+
 global:
   environment: production
   domain: inec.gov.ng
-  # Container registry that hosts the platform images. Replace before deploying.
-  imageRegistry: ghcr.io/REPLACE_WITH_YOUR_ORG
-  # Default image tag for all services. Pin to an immutable release tag or
-  # digest in production; never deploy "latest".
-  tag: "REPLACE_WITH_RELEASE_TAG"
+  # Container registry that hosts the platform images. Matches the CI/CD
+  # push target: ghcr.io/<owner>/inec-* (.github/workflows/ci.yml, cd.yml;
+  # module org github.com/munisp/inec).
+  imageRegistry: ghcr.io/munisp
+  # Default image tag. CI pushes both :<git-sha> and :latest to GHCR on every
+  # main merge (.github/workflows/ci.yml docker push steps; cd.yml
+  # metadata-action). Pin to an immutable sha tag for releases; "latest"
+  # always resolves to the most recent main build.
+  tag: "latest"
 
 # Backend (Go)
 backend:
@@ -85,42 +103,10 @@ frontend:
       memory: "256Mi"
       cpu: "500m"
 
-# ML Inference Server (Python)
-inference:
-  enabled: true
-  replicaCount: 2
-  image:
-    repository: inec-inference
-    tag: ""  # defaults to global.tag
-  service:
-    port: 8090
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "500m"
-    limits:
-      memory: "2Gi"
-      cpu: "2000m"
-
-# Rust Inference Engine
-rustInference:
-  enabled: true
-  replicaCount: 2
-  image:
-    repository: inec-rust-inference
-    tag: ""  # defaults to global.tag
-  service:
-    port: 8091
-  resources:
-    requests:
-      memory: "256Mi"
-      cpu: "250m"
-    limits:
-      memory: "1Gi"
-      cpu: "1000m"
-
 # GOTV/campaign API (Go, inec-go-backend/cmd/gotv-svc, port 8103)
 # Serves the frontend's same-origin /gotv/* calls (R5-089).
+# Image built from inec-go-backend/Dockerfile.service with
+# SERVICE_NAME=gotv-svc (same build pattern as the CI inec-backend image).
 gotv:
   enabled: true
   replicaCount: 2

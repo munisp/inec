@@ -14,6 +14,15 @@
 | **RPO (Recovery Point Objective)** | **0 seconds** (synchronous replication) | Every vote is constitutionally significant; zero data loss |
 | **MTTR (Mean Time To Repair)** | **< 10 minutes** | Automated failover for most scenarios |
 
+> **§1 reality note (R5-084):** the RPO-0/synchronous-replication row above is
+> the *target*, not the deployed state. No committed manifest configures
+> synchronous PostgreSQL replication or WAL archiving — the only backup that
+> exists today is the 6-hourly `pg_dump` CronJob
+> (`helm/inec-platform/templates/db-backup-cronjob.yaml`), so the achievable
+> RPO is **up to 6 hours** until `deploy/backup/postgresql-pitr.conf` is
+> provisioned (EXTERNAL: object storage + wal-g). RTO is likewise unrehearsed —
+> see `deploy/backup/RESTORE_RUNBOOK.md` §0.
+
 ### Tiered Recovery
 
 | Tier | Scope | RTO | RPO |

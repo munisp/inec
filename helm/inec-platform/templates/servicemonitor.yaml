@@ -19,3 +19,30 @@ spec:
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace }}
+---
+# R5-094: gotv-svc exposes Prometheus /metrics (cmd/gotv-svc/main.go
+# r.Handle("/metrics", metricsHandler())) — it was the only helm-deployed
+# service with /metrics but no ServiceMonitor.
+{{- if .Values.gotv.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-gotv
+  labels:
+    app.kubernetes.io/name: inec-gotv
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inec-gotv
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

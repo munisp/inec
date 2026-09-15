@@ -13,6 +13,19 @@ groups:
           description: "The INEC backend has been unreachable for >1 minute. Election operations are halted."
           runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/backend-down.md"
 
+      # R5-094: gotv-svc serves all /gotv/* campaign traffic — its loss is
+      # silent without a scrape target, hence the new gotv-svc job.
+      - alert: GOTVServiceDown
+        expr: up{job="gotv-svc"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "GOTV service is DOWN"
+          description: "gotv-svc (/gotv/* campaign and field-operations API) has been unreachable for >2 minutes."
+          runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/backend-down.md"
+
       - alert: INECHighErrorRate
         expr: |
           sum(rate(inec_http_requests_total{status=~"5.."}[5m]))
