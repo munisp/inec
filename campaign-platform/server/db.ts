@@ -503,22 +503,133 @@ export async function getWarRoomIncidents(profileId: number) {
     .orderBy(desc(schema.warRoomIncidents.reportedAt));
 }
 
-export async function addWarRoomIncident(data: typeof schema.warRoomIncidents.$inferInsert) {
+async function writeIncidentAudit(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  entry: Omit<typeof schema.warRoomIncidentAudit.$inferInsert, "id">,
+) {
+  await db.insert(schema.warRoomIncidentAudit).values(entry);
+}
+
+export async function addWarRoomIncident(
+  data: typeof schema.warRoomIncidents.$inferInsert,
+  actor?: string,
+) {
   const db = getDb();
   if (!db) return null;
   const rows = await db.insert(schema.warRoomIncidents).values(data).returning();
+  if (rows[0]) {
+    // R5-098: every lifecycle event is audited from creation onward.
+    await writeIncidentAudit(db, {
+      incidentId: rows[0].id, action: "created", actor: actor ?? null,
+      toStatus: rows[0].status ?? "open",
+      detail: `${rows[0].severity ?? "medium"}${rows[0].incidentType ? ` ${rows[0].incidentType}` : ""} incident reported${rows[0].lga ? ` in ${rows[0].lga}` : ""}`,
+    });
+  }
   return rows[0];
 }
 
-export async function updateIncidentStatus(id: number, status: "open" | "escalated" | "resolved") {
+export async function updateIncidentStatus(
+  id: number,
+  status: "open" | "escalated" | "resolved",
+  actor?: string,
+) {
   const db = getDb();
   if (!db) return null;
+  const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
   const rows = await db
     .update(schema.warRoomIncidents)
     .set({ status, resolvedAt: status === "resolved" ? new Date() : null })
     .where(eq(schema.warRoomIncidents.id, id))
     .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "status_changed", actor: actor ?? null,
+      fromStatus: prev[0]?.status ?? null, toStatus: status,
+    });
+  }
   return rows[0];
+}
+
+/** R5-098: assign an incident to a responder/team, with audit. */
+export async function assignIncident(id: number, assignedTo: string, actor?: string) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .update(schema.warRoomIncidents)
+    .set({ assignedTo })
+    .where(eq(schema.warRoomIncidents.id, id))
+    .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "assigned", actor: actor ?? null,
+      fromStatus: rows[0].status ?? null, toStatus: rows[0].status ?? null,
+      detail: `assigned to ${assignedTo}`,
+    });
+  }
+  return rows[0];
+}
+
+/**
+ * R5-098: escalate an incident to an external authority (security agency,
+ * INEC, neutral observer, party HQ). Records who was notified and when —
+ * previously escalation went nowhere and owner notification was best-effort.
+ */
+export async function escalateIncident(
+  id: number,
+  escalatedTo: string,
+  note: string | undefined,
+  actor?: string,
+) {
+  const db = getDb();
+  if (!db) return null;
+  const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
+  const rows = await db
+    .update(schema.warRoomIncidents)
+    .set({
+      status: "escalated",
+      escalatedTo,
+      escalatedAt: new Date(),
+      escalationNote: note ?? null,
+    })
+    .where(eq(schema.warRoomIncidents.id, id))
+    .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "escalated", actor: actor ?? null,
+      fromStatus: prev[0]?.status ?? null, toStatus: "escalated",
+      detail: `escalated to ${escalatedTo}${note ? `: ${note}` : ""}`,
+    });
+  }
+  return rows[0];
+}
+
+/** R5-098: resolve an incident with audit. */
+export async function resolveIncident(id: number, actor?: string) {
+  const db = getDb();
+  if (!db) return null;
+  const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
+  const rows = await db
+    .update(schema.warRoomIncidents)
+    .set({ status: "resolved", resolvedAt: new Date() })
+    .where(eq(schema.warRoomIncidents.id, id))
+    .returning();
+  if (rows[0]) {
+    await writeIncidentAudit(db, {
+      incidentId: id, action: "resolved", actor: actor ?? null,
+      fromStatus: prev[0]?.status ?? null, toStatus: "resolved",
+    });
+  }
+  return rows[0];
+}
+
+export async function getIncidentAudit(incidentId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.warRoomIncidentAudit)
+    .where(eq(schema.warRoomIncidentAudit.incidentId, incidentId))
+    .orderBy(desc(schema.warRoomIncidentAudit.createdAt));
 }
 
 export async function getFieldAgents(profileId: number) {

@@ -1,7 +1,7 @@
 import {
   pgTable, serial, text, varchar, integer, boolean,
   timestamp, pgEnum, jsonb, real, date, unique, numeric, uniqueIndex, index,
-  primaryKey
+  primaryKey, doublePrecision
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -220,10 +220,36 @@ export const warRoomIncidents = pgTable("war_room_incidents", {
   description: text("description").notNull(),
   severity: incidentSeverityEnum("severity").default("medium"),
   status: incidentStatusEnum("status").default("open"),
+  // R5-098: geo, evidence, time-of-occurrence, escalation and rival-party
+  // attribution fields — previously the UI only captured free text + severity.
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
+  evidenceUrl: text("evidence_url"),
+  occurredAt: timestamp("occurred_at"),
+  assignedTo: varchar("assigned_to", { length: 200 }),
+  escalatedTo: varchar("escalated_to", { length: 100 }),
+  escalatedAt: timestamp("escalated_at"),
+  escalationNote: text("escalation_note"),
+  oppositionEntryId: integer("opposition_entry_id").references(() => oppositionResearch.id),
   reportedAt: timestamp("reported_at").defaultNow().notNull(),
   resolvedAt: timestamp("resolved_at"),
 });
 export type WarRoomIncident = typeof warRoomIncidents.$inferSelect;
+
+// R5-098: append-only audit trail for the incident escalation workflow —
+// every create/assign/escalate/resolve/status change is recorded with actor
+// and timestamp so election-day triage is tribunal-evidence grade.
+export const warRoomIncidentAudit = pgTable("war_room_incident_audit", {
+  id: serial("id").primaryKey(),
+  incidentId: integer("incident_id").notNull().references(() => warRoomIncidents.id),
+  action: varchar("action", { length: 30 }).notNull(),
+  actor: varchar("actor", { length: 200 }),
+  fromStatus: varchar("from_status", { length: 20 }),
+  toStatus: varchar("to_status", { length: 20 }),
+  detail: text("detail"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type WarRoomIncidentAudit = typeof warRoomIncidentAudit.$inferSelect;
 
 // ─── War Room Field Agents ────────────────────────────────────────────────────
 export const fieldAgents = pgTable("field_agents", {

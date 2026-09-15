@@ -526,12 +526,25 @@ export const appRouter = router({
         description: z.string(),
         lga: z.string().optional(),
         pollingUnit: z.string().optional(),
+        // R5-098: category/geo/evidence/occurrence/attribution — the schema
+        // columns existed but no input path wrote them.
+        incidentType: z.enum(["violence", "vote_buying", "inec_failure", "intimidation", "logistics", "other"]).optional(),
+        latitude: z.number().min(-90).max(90).optional(),
+        longitude: z.number().min(-180).max(180).optional(),
+        evidenceUrl: z.string().max(500).optional(),
+        occurredAt: z.string().optional(),
+        oppositionEntryId: z.number().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         // FIX: war_room_incidents has `pu_name`, not `polling_unit` — map the
         // client key onto the real column instead of silently dropping it.
-        const { pollingUnit, ...rest } = input;
-        const incident = await db.addWarRoomIncident({ ...rest, puName: pollingUnit } as any);
+        const { pollingUnit, occurredAt, ...rest } = input;
+        const incident = await db.addWarRoomIncident({
+          ...rest,
+          puName: pollingUnit,
+          occurredAt: occurredAt ? new Date(occurredAt) : undefined,
+          reportedBy: ctx.user?.username ?? ctx.user?.fullName ?? undefined,
+        } as any, ctx.user?.username);
         if (input.severity === "critical" || input.severity === "high") {
           try {
             await notifyOwner({
@@ -550,9 +563,56 @@ export const appRouter = router({
         // value for authz; resolve the owning profile from the incident row.
         const { warRoomIncidents } = await import("../drizzle/schema");
         const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
-        const result = await db.updateIncidentStatus(input.id, input.status as any);
+        const result = await db.updateIncidentStatus(input.id, input.status as any, ctx.user?.username);
         broadcastWarRoomUpdate(input.profileId ?? profileId);
         return result;
+      }),
+    // R5-098: escalation workflow — assign to a responder, escalate to an
+    // external authority (timestamped, audited), resolve with audit trail.
+    assignIncident: protectedProcedure
+      .input(z.object({ id: z.number(), assignedTo: z.string().min(1).max(200), profileId: z.number().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
+        const result = await db.assignIncident(input.id, input.assignedTo, ctx.user?.username);
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
+        return result;
+      }),
+    escalateIncident: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        escalatedTo: z.enum(["security_agency", "inec", "neutral_observer", "party_hq"]),
+        note: z.string().max(1000).optional(),
+        profileId: z.number().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
+        const result = await db.escalateIncident(input.id, input.escalatedTo, input.note, ctx.user?.username);
+        try {
+          await notifyOwner({
+            title: `🚨 Incident ESCALATED to ${input.escalatedTo.replace(/_/g, " ")}`,
+            content: `Incident #${input.id} escalated by ${ctx.user?.username ?? "unknown"}${input.note ? `: ${input.note}` : ""}`,
+          });
+        } catch { /* notification failure must not block the escalation record */ }
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
+        return result;
+      }),
+    resolveIncident: protectedProcedure
+      .input(z.object({ id: z.number(), profileId: z.number().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        const profileId = await assertRowAccess(ctx.user, warRoomIncidents, input.id, "manager");
+        const result = await db.resolveIncident(input.id, ctx.user?.username);
+        broadcastWarRoomUpdate(input.profileId ?? profileId);
+        return result;
+      }),
+    incidentAudit: protectedProcedure
+      .input(z.object({ incidentId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const { warRoomIncidents } = await import("../drizzle/schema");
+        await assertRowAccess(ctx.user, warRoomIncidents, input.incidentId, "viewer");
+        return db.getIncidentAudit(input.incidentId);
       }),
     agents: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
