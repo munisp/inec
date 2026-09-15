@@ -143,7 +143,7 @@ services:
     depends_on:
     - go-backend
     - redis
-    - kafka
+    - kafka-1
     image: daprio/dapr:1.12.0
     network_mode: service:go-backend
     volumes:
@@ -214,7 +214,7 @@ services:
     environment:
     - RUST_LOG=info
     - PORT=9091
-    - KAFKA_BROKERS=kafka:29092
+    - KAFKA_BROKERS=kafka-1:29092,kafka-2:29092,kafka-3:29092
     - REDIS_NODES=redis://redis:6379
     - FLUVIO_ENDPOINT=fluvio-sc:9003
     healthcheck:
@@ -267,18 +267,24 @@ services:
     - 3000:80
 
   go-backend:
-    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
+    # R5-092: raised from 512Mi/1.0 CPU. The monolith hosts 500+ routes, WS
+    # hubs, collation caches and the in-memory ingestion queue; at the
+    # k6 election-day profile (~200 rps POST /results/submit peak, see
+    # loadtest/k6_election_day.js sizing note) 512Mi OOMs and 1 CPU throttles.
+    # 4Gi/2 CPU is the dev/reference floor; production sizing must be
+    # re-validated against the k6 run on production-like hardware (the helm
+    # chart carries its own requests/limits).
     restart: unless-stopped
-    mem_limit: 512M
-    cpus: 1.0
+    mem_limit: 4G
+    cpus: 2.0
     build:
       context: ./inec-go-backend
       dockerfile: Dockerfile
     depends_on:
       apisix:
         condition: service_started
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       keycloak:
         condition: service_started
       lakehouse:
@@ -318,7 +324,7 @@ services:
     - PGPOOL_PCP_HOST=pgpool
     - PGPOOL_PCP_PORT=9898
     - REDIS_URL=redis://redis:6379/0
-    - KAFKA_BROKERS=kafka:29092
+    - KAFKA_BROKERS=kafka-1:29092,kafka-2:29092,kafka-3:29092
     - TEMPORAL_HOSTPORT=temporal:7233
     - TEMPORAL_NAMESPACE=default
     - DAPR_HTTP_PORT=3500
@@ -394,14 +400,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
     environment:
     - APP_ENV=${APP_ENV:?APP_ENV must be set}
     - INEC_ENV=${INEC_ENV:?INEC_ENV must be set}
     - DATABASE_URL=postgres://${PG_USER:?PG_USER must be set}:${PG_PASSWORD:?PG_PASSWORD must be set}@pgpool:5432/${PG_DB:?PG_DB must be set}?sslmode=disable
     - REDIS_URL=redis://redis:6379/2
-    - KAFKA_BROKERS=kafka:29092
+    - KAFKA_BROKERS=kafka-1:29092,kafka-2:29092,kafka-3:29092
     - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
     # gotv-svc fail-fast requirements in production (see cmd/gotv-svc/main.go)
     - INTERNAL_SERVICE_SECRET=${INTERNAL_SERVICE_SECRET:?INTERNAL_SERVICE_SECRET must be set}
@@ -532,24 +538,33 @@ services:
     - inec-network
     restart: unless-stopped
 
-  kafka:
+  # R5-085: 3-broker KRaft cluster. The previous single broker with
+  # *_REPLICATION_FACTOR: 1 meant one disk loss destroyed the only copy of
+  # the result/audit event streams. Production-grade values: RF=3,
+  # min.insync.replicas=2. NOTE: this compose cluster is the DEV/REFERENCE
+  # topology — actual production cluster provisioning (managed MSK or
+  # multi-AZ self-hosted) is EXTERNAL to this repo; these values are the
+  # contract the external cluster must meet.
+  kafka-1:
     # healthcheck: omitted — cp-kafka has no HTTP probe; a broker-api-versions check needs the full Kafka client classpath, too heavy for compose.
-    # Resource limits (2026-08-12 hardening): prevent a single service from starving the host.
     restart: unless-stopped
     mem_limit: 1G
     cpus: 1.0
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:29092,HOST://localhost:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,HOST://0.0.0.0:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
-      KAFKA_LOG_RETENTION_HOURS: 168
-      KAFKA_NODE_ID: 1
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168 # default only — audit topics override to 3y via kafka-init
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # Durability baseline (R5-085)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
     image: confluentinc/cp-kafka:7.5.0
     networks:
     - inec-network
@@ -557,7 +572,111 @@ services:
     - 9092:9092
     - 29092:29092
     volumes:
-    - kafka-data:/var/lib/kafka/data
+    - kafka-data-1:/var/lib/kafka/data
+
+  kafka-2:
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+    image: confluentinc/cp-kafka:7.5.0
+    networks:
+    - inec-network
+    volumes:
+    - kafka-data-2:/var/lib/kafka/data
+
+  kafka-3:
+    restart: unless-stopped
+    mem_limit: 1G
+    cpus: 1.0
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+    image: confluentinc/cp-kafka:7.5.0
+    networks:
+    - inec-network
+    volumes:
+    - kafka-data-3:/var/lib/kafka/data
+
+  # One-shot topic provisioning (R5-085): creates every produced topic with
+  # RF=3, min.insync.replicas=2. Audit streams keep events for 3 years
+  # (electoral petitions window); the 168h broker default applies to the
+  # rest. Idempotent (--if-not-exists). The Go producers also auto-create
+  # topics — their in-code RF=1/RequireOne defaults are tracked for the
+  # owning waves in ops/HANDOFF-W6.md; this job is the authoritative spec.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+    - kafka-1
+    - kafka-2
+    - kafka-3
+    networks:
+    - inec-network
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      BROKERS=kafka-1:29092,kafka-2:29092,kafka-3:29092
+      echo "waiting for cluster..."
+      kafka-broker-api-versions --bootstrap-server $$BROKERS >/dev/null
+      THREE_YEARS_MS=94608000000
+      create() {  # topic retention_ms
+        kafka-topics --bootstrap-server $$BROKERS --create --if-not-exists \
+          --topic "$$1" --partitions 3 --replication-factor 3 \
+          --config min.insync.replicas=2 \
+          --config retention.ms="$$2"
+      }
+      # Result pipeline
+      create inec.results.submitted $$THREE_YEARS_MS
+      create inec.results.validated $$THREE_YEARS_MS
+      create inec.results.finalized $$THREE_YEARS_MS
+      create inec.results.disputed $$THREE_YEARS_MS
+      # Audit streams — petitions/forensics horizon
+      create inec.audit.log $$THREE_YEARS_MS
+      create gotv.audit $$THREE_YEARS_MS
+      # Operational topics — default retention
+      create inec.incidents.reported 604800000
+      create inec.fluvio.ingest 604800000
+      create inec.ingestion.results 604800000
+      create inec.ingestion.offline 604800000
+      create inec.bvas.accreditation $$THREE_YEARS_MS
+      create inec.collation.updates 604800000
+      create inec.accreditation.events $$THREE_YEARS_MS
+      create inec.events.general 604800000
+      create command-center.load-shedding 604800000
+      # GOTV domain events
+      create gotv.campaigns 604800000
+      create gotv.volunteers 604800000
+      create gotv.rides 604800000
+      create gotv.canvass 604800000
+      create gotv.pledges 604800000
+      echo "topic provisioning complete:"
+      kafka-topics --bootstrap-server $$BROKERS --describe | grep -E "Topic:|ReplicationFactor" | head -50
 
   kafka-rest:
     # healthcheck: omitted — its /v3 probe only reflects the kafka broker it depends_on; adds no signal beyond that dependency.
@@ -566,9 +685,11 @@ services:
     mem_limit: 512M
     cpus: 0.5
     depends_on:
-    - kafka
+    - kafka-1
+    - kafka-2
+    - kafka-3
     environment:
-      KAFKA_REST_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_REST_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
       KAFKA_REST_LISTENERS: http://0.0.0.0:8082
     image: confluentinc/cp-kafka-rest:7.5.0
     networks:
@@ -824,6 +945,35 @@ services:
     - inec-network
     volumes:
     - redis-data:/data
+
+  # R5-086: async replica so a primary loss is a warm-promotion (manual,
+  # seconds-to-minutes) instead of a cold restart with AOF replay. The rate
+  # limiter still points at the primary and fails closed in production —
+  # automatic failover (Sentinel-aware client / fail-open-with-local-limiter)
+  # requires Go changes tracked in ops/HANDOFF-W6.md; production managed HA
+  # (e.g. ElastiCache with automatic failover) is EXTERNAL to this repo.
+  redis-replica:
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 0.5
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --replicaof redis 6379
+    image: redis:7-alpine
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      interval: 10s
+      retries: 3
+      start_period: 10s
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      timeout: 5s
+    networks:
+    - inec-network
+    volumes:
+    - redis-replica-data:/data
 
   temporal:
     # healthcheck: omitted — temporalio/auto-setup ships no curl and no guaranteed tctl/temporal CLI for a cluster-health probe.
@@ -1361,12 +1511,15 @@ volumes:
   app-data: null
   fluvio-data: null
   fluvio-bridge-data: null
-  kafka-data: null
+  kafka-data-1: null
+  kafka-data-2: null
+  kafka-data-3: null
   lakehouse-data: null
   permify-data: null
   pg-primary-data: null
   pg-replica-data: null
   redis-data: null
+  redis-replica-data: null
   temporal-data: null
   tigerbeetle-data: null
   openappsec-shared-storage: null
