@@ -159,7 +159,6 @@ func main() {
 	initPgBouncerAwarePooling(db)
 	initPgpool()
 	go periodicPoolStats()
-	initRingBufferQueue()
 	initShardedWSHub()
 	initCollationCache()
 	go trackIngestionThroughput()
@@ -474,7 +473,7 @@ func main() {
 
 	// W5 voter-channel routes (R5-071/072/073/078).
 	r.HandleFunc("/sms/inbound", telcoProviderAuth(handleSMSVerify)).Methods("POST") // MO-SMS webhook (RESULT/VERIFY/STATUS)
-	r.HandleFunc("/ussd/voter", telcoProviderAuth(USSDHandler)).Methods("POST")       // AT-form multilingual voter-services USSD
+	r.HandleFunc("/ussd/voter", telcoProviderAuth(USSDHandler)).Methods("POST")      // AT-form multilingual voter-services USSD
 	r.HandleFunc("/ivr/start", telcoProviderAuth(IVRStartHandler)).Methods("POST")
 	r.HandleFunc("/ivr/action", telcoProviderAuth(IVRActionHandler)).Methods("POST")
 	r.HandleFunc("/ivr/incidents", readAuth(IVRIncidentsHandler)).Methods("GET")
@@ -1062,6 +1061,13 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	// W1 handoff (R5-008): drain in-flight ingestion jobs before releasing
+	// middleware/DB dependencies; survivors stay 'pending' and are recovered
+	// on next start.
+	if !waitForIngestionDrain(10 * time.Second) {
+		log.Warn().Msg("ingestion drain timed out during shutdown — pending jobs will be recovered on next start")
+	}
 
 	// Stop durable workers before releasing middleware or database dependencies.
 	stopExternalIntegrationDeliveryWorker()
