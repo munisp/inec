@@ -17,6 +17,7 @@ networks:
 
 services:
   ca.inec:
+    restart: unless-stopped
     image: hyperledger/fabric-ca:1.5.7
     environment:
       - FABRIC_CA_HOME=/etc/hyperledger/fabric-ca-server
@@ -29,8 +30,14 @@ services:
     volumes:
       - ./organizations/fabric-ca/inec:/etc/hyperledger/fabric-ca-server
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
 
   ca.observers:
+    restart: unless-stopped
     image: hyperledger/fabric-ca:1.5.7
     environment:
       - FABRIC_CA_HOME=/etc/hyperledger/fabric-ca-server
@@ -43,8 +50,14 @@ services:
     volumes:
       - ./organizations/fabric-ca/observers:/etc/hyperledger/fabric-ca-server
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
 
   orderer.inec.gov.ng:
+    restart: unless-stopped
     image: hyperledger/fabric-orderer:2.5.4
     environment:
       - FABRIC_LOGGING_SPEC=INFO
@@ -63,7 +76,6 @@ services:
       - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
       - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
       - ORDERER_ADMIN_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
-      - ORDERER_ADMIN_TLS_CLIENTROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
     ports:
       - "7050:7050"
       - "7053:7053"
@@ -71,8 +83,14 @@ services:
       - ./organizations/ordererOrganizations/inec.gov.ng/orderers/orderer.inec.gov.ng/msp:/var/hyperledger/orderer/msp
       - ./organizations/ordererOrganizations/inec.gov.ng/orderers/orderer.inec.gov.ng/tls:/var/hyperledger/orderer/tls
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   peer0.inec.inec.gov.ng:
+    restart: unless-stopped
     image: hyperledger/fabric-peer:2.5.4
     environment:
       - CORE_PEER_ID=peer0.inec.inec.gov.ng
@@ -101,8 +119,14 @@ services:
       - ./organizations/peerOrganizations/inec.inec.gov.ng/peers/peer0.inec.inec.gov.ng/tls:/etc/hyperledger/fabric/tls
     depends_on: [couchdb0]
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   couchdb0:
+    restart: unless-stopped
     image: couchdb:3.3.3
     environment:
       - COUCHDB_USER=admin
@@ -110,8 +134,14 @@ services:
     ports:
       - "5984:5984"
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
 
   peer0.observers.inec.gov.ng:
+    restart: unless-stopped
     image: hyperledger/fabric-peer:2.5.4
     environment:
       - CORE_PEER_ID=peer0.observers.inec.gov.ng
@@ -134,13 +164,18 @@ services:
     ports:
       - "9051:9051"
     volumes:
-      - /var/run/docker.sock:/host/var/run/docker.sock
       - ./organizations/peerOrganizations/observers.inec.gov.ng/peers/peer0.observers.inec.gov.ng/msp:/etc/hyperledger/fabric/msp
       - ./organizations/peerOrganizations/observers.inec.gov.ng/peers/peer0.observers.inec.gov.ng/tls:/etc/hyperledger/fabric/tls
     depends_on: [couchdb1]
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
 
   couchdb1:
+    restart: unless-stopped
     image: couchdb:3.3.3
     environment:
       - COUCHDB_USER=admin
@@ -148,3 +183,8 @@ services:
     ports:
       - "7984:5984"
     networks: [inec-fabric]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"

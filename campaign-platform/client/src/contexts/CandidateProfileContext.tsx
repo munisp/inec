@@ -32,9 +32,9 @@ const CandidateProfileContext = createContext<ProfileContextValue>({
   profileId: null,
   isLoading: true,
   refetch: () => {},
-  memberRole: "owner",
-  canEdit: true,
-  canDelete: true,
+  memberRole: "viewer",
+  canEdit: false,
+  canDelete: false,
 });
 
 export function CandidateProfileProvider({ children }: { children: ReactNode }) {
@@ -44,11 +44,16 @@ export function CandidateProfileProvider({ children }: { children: ReactNode }) 
   });
 
   const profileId = data?.id ?? null;
-  const { data: roleData } = trpc.team.myRole.useQuery(
+  const { data: roleData, isFetched: roleFetched } = trpc.team.myRole.useQuery(
     { profileId: profileId! },
     { enabled: !!profileId, staleTime: 60_000 }
   );
-  const memberRole: MemberRole = (roleData as MemberRole | undefined) ?? "owner";
+  // Fail closed: until the role is loaded, treat the user as a viewer with no
+  // edit/delete privileges. Never default to "owner" on error or missing data.
+  const roleLoaded = !!profileId && roleFetched && roleData != null;
+  const memberRole: MemberRole = roleLoaded ? (roleData as MemberRole) : "viewer";
+  const canEdit = roleLoaded && memberRole !== "viewer";
+  const canDelete = roleLoaded && memberRole === "owner";
 
   return (
     <CandidateProfileContext.Provider
@@ -58,8 +63,8 @@ export function CandidateProfileProvider({ children }: { children: ReactNode }) 
         isLoading,
         refetch,
         memberRole,
-        canEdit: memberRole !== "viewer",
-        canDelete: memberRole === "owner",
+        canEdit,
+        canDelete,
       }}
     >
       {children}
