@@ -205,8 +205,6 @@ func main() {
 	initPlatformEnhancements(db)
 	initPlatformImprovements(db)
 	initComplianceTables()
-	initGOTVTables()
-	initGOTVEncryption()
 	initMFA()
 	runGeoMigrations()
 	runGeoAdvancedMigrations()
@@ -214,7 +212,6 @@ func main() {
 	if shouldSeedE2EFixtures() {
 		log.Info().Msg("Seeding declared E2E fixtures in explicit non-production environment")
 		seedDatabase(db)
-		seedGOTVData()
 	}
 	initOpenAPIRoutes()
 
@@ -335,7 +332,6 @@ func main() {
 	// blockchain attestation, mesh network, H3 hex grid, offline tiles, MVT tiles
 	registerGeoAdvancedRoutes(r)
 	registerComplianceRoutes(r)
-	registerGOTVRoutes(r)
 
 	// GeoLibre GIS integration — GeoJSON endpoints, spatial queries, project export
 	registerGeoLibreRoutes(r)
