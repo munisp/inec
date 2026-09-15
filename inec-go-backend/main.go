@@ -866,6 +866,11 @@ func main() {
 	// Data Sovereignty (#20) + Erasure
 	r.HandleFunc("/data/classification", adminOnly(handleDataClassification)).Methods("GET", "POST")
 	r.HandleFunc("/data/erasure", adminOnly(handleDataErasure)).Methods("POST")
+	// W4-HANDOFF §7 (R5-067): dual-control erasure lifecycle — request by any
+	// staff identity, review/approve by a DIFFERENT admin, admin list.
+	r.HandleFunc("/data/erasure/requests", writeAuth(handleDataErasureRequest)).Methods("POST")
+	r.HandleFunc("/data/erasure/requests", adminOnly(handleDataErasureRequests)).Methods("GET")
+	r.HandleFunc("/data/erasure/review", adminOnly(handleDataErasureReview)).Methods("POST")
 
 	// Observer Photo Verification (#18)
 	r.HandleFunc("/observer/photo-verify", writeAuth(handleObserverPhotoVerify)).Methods("POST")
