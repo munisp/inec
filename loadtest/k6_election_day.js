@@ -1,6 +1,22 @@
 // K6 Distributed Load Test — INEC Election Day Simulation
-// Usage: k6 run --vus 500 --duration 10m loadtest/k6_election_day.js
+// Usage: k6 run loadtest/k6_election_day.js
+// Env:
+//   BASE_URL            default http://localhost:8088
+//   LOADTEST_USERNAME   officer/admin login (default admin)
+//   LOADTEST_PASSWORD   password (default admin123 — local seed only)
 // For distributed: k6 run --execution-segment "0:1/2" ... (split across nodes)
+//
+// SIZING (R5-090 — previously claimed "48K+ PUs" at 500 VUs and POSTed to a
+// route that does not exist, so thresholds passed trivially on 404/405):
+//   Nigeria has ~176,846 polling units. If 80% report within a 4-hour
+//   evening window that is ~9.8 submissions/sec average; planning for a
+//   20x peak-to-average ratio gives ~200 rps of POST /results/submit.
+//   Each VU iteration below sleeps ~0.5–2.5s, so ~1000 VUs produce on the
+//   order of 150–300 submissions/sec against the REAL write path
+//   (POST /results/submit — the only registered result-ingest route).
+//   Run against an environment seeded with polling units and an ACTIVE
+//   election (the test discovers both in setup()); without seed data the
+//   handler correctly 400s and the error thresholds will fail loudly.
 
 import http from 'k6/http';
 import { check, sleep, group } from 'k6';
@@ -14,19 +30,22 @@ const biometricVerifications = new Counter('biometric_verifications');
 const responseTime = new Trend('response_time_ms');
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8088';
+const LOADTEST_USERNAME = __ENV.LOADTEST_USERNAME || 'admin';
+const LOADTEST_PASSWORD = __ENV.LOADTEST_PASSWORD || 'admin123';
 const STATES = ['FC','LA','KN','RV','OG','AN','EN','OY','KD','BO','AD','BA','BE','CR','DE','EB','ED','EK','GO','IM','JI','KB','KE','KO','KW','NA','NI','ON','OS','OT','PL','SO','TA','YO','ZA','AB','AK'];
 
 export const options = {
   scenarios: {
-    // Scenario 1: Result submissions from 48K+ polling units
+    // Scenario 1: Result submissions from ~176,846 polling units
+    // (peak target ~200 rps of POST /results/submit — see header sizing note)
     result_submission: {
       executor: 'ramping-vus',
       startVUs: 50,
       stages: [
-        { duration: '2m', target: 200 },  // Ramp up (early results)
-        { duration: '5m', target: 500 },  // Peak (all PUs reporting)
-        { duration: '2m', target: 100 },  // Wind down
-        { duration: '1m', target: 0 },    // Drain
+        { duration: '2m', target: 250 },   // Ramp up (early results)
+        { duration: '5m', target: 1000 },  // Peak (all PUs reporting)
+        { duration: '2m', target: 200 },   // Wind down
+        { duration: '1m', target: 0 },     // Drain
       ],
       exec: 'submitResults',
     },
@@ -90,16 +109,16 @@ export const options = {
     errors: ['rate<0.01'],
     http_req_failed: ['rate<0.01'],
     'http_req_duration{name:GET /healthz}': ['p(99)<100'],
-    'http_req_duration{name:POST /results}': ['p(95)<1000'],
-    'http_req_duration{name:GET /collation/national}': ['p(95)<800'],
+    'http_req_duration{name:POST /results/submit}': ['p(95)<1000'],
+    'http_req_duration{name:GET /inec/collation}': ['p(95)<800'],
     'http_req_duration{name:GET /dashboard/stats}': ['p(95)<500'],
   },
 };
 
 function getAuthToken() {
   const loginRes = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
-    username: 'admin',
-    password: 'admin123',
+    username: LOADTEST_USERNAME,
+    password: LOADTEST_PASSWORD,
   }), { headers: { 'Content-Type': 'application/json' } });
   if (loginRes.status === 200) {
     const body = JSON.parse(loginRes.body);
@@ -108,25 +127,57 @@ function getAuthToken() {
   return '';
 }
 
-let authToken = '';
-
 export function setup() {
-  authToken = getAuthToken();
-  return { token: authToken };
+  const token = getAuthToken();
+  if (!token) {
+    throw new Error(`login failed for ${LOADTEST_USERNAME} — cannot exercise authenticated write path`);
+  }
+  // Discover a real ACTIVE election (POST /results/submit rejects inactive/
+  // unknown election_id with 400 — hardcoding election_id: 1 only worked by
+  // accident of seed ordering).
+  const authHeaders = { headers: { 'Authorization': `Bearer ${token}` } };
+  const elRes = http.get(`${BASE_URL}/elections`, authHeaders);
+  let electionId = 0;
+  if (elRes.status === 200) {
+    const elections = JSON.parse(elRes.body);
+    const list = Array.isArray(elections) ? elections : (elections.elections || elections.data || []);
+    const active = list.find((e) => e.status === 'active') || list[0];
+    if (active) electionId = active.id;
+  }
+  if (!electionId) {
+    throw new Error('no election found — seed an election before running the load test');
+  }
+  // Discover real polling-unit codes (the handler 400s "Polling unit not
+  // found" for fabricated codes). /geo/polling-units is a public read route.
+  const puRes = http.get(`${BASE_URL}/geo/polling-units?limit=1000`);
+  let puCodes = [];
+  if (puRes.status === 200) {
+    const pus = JSON.parse(puRes.body);
+    const list = Array.isArray(pus) ? pus : (pus.polling_units || pus.data || []);
+    puCodes = list.map((pu) => pu.code).filter(Boolean);
+  }
+  if (puCodes.length === 0) {
+    throw new Error('no polling units found — seed geography before running the load test');
+  }
+  return { token, electionId, puCodes };
 }
 
 export function submitResults(data) {
   const token = data.token;
-  const state = STATES[Math.floor(Math.random() * STATES.length)];
-  const puCode = `${state}/${String(Math.floor(Math.random() * 44) + 1).padStart(2, '0')}/${String(Math.floor(Math.random() * 774) + 1).padStart(3, '0')}/${String(Math.floor(Math.random() * 9999) + 1).padStart(4, '0')}`;
+  // Rotate through REAL seeded PU codes. Duplicates return 400
+  // "Result already submitted for this polling unit" — an expected,
+  // counted-as-pass outcome once a PU has reported.
+  const puCode = data.puCodes[Math.floor(Math.random() * data.puCodes.length)];
 
   group('result_submission', () => {
+    // Payload matches handleSubmitResult exactly: accredited_voters +
+    // rejected_votes (there is NO total_votes_cast/rejected_ballots field —
+    // total cast is derived server-side as valid votes + rejected votes).
     const payload = JSON.stringify({
-      election_id: 1,
+      election_id: data.electionId,
       polling_unit_code: puCode,
       accredited_voters: Math.floor(Math.random() * 500) + 100,
-      total_votes_cast: Math.floor(Math.random() * 400) + 100,
-      rejected_ballots: Math.floor(Math.random() * 10),
+      rejected_votes: Math.floor(Math.random() * 10),
       party_scores: [
         { party_code: 'APC', votes: Math.floor(Math.random() * 200) },
         { party_code: 'PDP', votes: Math.floor(Math.random() * 150) },
@@ -141,12 +192,14 @@ export function submitResults(data) {
       'X-Idempotency-Key': `${puCode}-${Date.now()}`,
     };
 
-    const res = http.post(`${BASE_URL}/results`, payload, { headers, tags: { name: 'POST /results' } });
+    const res = http.post(`${BASE_URL}/results/submit`, payload, { headers, tags: { name: 'POST /results/submit' } });
     responseTime.add(res.timings.duration);
     resultSubmissions.add(1);
 
     const success = check(res, {
-      'result submitted (200/201/409)': (r) => [200, 201, 409].includes(r.status),
+      'result submitted or already-reported duplicate': (r) =>
+        [200, 201].includes(r.status) ||
+        (r.status === 400 && r.body && r.body.includes('already submitted')),
       'response time < 1s': (r) => r.timings.duration < 1000,
     });
     errorRate.add(!success);
@@ -160,19 +213,20 @@ export function queryCollation(data) {
   const state = STATES[Math.floor(Math.random() * STATES.length)];
 
   group('collation_query', () => {
-    // National results
-    const natRes = http.get(`${BASE_URL}/collation/national?election_id=1`, {
+    // National results — real route: GET /inec/collation?level=national
+    // (there is no /collation/national; see handleHierarchicalCollation)
+    const natRes = http.get(`${BASE_URL}/inec/collation?level=national&election_id=${data.electionId}`, {
       headers: { 'Authorization': `Bearer ${token}` },
-      tags: { name: 'GET /collation/national' },
+      tags: { name: 'GET /inec/collation' },
     });
     responseTime.add(natRes.timings.duration);
     collationRequests.add(1);
     check(natRes, { 'national collation 200': (r) => r.status === 200 });
 
     // State results
-    const stateRes = http.get(`${BASE_URL}/collation/state?election_id=1&state_code=${state}`, {
+    const stateRes = http.get(`${BASE_URL}/inec/collation?level=state&code=${state}&election_id=${data.electionId}`, {
       headers: { 'Authorization': `Bearer ${token}` },
-      tags: { name: 'GET /collation/state' },
+      tags: { name: 'GET /inec/collation' },
     });
     responseTime.add(stateRes.timings.duration);
     collationRequests.add(1);

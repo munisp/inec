@@ -112,15 +112,43 @@ export const options = {
   },
 };
 
-// Setup: authenticate once and share token
+// Setup: authenticate once, then discover a REAL active election and REAL
+// polling-unit codes — POST /results/submit 400s on fabricated ids/codes
+// (R5-090: this test previously POSTed a made-up payload to the nonexistent
+// POST /results, so every run "passed" on 404/405).
 export function setup() {
   const loginRes = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
-    username: 'admin',
-    password: 'admin123',
+    username: __ENV.LOADTEST_USERNAME || 'admin',
+    password: __ENV.LOADTEST_PASSWORD || 'admin123',
   }), { headers: { 'Content-Type': 'application/json' } });
 
   const token = loginRes.json('access_token') || '';
-  return { token };
+  if (!token) {
+    throw new Error('login failed — cannot exercise authenticated write path');
+  }
+  const authHeaders = { headers: { 'Authorization': `Bearer ${token}` } };
+  const elRes = http.get(`${BASE_URL}/elections`, authHeaders);
+  let electionId = 0;
+  if (elRes.status === 200) {
+    const body = JSON.parse(elRes.body);
+    const list = Array.isArray(body) ? body : (body.elections || body.data || []);
+    const active = list.find((e) => e.status === 'active') || list[0];
+    if (active) electionId = active.id;
+  }
+  if (!electionId) {
+    throw new Error('no election found — seed an election before running the load test');
+  }
+  const puRes = http.get(`${BASE_URL}/geo/polling-units?limit=1000`);
+  let puCodes = [];
+  if (puRes.status === 200) {
+    const body = JSON.parse(puRes.body);
+    const list = Array.isArray(body) ? body : (body.polling_units || body.data || []);
+    puCodes = list.map((pu) => pu.code).filter(Boolean);
+  }
+  if (puCodes.length === 0) {
+    throw new Error('no polling units found — seed geography before running the load test');
+  }
+  return { token, electionId, puCodes };
 }
 
 // --- Scenario Executors ---
@@ -149,7 +177,8 @@ export function dashboardViewer(data) {
   const endpoints = [
     '/dashboard/stats',
     '/elections',
-    '/collation/national',
+    // real route (there is no /collation/national):
+    '/inec/collation?level=national',
     '/architecture/health',
     '/architecture/circuit-breakers',
   ];
@@ -168,29 +197,39 @@ export function dashboardViewer(data) {
 }
 
 export function submitResult(data) {
+  const puCode = data.puCodes[Math.floor(Math.random() * data.puCodes.length)];
   const headers = {
     'Content-Type': 'application/json',
+    'Authorization': `Bearer ${data.token}`,
     'Cookie': `inec_token=${data.token}`,
     'X-Idempotency-Key': `k6-${__VU}-${__ITER}-${Date.now()}`,
   };
 
+  // Real write path + real payload shape (handleSubmitResult):
+  // election_id, polling_unit_code, party_scores[], accredited_voters,
+  // rejected_votes. No polling_unit_id/party_id/votes fields exist.
   const payload = JSON.stringify({
-    election_id: 1,
-    polling_unit_id: Math.floor(Math.random() * 48000) + 1,
-    party_id: Math.floor(Math.random() * 8) + 1,
-    votes: Math.floor(Math.random() * 500) + 1,
-    submitted_by: `k6-officer-${__VU}`,
+    election_id: data.electionId,
+    polling_unit_code: puCode,
+    accredited_voters: Math.floor(Math.random() * 500) + 100,
+    rejected_votes: Math.floor(Math.random() * 10),
+    party_scores: [
+      { party_code: 'APC', votes: Math.floor(Math.random() * 200) + 1 },
+      { party_code: 'PDP', votes: Math.floor(Math.random() * 150) + 1 },
+      { party_code: 'LP', votes: Math.floor(Math.random() * 100) + 1 },
+    ],
   });
 
   const start = Date.now();
-  const res = http.post(`${BASE_URL}/results`, payload, { headers });
+  const res = http.post(`${BASE_URL}/results/submit`, payload, { headers });
   submissionLatency.add(Date.now() - start);
   resultSubmissions.add(1);
 
-  check(res, {
-    'submission ok': (r) => [200, 201, 409, 429].includes(r.status),
-  });
-  errorRate.add(![200, 201, 409, 429].includes(res.status));
+  const ok = (r) =>
+    [200, 201, 429].includes(r.status) ||
+    (r.status === 400 && r.body && r.body.includes('already submitted'));
+  check(res, { 'submission ok': ok });
+  errorRate.add(!ok(res));
 
   sleep(Math.random() * 3 + 1);
 }

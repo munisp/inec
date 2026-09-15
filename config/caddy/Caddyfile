@@ -64,6 +64,19 @@ https://localhost, https://inec.local {
         }
     }
     
+    # GOTV/campaign API — the frontend calls /gotv/* same-origin
+    # (GOTV_API_URL=''); without this block those calls fell through to the
+    # SPA static server in production (R5-089). Routed via APISIX so the
+    # edge rate limit / real-ip policy applies (config/apisix/apisix.yaml).
+    handle /gotv/* {
+        reverse_proxy apisix:9080 {
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up Host {host}
+        }
+    }
+
     # Keycloak Auth routing
     handle /auth/* {
         reverse_proxy keycloak:8080 {

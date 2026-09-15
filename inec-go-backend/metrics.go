@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"net/http"
 	"os"
@@ -69,6 +70,20 @@ var (
 		},
 		[]string{"query_type"},
 	)
+
+	dbHealthy = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "inec_database_healthy",
+			Help: "Primary database reachability (1=healthy, 0=unhealthy)",
+		},
+	)
+
+	dbConnectionsActive = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "inec_db_connections_active",
+			Help: "Currently open primary database connections (sql.DBStats.OpenConnections)",
+		},
+	)
 )
 
 func initMetrics() {
@@ -80,7 +95,44 @@ func initMetrics() {
 		panicCounter,
 		middlewareHealth,
 		dbQueryDuration,
+		dbHealthy,
+		dbConnectionsActive,
 	)
+	// R5-088/R5-094: middlewareHealth was registered but NEVER emitted and no
+	// database health/pool metric existed at all, so the middleware/database
+	// alerts could never fire. This exporter populates them from the
+	// package-level mwHub and db handles once those are initialized later in
+	// main(); both are assigned exactly once during startup, and the loop
+	// nil-guards until then.
+	go metricsExporterLoop()
+}
+
+// metricsExporterLoop periodically publishes subsystem health/pool gauges
+// that have no natural per-request emission site.
+func metricsExporterLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		if hub := mwHub; hub != nil {
+			for _, st := range hub.GetAllStatus() {
+				v := 0.0
+				if st.Connected {
+					v = 1
+				}
+				middlewareHealth.WithLabelValues(st.Name).Set(v)
+			}
+		}
+		if d := db; d != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if err := d.PingContext(ctx); err != nil {
+				dbHealthy.Set(0)
+			} else {
+				dbHealthy.Set(1)
+			}
+			cancel()
+			dbConnectionsActive.Set(float64(d.Stats().OpenConnections))
+		}
+	}
 }
 
 func metricsHandler() http.Handler {

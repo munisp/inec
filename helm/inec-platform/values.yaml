@@ -119,6 +119,22 @@ rustInference:
       memory: "1Gi"
       cpu: "1000m"
 
+# GOTV/campaign API (Go, inec-go-backend/cmd/gotv-svc, port 8103)
+# Serves the frontend's same-origin /gotv/* calls (R5-089).
+gotv:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: inec-gotv-svc
+    tag: ""  # defaults to global.tag
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "512Mi"
+      cpu: "1000m"
+
 # Ingress
 ingress:
   enabled: true
@@ -135,6 +151,11 @@ ingress:
           service: backend
     - host: app.inec.gov.ng
       paths:
+        # Frontend calls /gotv/* same-origin; route to gotv-svc BEFORE the
+        # SPA catch-all (pathType Prefix longest-match wins in nginx ingress).
+        - path: /gotv
+          pathType: Prefix
+          service: gotv
         - path: /
           pathType: Prefix
           service: frontend

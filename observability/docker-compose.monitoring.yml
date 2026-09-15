@@ -15,6 +15,12 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # Scrapes authenticate with METRICS_BEARER_TOKEN (backend fails closed
+      # without it in production). Before `up`, create the token file:
+      #   mkdir -p observability/prometheus/secrets
+      #   printf '%s' "$METRICS_BEARER_TOKEN" > observability/prometheus/secrets/metrics_token
+      # (gitignored — see observability/prometheus/secrets/.gitignore)
+      - ./prometheus/secrets:/etc/prometheus/secrets:ro
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"

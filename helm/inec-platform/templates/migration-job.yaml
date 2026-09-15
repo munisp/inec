@@ -21,17 +21,63 @@ spec:
       containers:
         - name: migrate
           image: "{{ .Values.global.imageRegistry }}/{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag | default .Values.global.tag }}"
-          command: ["./inec-go-backend", "--migrate-only"]
+          # R5-087: the previous revision invoked `./inec-go-backend
+          # --migrate-only` with RUN_MIGRATIONS_ONLY=true — neither the flag
+          # nor the env var is read anywhere in the Go code, so the binary
+          # booted the FULL server and this hook hung until
+          # activeDeadlineSeconds killed it.
+          #
+          # There is no migrate-only entrypoint today (adding one is a Go
+          # change owned by the monolith wave — see ops/HANDOFF-W6.md).
+          # What the binary *does* guarantee: runMigrations() executes to
+          # completion (or log.Fatal) BEFORE the HTTP listener starts, and
+          # /readiness returns 200 only once the DB is reachable. So this job
+          # boots the binary, polls /readiness, and terminates it — a real,
+          # working invocation against the current image (which ships curl).
+          # Replace with `--migrate-only` once the monolith implements it.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              echo "migrate-job: starting backend to run embedded migrations"
+              ./inec-go-backend &
+              APP_PID=$!
+              for i in $(seq 1 140); do
+                if curl -sf "http://127.0.0.1:${PORT}/readiness" >/dev/null 2>&1; then
+                  echo "migrate-job: readiness OK — migrations applied, stopping server"
+                  kill -TERM "$APP_PID" 2>/dev/null
+                  wait "$APP_PID" 2>/dev/null
+                  echo "migrate-job: done"
+                  exit 0
+                fi
+                if ! kill -0 "$APP_PID" 2>/dev/null; then
+                  echo "migrate-job: backend exited before becoming ready (migration failure?)" >&2
+                  wait "$APP_PID"
+                  exit 1
+                fi
+                sleep 2
+              done
+              echo "migrate-job: timed out waiting for readiness" >&2
+              kill -TERM "$APP_PID" 2>/dev/null
+              exit 1
           env:
             - name: DB_DRIVER
               value: postgres
+            - name: PORT
+              value: "8088"
+            # Non-production env so validateConfig() does not demand the full
+            # production env set (TLS certs, metrics token, ...) for what is
+            # effectively a one-shot migration runner. APP_ENV=staging does
+            # NOT trigger E2E fixture seeding (only test/e2e/CI do).
+            - name: APP_ENV
+              value: staging
+            - name: INEC_ENV
+              value: staging
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-db-credentials
                   key: url
-            - name: RUN_MIGRATIONS_ONLY
-              value: "true"
           resources:
             requests:
               memory: "128Mi"
