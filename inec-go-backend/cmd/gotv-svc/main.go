@@ -1090,7 +1090,7 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	if totalContacts == 0 {
 		var targetState sql.NullString
 		svc.DB.QueryRow("SELECT target_state FROM gotv_campaigns WHERE campaign_id=$1", id).Scan(&targetState)
-		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE) AND consent_id IS NOT NULL"
+		countQuery := "SELECT COUNT(*) FROM gotv_contacts c WHERE c.party_id=$1 AND (c.opted_out IS NULL OR c.opted_out=FALSE) AND EXISTS (SELECT 1 FROM gotv_consent_records cr WHERE cr.consent_id = c.consent_id AND cr.status='active')"
 		var countArgs []interface{}
 		countArgs = append(countArgs, pid)
 		if targetState.Valid && targetState.String != "" {
@@ -1206,15 +1206,65 @@ func handleListContacts(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{"contacts": contacts, "total": len(contacts)})
 }
 
+// consentInput is the structured consent proof accepted at contact
+// creation/import (R5-096). Every consent_id linked to a contact must have a
+// corresponding gotv_consent_records row with channel/purpose/legal_basis/
+// timestamp/recorder — NDPR consent must be provable, not self-asserted.
+type consentInput struct {
+	Channel    string `json:"channel"`
+	Purpose    string `json:"purpose"`
+	LegalBasis string `json:"legal_basis"`
+	ProofRef   string `json:"proof_ref"`
+}
+
+// recordConsent creates (or verifies) the consent record for consentID and
+// returns the consent_id to link, or an error. A structured input generates a
+// fresh server-side consent_id; a bare legacy consent_id gets an honestly
+// labelled caller-asserted record so the link is always backed by a row.
+func recordConsent(partyID int, contactID, consentID string, in *consentInput, channel, recordedBy string) (string, error) {
+	if in != nil {
+		if strings.TrimSpace(in.Channel) == "" || strings.TrimSpace(in.LegalBasis) == "" {
+			return "", fmt.Errorf("consent.channel and consent.legal_basis are required")
+		}
+		purpose := strings.TrimSpace(in.Purpose)
+		if purpose == "" {
+			purpose = "campaign_outreach"
+		}
+		consentID = "gotv-consent-" + uuid.New().String()[:12]
+		_, err := svc.DB.Exec(
+			`INSERT INTO gotv_consent_records (consent_id, party_id, contact_id, channel, purpose, legal_basis, proof_ref, recorded_by)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			consentID, partyID, nullStr(contactID), in.Channel, purpose, in.LegalBasis, nullStr(in.ProofRef), recordedBy)
+		if err != nil {
+			return "", err
+		}
+		return consentID, nil
+	}
+	if strings.TrimSpace(consentID) == "" {
+		return "", nil
+	}
+	// Legacy free-text consent id: back it with a caller-asserted record
+	// (idempotent — the same id may be submitted for many contacts).
+	if _, err := svc.DB.Exec(
+		`INSERT INTO gotv_consent_records (consent_id, party_id, contact_id, channel, purpose, legal_basis, recorded_by)
+		 VALUES ($1,$2,$3,$4,'campaign_outreach','self_asserted',$5)
+		 ON CONFLICT (consent_id) DO NOTHING`,
+		consentID, partyID, nullStr(contactID), channel, recordedBy); err != nil {
+		return "", err
+	}
+	return consentID, nil
+}
+
 func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	var req struct {
-		Phone     string   `json:"phone"`
-		FullName  string   `json:"full_name"`
-		StateCode string   `json:"state_code"`
-		LGACode   string   `json:"lga_code"`
-		ConsentID string   `json:"consent_id"`
-		Tags      []string `json:"tags"`
+		Phone     string        `json:"phone"`
+		FullName  string        `json:"full_name"`
+		StateCode string        `json:"state_code"`
+		LGACode   string        `json:"lga_code"`
+		ConsentID string        `json:"consent_id"`
+		Consent   *consentInput `json:"consent"`
+		Tags      []string      `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid json", http.StatusBadRequest)
@@ -1243,11 +1293,17 @@ func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contactID := "gotv-contact-" + uuid.New().String()[:8]
+	consentID, err := recordConsent(pid, contactID, req.ConsentID, req.Consent, "manual_create", user)
+	if err != nil {
+		jsonErr(w, "invalid consent: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	_, err = svc.DB.Exec(
 		`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, tags, consent_id)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		contactID, pid, phoneEnc, pHash, nameEnc, nullStr(req.StateCode), nullStr(req.LGACode),
-		pq.StringArray(req.Tags), nullStr(req.ConsentID),
+		pq.StringArray(req.Tags), nullStr(consentID),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
@@ -1361,10 +1417,24 @@ func handleImportContacts(w http.ResponseWriter, r *http.Request) {
 			lgaCode = sql.NullString{String: strings.TrimSpace(record[lc]), Valid: true}
 		}
 
+		// R5-096: bulk imports must create a provable consent record per
+		// consent id (channel csv_import, caller-asserted basis) before linking;
+		// rows without a consent column stay consent-less and unreachable by
+		// dispatch, which is the NDPR-safe default.
+		var consentID string
+		if cc, ok := colMap["consent_id"]; ok && len(record) > cc {
+			cid, cErr := recordConsent(pid, contactID, strings.TrimSpace(record[cc]), nil, "csv_import", user)
+			if cErr != nil {
+				skipped++
+				continue
+			}
+			consentID = cid
+		}
+
 		_, err = svc.DB.Exec(
-			`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (party_id, phone_hash) DO NOTHING`,
-			contactID, pid, phoneEnc, pHash, nameEnc, stateCode, lgaCode,
+			`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, consent_id)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (party_id, phone_hash) DO NOTHING`,
+			contactID, pid, phoneEnc, pHash, nameEnc, stateCode, lgaCode, nullStr(consentID),
 		)
 		if err != nil {
 			skipped++
@@ -1461,6 +1531,14 @@ func handleOptOut(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "contact not found", http.StatusNotFound)
 		return
 	}
+	// R5-096: opt-out must propagate to the consent ledger — the linked
+	// consent record is withdrawn so dispatch eligibility (which now requires
+	// an ACTIVE consent record) excludes the contact everywhere, not just via
+	// the opted_out flag.
+	svc.DB.Exec(
+		`UPDATE gotv_consent_records SET status='withdrawn', withdrawn_at=NOW()
+		 WHERE status='active' AND consent_id = (SELECT consent_id FROM gotv_contacts WHERE contact_id=$1 AND party_id=$2)`,
+		id, pid)
 	svc.Audit(pid, user, "opt_out", "contact", id)
 	jsonResp(w, map[string]interface{}{"opted_out": true})
 }
@@ -1836,6 +1914,60 @@ func handleUpdateRideStatus(w http.ResponseWriter, r *http.Request) {
 	if !validStatuses[req.Status] {
 		jsonErr(w, "invalid status", http.StatusBadRequest)
 		return
+	}
+
+	// R5-100: a driver no-show/cancellation must not strand the voter. When the
+	// ride carries a live assignment, clear the dead volunteer, return the
+	// request to 'pending', re-invoke the matcher, and notify coordinators —
+	// instead of a bare status flip that keeps the dead volunteer_id forever.
+	// The no_show/cancelled fact is preserved in the audit log and ride events.
+	if req.Status == "no_show" || req.Status == "cancelled" {
+		var contactID, prevVolunteer string
+		var pickupLat, pickupLng float64
+		scanErr := svc.DB.QueryRow(
+			`WITH old AS (
+				SELECT request_id, volunteer_id FROM gotv_ride_requests
+				WHERE request_id=$1 AND party_id=$2
+			), upd AS (
+				UPDATE gotv_ride_requests r SET volunteer_id=NULL, matched_at=NULL, status='pending'
+				FROM old
+				WHERE r.request_id=old.request_id AND r.volunteer_id IS NOT NULL
+				  AND r.status IN ('matched','en_route')
+				RETURNING r.contact_id, r.pickup_latitude, r.pickup_longitude, old.volunteer_id
+			) SELECT contact_id, pickup_latitude, pickup_longitude, volunteer_id FROM upd`,
+			id, pid,
+		).Scan(&contactID, &pickupLat, &pickupLng, &prevVolunteer)
+		if scanErr == nil {
+			svc.Audit(pid, user, "ride_"+req.Status, "ride", id)
+			publishEvent(TopicGOTVRideEvent, id, map[string]interface{}{
+				"event": "ride_" + req.Status, "ride_id": id, "party_id": pid,
+				"contact_id": contactID, "previous_volunteer_id": prevVolunteer,
+				"action":    "returned_to_pending_for_rematch",
+				"timestamp": time.Now().UTC(),
+			})
+			// Re-invoke the matcher with the same CAS guard used at creation:
+			// only a still-pending request is re-matched, so a coordinator's
+			// manual match in the meantime is never clobbered.
+			go func() {
+				if match, mErr := invokeRustMatchRide(id, pickupLat, pickupLng, pid); mErr == nil {
+					if volID, ok := match["volunteer_id"].(string); ok && volID != "" {
+						res, _ := svc.DB.Exec(
+							"UPDATE gotv_ride_requests SET volunteer_id=$1, status='matched', matched_at=NOW() WHERE request_id=$2 AND status='pending'",
+							volID, id)
+						if rows, _ := res.RowsAffected(); rows > 0 {
+							publishEvent(TopicGOTVRideEvent, id, map[string]interface{}{
+								"event": "ride_rematched", "ride_id": id, "volunteer_id": volID,
+							})
+						}
+					}
+				}
+			}()
+			cacheInvalidate(r.Context(), fmt.Sprintf("dashboard:%d", pid))
+			jsonResp(w, map[string]interface{}{"updated": true, "rematch": "pending"})
+			return
+		}
+		// No live assignment (e.g. voter cancelled a still-pending ride):
+		// fall through to the plain terminal status update below.
 	}
 
 	var timeCol string
@@ -2532,6 +2664,46 @@ func nullStr(s string) interface{} {
 	return s
 }
 
+// R5-010: client device clocks are untrusted. A client-supplied door-knock
+// capture timestamp is accepted only within 72h in the past and 10min in the
+// future of server time; anything else is rejected rather than silently
+// stored (forged capture times undermine chain-of-custody for late-synced
+// field evidence). The server receipt time is always recorded independently
+// via the gotv_door_knocks.recorded_at column (DEFAULT CURRENT_TIMESTAMP).
+const (
+	maxKnockTimestampAge  = 72 * time.Hour
+	maxKnockTimestampSkew = 10 * time.Minute
+)
+
+// validateKnockTimestamp returns nil for an absent timestamp (server NOW()
+// applies) or the normalized UTC timestamp; an error for unparseable or
+// out-of-window values.
+func validateKnockTimestamp(raw string) (interface{}, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var ts time.Time
+	var err error
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		ts, err = time.Parse(layout, raw)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("unparseable timestamp %q (use RFC3339)", raw)
+	}
+	now := time.Now().UTC()
+	if ts.Before(now.Add(-maxKnockTimestampAge)) {
+		return nil, fmt.Errorf("timestamp %s is older than %v", raw, maxKnockTimestampAge)
+	}
+	if ts.After(now.Add(maxKnockTimestampSkew)) {
+		return nil, fmt.Errorf("timestamp %s is more than %v in the future", raw, maxKnockTimestampSkew)
+	}
+	return ts.UTC().Format(time.RFC3339), nil
+}
+
 func nullVal(ns sql.NullString) interface{} {
 	if ns.Valid {
 		return ns.String
@@ -2817,12 +2989,18 @@ func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	knockedAt, tsErr := validateKnockTimestamp(req.Timestamp)
+	if tsErr != nil {
+		jsonErr(w, "invalid timestamp: "+tsErr.Error(), http.StatusBadRequest)
+		return
+	}
+
 	knockID := "knock-" + uuid.New().String()[:8]
 	_, err := svc.DB.Exec(
 		`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamp, NOW()))
 		 ON CONFLICT DO NOTHING`,
-		pid, user, req.ContactID, knockID, req.ShiftID, req.Outcome, req.Notes, req.Lat, req.Lng, nullStr(req.Timestamp),
+		pid, user, req.ContactID, knockID, req.ShiftID, req.Outcome, req.Notes, req.Lat, req.Lng, knockedAt,
 	)
 	if err != nil {
 		jsonErr(w, "failed to record knock", http.StatusInternalServerError)
@@ -2834,7 +3012,7 @@ func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
 		svc.DB.Exec("UPDATE gotv_contacts SET voter_status='pledged', updated_at=NOW() WHERE contact_id=$1 AND party_id=$2", req.ContactID, pid)
 	}
 
-	jsonResp(w, map[string]interface{}{"knock_id": knockID, "recorded": true})
+	jsonResp(w, map[string]interface{}{"knock_id": knockID, "recorded": true, "server_time": time.Now().UTC().Format(time.RFC3339)})
 }
 
 func handleMobileSync(w http.ResponseWriter, r *http.Request) {
@@ -2858,8 +3036,15 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 
 	syncOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
 	synced := 0
+	rejectedTimestamps := 0
 	for _, k := range req.Knocks {
 		if k.Outcome != "" && !syncOutcomes[k.Outcome] {
+			continue
+		}
+		knockedAt, tsErr := validateKnockTimestamp(k.Timestamp)
+		if tsErr != nil {
+			// R5-010: never store an out-of-window/forged client capture time.
+			rejectedTimestamps++
 			continue
 		}
 		knockID := "knock-" + uuid.New().String()[:8]
@@ -2867,7 +3052,7 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 			`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamp, NOW()))
 			 ON CONFLICT DO NOTHING`,
-			pid, user, k.ContactID, knockID, k.ShiftID, k.Outcome, k.Notes, k.Lat, k.Lng, nullStr(k.Timestamp),
+			pid, user, k.ContactID, knockID, k.ShiftID, k.Outcome, k.Notes, k.Lat, k.Lng, knockedAt,
 		)
 		if err == nil {
 			synced++
@@ -2881,9 +3066,10 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 	svc.DB.Exec("UPDATE gotv_mobile_users SET last_sync_at=NOW() WHERE user_id=$1 AND party_id=$2", user, pid)
 
 	jsonResp(w, map[string]interface{}{
-		"synced":     synced,
-		"total":      len(req.Knocks),
-		"sync_token": time.Now().UTC().Format(time.RFC3339),
+		"synced":              synced,
+		"total":               len(req.Knocks),
+		"rejected_timestamps": rejectedTimestamps,
+		"sync_token":          time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

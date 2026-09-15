@@ -1048,11 +1048,107 @@ func handleGetPortal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, row)
 }
 
+// handlePortalSync pushes finalized, evidence-signed results to an authorized
+// portal connection. R5-095: re-wired behind the IReV configuration gate —
+// only 'irev' portal connections have an authoritative submission channel
+// (submitAuthorizedIReVResult, which requires a finalized result, a signed
+// RESULT_FINALIZED evidence event, and no blocking reconciliation cases);
+// every other portal type fails closed. IReV credentials/mTLS material are an
+// EXTERNAL dependency (IREV_* env); when unconfigured the endpoint returns 503
+// rather than counting local records as a completed portal exchange.
 func handlePortalSync(w http.ResponseWriter, r *http.Request) {
-	// The generic portal implementation cannot establish an authoritative external
-	// receipt. Keep the compatibility function explicitly unavailable rather than
-	// counting local records as a completed portal exchange.
-	handleLegacyPortalSyncDisabled(w, r)
+	claims, err := requireRole(r, "admin", "ict_officer")
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	portalID := mux.Vars(r)["id"]
+	var portalType, portalStatus string
+	if err := db.QueryRow(`SELECT portal_type, status FROM portal_connections WHERE id=?`, portalID).Scan(&portalType, &portalStatus); err != nil {
+		writeError(w, http.StatusNotFound, "portal connection not found")
+		return
+	}
+	if portalStatus != "active" {
+		writeError(w, http.StatusConflict, "portal connection is not active")
+		return
+	}
+	if portalType != "irev" {
+		writeError(w, http.StatusServiceUnavailable, "only the authorized IReV portal has an authoritative result-submission channel; this portal type cannot receive result pushes")
+		return
+	}
+	if err := currentIReVConfig().configured(); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "IReV portal sync is not configured: "+err.Error())
+		return
+	}
+
+	var request struct {
+		ResultIDs []int `json:"result_ids"`
+	}
+	if r.Body != nil {
+		// An empty/absent body selects up to 100 finalized results with no
+		// in-flight or successful IReV submission.
+		_ = json.NewDecoder(r.Body).Decode(&request)
+	}
+	if len(request.ResultIDs) == 0 {
+		rows, qErr := db.Query(`SELECT id FROM results WHERE status='finalized' AND NOT EXISTS (
+			SELECT 1 FROM irev_submission_receipts s WHERE s.result_id=results.id
+			AND s.submission_status IN ('pending','submitted','acknowledged')) ORDER BY id LIMIT 100`)
+		if qErr != nil {
+			writeError(w, http.StatusInternalServerError, qErr.Error())
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int
+			if rows.Scan(&id) == nil {
+				request.ResultIDs = append(request.ResultIDs, id)
+			}
+		}
+	}
+
+	logID := insertReturningID(db, `INSERT INTO portal_sync_log (portal_id, sync_type, entity_type, status) VALUES (?,?, 'result', 'in_progress')`, portalID, "push")
+
+	synced, failed := 0, 0
+	failures := make([]string, 0, 8)
+	for _, resultID := range request.ResultIDs {
+		if resultID <= 0 {
+			failed++
+			continue
+		}
+		_, _, submitErr := submitAuthorizedIReVResult(r.Context(), resultID, claims["user_id"])
+		if submitErr != nil {
+			failed++
+			if len(failures) < 8 {
+				failures = append(failures, fmt.Sprintf("result %d: %v", resultID, submitErr))
+			}
+			continue
+		}
+		synced++
+	}
+
+	syncStatus := "completed"
+	switch {
+	case failed > 0 && synced > 0:
+		syncStatus = "partial"
+	case failed > 0 && synced == 0:
+		syncStatus = "failed"
+	}
+	errMsg := interface{}(nil)
+	if len(failures) > 0 {
+		errMsg = strings.Join(failures, "; ")
+	}
+	if logID != 0 {
+		dbExecLog("portal_sync_log_complete", `UPDATE portal_sync_log SET records_synced=?, records_failed=?, status=?, error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
+			synced, failed, syncStatus, errMsg, logID)
+	}
+	dbExecLog("portal_last_sync", `UPDATE portal_connections SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?`, portalID)
+	logAudit("PORTAL_SYNC", "portal", portalID, 0, map[string]interface{}{"synced": synced, "failed": failed, "status": syncStatus})
+
+	writeJSON(w, 200, M{
+		"portal_id": portalID, "portal_type": portalType,
+		"attempted": len(request.ResultIDs), "synced": synced, "failed": failed,
+		"status": syncStatus, "errors": failures,
+	})
 }
 
 func handlePortalSyncLog(w http.ResponseWriter, r *http.Request) {

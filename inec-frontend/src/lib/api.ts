@@ -1033,7 +1033,6 @@ export const api = {
   // Innovation 1: AI Anomaly Detection
   detectAnomaly: (data: Record<string, unknown>) =>
     request('/innovation/anomaly/detect', { method: 'POST', body: JSON.stringify(data) }),
-  getAnomalyAlerts: () => request('/innovation/anomaly/alerts'),
   getAnomalyModelStatus: () => request('/innovation/anomaly/model/status'),
 
   // Innovation 2: Zero-Knowledge Proof Voter Verification
@@ -1079,7 +1078,6 @@ export const api = {
   // Innovation 7: Satellite Imagery
   analyzeSatelliteImagery: (data: Record<string, unknown>) =>
     request('/innovation/satellite/analyze', { method: 'POST', body: JSON.stringify(data) }),
-  getSatelliteAlerts: () => request('/innovation/satellite/alerts'),
   getSatelliteStatus: () => request('/innovation/satellite/status'),
 
   // Innovation 8: IVR Extended

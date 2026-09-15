@@ -49,8 +49,8 @@ func setupBlockerTestRouter() *mux.Router {
 	r.HandleFunc("/blockchain/stats", handleBlockchainStats).Methods("GET")
 	r.HandleFunc("/blockchain/chain", handleBlockchainChain).Methods("GET")
 	r.HandleFunc("/blockchain/verify/{result_id}", handleBlockchainVerifyResult).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/blocks", handleFabricBlocks).Methods("GET")
-	r.HandleFunc("/blockchain/fabric/transactions", handleFabricTransactions).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/blocks", handleExternalBlockchainUnavailable).Methods("GET")
+	r.HandleFunc("/blockchain/fabric/transactions", handleExternalBlockchainUnavailable).Methods("GET")
 	// BVAS
 	r.HandleFunc("/bvas/devices", handleListBVASDevices).Methods("GET")
 	r.HandleFunc("/bvas/reconciliation", handleBVASReconciliation).Methods("GET")
@@ -239,28 +239,28 @@ func SkipTestBlockchainVerifyResultEndpoint(t *testing.T) {
 }
 
 func SkipTestFabricBlocksEndpoint(t *testing.T) {
-	if db == nil || fabricNetwork == nil {
-		t.Skip("database or fabric network not initialized")
+	if db == nil {
+		t.Skip("database not initialized")
 	}
 	r := setupBlockerTestRouter()
 	req := httptest.NewRequest("GET", "/blockchain/fabric/blocks?limit=5", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != 503 {
+		t.Fatalf("expected 503 (external blockchain unconfigured), got %d", w.Code)
 	}
 }
 
 func SkipTestFabricTransactionsEndpoint(t *testing.T) {
-	if db == nil || fabricNetwork == nil {
-		t.Skip("database or fabric network not initialized")
+	if db == nil {
+		t.Skip("database not initialized")
 	}
 	r := setupBlockerTestRouter()
 	req := httptest.NewRequest("GET", "/blockchain/fabric/transactions?limit=5", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != 503 {
+		t.Fatalf("expected 503 (external blockchain unconfigured), got %d", w.Code)
 	}
 }
 

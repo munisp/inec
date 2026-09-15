@@ -131,7 +131,8 @@ func (d *DispatchEngine) LaunchCampaignV2(ctx context.Context, campaignID string
 		        COALESCE(c.ward_code,''), COALESCE(c.polling_unit_code,'')
 		 FROM gotv_contacts c
 		 LEFT JOIN gotv_outreach_log o ON o.contact_id = c.contact_id AND o.campaign_id = $1
-		 WHERE c.party_id = $2 AND c.opted_out = FALSE AND c.consent_id IS NOT NULL
+		 WHERE c.party_id = $2 AND c.opted_out = FALSE
+		   AND EXISTS (SELECT 1 FROM gotv_consent_records cr WHERE cr.consent_id = c.consent_id AND cr.status='active')
 		   AND o.id IS NULL
 		 ORDER BY c.created_at
 		 LIMIT 500000`,

@@ -111,6 +111,28 @@ func (s *Service) InitTables(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_gotv_contacts_party ON gotv_contacts(party_id);
 	CREATE INDEX IF NOT EXISTS idx_gotv_contacts_geo ON gotv_contacts(state_code, lga_code, ward_code);
 
+	-- R5-096: supporter consent is a provable record (channel, purpose, legal
+	-- basis, timestamp, recorder), not a free-text string. PG deployments
+	-- additionally enforce the FK from gotv_contacts.consent_id via migration
+	-- 000046 (including legacy backfill); application code always creates a
+	-- record here before linking a contact.
+	CREATE TABLE IF NOT EXISTS gotv_consent_records (
+		consent_id TEXT PRIMARY KEY,
+		party_id INTEGER NOT NULL,
+		contact_id TEXT,
+		channel TEXT NOT NULL,
+		purpose TEXT NOT NULL DEFAULT 'campaign_outreach',
+		legal_basis TEXT NOT NULL,
+		proof_ref TEXT,
+		status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','withdrawn')),
+		granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		withdrawn_at TIMESTAMP,
+		recorded_by TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_consent_party ON gotv_consent_records(party_id);
+	CREATE INDEX IF NOT EXISTS idx_gotv_consent_contact ON gotv_consent_records(contact_id);
+
 	CREATE TABLE IF NOT EXISTS gotv_volunteers (
 		id SERIAL PRIMARY KEY,
 		volunteer_id TEXT UNIQUE NOT NULL,
