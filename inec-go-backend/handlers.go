@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -491,22 +492,56 @@ func logAudit(action, entityType, entityID string, userID int, details map[strin
 	logAuditCtx(context.Background(), action, entityType, entityID, userID, details)
 }
 
+// auditChainMu serializes audit-chain appends in-process (the cross-process
+// guarantee comes from the FOR UPDATE tail lock inside the transaction).
+var auditChainMu sync.Mutex
+
+// logAuditCtx appends to the hash-chained audit log. W4-HANDOFF §1:
+// (a) the preimage binds details + user_id + entity_type + the exact stored
+// timestamp, so tampering with any field is detectable on recomputation;
+// (b) the tail read and the INSERT run in ONE transaction with SELECT ...
+// FOR UPDATE on the tail row (plus an in-process mutex), so concurrent
+// writers on this or another replica cannot fork the chain;
+// (c) failures stay loud. The Go-computed timestamp is stored explicitly so
+// verifiers can recompute the exact preimage.
 func logAuditCtx(ctx context.Context, action, entityType, entityID string, userID int, details map[string]interface{}) {
+	detailsJSON, _ := json.Marshal(details)
+	auditChainMu.Lock()
+	defer auditChainMu.Unlock()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Error().Err(err).Msg("SECURITY: audit chain tx begin failed")
+		return
+	}
+	defer tx.Rollback()
+	tailQ := "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+	if usePostgres {
+		tailQ += " FOR UPDATE"
+	}
 	var prevHash sql.NullString
-	dbQueryRowCtx(ctx, "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
+	if err := tx.QueryRowContext(ctx, tailQ).Scan(&prevHash); err != nil && err != sql.ErrNoRows {
+		log.Error().Err(err).Msg("SECURITY: audit chain tail read failed")
+		return
+	}
 	prev := strings.Repeat("0", 64)
 	if prevHash.Valid {
 		prev = prevHash.String
 	}
-	blockData := fmt.Sprintf("%s%s%s%s", prev, action, entityID, time.Now().UTC().Format(time.RFC3339))
+	ts := time.Now().UTC().Format(time.RFC3339)
+	blockData := fmt.Sprintf("%s|%s|%s|%s|%d|%s|%s",
+		prev, action, entityType, entityID, userID, ts, string(detailsJSON))
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
-	detailsJSON, _ := json.Marshal(details)
 	// Audit failures must be loud, not silent — the chain is a security control.
-	if _, err := dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
-		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash, \"timestamp\") VALUES (?,?,?,?,?,?,?,?)",
+		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev, ts); err != nil {
 		log.Error().Err(err).Str("action", action).Str("entity_type", entityType).Str("entity_id", entityID).
 			Msg("SECURITY: audit log write failed")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Error().Err(err).Msg("SECURITY: audit chain commit failed")
 	}
 }
 
@@ -2105,6 +2140,7 @@ func enforceStateTenancy(w http.ResponseWriter, r *http.Request, user jwt.MapCla
 //   - election has NO PU-level assignments at all: the registry has not been
 //     populated for this election — the control is unenforceable, so degrade
 //     to state tenancy with a loud warning log (never silently).
+//
 // Query errors fail closed (500).
 func enforceOfficerPUBinding(w http.ResponseWriter, r *http.Request, user jwt.MapClaims, electionID int, puCode string) bool {
 	role, _ := user["role"].(string)
