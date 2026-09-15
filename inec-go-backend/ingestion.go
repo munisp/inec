@@ -619,6 +619,10 @@ func applyResultTx(ctx context.Context, tx *sql.Tx, res ingestedResult) (resultA
 
 	ec8aHash := computeEC8AHash(res.ElectionID, res.PollingUnitCode, res.PartyScores, res.AccreditedVoters, res.RejectedVotes)
 
+	// NOTE: the live handler inserts tigerbeetle_status='NOT_APPLICABLE', which
+	// violates the results_tigerbeetle_status_check constraint ('PENDING',
+	// 'POSTED', 'VOIDED') on PostgreSQL — the applier uses the constraint-
+	// compliant 'PENDING'. Constraint/literal alignment is handed off to W2.
 	insertRes, err := tx.ExecContext(ctx, convertPlaceholders(`INSERT INTO results
 		(election_id, polling_unit_code, presiding_officer_id, status,
 		 total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
@@ -627,7 +631,7 @@ func applyResultTx(ctx context.Context, tx *sql.Tx, res ingestedResult) (resultA
 		ON CONFLICT (election_id, polling_unit_code) DO NOTHING`),
 		res.ElectionID, res.PollingUnitCode, nullableInt(res.SubmittedBy), "pending",
 		totalValid, res.RejectedVotes, totalCast, res.AccreditedVoters,
-		ec8aHash, nil, "NOT_APPLICABLE", "PENDING")
+		ec8aHash, nil, "PENDING", "PENDING")
 	if err != nil {
 		return "", 0, fmt.Errorf("insert result: %w", err)
 	}

@@ -440,7 +440,7 @@ func (s *Service) processResultImport(ctx context.Context, payload map[string]in
 		`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 			total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
 			tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
-		 VALUES ($1,$2,$3,'pending',$4,$5,$6,$7,NULL,'NOT_APPLICABLE','PENDING')
+		 VALUES ($1,$2,$3,'pending',$4,$5,$6,$7,NULL,'PENDING','PENDING')
 		 ON CONFLICT (election_id, polling_unit_code) DO NOTHING`,
 		electionID, puCode, officerArg, totalValid, rejected, totalCast, accredited)
 	if err != nil {

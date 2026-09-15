@@ -55,6 +55,7 @@ func w1ProvisionScratch(baseDSN string) {
 		for _, f := range []string{
 			"migrations/000001_initial_schema.up.sql",     // elections, polling_units, results, parties
 			"migrations/000006_bvas_extended.up.sql",      // bvas_accreditations
+			"migrations/000012_api_integrations.up.sql",   // ingestion_jobs, offline_sync_queue, dead_letter_queue
 			"migrations/000021_core_extended.up.sql",      // audit_log
 			"migrations/000022_election_management.up.sql", // result_party_scores
 			"migrations/000028_results_unique_constraint.up.sql",
@@ -71,20 +72,10 @@ func w1ProvisionScratch(baseDSN string) {
 				return
 			}
 		}
-		// Ingestion tables via the same Go init the monolith uses, then the
-		// 000033 deltas (idempotent ADD COLUMN / CREATE INDEX IF NOT EXISTS).
+		// Dev-parity init (no-op on already-migrated tables; CREATE IF NOT EXISTS).
 		compat := openPgCompat(dsn)
 		defer compat.Close()
 		initIngestionTables(compat)
-		m33, err := os.ReadFile("migrations/000033_ingestion_apply_and_idempotency.up.sql")
-		if err != nil {
-			w1ScratchErr = err
-			return
-		}
-		if _, err := compat.Exec(string(m33)); err != nil {
-			w1ScratchErr = fmt.Errorf("re-apply 000033: %w", err)
-			return
-		}
 		// Seed: one active election, one PU, parties.
 		seed := `
 		INSERT INTO parties (code, name, abbreviation) VALUES ('APC','All Progressives','APC'),('PDP','Peoples Democratic','PDP') ON CONFLICT (code) DO NOTHING;
@@ -97,7 +88,15 @@ func w1ProvisionScratch(baseDSN string) {
 			('PU-W1-005','W1 PU 5','W-001',1000),
 			('PU-W1-006','W1 PU 6','W-001',1000),
 			('PU-W1-007','W1 PU 7','W-001',1000),
-			('PU-W1-008','W1 PU 8','W-001',1000)
+			('PU-W1-008','W1 PU 8','W-001',1000),
+			('PU-W1-R01','W1 PU R1','W-001',1000),
+			('PU-W1-R02','W1 PU R2','W-001',1000),
+			('PU-W1-R03','W1 PU R3','W-001',1000),
+			('PU-W1-R04','W1 PU R4','W-001',1000),
+			('PU-W1-R05','W1 PU R5','W-001',1000),
+			('PU-W1-R06','W1 PU R6','W-001',1000),
+			('PU-W1-R07','W1 PU R7','W-001',1000),
+			('PU-W1-R08','W1 PU R8','W-001',1000)
 		ON CONFLICT (code) DO NOTHING;
 		`
 		if _, err := compat.Exec(seed); err != nil {
@@ -223,7 +222,8 @@ func TestW1ApplyDuplicateAndConflict(t *testing.T) {
 		t.Fatalf("duplicate created %d rows", count)
 	}
 	// Divergent re-apply → conflict, original figures preserved, audit written.
-	conflicting, _ := parseIngestedResult(w1ResultPayload("PU-W1-002", 999, 150, 400, 5))
+	// (Figures stay EC8A-valid so the divergence reaches the conflict path.)
+	conflicting, _ := parseIngestedResult(w1ResultPayload("PU-W1-002", 120, 150, 400, 5))
 	conflicting.Source = "offline_sync"
 	outcome, _, err = applyIngestedResult(context.Background(), conflicting)
 	if err != nil || outcome != resultConflict {
@@ -347,9 +347,8 @@ func TestW1RecoverPendingDrainsEverything(t *testing.T) {
 	if _, err := testDB.Exec("DELETE FROM ingestion_jobs"); err != nil {
 		t.Fatal(err)
 	}
-	// 7 pending + 1 stale in_progress, each a distinct PU... reuse PUs via
-	// distinct election-scoped keys is not possible (8 seeded), so use 8.
-	pus := []string{"PU-W1-001", "PU-W1-002", "PU-W1-003", "PU-W1-004", "PU-W1-005", "PU-W1-006", "PU-W1-007", "PU-W1-008"}
+	// 7 pending + 1 stale in_progress on PUs dedicated to this test.
+	pus := []string{"PU-W1-R01", "PU-W1-R02", "PU-W1-R03", "PU-W1-R04", "PU-W1-R05", "PU-W1-R06", "PU-W1-R07", "PU-W1-R08"}
 	for i, pu := range pus {
 		status := "pending"
 		if i == 7 {
@@ -373,7 +372,7 @@ func TestW1RecoverPendingDrainsEverything(t *testing.T) {
 		t.Fatalf("R5-003 regression: %d jobs stranded after recovery", incomplete)
 	}
 	var applied int
-	testDB.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=1").Scan(&applied)
+	testDB.QueryRow("SELECT COUNT(*) FROM results WHERE election_id=1 AND polling_unit_code LIKE 'PU-W1-R%'").Scan(&applied)
 	if applied != 8 {
 		t.Fatalf("expected 8 recovered results applied, got %d", applied)
 	}
