@@ -1,5 +1,6 @@
 import { useState, lazy, Suspense } from 'react';
 import { useAuth } from '@/lib/auth';
+import { useI18n } from '@/lib/i18n';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -18,6 +19,7 @@ const DemoQuickAccess = import.meta.env.DEV
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const { t } = useI18n();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -60,29 +62,29 @@ export default function LoginPage() {
             <Vote className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">INEC Election Platform</h1>
-          <p className="text-green-200 text-sm">Blockchain-Based Election Results System v4.0</p>
+          <p className="text-green-200 text-sm">{t('login_tagline')}</p>
         </div>
 
         <Card className="border-0 shadow-2xl">
           <CardHeader className="pb-4">
-            <CardTitle className="text-lg">Sign In</CardTitle>
-            <CardDescription>Access the election management platform</CardDescription>
+            <CardTitle className="text-lg">{t('login_title')}</CardTitle>
+            <CardDescription>{t('login_subtitle')}</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleLogin} className="space-y-4">
               {error && (
-                <div className="p-3 text-sm text-red-700 bg-red-50 rounded-lg border border-red-200">{error}</div>
+                <div role="alert" className="p-3 text-sm text-red-700 bg-red-50 rounded-lg border border-red-200">{error}</div>
               )}
               <div className="space-y-2">
-                <Label htmlFor="username">Username</Label>
-                <Input id="username" name="username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Enter username" />
+                <Label htmlFor="username">{t('login_username')}</Label>
+                <Input id="username" name="username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={t('login_enter_username')} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input id="password" name="password" autoComplete="current-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter password" />
+                <Label htmlFor="password">{t('login_password')}</Label>
+                <Input id="password" name="password" autoComplete="current-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t('login_enter_password')} />
               </div>
               <Button type="submit" className="w-full bg-green-700 hover:bg-green-800" disabled={loading}>
-                {loading ? 'Signing in...' : 'Sign In'}
+                {loading ? t('login_signing_in') : t('login_title')}
               </Button>
             </form>
 
@@ -97,8 +99,8 @@ export default function LoginPage() {
         </Card>
 
         <div className="text-center space-y-1">
-          <p className="text-green-300 text-xs">Independent National Electoral Commission</p>
-          <p className="text-green-400/60 text-xs">Federal Republic of Nigeria</p>
+          <p className="text-green-300 text-xs">{t('login_commission')}</p>
+          <p className="text-green-400/60 text-xs">{t('login_country')}</p>
         </div>
       </div>
     </div>

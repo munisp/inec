@@ -59,7 +59,7 @@ type IVRResponse struct {
 }
 
 // IVR sessions are persisted in the `ivr_sessions` table (migration
-// 000035_ivr_sessions) instead of a process-local map, so telephony
+// 000038_ivr_sessions) instead of a process-local map, so telephony
 // callbacks keep working across replicas and restarts (R5-120 sub-action).
 func ivrSaveSession(s *IVRSession) error {
 	if db == nil {

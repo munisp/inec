@@ -18,7 +18,7 @@ package main
 // Outbound replies are sent via the Meta Graph API when WHATSAPP_API_TOKEN
 // and WHATSAPP_PHONE_NUMBER_ID are configured; every inbound message and the
 // computed reply are also persisted to `whatsapp_messages` (migration
-// 000033) so nothing is lost when the API credential is absent.
+// 000036) so nothing is lost when the API credential is absent.
 
 import (
 	"bytes"

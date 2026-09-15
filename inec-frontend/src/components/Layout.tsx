@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useAuth } from '@/lib/auth';
 import { canAccessPage } from '@/lib/page-roles';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, LANGUAGE_OPTIONS, type Lang } from '@/lib/i18n';
 import { useTheme } from '@/components/ThemeProvider';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
@@ -199,11 +199,10 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
           <button onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')} className="p-2 rounded-md text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200" aria-label="Toggle theme">
             <ThemeIcon className="w-4 h-4" />
           </button>
-          <select aria-label="Language" className="text-sm border dark:border-zinc-600 rounded px-2 py-1 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100" value={lang} onChange={(e) => setLang(e.target.value as 'en' | 'ha' | 'yo' | 'ig')}>
-            <option value="en">EN</option>
-            <option value="ha">HA</option>
-            <option value="yo">YO</option>
-            <option value="ig">IG</option>
+          <select aria-label="Language" className="text-sm border dark:border-zinc-600 rounded px-2 py-1 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100" value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
+            {LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.value.toUpperCase()}</option>
+            ))}
           </select>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -233,11 +232,10 @@ export default function Layout({ currentPage, onNavigate, children }: LayoutProp
             <Badge variant="outline" className="text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/30" aria-live="polite">
               System Online
             </Badge>
-            <select aria-label="Language" className="text-sm border dark:border-zinc-600 rounded px-2 py-1 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100" value={lang} onChange={(e) => setLang(e.target.value as 'en' | 'ha' | 'yo' | 'ig')}>
-              <option value="en">EN</option>
-              <option value="ha">HA</option>
-              <option value="yo">YO</option>
-              <option value="ig">IG</option>
+            <select aria-label="Language" className="text-sm border dark:border-zinc-600 rounded px-2 py-1 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100" value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
+              {LANGUAGE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.value.toUpperCase()}</option>
+              ))}
             </select>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

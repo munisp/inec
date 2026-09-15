@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useI18n } from '@/lib/i18n';
 import { Eye, Radio, Upload, Bell, MapPin, Activity, Users, FileText, AlertTriangle } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL ?? '';
@@ -56,6 +57,7 @@ interface PartyDashboard {
 }
 
 export default function ObserverMonitoringPage() {
+  const { t } = useI18n();
   const [tab, setTab] = useState<'live' | 'reports' | 'alerts' | 'party'>('live');
   const [events, setEvents] = useState<ResultEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -142,11 +144,11 @@ export default function ObserverMonitoringPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-zinc-900">Observer Monitoring</h1>
+        <h1 className="text-2xl font-bold text-zinc-900">{t('observer_title')}</h1>
         <div className="flex items-center gap-2">
           <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${connected ? 'bg-green-100 text-green-700' : 'bg-zinc-100 text-zinc-500'}`}>
             <Radio className="w-3 h-3" />
-            {connected ? 'Live' : 'Disconnected'}
+            {connected ? t('observer_live') : t('disconnected')}
           </span>
         </div>
       </div>
@@ -160,20 +162,20 @@ export default function ObserverMonitoringPage() {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <StatCard icon={Users} label="Observers" value={stats.total_observers || 0} />
-        <StatCard icon={MapPin} label="Active Check-ins" value={stats.active_check_ins || 0} />
-        <StatCard icon={FileText} label="Reports Today" value={stats.reports_today || 0} />
-        <StatCard icon={Bell} label="Alert Rules" value={stats.active_alert_rules || 0} />
-        <StatCard icon={Activity} label="Live Streams" value={stats.active_sse_streams || 0} />
+        <StatCard icon={Users} label={t('observer_observers')} value={stats.total_observers || 0} />
+        <StatCard icon={MapPin} label={t('observer_checkins')} value={stats.active_check_ins || 0} />
+        <StatCard icon={FileText} label={t('observer_reports_today')} value={stats.reports_today || 0} />
+        <StatCard icon={Bell} label={t('observer_alert_rules')} value={stats.active_alert_rules || 0} />
+        <StatCard icon={Activity} label={t('observer_live_streams')} value={stats.active_sse_streams || 0} />
       </div>
 
       {/* Tabs */}
       <div className="flex overflow-x-auto border-b border-zinc-200" role="tablist" aria-label="Observer monitoring views">
         {[
-          { key: 'live', icon: Radio, label: 'Live Feed' },
-          { key: 'reports', icon: Upload, label: 'Reports' },
-          { key: 'alerts', icon: Bell, label: 'Alerts' },
-          { key: 'party', icon: Eye, label: 'Party Dashboard' },
+          { key: 'live', icon: Radio, label: t('observer_tab_live') },
+          { key: 'reports', icon: Upload, label: t('observer_tab_reports') },
+          { key: 'alerts', icon: Bell, label: t('observer_tab_alerts') },
+          { key: 'party', icon: Eye, label: t('observer_tab_party') },
         ].map(t => (
           <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key as typeof tab)}
             className={`shrink-0 flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t.key ? 'border-green-600 text-green-700' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}>
