@@ -1,21 +1,43 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl, Image, Alert, Platform, Animated,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from 'expo-router';
 import { observerApi, ObserverReport } from '../../src/lib/api';
-import { getPendingReports, savePendingReport, PendingReport } from '../../src/lib/offline';
+import { useResolvedElection } from '../../src/lib/election';
+import { getCurrentLocation } from '../../src/lib/location';
+import {
+  getPendingReports, queueReport, persistCapturedPhoto, PendingReport,
+} from '../../src/lib/offline';
 import { EmptyState } from '../../src/components/EmptyState';
 import { FeedSkeleton } from '../../src/components/SkeletonLoader';
+
+// R5-110: crash-safe draft — the in-progress report (text + persisted photo
+// reference) survives an app crash under camera memory pressure.
+const DRAFT_KEY = 'inec_report_draft_v1';
+
+interface ReportDraft {
+  puCode: string;
+  description: string;
+  photoUri: string | null;
+  photoSha256: string | null;
+  savedAt: string;
+}
+
+interface CapturedPhoto {
+  uri: string;
+  sha256: string;
+}
 
 export default function ReportsScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [showCamera, setShowCamera] = useState(false);
-  const [photo, setPhoto] = useState<string | null>(null);
+  const [photo, setPhoto] = useState<CapturedPhoto | null>(null);
   const [puCode, setPuCode] = useState('');
   const [description, setDescription] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -25,6 +47,41 @@ export default function ReportsScreen() {
   const [loading, setLoading] = useState(true);
   const cameraRef = useRef<CameraView>(null);
   const buttonScale = useRef(new Animated.Value(1)).current;
+  // R5-107: the backend requires election_id — resolve it from the shared
+  // election context; submission is gated until it resolves.
+  const { electionId, loading: electionLoading, error: electionError } = useResolvedElection();
+
+  // Restore an unsent draft after a crash/restart.
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(DRAFT_KEY);
+        if (!raw) return;
+        const draft = JSON.parse(raw) as ReportDraft;
+        if (draft.puCode) setPuCode(draft.puCode);
+        if (draft.description) setDescription(draft.description);
+        if (draft.photoUri && draft.photoSha256) {
+          setPhoto({ uri: draft.photoUri, sha256: draft.photoSha256 });
+        }
+      } catch { /* corrupt draft — start fresh */ }
+    })();
+  }, []);
+
+  // Persist the draft on every change (best-effort).
+  useEffect(() => {
+    if (!puCode && !description && !photo) return;
+    const draft: ReportDraft = {
+      puCode, description,
+      photoUri: photo?.uri ?? null,
+      photoSha256: photo?.sha256 ?? null,
+      savedAt: new Date().toISOString(),
+    };
+    AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft)).catch(() => {});
+  }, [puCode, description, photo]);
+
+  const clearDraft = useCallback(() => {
+    AsyncStorage.removeItem(DRAFT_KEY).catch(() => {});
+  }, []);
 
   const loadReports = useCallback(async () => {
     try {
@@ -56,7 +113,16 @@ export default function ReportsScreen() {
 
     const result = await cameraRef.current.takePictureAsync({ quality: 0.8 });
     if (result) {
-      setPhoto(result.uri);
+      // R5-110: the camera cache URI is volatile — persist the photo into
+      // app-owned storage and pin its SHA-256 immediately, or the queued
+      // upload can silently break/change later.
+      const persisted = await persistCapturedPhoto(result.uri);
+      if (!persisted) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Photo Error', 'Could not save the photo. Please retake it.');
+        return;
+      }
+      setPhoto(persisted);
       setShowCamera(false);
     }
   };
@@ -67,27 +133,65 @@ export default function ReportsScreen() {
       Alert.alert('Required', 'Enter the Polling Unit code');
       return;
     }
+    if (!photo) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Required', 'Take a photo of the EC8A form — the backend requires photo evidence');
+      return;
+    }
+    if (!electionId) {
+      // R5-107: never submit/queue without a resolved election id.
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Election Unavailable',
+        electionError
+          ? `Could not resolve the active election (${electionError}). Check your connection and retry.`
+          : 'Still resolving the active election — please wait a moment and retry.'
+      );
+      return;
+    }
 
     setSubmitting(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
+    const location = await getCurrentLocation().catch(() => null);
+
     try {
       const form = new FormData();
       form.append('polling_unit_code', puCode);
-      form.append('notes', description || '');
-      if (photo) {
-        const filename = photo.split('/').pop() || 'photo.jpg';
-        form.append('photo', { uri: photo, name: filename, type: 'image/jpeg' } as unknown as Blob);
+      form.append('election_id', String(electionId));
+      form.append('report_type', 'result_photo');
+      // R5-107: the backend reads `description`, not `notes`.
+      form.append('description', description || '');
+      if (location) {
+        form.append('latitude', String(location.latitude));
+        form.append('longitude', String(location.longitude));
       }
+      const filename = photo.uri.split('/').pop() || 'photo.jpg';
+      form.append('photo', { uri: photo.uri, name: filename, type: 'image/jpeg' } as unknown as Blob);
       await observerApi.submitReport(form);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setPuCode('');
       setDescription('');
       setPhoto(null);
+      clearDraft();
       loadReports();
     } catch {
-      await savePendingReport(puCode, description, photo || '');
+      // Offline/server failure — queue with the REAL election id (no sentinel).
+      await queueReport({
+        polling_unit_code: puCode,
+        election_id: electionId,
+        report_type: 'result_photo',
+        photo_uri: photo.uri,
+        photo_sha256: photo.sha256,
+        description,
+        latitude: location?.latitude ?? 0,
+        longitude: location?.longitude ?? 0,
+      });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setPuCode('');
+      setDescription('');
+      setPhoto(null);
+      clearDraft();
       const pending = await getPendingReports();
       setPendingReports(pending);
     } finally {
@@ -155,14 +259,29 @@ export default function ReportsScreen() {
 
         {photo && (
           <View style={styles.photoPreview}>
-            <Image source={{ uri: photo }} style={styles.previewImage} />
-            <TouchableOpacity style={styles.removePhoto} onPress={() => { setPhoto(null); Haptics.selectionAsync(); }}>
+            <Image
+              source={{ uri: photo.uri }}
+              style={styles.previewImage}
+              accessibilityLabel="Photo of the EC8A result sheet"
+            />
+            <TouchableOpacity
+              style={styles.removePhoto}
+              onPress={() => { setPhoto(null); Haptics.selectionAsync(); }}
+              accessibilityLabel="Remove photo"
+              accessibilityRole="button"
+            >
               <Ionicons name="close-circle" size={24} color="#dc2626" />
             </TouchableOpacity>
           </View>
         )}
 
-        <TouchableOpacity style={styles.cameraButton} onPress={() => setShowCamera(true)} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.cameraButton}
+          onPress={() => setShowCamera(true)}
+          activeOpacity={0.7}
+          accessibilityLabel={photo ? 'Retake photo of EC8A form' : 'Take photo of EC8A form'}
+          accessibilityRole="button"
+        >
           <View style={styles.cameraButtonIcon}>
             <Ionicons name="camera" size={20} color="#166534" />
           </View>
@@ -184,6 +303,7 @@ export default function ReportsScreen() {
               value={puCode}
               onChangeText={setPuCode}
               autoCapitalize="characters"
+              accessibilityLabel="Polling unit code"
             />
           </View>
         </View>
@@ -198,17 +318,23 @@ export default function ReportsScreen() {
             onChangeText={setDescription}
             multiline
             numberOfLines={3}
+            accessibilityLabel="Report description, optional"
           />
         </View>
 
         <TouchableOpacity
-          style={[styles.submitButton, submitting && styles.submitDisabled]}
+          style={[styles.submitButton, (submitting || electionLoading) && styles.submitDisabled]}
           onPress={submit}
-          disabled={submitting}
+          disabled={submitting || electionLoading}
           activeOpacity={0.8}
+          accessibilityLabel="Submit observer report"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: submitting || electionLoading, busy: submitting }}
         >
           <Ionicons name={submitting ? 'hourglass-outline' : 'cloud-upload'} size={18} color="#fff" />
-          <Text style={styles.submitText}>{submitting ? 'Submitting...' : 'Submit Report'}</Text>
+          <Text style={styles.submitText}>
+            {submitting ? 'Submitting...' : electionLoading ? 'Resolving election...' : 'Submit Report'}
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -226,6 +352,11 @@ export default function ReportsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.pendingPU}>{r.polling_unit_code}</Text>
                 <Text style={styles.pendingDesc}>{r.description || 'No description'}</Text>
+                {r.last_error ? (
+                  <Text style={styles.pendingError} numberOfLines={1}>
+                    {r.attempts} attempt{r.attempts === 1 ? '' : 's'} — {r.last_error}
+                  </Text>
+                ) : null}
               </View>
             </View>
           ))}
@@ -367,6 +498,7 @@ const styles = StyleSheet.create({
   },
   pendingPU: { fontSize: 14, fontWeight: '600', color: '#111827' },
   pendingDesc: { fontSize: 12, color: '#6b7280', marginTop: 2 },
+  pendingError: { fontSize: 11, color: '#b45309', marginTop: 2 },
   reportCard: {
     flexDirection: 'row',
     alignItems: 'center',
