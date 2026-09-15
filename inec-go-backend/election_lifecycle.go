@@ -60,27 +60,27 @@ func puInRerunScope(ctx context.Context, electionID int, puCode string) (bool, e
 
 // declarationAssessment is the output of the declaration rules engine.
 type declarationAssessment struct {
-	Complete        bool              `json:"complete"`
-	TotalPUs        int               `json:"total_pus"`
-	FinalizedPUs    int               `json:"finalized_pus"`
-	DisputedPUs     int               `json:"disputed_pus"`
-	VoidedPUs       int               `json:"voided_pus"`
-	MissingPUs      int               `json:"missing_pus"`
-	OpenDisputes    int               `json:"open_disputes"`
-	PartyTotals     map[string]int64  `json:"party_totals"`
-	WinnerParty     string            `json:"winner_party,omitempty"`
-	WinnerVotes     int64             `json:"winner_votes,omitempty"`
-	RunnerUpParty   string            `json:"runner_up_party,omitempty"`
-	RunnerUpVotes   int64             `json:"runner_up_votes,omitempty"`
-	Margin          int64             `json:"margin"`
-	Tie             bool              `json:"tie"`
-	AffectedVoters  int64             `json:"affected_voters"`
-	Inconclusive    bool              `json:"inconclusive"`
-	InconclusiveWhy string            `json:"inconclusive_reason,omitempty"`
-	SpreadRequired  bool              `json:"spread_required"`
-	SpreadMet       bool              `json:"spread_met"`
-	SpreadStates    int               `json:"spread_states_qualified"`
-	SpreadThreshold int               `json:"spread_threshold"`
+	Complete        bool             `json:"complete"`
+	TotalPUs        int              `json:"total_pus"`
+	FinalizedPUs    int              `json:"finalized_pus"`
+	DisputedPUs     int              `json:"disputed_pus"`
+	VoidedPUs       int              `json:"voided_pus"`
+	MissingPUs      int              `json:"missing_pus"`
+	OpenDisputes    int              `json:"open_disputes"`
+	PartyTotals     map[string]int64 `json:"party_totals"`
+	WinnerParty     string           `json:"winner_party,omitempty"`
+	WinnerVotes     int64            `json:"winner_votes,omitempty"`
+	RunnerUpParty   string           `json:"runner_up_party,omitempty"`
+	RunnerUpVotes   int64            `json:"runner_up_votes,omitempty"`
+	Margin          int64            `json:"margin"`
+	Tie             bool             `json:"tie"`
+	AffectedVoters  int64            `json:"affected_voters"`
+	Inconclusive    bool             `json:"inconclusive"`
+	InconclusiveWhy string           `json:"inconclusive_reason,omitempty"`
+	SpreadRequired  bool             `json:"spread_required"`
+	SpreadMet       bool             `json:"spread_met"`
+	SpreadStates    int              `json:"spread_states_qualified"`
+	SpreadThreshold int              `json:"spread_threshold"`
 }
 
 // assessDeclaration runs the completeness gate, winner computation, and the
@@ -343,15 +343,15 @@ func handleDeclareResult(w http.ResponseWriter, r *http.Request) {
 		outcome = "inconclusive"
 	}
 	payload := M{
-		"outcome":        outcome,
-		"winner_party":   nil,
-		"party_totals":   a.PartyTotals,
-		"margin":         a.Margin,
-		"assessment":     a,
-		"declared_by":    username,
-		"declared_at":    time.Now().UTC().Format(time.RFC3339),
-		"election_id":    electionID,
-		"notes":          req.Notes,
+		"outcome":      outcome,
+		"winner_party": nil,
+		"party_totals": a.PartyTotals,
+		"margin":       a.Margin,
+		"assessment":   a,
+		"declared_by":  username,
+		"declared_at":  time.Now().UTC().Format(time.RFC3339),
+		"election_id":  electionID,
+		"notes":        req.Notes,
 	}
 	if outcome == "winner_declared" {
 		payload["winner_party"] = a.WinnerParty

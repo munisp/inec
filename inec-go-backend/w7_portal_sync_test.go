@@ -109,4 +109,3 @@ func TestPortalSyncFailsClosed(t *testing.T) {
 		t.Fatalf("config-gated sync must not write portal_sync_log rows, found %d", logCount)
 	}
 }
-

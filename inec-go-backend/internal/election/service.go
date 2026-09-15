@@ -19,17 +19,17 @@ type State string
 // preparation/accreditation/collation states violated the DB CHECK and every
 // transition failed; they map to active/voting/collating respectively.
 const (
-	StateDraft      State = "draft"
-	StateScheduled  State = "scheduled"
-	StateActive     State = "active"
-	StateVoting     State = "voting"
-	StateCollating  State = "collating"
-	StateClosed     State = "closed"
-	StateDeclared   State = "declared"
-	StateSuspended  State = "suspended"
-	StateCancelled  State = "cancelled"
-	StateDisputed   State = "disputed"
-	StatePostponed  State = "postponed"
+	StateDraft     State = "draft"
+	StateScheduled State = "scheduled"
+	StateActive    State = "active"
+	StateVoting    State = "voting"
+	StateCollating State = "collating"
+	StateClosed    State = "closed"
+	StateDeclared  State = "declared"
+	StateSuspended State = "suspended"
+	StateCancelled State = "cancelled"
+	StateDisputed  State = "disputed"
+	StatePostponed State = "postponed"
 )
 
 // ValidTransitions defines the allowed state machine transitions.

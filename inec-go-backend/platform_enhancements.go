@@ -954,14 +954,14 @@ func handleCitizenVerifySignature(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, M{
 		"result": result, "signed": true, "signature": sig,
-		"hash_valid":       currentHash == enhStr(sig, "result_hash"),
-		"signature_valid":  signatureValid,
-		"algorithm":        "ed25519",
-		"signer_id":        enhToInt(sig["signer_id"]),
-		"signer_role":      enhStr(sig, "signer_role"),
-		"signer_pubkey":    enhStr(sig, "officer_pubkey"),
-		"server_pubkey":    pubHex,
-		"tamper_detected":  currentHash != enhStr(sig, "result_hash") || !signatureValid,
+		"hash_valid":      currentHash == enhStr(sig, "result_hash"),
+		"signature_valid": signatureValid,
+		"algorithm":       "ed25519",
+		"signer_id":       enhToInt(sig["signer_id"]),
+		"signer_role":     enhStr(sig, "signer_role"),
+		"signer_pubkey":   enhStr(sig, "officer_pubkey"),
+		"server_pubkey":   pubHex,
+		"tamper_detected": currentHash != enhStr(sig, "result_hash") || !signatureValid,
 	})
 }
 

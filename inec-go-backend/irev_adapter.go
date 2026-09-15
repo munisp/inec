@@ -470,5 +470,3 @@ func normalizeIReVStatus(status string) string {
 		return "reconciliation_required"
 	}
 }
-
-
