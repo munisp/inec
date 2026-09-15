@@ -245,7 +245,6 @@ func initEMSTables(database *sql.DB) {
 	database.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_voters_nin ON voters(nin)`)
 }
 
-
 // ══════════════════════════════════════════════════════════════
 // API Handlers - Voter Registration
 // ══════════════════════════════════════════════════════════════
@@ -328,6 +327,9 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 		PollingUnitCode string `json:"polling_unit_code"`
 		BiometricData   string `json:"biometric_data"`
 		NIN             string `json:"nin"`
+		// W5_HANDOFF §3: optional PWD self-declaration (migration 000042).
+		DisabilityType   string `json:"disability_type"`
+		AssistanceNeeded bool   `json:"assistance_needed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON")
@@ -379,10 +381,22 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 	if req.NIN != "" {
 		ninVal = req.NIN
 	}
-	_, err := db.Exec(`INSERT INTO voters (vin, nin, first_name, last_name, middle_name, date_of_birth, gender, phone, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'registered')`,
+	// W5_HANDOFF §3: optional PWD self-declaration; validated against the
+	// migration-000042 enumeration, NULL when absent.
+	var disabilityVal interface{}
+	if req.DisabilityType != "" {
+		switch req.DisabilityType {
+		case "visual", "hearing", "mobility", "cognitive", "other":
+			disabilityVal = req.DisabilityType
+		default:
+			writeError(w, 400, "disability_type must be one of: visual, hearing, mobility, cognitive, other")
+			return
+		}
+	}
+	_, err := db.Exec(`INSERT INTO voters (vin, nin, first_name, last_name, middle_name, date_of_birth, gender, phone, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, disability_type, assistance_needed, status)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'registered')`,
 		vin, ninVal, req.FirstName, req.LastName, req.MiddleName, req.DateOfBirth, req.Gender, req.Phone,
-		req.StateCode, req.LGACode, req.WardCode, req.PollingUnitCode, bioVal, pvcNum)
+		req.StateCode, req.LGACode, req.WardCode, req.PollingUnitCode, bioVal, pvcNum, disabilityVal, req.AssistanceNeeded)
 	if err != nil {
 		writeError(w, 500, "Registration failed: "+err.Error())
 		return
