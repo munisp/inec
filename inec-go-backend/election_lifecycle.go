@@ -900,3 +900,56 @@ func handleStaffHandover(w http.ResponseWriter, r *http.Request) {
 		"message": "Officer handover recorded. Re-point the replacement device via the device gateway enrollment flow.",
 	})
 }
+
+// ── Party-agent countersigning (R5-032) ──
+
+// handleSignResultAgent captures a party agent's signature — or formal
+// refusal — on a PU result, as required on the EC8A. POST /results/{id}/agent-sign
+func handleSignResultAgent(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardRole(w, r, "admin", "presiding_officer", "collation_officer")
+	if !ok {
+		return
+	}
+	id := mux.Vars(r)["id"]
+	var req struct {
+		PartyCode string `json:"party_code" validate:"required"`
+		AgentName string `json:"agent_name" validate:"required"`
+		Decision  string `json:"decision" validate:"required"`
+		Reason    string `json:"reason"`
+	}
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if req.Decision != "signed" && req.Decision != "refused" {
+		writeError(w, 400, "decision must be signed or refused")
+		return
+	}
+	if req.Decision == "refused" && req.Reason == "" {
+		writeError(w, 400, "a refusal must state its reason")
+		return
+	}
+	var resultStatus string
+	if err := db.QueryRowContext(r.Context(), "SELECT status FROM results WHERE id=$1", id).Scan(&resultStatus); err != nil {
+		writeError(w, 404, "result not found")
+		return
+	}
+	if resultStatus == "superseded" || resultStatus == "voided" {
+		writeError(w, 409, "cannot countersign a "+resultStatus+" result; sign the canonical result")
+		return
+	}
+	username, _ := claims["username"].(string)
+	if _, err := db.ExecContext(r.Context(), `
+		INSERT INTO result_agent_signatures (result_id, party_code, agent_name, decision, reason, signed_by)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (result_id, party_code) DO UPDATE SET agent_name=EXCLUDED.agent_name,
+			decision=EXCLUDED.decision, reason=EXCLUDED.reason, signed_by=EXCLUDED.signed_by, signed_at=now()`,
+		id, req.PartyCode, req.AgentName, req.Decision, req.Reason, username); err != nil {
+		writeError(w, 500, "failed to record agent signature")
+		return
+	}
+	logAudit("RESULT_AGENT_"+strings.ToUpper(req.Decision), "result", id, claimUserID(claims), map[string]interface{}{
+		"party_code": req.PartyCode, "agent_name": req.AgentName, "reason": req.Reason,
+	})
+	writeJSON(w, 201, M{"result_id": id, "party_code": req.PartyCode, "decision": req.Decision})
+}

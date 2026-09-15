@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 // ══════════════════════════════════════════════════════════════
@@ -483,16 +484,41 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "first_name, last_name, date_of_birth required")
 		return
 	}
+	// R5-031: DOB is validated and eligibility enforced (18+ on registration).
+	dob, dobErr := time.Parse("2006-01-02", req.DateOfBirth)
+	if dobErr != nil {
+		writeError(w, 400, "date_of_birth must be YYYY-MM-DD")
+		return
+	}
+	if dob.After(time.Now()) {
+		writeError(w, 400, "date_of_birth cannot be in the future")
+		return
+	}
+	age := time.Now().Year() - dob.Year()
+	if time.Now().YearDay() < dob.YearDay() {
+		age--
+	}
+	if age < 18 {
+		writeError(w, 422, "voter must be at least 18 years old to register")
+		return
+	}
 
 	vinHash := sha256.Sum256([]byte(fmt.Sprintf("%s%s%s%d", req.FirstName, req.LastName, req.DateOfBirth, time.Now().UnixNano())))
 	vin := fmt.Sprintf("VIN%04x%08x", vinHash[0:2], vinHash[2:6])
-	bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.BiometricData)))
 
-	var dupCount int
-	db.QueryRow("SELECT COUNT(*) FROM voters WHERE biometric_hash=?", bioHash[:32]).Scan(&dupCount)
-	if dupCount > 0 {
-		writeError(w, 409, "Duplicate biometric detected")
-		return
+	// R5-031: biometric dedupe only applies when biometric data was actually
+	// captured — otherwise every biometric-less registration collides on the
+	// hash of the empty string.
+	var bioVal interface{}
+	if req.BiometricData != "" {
+		bioHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.BiometricData)))
+		var dupCount int
+		db.QueryRow("SELECT COUNT(*) FROM voters WHERE biometric_hash=?", bioHash[:32]).Scan(&dupCount)
+		if dupCount > 0 {
+			writeError(w, 409, "Duplicate biometric detected")
+			return
+		}
+		bioVal = bioHash[:32]
 	}
 
 	pvcNum := fmt.Sprintf("PVC-%s-%06d", req.StateCode, time.Now().UnixNano()%999999)
@@ -503,7 +529,7 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 	_, err := db.Exec(`INSERT INTO voters (vin, nin, first_name, last_name, middle_name, date_of_birth, gender, phone, state_code, lga_code, ward_code, polling_unit_code, biometric_hash, pvc_number, status)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'registered')`,
 		vin, ninVal, req.FirstName, req.LastName, req.MiddleName, req.DateOfBirth, req.Gender, req.Phone,
-		req.StateCode, req.LGACode, req.WardCode, req.PollingUnitCode, bioHash[:32], pvcNum)
+		req.StateCode, req.LGACode, req.WardCode, req.PollingUnitCode, bioVal, pvcNum)
 	if err != nil {
 		writeError(w, 500, "Registration failed: "+err.Error())
 		return
@@ -513,10 +539,107 @@ func handleRegisterVoter(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, M{"vin": vin, "pvc_number": pvcNum, "message": "Voter registered successfully"})
 }
 
+// handleCollectPVC records PVC collection for a registered voter (R5-029).
+// POST /ems/voters/{vin}/collect-pvc
+func handleCollectPVC(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardRole(w, r, "admin", "collation_officer", "presiding_officer")
+	if !ok {
+		return
+	}
+	vin := mux.Vars(r)["vin"]
+	res, err := db.ExecContext(r.Context(),
+		"UPDATE voters SET pvc_collected=1, pvc_collected_at=CURRENT_TIMESTAMP WHERE vin=? AND pvc_collected=0", vin)
+	if err != nil {
+		writeError(w, 500, "failed to record PVC collection")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, 409, "voter not found or PVC already collected")
+		return
+	}
+	logAudit("PVC_COLLECTED", "voter", vin, claimUserID(claims), nil)
+	writeJSON(w, 200, M{"vin": vin, "pvc_collected": true})
+}
+
+// handleMarkVoted records that a voter has voted on election day (R5-028).
+// POST /ems/voters/{vin}/mark-voted {election_id}
+func handleMarkVoted(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardRole(w, r, "admin", "presiding_officer")
+	if !ok {
+		return
+	}
+	vin := mux.Vars(r)["vin"]
+	var req struct {
+		ElectionID int `json:"election_id" validate:"required,gt=0"`
+	}
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	var status string
+	if err := db.QueryRowContext(r.Context(), "SELECT status FROM voters WHERE vin=?", vin).Scan(&status); err != nil {
+		writeError(w, 404, "voter not found")
+		return
+	}
+	if status != "active" && status != "verified" && status != "registered" {
+		writeError(w, 409, "voter status '"+status+"' is not eligible to vote")
+		return
+	}
+	res, err := db.ExecContext(r.Context(),
+		"UPDATE voters SET has_voted=1, voted_at=CURRENT_TIMESTAMP WHERE vin=? AND has_voted=0", vin)
+	if err != nil {
+		writeError(w, 500, "failed to mark voter")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, 409, "voter has already been marked as voted")
+		return
+	}
+	logAudit("VOTER_MARKED_VOTED", "voter", vin, claimUserID(claims), map[string]interface{}{"election_id": req.ElectionID})
+	writeJSON(w, 200, M{"vin": vin, "has_voted": true, "election_id": req.ElectionID})
+}
+
+// handleReactivateVoter reactivates a transferred/suspended voter at their
+// current polling unit after verification (R5-030).
+// POST /ems/voters/{vin}/reactivate {polling_unit_code}
+func handleReactivateVoter(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardRole(w, r, "admin")
+	if !ok {
+		return
+	}
+	vin := mux.Vars(r)["vin"]
+	var req struct {
+		PollingUnitCode string `json:"polling_unit_code" validate:"required"`
+	}
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	var puExists int
+	db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM polling_units WHERE code=?", req.PollingUnitCode).Scan(&puExists)
+	if puExists == 0 {
+		writeError(w, 400, "polling unit not found")
+		return
+	}
+	res, err := db.ExecContext(r.Context(),
+		"UPDATE voters SET status='active', polling_unit_code=? WHERE vin=? AND status IN ('transferred','suspended')",
+		req.PollingUnitCode, vin)
+	if err != nil {
+		writeError(w, 500, "failed to reactivate voter")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, 409, "voter not found or not in transferred/suspended status")
+		return
+	}
+	logAudit("VOTER_REACTIVATED", "voter", vin, claimUserID(claims), map[string]interface{}{"polling_unit_code": req.PollingUnitCode})
+	writeJSON(w, 200, M{"vin": vin, "status": "active", "polling_unit_code": req.PollingUnitCode})
+}
+
 func handleVoterStats(w http.ResponseWriter, r *http.Request) {
 	stateCode := r.URL.Query().Get("state_code")
 
-	var total, active, verified, registered, pvcCollected int
+	var total, active, verified, registered, transferred, pvcCollected int
 	baseQ := "SELECT COUNT(*) FROM voters"
 	filter := ""
 	var params []interface{}
@@ -529,6 +652,9 @@ func handleVoterStats(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow(baseQ+" WHERE status='active'"+strings.Replace(filter, "WHERE", "AND", 1), params...).Scan(&active)
 	db.QueryRow(baseQ+" WHERE status='verified'"+strings.Replace(filter, "WHERE", "AND", 1), params...).Scan(&verified)
 	db.QueryRow(baseQ+" WHERE status='registered'"+strings.Replace(filter, "WHERE", "AND", 1), params...).Scan(&registered)
+	// R5-030: transferred voters are visible in register statistics instead
+	// of vanishing from the counts.
+	db.QueryRow(baseQ+" WHERE status='transferred'"+strings.Replace(filter, "WHERE", "AND", 1), params...).Scan(&transferred)
 	db.QueryRow(baseQ+" WHERE pvc_collected=1"+strings.Replace(filter, "WHERE", "AND", 1), params...).Scan(&pvcCollected)
 
 	var byState []M
@@ -541,7 +667,7 @@ func handleVoterStats(w http.ResponseWriter, r *http.Request) {
 	byGender = scanRows(genderRows)
 
 	writeJSON(w, 200, M{
-		"total": total, "active": active, "verified": verified, "registered": registered,
+		"total": total, "active": active, "verified": verified, "registered": registered, "transferred": transferred,
 		"pvc_collected": pvcCollected, "pvc_collection_rate": safePercent(pvcCollected, total),
 		"by_state": byState, "by_gender": byGender,
 	})
@@ -802,6 +928,17 @@ func handleBVASHeartbeat(w http.ResponseWriter, r *http.Request) {
 		req.DeviceID, req.BatteryLevel, req.SignalStrength, req.GPSLatitude, req.GPSLongitude, req.SyncQueueSize, req.FirmwareVersion, req.UptimeSeconds)
 	dbExecLog("bvas_battery", "UPDATE bvas_devices SET battery_level=?, last_sync_at=CURRENT_TIMESTAMP, latitude=?, longitude=? WHERE id=?",
 		req.BatteryLevel, req.GPSLatitude, req.GPSLongitude, req.DeviceID)
+
+	// R5-035: low-battery devices raise an operational alert immediately —
+	// a dying BVAS is an election-day incident, not a log line.
+	if req.BatteryLevel < 15 {
+		log.Warn().Str("device_id", req.DeviceID).Int("battery", req.BatteryLevel).Msg("BVAS device battery critical")
+		dbExecLog("bvas_low_battery_incident", `INSERT INTO stakeholder_incidents (reporter_id, incident_type, description, severity, latitude, longitude, polling_unit_code, status)
+			VALUES (1, 'device_alert', ?, 'high', ?, ?, NULL, 'reported')`,
+			fmt.Sprintf("BVAS device %s battery at %d%% — replacement/power bank required", req.DeviceID, req.BatteryLevel),
+			req.GPSLatitude, req.GPSLongitude)
+		logAudit("BVAS_LOW_BATTERY", "device", req.DeviceID, 0, map[string]interface{}{"battery_level": req.BatteryLevel})
+	}
 
 	writeJSON(w, 200, M{"status": "ok", "device_id": req.DeviceID})
 }

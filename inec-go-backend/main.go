@@ -293,6 +293,12 @@ func main() {
 	r.HandleFunc("/inec/collation/persist", writeAuth(handlePersistCollation)).Methods("POST")
 	// Presiding-officer handover (R5-026)
 	r.HandleFunc("/ems/assignments/handover", adminOnly(handleStaffHandover)).Methods("POST")
+	// Party-agent countersigning (R5-032)
+	r.HandleFunc("/results/{id:[0-9]+}/agent-sign", writeAuth(handleSignResultAgent)).Methods("POST")
+	// Voter register operations (R5-028/029/030)
+	r.HandleFunc("/ems/voters/{vin}/collect-pvc", writeAuth(handleCollectPVC)).Methods("POST")
+	r.HandleFunc("/ems/voters/{vin}/mark-voted", writeAuth(handleMarkVoted)).Methods("POST")
+	r.HandleFunc("/ems/voters/{vin}/reactivate", adminOnly(handleReactivateVoter)).Methods("POST")
 
 	// Geo
 	r.HandleFunc("/geo/states", handleListStates).Methods("GET")
