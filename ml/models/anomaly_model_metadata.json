@@ -59,5 +59,7 @@
     "colsample_bytree": 0.8
   },
   "cpu_inference": true,
-  "inference_latency_ms": "<10ms per sample on CPU"
+  "inference_latency_ms": "<10ms per sample on CPU",
+  "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+  "integrity_note": "This artifact was trained on generate_synthetic_training_data() output, not real election results. The near-perfect metrics (ROC-AUC 1.0) reflect synthetic separability, not production performance. Retrain on real labeled results (--data) before any production use."
 }
