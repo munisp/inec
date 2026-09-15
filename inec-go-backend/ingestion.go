@@ -732,8 +732,10 @@ func applyIngestedResult(ctx context.Context, res ingestedResult) (resultApplyOu
 			"phase": "Pre-Validation", "polling_unit": res.PollingUnitCode,
 			"source": res.Source, "source_ref": res.SourceRef,
 		})
-		go publishResultEvent(TopicResultSubmitted, resultID, res.PollingUnitCode, res.ElectionID, res.SubmittedBy,
-			map[string]interface{}{"phase": "Pre-Validation", "source": res.Source})
+		if mwHub != nil && mwHub.Kafka != nil {
+			go publishResultEvent(TopicResultSubmitted, resultID, res.PollingUnitCode, res.ElectionID, res.SubmittedBy,
+				map[string]interface{}{"phase": "Pre-Validation", "source": res.Source})
+		}
 	case resultConflict:
 		// A rejected divergent re-submission must be auditable.
 		logAudit("RESULT_SYNC_CONFLICT", "result", entityID, res.SubmittedBy, map[string]interface{}{
