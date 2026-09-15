@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -103,9 +104,24 @@ func ValidateEC8A(form *FormEC8A) []string {
 }
 
 // handleSubmitEC8A processes a Form EC8A submission with full validation.
+//
+// SECURITY (R5-037): this path previously accepted results from ANY staff
+// role for ANY polling unit in ANY election state. It now enforces the same
+// controls as the canonical submit path (handleSubmitResult): only roles
+// that may CREATE PU results (presiding officers; admins for supervised
+// backfill — collation officers are explicitly excluded), state tenancy
+// from verified JWT claims, and an election that is open for result capture
+// ('active'/'voting', rerun-scoped where applicable). Rejections are
+// audit-logged.
 func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 	claims, ok := guardAuth(w, r)
 	if !ok {
+		return
+	}
+	if role, _ := claims["role"].(string); role != "admin" && role != "presiding_officer" {
+		logAudit("EC8A_SUBMIT_REJECTED", "result", "", claimUserID(claims),
+			map[string]interface{}{"reason": "role_not_permitted", "role": role})
+		writeError(w, http.StatusForbidden, "role not permitted to create polling-unit results")
 		return
 	}
 	var form FormEC8A
@@ -121,6 +137,46 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 			"violations": violations,
 			"status":     "rejected",
 		})
+		return
+	}
+
+	// R5-037: the election must be open for result capture — 'active'
+	// (pre-poll-open operational window) or 'voting' per the W2 lifecycle
+	// semantics; rerun/supplementary elections restrict to declared scope.
+	var elStatus, elKind string
+	if err := dbQueryRowCtx(r.Context(), "SELECT status, election_kind FROM elections WHERE id=?", form.ElectionID).Scan(&elStatus, &elKind); err != nil {
+		writeError(w, http.StatusBadRequest, "Election not found")
+		return
+	}
+	if elStatus != "active" && elStatus != "voting" {
+		logAudit("EC8A_SUBMIT_REJECTED", "result", form.PollingUnitCode, claimUserID(claims),
+			map[string]interface{}{"reason": "election_not_open", "election_id": form.ElectionID, "status": elStatus})
+		writeError(w, http.StatusConflict, fmt.Sprintf("Election not open for result capture (status: %s)", elStatus))
+		return
+	}
+	if elKind != "general" {
+		inScope, scopeErr := puInRerunScope(r.Context(), form.ElectionID, form.PollingUnitCode)
+		if scopeErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to verify rerun scope")
+			return
+		}
+		if !inScope {
+			logAudit("EC8A_SUBMIT_REJECTED", "result", form.PollingUnitCode, claimUserID(claims),
+				map[string]interface{}{"reason": "outside_rerun_scope", "election_id": form.ElectionID})
+			writeError(w, http.StatusForbidden, "polling unit is not in the declared scope of this "+elKind+" election")
+			return
+		}
+	}
+
+	// R5-037: state tenancy — officers may only submit for polling units in
+	// their assigned state (from verified JWT claims, never the request).
+	if !enforceStateTenancy(w, r, jwt.MapClaims(claims), form.PollingUnitCode) {
+		logAudit("EC8A_SUBMIT_REJECTED", "result", form.PollingUnitCode, claimUserID(claims),
+			map[string]interface{}{"reason": "outside_state_tenancy", "election_id": form.ElectionID})
+		return
+	}
+	// R5-043: presiding officers are bound to their assigned polling unit.
+	if !enforceOfficerPUBinding(w, r, jwt.MapClaims(claims), form.ElectionID, form.PollingUnitCode) {
 		return
 	}
 
@@ -205,6 +261,10 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "commit failed")
 		return
 	}
+	// R5-037: EC8A submissions enter the security audit trail (this path was
+	// previously invisible — no tenancy, no election-state check, no audit).
+	logAudit("EC8A_SUBMITTED", "result", form.PollingUnitCode, userID,
+		map[string]interface{}{"election_id": form.ElectionID, "result_id": resultID, "path": "/inec/ec8a/submit"})
 
 	if mwHub != nil && mwHub.Kafka != nil {
 		mwHub.Kafka.Produce(r.Context(), KafkaMessage{
