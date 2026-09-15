@@ -267,7 +267,8 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 		map[string]interface{}{"election_id": form.ElectionID, "result_id": resultID, "path": "/inec/ec8a/submit"})
 
 	if mwHub != nil && mwHub.Kafka != nil {
-		mwHub.Kafka.Produce(r.Context(), KafkaMessage{
+		// W4-HANDOFF §6: result lifecycle events are audit-critical.
+		if err := ProduceCritical(r.Context(), mwHub.Kafka, KafkaMessage{
 			Topic: TopicResultSubmitted,
 			Key:   form.PollingUnitCode,
 			Value: map[string]interface{}{
@@ -278,7 +279,9 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 				"party_count":         len(form.PartyResults),
 				"evidence_content_id": formHash,
 			},
-		})
+		}); err != nil {
+			log.Error().Err(err).Str("pu", form.PollingUnitCode).Msg("SECURITY: EC8A submit event lost")
+		}
 	}
 	if mwHub != nil && mwHub.Redis != nil {
 		cacheKey := fmt.Sprintf("ec8a:%d:%s", form.ElectionID, form.PollingUnitCode)
