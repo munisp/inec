@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { eq, desc, and, sql, gte, lte, isNull } from "drizzle-orm";
+import { eq, desc, and, or, sql, gte, lte, lt, isNull, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import * as schema from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -639,6 +639,51 @@ export async function getFieldAgents(profileId: number) {
     .select()
     .from(schema.fieldAgents)
     .where(eq(schema.fieldAgents.profileId, profileId))
+    .orderBy(schema.fieldAgents.name);
+}
+
+/**
+ * R5-099: agent self check-in — stamps last_checkin=NOW, returns the agent
+ * to 'active', and optionally records the agent-reported voters-counted
+ * figure (previously votersCounted had no writer and check-ins went nowhere).
+ * Tenant-guarded: the agent row must belong to profileId.
+ */
+export async function agentCheckIn(agentId: number, profileId: number, votersCounted?: number) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .update(schema.fieldAgents)
+    .set({
+      lastCheckin: new Date(),
+      agentStatus: "active",
+      ...(votersCounted !== undefined ? { votersCounted } : {}),
+    })
+    .where(and(eq(schema.fieldAgents.id, agentId), eq(schema.fieldAgents.profileId, requireTenantId(profileId))))
+    .returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * R5-099: silent-agent scan. Agents that are supposed to be deployed
+ * ('active' or 'sos') but have not checked in within thresholdMinutes are
+ * flagged 'silent' (idempotent) and returned with their staleness, so the
+ * war-room dashboard and the cron scanner share one definition of "silent".
+ * Pass profileId=null to scan every profile (cron path).
+ */
+export async function scanSilentAgents(profileId: number | null, thresholdMinutes: number) {
+  const db = getDb();
+  if (!db) return [];
+  const cutoff = new Date(Date.now() - thresholdMinutes * 60_000);
+  const scope = profileId == null ? undefined : eq(schema.fieldAgents.profileId, requireTenantId(profileId));
+  const overdue = or(isNull(schema.fieldAgents.lastCheckin), lt(schema.fieldAgents.lastCheckin, cutoff));
+  await db
+    .update(schema.fieldAgents)
+    .set({ agentStatus: "silent" })
+    .where(and(scope, inArray(schema.fieldAgents.agentStatus, ["active", "sos"]), overdue));
+  return db
+    .select()
+    .from(schema.fieldAgents)
+    .where(and(scope, eq(schema.fieldAgents.agentStatus, "silent")))
     .orderBy(schema.fieldAgents.name);
 }
 

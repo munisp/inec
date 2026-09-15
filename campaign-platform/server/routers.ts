@@ -617,6 +617,31 @@ export const appRouter = router({
     agents: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getFieldAgents(input.profileId)),
+    // R5-099: agent self check-in — any member of the campaign (viewer role
+    // is what field agents are enrolled as) can check in; the agent row must
+    // belong to the profile (tenant-guarded in agentCheckIn).
+    checkIn: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        agentId: z.number(),
+        votersCounted: z.number().int().min(0).optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const agent = await db.agentCheckIn(input.agentId, input.profileId, input.votersCounted);
+        if (!agent) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found for this profile" });
+        }
+        broadcastWarRoomUpdate(input.profileId);
+        return agent;
+      }),
+    // R5-099: silent-agent scan surfaced to the dashboard — flags overdue
+    // agents 'silent' (idempotent) and returns the current silent set.
+    silentAgents: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        thresholdMinutes: z.number().int().min(5).max(24 * 60).default(60),
+      }))
+      .query(({ input }) => db.scanSilentAgents(input.profileId, input.thresholdMinutes)),
     upsertAgent: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),

@@ -93,6 +93,11 @@ export default function ElectionDayWarRoom() {
     return () => es.close();
   }, [profileId, utils.warRoom.incidents]);
 
+  // R5-099: silent-agent scan surfaced on the war-room dashboard.
+  const { data: silentAgents = [] } = trpc.warRoom.silentAgents.useQuery(
+    { profileId: profileId!, thresholdMinutes: 60 }, { enabled: !!profileId, refetchInterval: 60000 }
+  );
+
   const active = incidents.filter((i: any) => i.status !== "resolved").length;
   const critical = incidents.filter((i: any) => (i.severity === "critical" || i.severity === "high") && i.status !== "resolved").length;
   const resolved = incidents.filter((i: any) => i.status === "resolved").length;
@@ -143,8 +148,20 @@ export default function ElectionDayWarRoom() {
             <p className="text-xs text-green-400">RESOLVED</p>
             <p className="font-mono font-bold text-green-400">{resolved}</p>
           </div>
+          <div className="text-right" title={silentAgents.map((a: any) => a.name).join(", ")}>
+            <p className="text-xs text-amber-400">SILENT AGENTS</p>
+            <p className="font-mono font-bold text-amber-400">{silentAgents.length}</p>
+          </div>
         </div>
       </header>
+
+      {silentAgents.length > 0 && (
+        <div className="px-4 py-2 text-xs text-amber-300 border-b border-amber-900/40" style={{ background: "#3B2A12" }}>
+          ⚠ {silentAgents.length} deployed agent{silentAgents.length !== 1 ? "s" : ""} silent (no check-in within 60 min):{" "}
+          {silentAgents.slice(0, 8).map((a: any) => a.name + (a.assignedPu ? ` (${a.assignedPu})` : "")).join(", ")}
+          {silentAgents.length > 8 ? `, +${silentAgents.length - 8} more` : ""}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex flex-col">
