@@ -159,17 +159,12 @@ func HandleDataSubjectErasure(w http.ResponseWriter, r *http.Request) {
 	}
 	processed = append(processed, "biometric_verifications")
 
-	// Audit entry (inside the same transaction so erasure and its audit trail
-	// can never diverge).
+	// R5-053: the audit entry is written AFTER commit through the hash-chained
+	// logAuditCtx — a direct INSERT here bypassed the chain (NULL block_hash).
+	// Chaining cannot happen inside this transaction because the chain requires
+	// a serialized prev-hash read (see logAuditCtx); a committed erasure without
+	// a chained audit row is logged loudly below on failure.
 	details := fmt.Sprintf("NDPR erasure: anonymized voter row and deleted biometric verification records for subject; tables=%v", processed)
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO audit_log (action, entity_type, entity_id, details)
-		 VALUES ('data_subject_erasure', 'voter', $1, $2)`, nin, details); err != nil {
-		log.Error().Err(err).Msg("data subject erasure: audit insert failed")
-		writeError(w, 500, "erasure request failed")
-		return
-	}
-	processed = append(processed, "audit_log")
 
 	// Record the data subject request.
 	requestID := fmt.Sprintf("dsr-%d", time.Now().UnixNano())
@@ -187,6 +182,11 @@ func HandleDataSubjectErasure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "erasure request failed")
 		return
 	}
+
+	// Chained audit entry (R5-053). logAuditCtx never fails silently — it logs
+	// at error level on write failure.
+	logAuditCtx(ctx, "data_subject_erasure", "voter", nin, 0, map[string]interface{}{"details": details, "request_id": requestID})
+	processed = append(processed, "audit_log")
 
 	log.Info().Str("request_id", requestID).Msg("NDPR data subject erasure completed")
 	writeJSON(w, 200, map[string]interface{}{

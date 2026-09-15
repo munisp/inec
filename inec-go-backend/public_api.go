@@ -112,10 +112,21 @@ func handlePublicAPIElections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"data": elections, "count": len(elections), "api_version": "v1"})
 }
 
+// R5-061: the public API must not silently serve unverified results as
+// official. By default only validated+finalized rows are returned, every row
+// carries an explicit is_final/provisional watermark, and election_id is now
+// REQUIRED (the previous default of election 1 could publish the wrong
+// election's figures). Callers may opt into pending rows with
+// ?include_pending=true, which marks the whole response provisional.
 func handlePublicAPIResults(w http.ResponseWriter, r *http.Request) {
-	electionID := queryParamInt(r, "election_id", 1)
+	electionID := queryParamInt(r, "election_id", 0)
+	if electionID <= 0 {
+		writeError(w, 400, "election_id is required — results are never served for an implicit default election")
+		return
+	}
 	stateCode := queryParam(r, "state_code", "")
 	status := queryParam(r, "status", "")
+	includePending := queryParam(r, "include_pending", "false") == "true"
 	limit := queryParamInt(r, "limit", 50)
 	offset := queryParamInt(r, "offset", 0)
 
@@ -137,6 +148,8 @@ func handlePublicAPIResults(w http.ResponseWriter, r *http.Request) {
 	if status != "" {
 		query += " AND r.status=?"
 		args = append(args, status)
+	} else if !includePending {
+		query += " AND r.status IN ('validated','finalized')"
 	}
 	query += " ORDER BY r.submitted_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
@@ -159,6 +172,9 @@ func handlePublicAPIResults(w http.ResponseWriter, r *http.Request) {
 			"total_votes_cast": totalCast, "total_valid_votes": totalValid,
 			"rejected_votes": rejected, "accredited_voters": accredited,
 			"status": st, "submitted_at": submitted,
+			// R5-061: explicit finality watermark on every row.
+			"is_final":    st == "finalized",
+			"provisional": st != "finalized",
 		})
 	}
 
@@ -168,6 +184,7 @@ func handlePublicAPIResults(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{
 		"data": results, "count": len(results), "total": total,
 		"limit": limit, "offset": offset, "api_version": "v1",
+		"provisional": includePending,
 	})
 }
 
