@@ -60,8 +60,14 @@ func w4EnsureSchema(t *testing.T) {
 			sha256 text NOT NULL, legal_hold integer NOT NULL DEFAULT 0,
 			archived_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP)`,
 		`CREATE TABLE IF NOT EXISTS official_tracking_history (
-			id SERIAL PRIMARY KEY, official_id integer, latitude real, longitude real,
+			id SERIAL PRIMARY KEY, staff_id text, role text, official_id integer,
+			latitude real, longitude real,
 			recorded_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP)`,
+		// The full-suite shared DB may already hold the production table
+		// (000008: staff_id/role NOT NULL, id bigint without default, no
+		// official_id) — CREATE IF NOT EXISTS then skips the harness column.
+		// Make the harness compatible either way.
+		`ALTER TABLE official_tracking_history ADD COLUMN IF NOT EXISTS official_id integer`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -153,7 +159,7 @@ func TestRetentionLegalHoldAndRealArchive(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO audit_log (action, entity_type, entity_id, "timestamp") VALUES ('w4test-hold','test','1',$1)`, old); err != nil {
 		t.Fatalf("seed audit_log: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO official_tracking_history (official_id, recorded_at) VALUES (999001, $1)`, old); err != nil {
+	if _, err := db.Exec(`INSERT INTO official_tracking_history (id, staff_id, role, official_id, latitude, longitude, recorded_at) VALUES (999001, 'w4test', 'observer', 999001, 0, 0, $1)`, old); err != nil {
 		t.Fatalf("seed official_tracking_history: %v", err)
 	}
 

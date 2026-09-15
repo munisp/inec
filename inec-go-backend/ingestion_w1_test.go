@@ -348,6 +348,12 @@ func TestW1RecoverPendingDrainsEverything(t *testing.T) {
 	if _, err := testDB.Exec("DELETE FROM ingestion_jobs"); err != nil {
 		t.Fatal(err)
 	}
+	// Clean prior runs' applied results too — the canonical apply is
+	// first-writer-wins (ON CONFLICT DO NOTHING), so a leftover row from an
+	// earlier suite run would make this test assert on stale state.
+	if _, err := testDB.Exec("DELETE FROM results WHERE polling_unit_code LIKE 'PU-W1-R%'"); err != nil {
+		t.Fatal(err)
+	}
 	// 7 pending + 1 stale in_progress on PUs dedicated to this test.
 	pus := []string{"PU-W1-R01", "PU-W1-R02", "PU-W1-R03", "PU-W1-R04", "PU-W1-R05", "PU-W1-R06", "PU-W1-R07", "PU-W1-R08"}
 	for i, pu := range pus {

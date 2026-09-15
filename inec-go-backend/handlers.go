@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2029,15 +2030,82 @@ func handleRecentClientMetrics(w http.ResponseWriter, r *http.Request) {
 
 // ── Audit ──
 
+// auditPIIKeyPattern matches JSON keys whose values are personal data and
+// must never leave the audit trail unredacted for non-admin viewers (R5-066).
+var auditPIIKeyPattern = regexp.MustCompile(`(?i)phone|email|vin|pvc|nin|passport|password|token|secret|api_key|apikey|address|lat|lng|gps|location|full_name|device_id|imei`)
+
+// redactAuditDetailsPII returns the details JSON with PII values masked.
+// Fail-closed: unparseable-but-nonempty payloads are replaced entirely.
+func redactAuditDetailsPII(details string) string {
+	if strings.TrimSpace(details) == "" {
+		return details
+	}
+	var payload interface{}
+	if err := json.Unmarshal([]byte(details), &payload); err != nil {
+		return `"***REDACTED***"`
+	}
+	masked := redactPIIValue(payload)
+	out, err := json.Marshal(masked)
+	if err != nil {
+		return `"***REDACTED***"`
+	}
+	return string(out)
+}
+
+func redactPIIValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, val := range t {
+			if auditPIIKeyPattern.MatchString(k) {
+				t[k] = "***REDACTED***"
+			} else {
+				t[k] = redactPIIValue(val)
+			}
+		}
+		return t
+	case []interface{}:
+		for i, val := range t {
+			t[i] = redactPIIValue(val)
+		}
+		return t
+	default:
+		return v
+	}
+}
+
+// handleAuditTrail serves the hash-chained audit trail to staff. R5-066:
+// gated to admin/collation_officer; explicit column projection; staff
+// identities (username/full_name) are exposed to ADMIN only; PII inside the
+// details payloads is redacted for non-admin viewers.
 func handleAuditTrail(w http.ResponseWriter, r *http.Request) {
+	user, err := getCurrentUser(r)
+	if err != nil {
+		writeError(w, 401, "authentication required")
+		return
+	}
+	role, _ := user["role"].(string)
+	if role != "admin" && role != "collation_officer" {
+		writeError(w, 403, "insufficient role for audit trail access")
+		return
+	}
+	isAdmin := role == "admin"
+
 	et := r.URL.Query().Get("entity_type")
 	eid := r.URL.Query().Get("entity_id")
 	action := r.URL.Query().Get("action")
 	limit := queryParamInt(r, "limit", 50)
 	offset := queryParamInt(r, "offset", 0)
 
-	q := "SELECT a.*, u.username, u.full_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE 1=1"
+	// Explicit projection (R5-066): no a.*, no staff identity join unless admin.
+	projection := "a.id, a.action, a.entity_type, a.entity_id, a.user_id, a.details, a.block_hash, a.prev_block_hash, a.\"timestamp\""
+	join := ""
+	if isAdmin {
+		projection += ", u.username, u.full_name"
+		join = " LEFT JOIN users u ON u.id=a.user_id"
+	}
+	q := "SELECT " + projection + " FROM audit_log a" + join + " WHERE 1=1"
 	var params []interface{}
+	// Whitelisted, bound filters only.
 	if et != "" {
 		q += " AND a.entity_type=?"
 		params = append(params, et)
@@ -2050,14 +2118,35 @@ func handleAuditTrail(w http.ResponseWriter, r *http.Request) {
 		q += " AND a.action=?"
 		params = append(params, action)
 	}
-	countQ := strings.Replace(q, "SELECT a.*, u.username, u.full_name", "SELECT COUNT(*) as total", 1)
+	countQ := "SELECT COUNT(*) FROM audit_log a WHERE 1=1"
+	var countParams []interface{}
+	if et != "" {
+		countQ += " AND a.entity_type=?"
+		countParams = append(countParams, et)
+	}
+	if eid != "" {
+		countQ += " AND a.entity_id=?"
+		countParams = append(countParams, eid)
+	}
+	if action != "" {
+		countQ += " AND a.action=?"
+		countParams = append(countParams, action)
+	}
 	var total int
-	dbQueryRowCtx(r.Context(), countQ, params...).Scan(&total)
+	dbQueryRowCtx(r.Context(), countQ, countParams...).Scan(&total)
 
 	q += " ORDER BY a.timestamp DESC LIMIT ? OFFSET ?"
 	params = append(params, limit, offset)
 	rows, _ := dbQueryCtx(r.Context(), q, params...)
-	writeJSON(w, 200, M{"total": total, "entries": scanRows(rows)})
+	entries := scanRows(rows)
+	if !isAdmin {
+		for _, e := range entries {
+			if d, ok := e["details"].(string); ok {
+				e["details"] = redactAuditDetailsPII(d)
+			}
+		}
+	}
+	writeJSON(w, 200, M{"total": total, "entries": entries})
 }
 
 func handleVerifyResult(w http.ResponseWriter, r *http.Request) {

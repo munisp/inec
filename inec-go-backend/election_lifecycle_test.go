@@ -281,7 +281,10 @@ func TestRerunMergeMath(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("validate rerun result: %d: %s", w.Code, w.Body.String())
 	}
-	w = doRequest(handleFinalizeResult, "POST", "/results/"+resID+"/finalize", "{}", adminClaims, map[string]string{"id": resID})
+	// W10 four-eyes: the finalizer must be a different identity than the
+	// validator (and the submitter).
+	admin2Claims := jwt.MapClaims{"sub": "4", "username": "admin2", "role": "admin"}
+	w = doRequest(handleFinalizeResult, "POST", "/results/"+resID+"/finalize", "{}", admin2Claims, map[string]string{"id": resID})
 	if w.Code != 200 {
 		t.Fatalf("finalize rerun result: %d: %s", w.Code, w.Body.String())
 	}
