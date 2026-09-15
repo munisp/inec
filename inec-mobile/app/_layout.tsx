@@ -7,7 +7,8 @@ import Constants from 'expo-constants';
 import type { EventSubscription } from 'expo-modules-core';
 import { getDb } from '../src/lib/offline';
 import { NetworkBanner } from '../src/components/NetworkBanner';
-import { getAuthMode, isRouteAllowed, PUBLIC_ROUTES, type AuthMode } from '../lib/auth-context';
+import { onAuthExpired } from '../src/lib/api';
+import { getAuthMode, setAuthMode, isRouteAllowed, PUBLIC_ROUTES, type AuthMode } from '../lib/auth-context';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -47,7 +48,7 @@ async function registerForPushNotificationsAsync(): Promise<string | undefined> 
 
 export default function RootLayout() {
   const [expoPushToken, setExpoPushToken] = useState<string | undefined>();
-  const [authMode, setAuthMode] = useState<AuthMode>('none');
+  const [authMode, setAuthModeState] = useState<AuthMode>('none');
   const notificationListener = useRef<EventSubscription | null>(null);
   const responseListener = useRef<EventSubscription | null>(null);
   const router = useRouter();
@@ -61,7 +62,17 @@ export default function RootLayout() {
     });
 
     // Load auth mode on startup
-    getAuthMode().then(setAuthMode);
+    getAuthMode().then(setAuthModeState);
+
+    // R5-108: when the refresh token is rejected the session is dead —
+    // drop back to the login screen instead of silently queueing "pending"
+    // work under a 401-ing token.
+    const unsubscribeAuthExpired = onAuthExpired(() => {
+      setAuthMode('none').finally(() => {
+        setAuthModeState('none');
+        router.replace('/');
+      });
+    });
 
     notificationListener.current = Notifications.addNotificationReceivedListener(() => {
       // Notification received while app is in foreground
@@ -75,6 +86,7 @@ export default function RootLayout() {
     });
 
     return () => {
+      unsubscribeAuthExpired();
       notificationListener.current?.remove();
       responseListener.current?.remove();
     };
