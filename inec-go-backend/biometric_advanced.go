@@ -762,19 +762,116 @@ func (o *OfflineEnrollmentQueue) GetStats() M {
 	return M{
 		"total": total, "pending": pending, "synced": synced, "failed": failed,
 		"conflicts": conflicts, "by_device": byDevice,
-		"sync_strategy":       "automatic_on_connectivity_restore",
-		"conflict_resolution": "server_wins_with_manual_review",
+		// R5-009: describe the strategy that actually exists — manual trigger
+		// with per-row apply into biometric_profiles; conflicts are flagged for
+		// manual review and never silently overwritten.
+		"sync_strategy":       "manual_trigger_with_per_row_apply",
+		"conflict_resolution": "flagged_for_manual_review",
 	}
 }
 
+// TriggerSync applies every pending offline enrollment for a device into
+// biometric_profiles (R5-009). Each row is processed individually with its own
+// outcome: 'synced' only after the enrollment actually exists, 'conflict' when
+// a different template is already enrolled for the voter+modality (flagged for
+// manual review, never overwritten), 'failed' with the row-level error.
 func (o *OfflineEnrollmentQueue) TriggerSync(deviceID string) M {
-	result, err := db.Exec(`UPDATE offline_enrollment_queue SET sync_status='synced', synced_at=CURRENT_TIMESTAMP, sync_attempts=sync_attempts+1 WHERE device_id=? AND sync_status='pending'`, deviceID)
+	rows, err := o.db.Query(`SELECT id, voter_vin, modality, template_data_hash FROM offline_enrollment_queue WHERE device_id=? AND sync_status='pending' ORDER BY id ASC`, deviceID)
 	if err != nil {
 		log.Error().Err(err).Str("device_id", deviceID).Msg("offline enrollment sync failed")
 		return M{"device_id": deviceID, "synced_count": 0, "status": "sync_error", "error": err.Error()}
 	}
-	affected, _ := result.RowsAffected()
-	return M{"device_id": deviceID, "synced_count": affected, "status": "sync_complete"}
+	defer rows.Close()
+
+	type queueRow struct {
+		id       int64
+		voterVIN string
+		modality string
+		hash     string
+	}
+	var pending []queueRow
+	for rows.Next() {
+		var qr queueRow
+		if err := rows.Scan(&qr.id, &qr.voterVIN, &qr.modality, &qr.hash); err == nil {
+			pending = append(pending, qr)
+		}
+	}
+
+	var synced, failed, conflicts int
+	outcomes := make([]M, 0, len(pending))
+	for _, qr := range pending {
+		outcome := M{"queue_id": qr.id, "voter_vin": qr.voterVIN, "modality": qr.modality}
+		status, applyErr := o.applyOfflineEnrollment(deviceID, qr.voterVIN, qr.modality, qr.hash)
+		switch {
+		case applyErr != nil:
+			failed++
+			outcome["status"] = "failed"
+			outcome["error"] = applyErr.Error()
+			o.db.Exec(`UPDATE offline_enrollment_queue SET sync_status='failed', sync_attempts=sync_attempts+1, resolution=? WHERE id=?`, applyErr.Error(), qr.id)
+		case status == "conflict":
+			conflicts++
+			outcome["status"] = "conflict"
+			outcome["resolution"] = "flagged_for_manual_review"
+			o.db.Exec(`UPDATE offline_enrollment_queue SET sync_status='pending', conflict_detected=1, sync_attempts=sync_attempts+1, resolution='conflicting template already enrolled; manual review required' WHERE id=?`, qr.id)
+		default:
+			synced++
+			outcome["status"] = status // synced | duplicate
+			o.db.Exec(`UPDATE offline_enrollment_queue SET sync_status='synced', synced_at=CURRENT_TIMESTAMP, sync_attempts=sync_attempts+1, resolution=? WHERE id=?`, status, qr.id)
+		}
+		outcomes = append(outcomes, outcome)
+	}
+
+	return M{
+		"device_id": deviceID, "synced_count": synced, "failed_count": failed,
+		"conflict_count": conflicts, "status": "sync_complete", "items": outcomes,
+	}
+}
+
+// applyOfflineEnrollment writes one queued enrollment into biometric_profiles.
+// Returns "synced" (new/updated), "duplicate" (identical template already
+// enrolled), "conflict" (different template exists — nothing overwritten).
+func (o *OfflineEnrollmentQueue) applyOfflineEnrollment(deviceID, voterVIN, modality, templateHash string) (string, error) {
+	column := ""
+	switch strings.ToLower(modality) {
+	case "fingerprint", "finger":
+		column = "fingerprint_hash"
+	case "facial", "face":
+		column = "facial_hash"
+	case "iris":
+		column = "iris_hash"
+	default:
+		return "", fmt.Errorf("unsupported modality: %s", modality)
+	}
+	if voterVIN == "" || templateHash == "" {
+		return "", fmt.Errorf("voter_vin and template_data_hash are required")
+	}
+
+	var profileID int64
+	var existingHash sql.NullString
+	err := o.db.QueryRow(fmt.Sprintf(`SELECT id, %s FROM biometric_profiles WHERE voter_vin=? ORDER BY id ASC LIMIT 1`, column), voterVIN).
+		Scan(&profileID, &existingHash)
+	if err == sql.ErrNoRows {
+		if _, err := o.db.Exec(fmt.Sprintf(`INSERT INTO biometric_profiles (voter_vin, %s, modalities_enrolled, enrollment_device, enrollment_date, status, updated_at)
+			VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'active', CURRENT_TIMESTAMP)`, column),
+			voterVIN, templateHash, modality, deviceID); err != nil {
+			return "", fmt.Errorf("create biometric profile: %w", err)
+		}
+		return "synced", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load biometric profile: %w", err)
+	}
+	if existingHash.Valid && existingHash.String != "" {
+		if existingHash.String == templateHash {
+			return "duplicate", nil
+		}
+		return "conflict", nil
+	}
+	if _, err := o.db.Exec(fmt.Sprintf(`UPDATE biometric_profiles SET %s=?, enrollment_device=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, column),
+		templateHash, deviceID, profileID); err != nil {
+		return "", fmt.Errorf("update biometric profile: %w", err)
+	}
+	return "synced", nil
 }
 
 type MatchScoreNormalizer struct {

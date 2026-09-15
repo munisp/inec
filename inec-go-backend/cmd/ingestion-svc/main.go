@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,6 +113,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
+
+	// R5-008: drain in-flight job goroutines before exit; unfinished jobs stay
+	// 'in_progress' and are rescued by RecoverPending on next start.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+	if err := svc.Shutdown(drainCtx); err != nil {
+		log.Warn().Err(err).Msg("Job drain incomplete at shutdown; pending jobs will be recovered on restart")
+	}
 }
 
 func submitJob(svc *ingestion.Service) http.HandlerFunc {
@@ -125,22 +134,34 @@ func submitJob(svc *ingestion.Service) http.HandlerFunc {
 			http.Error(w, `{"error":"invalid body"}`, 400)
 			return
 		}
+		// R5-002: idempotency keys are client-supplied and required. The old
+		// type+UnixNano fallback made every retry a brand-new job.
 		if req.IdempotencyKey == "" {
-			req.IdempotencyKey = fmt.Sprintf("%s_%d", req.Type, time.Now().UnixNano())
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, `{"error":"idempotency_key is required"}`, 400)
+			return
 		}
 
-		job, err := svc.Enqueue(r.Context(), req.Type, req.Payload, req.IdempotencyKey)
+		job, duplicate, err := svc.Enqueue(r.Context(), req.Type, req.Payload, req.IdempotencyKey)
 		if err != nil {
-			if err.Error()[:10] == "queue full" {
+			if strings.HasPrefix(err.Error(), "queue full") {
 				w.Header().Set("Retry-After", "30")
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), 503)
+			} else if strings.Contains(err.Error(), "idempotency_key") {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), 400)
 			} else {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), 500)
 			}
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(202)
+		if duplicate {
+			// 200 (not 202): nothing new was accepted; the existing job is
+			// returned so clients can reconcile state.
+			w.WriteHeader(200)
+		} else {
+			w.WriteHeader(202)
+		}
 		json.NewEncoder(w).Encode(job)
 	}
 }

@@ -17,12 +17,20 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 const (
 	deviceGatewayEnvelopeVersion = "bvas-envelope-v1"
 	deviceGatewayNonceTTL        = 30 * time.Minute
 	deviceGatewayMaxClockSkew    = 10 * time.Minute
+	// deviceGatewayMaxOfflineBackdate bounds how far back an envelope's
+	// observed_at may be dated (R5-004). Accredited devices (enrolled, mTLS-
+	// verified, signature-checked) legitimately queue signed envelopes offline
+	// for hours before connectivity returns; arrival time is NOT capture time.
+	// Anti-replay is preserved by nonce/sequence uniqueness and the future-skew
+	// check; the server stamps received_at authoritatively on the inbox row.
+	deviceGatewayMaxOfflineBackdate = 72 * time.Hour
 )
 
 // DeviceGatewayEnvelope is a device-originated, signed, canonical event. It never
@@ -364,8 +372,16 @@ func validateDeviceGatewayEnvelope(envelope *DeviceGatewayEnvelope) (time.Time, 
 	if err != nil {
 		return time.Time{}, "", "", fmt.Errorf("observed_at must be RFC3339")
 	}
-	if time.Since(observedAt) > deviceGatewayMaxClockSkew || observedAt.After(time.Now().UTC().Add(deviceGatewayMaxClockSkew)) {
-		return time.Time{}, "", "", fmt.Errorf("device timestamp outside permitted clock skew")
+	// Anti-replay window (R5-004): future-dated captures are still rejected at
+	// the tight skew, but backdated observed_at is accepted up to the bounded
+	// offline window so post-blackout sync can drain. received_at is stamped
+	// server-side at persistence, so chain-of-custody does not depend on the
+	// device clock.
+	if observedAt.After(time.Now().UTC().Add(deviceGatewayMaxClockSkew)) {
+		return time.Time{}, "", "", fmt.Errorf("device timestamp is in the future beyond the permitted clock skew")
+	}
+	if time.Since(observedAt) > deviceGatewayMaxOfflineBackdate {
+		return time.Time{}, "", "", fmt.Errorf("device timestamp is older than the %v offline sync window", deviceGatewayMaxOfflineBackdate)
 	}
 	payloadHash, err := normalizeLowerHex64(envelope.PayloadSHA256)
 	if err != nil {
@@ -510,7 +526,16 @@ func redactedDeviceAnalyticsPayload(envelope DeviceGatewayEnvelope, observedAt t
 	return result
 }
 
-func persistDeviceGatewayEnvelope(ctx context.Context, envelope DeviceGatewayEnvelope, trust *enrolledDeviceTrust, observedAt time.Time, nonceHash, payloadHash, edgeFingerprint string, verification *deviceVerificationResponse) (int64, string, error) {
+// persistDeviceGatewayEnvelope persists the immutable inbox record AND applies
+// the envelope's semantic payload (accreditation → bvas_accreditations;
+// result_capture → canonical results write, R5-001) in one transaction.
+//
+// outcome is one of "applied", "duplicate", "conflict", "" (no semantic apply
+// for heartbeat/incident envelopes). Duplicate/conflicting data does NOT roll
+// back the inbox row (R5-005): the forensic record is kept, the row's
+// processing_status reflects the outcome, and the device gets a distinct
+// non-error response so its outbox can advance instead of wedging.
+func persistDeviceGatewayEnvelope(ctx context.Context, envelope DeviceGatewayEnvelope, trust *enrolledDeviceTrust, observedAt time.Time, nonceHash, payloadHash, edgeFingerprint string, verification *deviceVerificationResponse) (int64, string, string, error) {
 	correlationID := uuid.NewString()
 	attestation := verification.Attestation
 	if len(attestation) == 0 {
@@ -518,7 +543,7 @@ func persistDeviceGatewayEnvelope(ctx context.Context, envelope DeviceGatewayEnv
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx, `INSERT INTO bvas_device_gateway_inbox
@@ -526,49 +551,133 @@ func persistDeviceGatewayEnvelope(ctx context.Context, envelope DeviceGatewayEnv
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'accepted')`,
 		envelope.DeviceID, envelope.ElectionID, envelope.PollingUnitCode, envelope.EventType, envelope.Sequence, nonceHash, payloadHash, verification.EnvelopeSHA256, envelope.Signature, string(attestation), edgeFingerprint, observedAt, correlationID)
 	if err != nil {
-		return 0, "", fmt.Errorf("persist immutable device inbox: %w", err)
+		return 0, "", "", fmt.Errorf("persist immutable device inbox: %w", err)
 	}
 	inboxID, err := result.LastInsertId()
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
-	if envelope.EventType == "accreditation" {
-		pvcHash, biometricMatch, pvcVerified, method, err := deviceGatewayAccreditationPayload(envelope.Payload)
+
+	outcome := ""
+	var appliedResultID int64
+	switch envelope.EventType {
+	case "accreditation":
+		outcome, err = applyDeviceGatewayAccreditation(ctx, tx, envelope)
 		if err != nil {
-			return 0, "", err
+			return 0, "", "", err
 		}
-		var deviceStatus, electionStatus string
-		if err := tx.QueryRowContext(ctx, "SELECT status FROM bvas_devices WHERE id=?", envelope.DeviceID).Scan(&deviceStatus); err != nil || deviceStatus != "active" {
-			return 0, "", fmt.Errorf("device is not active")
+	case "result_capture":
+		outcome, appliedResultID, err = applyDeviceGatewayResultCapture(ctx, tx, envelope, observedAt)
+		if err != nil {
+			return 0, "", "", err
 		}
-		if err := tx.QueryRowContext(ctx, "SELECT status FROM elections WHERE id=?", envelope.ElectionID).Scan(&electionStatus); err != nil || (electionStatus != "voting" && electionStatus != "active") {
-			return 0, "", fmt.Errorf("election is not accepting accreditation")
-		}
-		var existing int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM bvas_accreditations WHERE voter_pvc_hash=? AND election_id=? AND polling_unit_code=?", pvcHash, envelope.ElectionID, envelope.PollingUnitCode).Scan(&existing); err != nil {
-			return 0, "", err
-		}
-		if existing > 0 {
-			return 0, "", fmt.Errorf("voter already accredited at this polling unit")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO bvas_accreditations (device_id,election_id,polling_unit_code,voter_pvc_hash,biometric_match,pvc_verified,method,accredited_at,synced_at)
-			VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, envelope.DeviceID, envelope.ElectionID, envelope.PollingUnitCode, pvcHash, boolToInt(biometricMatch), boolToInt(pvcVerified), method); err != nil {
-			return 0, "", fmt.Errorf("persist accredited device event: %w", err)
+	}
+	if outcome != "" && outcome != string(resultApplied) {
+		// Keep within the schema's processing_status vocabulary
+		// ('accepted','rejected','quarantined','processed'); the outcome detail
+		// goes to rejection_reason for forensics.
+		reason := outcome + ": event recorded, semantic apply was a no-op"
+		if _, err := tx.ExecContext(ctx, "UPDATE bvas_device_gateway_inbox SET processing_status='processed', rejection_reason=? WHERE id=?", reason, inboxID); err != nil {
+			return 0, "", "", err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", envelope.DeviceID); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	redactedPayload, _ := json.Marshal(redactedDeviceAnalyticsPayload(envelope, observedAt, payloadHash, inboxID, verification))
 	if _, err := tx.ExecContext(ctx, `INSERT INTO external_integration_outbox (correlation_id,source_type,aggregate_type,aggregate_id,event_type,event_version,partition_key,payload_redacted,payload_sha256,required_sinks,delivery_status)
 		VALUES (?,?,?,?,?,'v1',?,?,?,'["kafka","dapr","fluvio","opensearch"]','pending') ON CONFLICT DO NOTHING`,
 		correlationID, "bvas_gateway", "device_gateway_inbox", fmt.Sprintf("%d", inboxID), "inec.bvas.device-events.v1", envelope.DeviceID, string(redactedPayload), sha256Hex(redactedPayload)); err != nil {
-		return 0, "", fmt.Errorf("enqueue device event: %w", err)
+		return 0, "", "", fmt.Errorf("enqueue device event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
-	return inboxID, correlationID, nil
+	// Audit outcomes after commit so the trail only records durable state.
+	switch outcome {
+	case string(resultApplied):
+		if envelope.EventType == "result_capture" {
+			logAudit("RESULT_SUBMITTED", "result", fmt.Sprintf("%d", appliedResultID), 0, map[string]interface{}{
+				"phase": "Pre-Validation", "polling_unit": envelope.PollingUnitCode,
+				"source": "device_gateway", "source_ref": envelope.DeviceID,
+				"observed_at": observedAt.UTC().Format(time.RFC3339),
+			})
+		}
+	case string(resultConflict):
+		logAudit("RESULT_SYNC_CONFLICT", "result", fmt.Sprintf("%d", appliedResultID), 0, map[string]interface{}{
+			"election_id": envelope.ElectionID, "polling_unit": envelope.PollingUnitCode,
+			"source": "device_gateway", "source_ref": envelope.DeviceID,
+			"observed_at": observedAt.UTC().Format(time.RFC3339),
+			"detail":      "conflicting device-captured figures for an existing result; first-writer-wins, nothing overwritten",
+		})
+	}
+	return inboxID, correlationID, outcome, nil
+}
+
+// applyDeviceGatewayAccreditation persists an accreditation envelope.
+// An already-recorded accreditation for the same voter at the same PU is a
+// duplicate (idempotent no-op), not an error (R5-005).
+func applyDeviceGatewayAccreditation(ctx context.Context, tx *sql.Tx, envelope DeviceGatewayEnvelope) (string, error) {
+	pvcHash, biometricMatch, pvcVerified, method, err := deviceGatewayAccreditationPayload(envelope.Payload)
+	if err != nil {
+		return "", err
+	}
+	var deviceStatus, electionStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM bvas_devices WHERE id=?", envelope.DeviceID).Scan(&deviceStatus); err != nil || deviceStatus != "active" {
+		return "", fmt.Errorf("device is not active")
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM elections WHERE id=?", envelope.ElectionID).Scan(&electionStatus); err != nil || (electionStatus != "voting" && electionStatus != "active") {
+		return "", fmt.Errorf("election is not accepting accreditation")
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO bvas_accreditations (device_id,election_id,polling_unit_code,voter_pvc_hash,biometric_match,pvc_verified,method,accredited_at,synced_at)
+		VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+		ON CONFLICT (voter_pvc_hash, election_id, polling_unit_code) DO NOTHING`,
+		envelope.DeviceID, envelope.ElectionID, envelope.PollingUnitCode, pvcHash, boolToInt(biometricMatch), boolToInt(pvcVerified), method)
+	if err != nil {
+		return "", fmt.Errorf("persist accredited device event: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return string(resultDuplicate), nil
+	}
+	return string(resultApplied), nil
+}
+
+// applyDeviceGatewayResultCapture routes a result_capture envelope into the
+// canonical idempotent result write (R5-001): results + party scores +
+// integrity evidence, keyed on (election_id, polling_unit_code).
+func applyDeviceGatewayResultCapture(ctx context.Context, tx *sql.Tx, envelope DeviceGatewayEnvelope, observedAt time.Time) (string, int64, error) {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return "", 0, fmt.Errorf("result_capture payload must be a JSON object")
+	}
+	res, err := parseIngestedResult(payload)
+	if err != nil {
+		return "", 0, fmt.Errorf("result_capture payload invalid: %w", err)
+	}
+	// The envelope's signed identity is authoritative — payload fields cannot
+	// redirect the result to another election or polling unit.
+	res.ElectionID = envelope.ElectionID
+	res.PollingUnitCode = envelope.PollingUnitCode
+	res.SubmittedBy = 0
+	res.Source = "device_gateway"
+	res.SourceRef = envelope.DeviceID
+	outcome, resultID, err := applyResultTx(ctx, tx, res)
+	if err != nil {
+		return "", 0, err
+	}
+	return string(outcome), resultID, nil
+}
+
+// releaseDeviceGatewayNonce best-effort releases a consumed nonce after a hard
+// (non-duplicate) failure so a legitimate retry is not mistaken for a replay
+// (R5-005). Replay protection is unchanged for events that were persisted.
+func releaseDeviceGatewayNonce(ctx context.Context, deviceID, nonceHash string) {
+	if mwHub == nil || mwHub.Redis == nil {
+		return
+	}
+	if err := mwHub.Redis.Del(ctx, "device-gateway:nonce:"+deviceID+":"+nonceHash); err != nil {
+		log.Warn().Err(err).Str("device_id", deviceID).Msg("device gateway: failed to release nonce after persist failure")
+	}
 }
 
 func inspectDeviceGatewayRequest(r *http.Request, rawBody []byte) error {
@@ -668,16 +777,26 @@ func handleDeviceGatewayEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "verifier returned invalid envelope hash")
 		return
 	}
-	inboxID, correlationID, err := persistDeviceGatewayEnvelope(r.Context(), envelope, trust, observedAt, nonceHash, payloadHash, edgeFingerprint, verification)
+	inboxID, correlationID, outcome, err := persistDeviceGatewayEnvelope(r.Context(), envelope, trust, observedAt, nonceHash, payloadHash, edgeFingerprint, verification)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
-			writeError(w, http.StatusConflict, "replayed or conflicting device event")
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+			// Replayed nonce/sequence/envelope — the event is already recorded.
+			writeError(w, http.StatusConflict, "replayed device event (nonce, sequence, or envelope already recorded)")
 			return
 		}
+		// Hard failure after the nonce was consumed: release it so a legitimate
+		// retry is not mistaken for a replay (R5-005).
+		releaseDeviceGatewayNonce(r.Context(), envelope.DeviceID, nonceHash)
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	auditWrite("BVAS_DEVICE_ENVELOPE_ACCEPTED", "bvas_device_gateway_inbox", fmt.Sprintf("%d", inboxID), r, M{"device_id": envelope.DeviceID, "event_type": envelope.EventType, "sequence": envelope.Sequence, "correlation_id": correlationID, "envelope_sha256": verification.EnvelopeSHA256})
+	auditWrite("BVAS_DEVICE_ENVELOPE_ACCEPTED", "bvas_device_gateway_inbox", fmt.Sprintf("%d", inboxID), r, M{"device_id": envelope.DeviceID, "event_type": envelope.EventType, "sequence": envelope.Sequence, "correlation_id": correlationID, "envelope_sha256": verification.EnvelopeSHA256, "outcome": outcome})
+	// R5-005: duplicate data is NOT a replay and NOT an error — the device gets
+	// an explicit per-event outcome so its outbox can advance past the item.
+	if outcome == string(resultDuplicate) || outcome == string(resultConflict) {
+		writeJSON(w, http.StatusOK, M{"inbox_id": inboxID, "correlation_id": correlationID, "status": outcome, "envelope_sha256": verification.EnvelopeSHA256})
+		return
+	}
 	writeJSON(w, http.StatusAccepted, M{"inbox_id": inboxID, "correlation_id": correlationID, "status": "accepted", "envelope_sha256": verification.EnvelopeSHA256})
 }
 
