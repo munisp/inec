@@ -4,6 +4,7 @@ import { eq, desc, and, or, sql, gte, lte, lt, isNull, inArray } from "drizzle-o
 import { TRPCError } from "@trpc/server";
 import * as schema from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { createHash } from "crypto";
 import { logger } from "./_core/logger";
 
 let _pool: Pool | null = null;
@@ -538,7 +539,7 @@ export async function updateIncidentStatus(
   const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
   const rows = await db
     .update(schema.warRoomIncidents)
-    .set({ status, resolvedAt: status === "resolved" ? new Date() : null })
+    .set({ status, resolvedAt: status === "resolved" ? sql`now()` : null })
     .where(eq(schema.warRoomIncidents.id, id))
     .returning();
   if (rows[0]) {
@@ -588,7 +589,7 @@ export async function escalateIncident(
     .set({
       status: "escalated",
       escalatedTo,
-      escalatedAt: new Date(),
+      escalatedAt: sql`now()`,
       escalationNote: note ?? null,
     })
     .where(eq(schema.warRoomIncidents.id, id))
@@ -610,7 +611,7 @@ export async function resolveIncident(id: number, actor?: string) {
   const prev = await db.select().from(schema.warRoomIncidents).where(eq(schema.warRoomIncidents.id, id)).limit(1);
   const rows = await db
     .update(schema.warRoomIncidents)
-    .set({ status: "resolved", resolvedAt: new Date() })
+    .set({ status: "resolved", resolvedAt: sql`now()` })
     .where(eq(schema.warRoomIncidents.id, id))
     .returning();
   if (rows[0]) {
@@ -654,7 +655,7 @@ export async function agentCheckIn(agentId: number, profileId: number, votersCou
   const rows = await db
     .update(schema.fieldAgents)
     .set({
-      lastCheckin: new Date(),
+      lastCheckin: sql`now()`,
       agentStatus: "active",
       ...(votersCounted !== undefined ? { votersCounted } : {}),
     })
@@ -673,9 +674,13 @@ export async function agentCheckIn(agentId: number, profileId: number, votersCou
 export async function scanSilentAgents(profileId: number | null, thresholdMinutes: number) {
   const db = getDb();
   if (!db) return [];
-  const cutoff = new Date(Date.now() - thresholdMinutes * 60_000);
   const scope = profileId == null ? undefined : eq(schema.fieldAgents.profileId, requireTenantId(profileId));
-  const overdue = or(isNull(schema.fieldAgents.lastCheckin), lt(schema.fieldAgents.lastCheckin, cutoff));
+  // DB-side cutoff: mixing client-serialized Dates (UTC) with DB now() would
+  // break under a non-UTC database timezone.
+  const overdue = or(
+    isNull(schema.fieldAgents.lastCheckin),
+    sql`${schema.fieldAgents.lastCheckin} < now() - (${thresholdMinutes} || ' minutes')::interval`,
+  );
   await db
     .update(schema.fieldAgents)
     .set({ agentStatus: "silent" })
@@ -782,10 +787,78 @@ export async function getPetitionSignatures(petitionId: number) {
     .orderBy(desc(schema.petitionSignatures.signedAt));
 }
 
+/**
+ * R5-102: canonical signer identity hash — sha256 of
+ * lower(trim(phone)) | lower(trim(name)) | lower(trim(lga)), matching the
+ * backfill in migration 0005. Used for dedupe; the raw PII stays as-is.
+ */
+export function signerIdentityHash(sig: { signerName: string; phone?: string | null; lga?: string | null }) {
+  // Phone: digits only — formatting variance ("0803 111-2222" vs
+  // "08031112222") is the classic duplicate-signature vector. Name: case-
+  // and whitespace-insensitive. Must match the 0005 backfill expression.
+  const phone = (sig.phone ?? "").replace(/\D/g, "");
+  const name = (sig.signerName ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const lga = (sig.lga ?? "").trim().toLowerCase();
+  return createHash("sha256").update(`${phone}|${name}|${lga}`).digest("hex");
+}
+
+/**
+ * R5-102: record a signature. Every signature starts 'unverified' (never
+ * auto-verified) and carries its identity hash; a second signing by the same
+ * identity on the same petition is rejected as a duplicate (CONFLICT), not
+ * silently counted.
+ */
 export async function addPetitionSignature(data: typeof schema.petitionSignatures.$inferInsert) {
   const db = getDb();
   if (!db) return null;
-  const rows = await db.insert(schema.petitionSignatures).values(data).returning();
+  const signerHash = signerIdentityHash({
+    signerName: data.signerName,
+    phone: data.phone,
+    lga: data.lga,
+  });
+  const rows = await db
+    .insert(schema.petitionSignatures)
+    .values({ ...data, signerHash, verificationStatus: "unverified" })
+    .returning()
+    .catch((err: unknown) => {
+      // drizzle wraps pg errors — check the cause chain for the unique
+      // violation on the identity-hash index.
+      let cur: unknown = err;
+      let isDup = false;
+      while (cur instanceof Error) {
+        if (String(cur.message).includes("petition_signatures_signer_hash_uniq")) { isDup = true; break; }
+        cur = (cur as { cause?: unknown }).cause;
+      }
+      if (isDup) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "This signer has already signed this petition.",
+        });
+      }
+      throw err;
+    });
+  return rows[0];
+}
+
+/** R5-102: verify a signature (manager action) — stamps who/when. */
+export async function verifyPetitionSignature(id: number, petitionId: number, actor: string) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .update(schema.petitionSignatures)
+    .set({ verificationStatus: "verified", verifiedAt: sql`now()`, verifiedBy: actor })
+    .where(and(
+      eq(schema.petitionSignatures.id, id),
+      eq(schema.petitionSignatures.petitionId, petitionId),
+      eq(schema.petitionSignatures.verificationStatus, "unverified"),
+    ))
+    .returning();
+  if (!rows[0]) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "Signature not found or not in 'unverified' state (duplicates cannot be verified).",
+    });
+  }
   return rows[0];
 }
 
@@ -797,6 +870,22 @@ export async function getPetitionSignatureCount(petitionId: number) {
     .from(schema.petitionSignatures)
     .where(eq(schema.petitionSignatures.petitionId, petitionId));
   return result[0]?.count ?? 0;
+}
+
+/** R5-102: per-tier breakdown — counts distinguish pending vs verified. */
+export async function getPetitionSignatureStats(petitionId: number) {
+  const db = getDb();
+  if (!db) return { total: 0, verified: 0, unverified: 0, rejectedDuplicate: 0 };
+  const result = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      verified: sql<number>`count(*) filter (where ${schema.petitionSignatures.verificationStatus} = 'verified')::int`,
+      unverified: sql<number>`count(*) filter (where ${schema.petitionSignatures.verificationStatus} = 'unverified')::int`,
+      rejectedDuplicate: sql<number>`count(*) filter (where ${schema.petitionSignatures.verificationStatus} = 'rejected_duplicate')::int`,
+    })
+    .from(schema.petitionSignatures)
+    .where(eq(schema.petitionSignatures.petitionId, petitionId));
+  return result[0] ?? { total: 0, verified: 0, unverified: 0, rejectedDuplicate: 0 };
 }
 
 // ─── Diaspora ─────────────────────────────────────────────────────────────────

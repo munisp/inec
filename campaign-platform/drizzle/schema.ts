@@ -314,6 +314,13 @@ export const petitionSignatures = pgTable("petition_signatures", {
   signerName: varchar("signer_name", { length: 200 }).notNull(),
   phone: varchar("phone", { length: 20 }),
   lga: varchar("lga", { length: 100 }),
+  // R5-102: identity hash for dedupe (sha256 of normalized phone|name|lga)
+  // and a verification tier — signatures are 'unverified' until a campaign
+  // manager verifies them; duplicates are flagged, never silently counted.
+  signerHash: varchar("signer_hash", { length: 64 }),
+  verificationStatus: varchar("verification_status", { length: 20 }).default("unverified").notNull(),
+  verifiedAt: timestamp("verified_at"),
+  verifiedBy: varchar("verified_by", { length: 200 }),
   signedAt: timestamp("signed_at").defaultNow().notNull(),
 });
 export type PetitionSignature = typeof petitionSignatures.$inferSelect;

@@ -11,17 +11,22 @@ let profileId = 0;
 let userId = 0;
 let pool: Pool | null = null;
 
-async function seedAgent(name: string, status: string, lastCheckin: Date | null) {
+// Seed with DB-side timestamp arithmetic: node-pg serializes JS Dates in
+// LOCAL time (Asia/Shanghai here) while drizzle writes UTC ISO — mixing the
+// two breaks naive-timestamp comparisons, so keep everything DB-side.
+async function seedAgent(name: string, status: string, ageHours: number | null) {
   const r = await pool!.query(
-    `INSERT INTO field_agents (profile_id, name, agent_status, last_checkin) VALUES ($1,$2,$3,$4) RETURNING id`,
-    [profileId, name, status, lastCheckin],
+    `INSERT INTO field_agents (profile_id, name, agent_status, last_checkin)
+     VALUES ($1,$2,$3, CASE WHEN $4::int IS NULL THEN NULL ELSE now() - ($4::int || ' hours')::interval END)
+     RETURNING id`,
+    [profileId, name, status, ageHours],
   );
   return r.rows[0].id as number;
 }
 
 beforeAll(async () => {
   dsn = await createScratchDb("agents");
-  if (!dsn) return;
+  if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
   process.env.POSTGRES_URL = dsn;
   const seeded = await seedProfile(dsn, { username: "w11-ag", memberRole: "owner" });
   userId = seeded.userId;
@@ -37,15 +42,15 @@ afterAll(async () => {
 
 describe("R5-099 agent check-in + silent scan (PG)", () => {
   it("check-in stamps last_checkin/active and silent scan flags stale agents", async () => {
-    if (!dsn) return;
+    if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
     const { appRouter } = await import("./routers");
     const { createCtx, createTestUser } = await import("./testkit/trpcCtx");
     const caller = appRouter.createCaller(createCtx(createTestUser({ id: userId, username: "w11-ag" })));
 
-    const staleId = await seedAgent("Stale Agent", "active", new Date(Date.now() - 3 * 3600_000));
+    const staleId = await seedAgent("Stale Agent", "active", 3);
     const neverId = await seedAgent("Never Checked In", "active", null);
-    const freshId = await seedAgent("Fresh Agent", "active", new Date());
-    const offlineId = await seedAgent("Offline Agent", "offline", new Date(Date.now() - 5 * 3600_000));
+    const freshId = await seedAgent("Fresh Agent", "active", 0);
+    const offlineId = await seedAgent("Offline Agent", "offline", 5);
 
     // 1. Scan flags stale + never-checked-in deployed agents, not fresh/offline.
     const silent = (await caller.warRoom.silentAgents({ profileId, thresholdMinutes: 60 })) as Array<{ id: number; agentStatus: string }>;

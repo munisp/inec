@@ -743,6 +743,21 @@ export const appRouter = router({
         await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
         return db.getPetitionSignatureCount(input.petitionId);
       }),
+    // R5-102: per-tier signature stats (total/verified/unverified/rejected).
+    signatureStats: protectedProcedure
+      .input(z.object({ petitionId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        await assertPetitionAccess(ctx.user, input.petitionId, "viewer");
+        return db.getPetitionSignatureStats(input.petitionId);
+      }),
+    // R5-102: manager verifies a specific signature — signatures are never
+    // auto-verified; duplicates cannot be verified.
+    verifySignature: protectedProcedure
+      .input(z.object({ signatureId: z.number(), petitionId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await assertPetitionAccess(ctx.user, input.petitionId, "manager");
+        return db.verifyPetitionSignature(input.signatureId, input.petitionId, ctx.user!.username);
+      }),
     sign: protectedProcedure
       .input(z.object({
         petitionId: z.number(),

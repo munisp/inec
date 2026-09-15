@@ -27,17 +27,26 @@ export default function PetitionDrive() {
   const { data: signatures = [], isLoading: loadingSigs } = trpc.petitions.signatures.useQuery(
     { petitionId: petition?.id ?? 0 }, { enabled: !!petition?.id }
   );
+  // R5-102: verification tier stats + verify action.
+  const { data: sigStats } = trpc.petitions.signatureStats.useQuery(
+    { petitionId: petition?.id ?? 0 }, { enabled: !!petition?.id }
+  );
   const signMut = trpc.petitions.sign.useMutation({
-    onSuccess: () => { utils.petitions.signatures.invalidate(); toast.success("Signature added"); setForm({ name: "", phone: "", lga: "" }); },
+    onSuccess: () => { utils.petitions.signatures.invalidate(); utils.petitions.signatureStats.invalidate(); toast.success("Signature added (pending verification)"); setForm({ name: "", phone: "", lga: "" }); },
+    onError: (e) => toast.error(e.message),
+  });
+  const verifyMut = trpc.petitions.verifySignature.useMutation({
+    onSuccess: () => { utils.petitions.signatures.invalidate(); utils.petitions.signatureStats.invalidate(); },
     onError: (e) => toast.error(e.message),
   });
 
   const [form, setForm] = useState({ name: "", phone: "", lga: "" });
   const [createForm, setCreateForm] = useState({ title: "Campaign Support Petition", description: "", target: "10000" });
   const goal = petition?.targetSignatures ?? 10000;
-  const pct = goal > 0 ? Math.min(100, (signatures.length / goal) * 100) : 0;
+  const verifiedCount = sigStats?.verified ?? 0;
+  const pct = goal > 0 ? Math.min(100, (verifiedCount / goal) * 100) : 0;
   const progressLabel = pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
-  const progressWidth = signatures.length > 0 ? Math.max(0.4, pct) : 0;
+  const progressWidth = verifiedCount > 0 ? Math.max(0.4, pct) : 0;
   const shareUrl = petition ? `${window.location.origin}/sign/${petition.id}` : null;
   const copyShareLink = () => {
     if (!shareUrl) return;
@@ -53,8 +62,14 @@ export default function PetitionDrive() {
           <h1 className="text-white font-bold text-lg" style={{ fontFamily: "'Playfair Display', serif" }}>Petition & Signature Drive</h1>
         </div>
         <div className="text-right">
-          <p className="text-xs text-white/60">SIGNATURES</p>
-          <p className="font-mono font-bold text-white">{signatures.length.toLocaleString()} / {goal.toLocaleString()}</p>
+          <p className="text-xs text-white/60">SIGNATURES (verified)</p>
+          <p className="font-mono font-bold text-white">{(sigStats?.verified ?? 0).toLocaleString()} / {goal.toLocaleString()}</p>
+          {sigStats && (
+            <p className="text-xs text-white/60">
+              {sigStats.unverified.toLocaleString()} pending verification
+              {sigStats.rejectedDuplicate > 0 ? ` · ${sigStats.rejectedDuplicate.toLocaleString()} duplicates rejected` : ""}
+            </p>
+          )}
         </div>
       </header>
       <div className="max-w-4xl mx-auto px-6 py-8">
@@ -164,7 +179,7 @@ export default function PetitionDrive() {
           <div className="bg-white border border-gray-200 rounded overflow-hidden">
             <table className="w-full text-sm">
               <thead><tr className="bg-gray-50 border-b">
-                {["#","Name","Phone","LGA","Date"].map(h => <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">{h}</th>)}
+                {["#","Name","Phone","LGA","Status","Date"].map(h => <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">{h}</th>)}
               </tr></thead>
               <tbody>{signatures.map((s, i) => (
                 <tr key={s.id} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
@@ -172,6 +187,22 @@ export default function PetitionDrive() {
                   <td className="px-4 py-2 font-medium text-gray-900">{s.signerName}</td>
                   <td className="px-4 py-2 text-gray-600">{s.phone ?? "—"}</td>
                   <td className="px-4 py-2 text-gray-600">{s.lga ?? "—"}</td>
+                  <td className="px-4 py-2 text-xs">
+                    {s.verificationStatus === "verified" ? (
+                      <span className="text-green-700 font-semibold">Verified</span>
+                    ) : s.verificationStatus === "rejected_duplicate" ? (
+                      <span className="text-red-600 font-semibold">Duplicate</span>
+                    ) : (
+                      <span className="text-amber-600">Pending</span>
+                    )}
+                    {s.verificationStatus === "unverified" && canEdit && (
+                      <button
+                        className="ml-2 text-xs underline text-blue-700 disabled:opacity-40"
+                        disabled={verifyMut.isPending}
+                        onClick={() => petition && verifyMut.mutate({ signatureId: s.id, petitionId: petition.id })}
+                      >verify</button>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-xs text-gray-400">{new Date(s.signedAt).toLocaleDateString()}</td>
                 </tr>
               ))}</tbody>

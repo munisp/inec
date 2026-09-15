@@ -13,7 +13,7 @@ let verifyPool: Pool | null = null;
 
 beforeAll(async () => {
   dsn = await createScratchDb("incidents");
-  if (!dsn) return;
+  if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
   process.env.POSTGRES_URL = dsn;
   const seeded = await seedProfile(dsn, { username: "w11-inc", memberRole: "owner" });
   userId = seeded.userId;
@@ -29,7 +29,7 @@ afterAll(async () => {
 
 describe("R5-098 war-room incidents + escalation (PG)", () => {
   it("stores category/geo/evidence/occurrence and audits the escalation workflow", async () => {
-    if (!dsn) return; // pgserver unavailable
+    if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
     const { appRouter } = await import("./routers");
     const { createCtx, createTestUser } = await import("./testkit/trpcCtx");
     const ctx = createCtx(createTestUser({ id: userId, username: "w11-inc" }));
@@ -85,7 +85,7 @@ describe("R5-098 war-room incidents + escalation (PG)", () => {
   });
 
   it("rejects escalation by a viewer (manager role required)", async () => {
-    if (!dsn) return;
+    if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
     const { appRouter } = await import("./routers");
     const { createCtx, createTestUser } = await import("./testkit/trpcCtx");
     // Second user with only viewer membership on the same profile.

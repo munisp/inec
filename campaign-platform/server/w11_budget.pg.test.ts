@@ -12,7 +12,7 @@ let pool: Pool | null = null;
 
 beforeAll(async () => {
   dsn = await createScratchDb("budget");
-  if (!dsn) return;
+  if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
   process.env.POSTGRES_URL = dsn;
   const seeded = await seedProfile(dsn, { username: "w11-bud", memberRole: "owner", office: "Governor" });
   userId = seeded.userId;
@@ -28,7 +28,7 @@ afterAll(async () => {
 
 describe("R5-101 budget statutory caps + ledger (PG)", () => {
   it("enforces the Governor ₦1bn cap and audits every mutation", async () => {
-    if (!dsn) return;
+    if (!dsn) throw new Error("pgserver unavailable — PG-backed test must not be vacuous");
     const { appRouter } = await import("./routers");
     const { createCtx, createTestUser } = await import("./testkit/trpcCtx");
     const caller = appRouter.createCaller(createCtx(createTestUser({ id: userId, username: "w11-bud" })));

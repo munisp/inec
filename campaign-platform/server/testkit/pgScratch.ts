@@ -6,12 +6,17 @@ import { Pool } from "pg";
 import { readFileSync, readdirSync } from "fs";
 import path from "path";
 
-const ADMIN_DSN =
-  process.env.W11_PG_ADMIN_DSN ??
-  "host=/home/kimi/pgdata user=postgres dbname=postgres sslmode=disable";
+// pgserver socket directory. A leading '/' host is treated as a unix-socket
+// directory by node-postgres — no TCP needed.
+const PG_HOST = process.env.W11_PG_HOST ?? "/home/kimi/pgdata";
+const PG_USER = process.env.W11_PG_USER ?? "postgres";
+
+function cfg(database: string) {
+  return { host: PG_HOST, user: PG_USER, database };
+}
 
 export async function createScratchDb(tag: string): Promise<string | null> {
-  const admin = new Pool({ connectionString: ADMIN_DSN });
+  const admin = new Pool(cfg("postgres"));
   const name = `w11_${tag}_${Date.now().toString(36)}`;
   try {
     await admin.query(`DROP DATABASE IF EXISTS ${name}`);
@@ -22,8 +27,11 @@ export async function createScratchDb(tag: string): Promise<string | null> {
   }
   await admin.end();
 
-  const dsn = ADMIN_DSN.replace("dbname=postgres", `dbname=${name}`);
-  const pool = new Pool({ connectionString: dsn });
+  // URI form with percent-encoded socket dir as host — parseable by
+  // pg-connection-string, so it works both for Pool({connectionString}) and
+  // for server/db.ts getDb() via POSTGRES_URL.
+  const dsn = `postgresql://${PG_USER}@${encodeURIComponent(PG_HOST)}/${name}`;
+  const pool = new Pool(cfg(name));
   try {
     const dir = path.resolve(import.meta.dirname, "..", "..", "drizzle");
     const files = readdirSync(dir)
@@ -38,6 +46,8 @@ export async function createScratchDb(tag: string): Promise<string | null> {
   }
   return dsn;
 }
+
+
 
 /** Seed a user + candidate profile + campaign_membership; returns ids. */
 export async function seedProfile(
