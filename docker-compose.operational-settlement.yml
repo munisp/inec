@@ -3,8 +3,14 @@
 # FSPIOP onboarding, and mTLS acceptance testing are recorded in change control.
 services:
   go-backend:
+    restart: unless-stopped
     volumes:
       - type: bind
         source: ${MOJALOOP_SECRETS_DIR:?MOJALOOP_SECRETS_DIR must point to the approved mTLS secret directory}
         target: /run/secrets/mojaloop
         read_only: true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"

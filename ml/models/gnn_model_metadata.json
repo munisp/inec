@@ -1,6 +1,6 @@
 {
   "model_type": "ElectionGATFallback",
-  "architecture": "17\u2192256\u2192256\u219264\u219232\u21921 (GAT-compatible MLP)",
+  "architecture": "17→256→256→64→32→1 (GAT-compatible MLP)",
   "framework": "PyTorch",
   "version": "1.0.0",
   "trained_at": "2026-06-13T03:06:01.331442+00:00",
@@ -10,5 +10,7 @@
     "roc_auc": 0.9998427368421052,
     "average_precision": 0.9975721853208386
   },
-  "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt"
+  "weights_path": "/home/ubuntu/repos/inec/ml/models/gnn_election.pt",
+  "trained_on": "SYNTHETIC_NOT_FOR_PRODUCTION",
+  "integrity_note": "Trained on synthetic generated election data (near-perfect ROC-AUC reflects synthetic separability). Not valid for production anomaly detection."
 }

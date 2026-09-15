@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "middleware", "analytics_v2", "scoring_engine", "koh_indicators", "ml_serving", "voting_analytics"]
 
 [build-system]
 requires = ["setuptools>=75"]
