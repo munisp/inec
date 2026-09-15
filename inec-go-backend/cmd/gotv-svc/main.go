@@ -2532,6 +2532,46 @@ func nullStr(s string) interface{} {
 	return s
 }
 
+// R5-010: client device clocks are untrusted. A client-supplied door-knock
+// capture timestamp is accepted only within 72h in the past and 10min in the
+// future of server time; anything else is rejected rather than silently
+// stored (forged capture times undermine chain-of-custody for late-synced
+// field evidence). The server receipt time is always recorded independently
+// via the gotv_door_knocks.recorded_at column (DEFAULT CURRENT_TIMESTAMP).
+const (
+	maxKnockTimestampAge  = 72 * time.Hour
+	maxKnockTimestampSkew = 10 * time.Minute
+)
+
+// validateKnockTimestamp returns nil for an absent timestamp (server NOW()
+// applies) or the normalized UTC timestamp; an error for unparseable or
+// out-of-window values.
+func validateKnockTimestamp(raw string) (interface{}, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var ts time.Time
+	var err error
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		ts, err = time.Parse(layout, raw)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("unparseable timestamp %q (use RFC3339)", raw)
+	}
+	now := time.Now().UTC()
+	if ts.Before(now.Add(-maxKnockTimestampAge)) {
+		return nil, fmt.Errorf("timestamp %s is older than %v", raw, maxKnockTimestampAge)
+	}
+	if ts.After(now.Add(maxKnockTimestampSkew)) {
+		return nil, fmt.Errorf("timestamp %s is more than %v in the future", raw, maxKnockTimestampSkew)
+	}
+	return ts.UTC().Format(time.RFC3339), nil
+}
+
 func nullVal(ns sql.NullString) interface{} {
 	if ns.Valid {
 		return ns.String
@@ -2817,12 +2857,18 @@ func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	knockedAt, tsErr := validateKnockTimestamp(req.Timestamp)
+	if tsErr != nil {
+		jsonErr(w, "invalid timestamp: "+tsErr.Error(), http.StatusBadRequest)
+		return
+	}
+
 	knockID := "knock-" + uuid.New().String()[:8]
 	_, err := svc.DB.Exec(
 		`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamp, NOW()))
 		 ON CONFLICT DO NOTHING`,
-		pid, user, req.ContactID, knockID, req.ShiftID, req.Outcome, req.Notes, req.Lat, req.Lng, nullStr(req.Timestamp),
+		pid, user, req.ContactID, knockID, req.ShiftID, req.Outcome, req.Notes, req.Lat, req.Lng, knockedAt,
 	)
 	if err != nil {
 		jsonErr(w, "failed to record knock", http.StatusInternalServerError)
@@ -2834,7 +2880,7 @@ func handleMobileDoorKnock(w http.ResponseWriter, r *http.Request) {
 		svc.DB.Exec("UPDATE gotv_contacts SET voter_status='pledged', updated_at=NOW() WHERE contact_id=$1 AND party_id=$2", req.ContactID, pid)
 	}
 
-	jsonResp(w, map[string]interface{}{"knock_id": knockID, "recorded": true})
+	jsonResp(w, map[string]interface{}{"knock_id": knockID, "recorded": true, "server_time": time.Now().UTC().Format(time.RFC3339)})
 }
 
 func handleMobileSync(w http.ResponseWriter, r *http.Request) {
@@ -2858,8 +2904,15 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 
 	syncOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
 	synced := 0
+	rejectedTimestamps := 0
 	for _, k := range req.Knocks {
 		if k.Outcome != "" && !syncOutcomes[k.Outcome] {
+			continue
+		}
+		knockedAt, tsErr := validateKnockTimestamp(k.Timestamp)
+		if tsErr != nil {
+			// R5-010: never store an out-of-window/forged client capture time.
+			rejectedTimestamps++
 			continue
 		}
 		knockID := "knock-" + uuid.New().String()[:8]
@@ -2867,7 +2920,7 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 			`INSERT INTO gotv_door_knocks (party_id, volunteer_id, contact_id, knock_id, shift_id, outcome, notes, latitude, longitude, knocked_at)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamp, NOW()))
 			 ON CONFLICT DO NOTHING`,
-			pid, user, k.ContactID, knockID, k.ShiftID, k.Outcome, k.Notes, k.Lat, k.Lng, nullStr(k.Timestamp),
+			pid, user, k.ContactID, knockID, k.ShiftID, k.Outcome, k.Notes, k.Lat, k.Lng, knockedAt,
 		)
 		if err == nil {
 			synced++
@@ -2881,9 +2934,10 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 	svc.DB.Exec("UPDATE gotv_mobile_users SET last_sync_at=NOW() WHERE user_id=$1 AND party_id=$2", user, pid)
 
 	jsonResp(w, map[string]interface{}{
-		"synced":     synced,
-		"total":      len(req.Knocks),
-		"sync_token": time.Now().UTC().Format(time.RFC3339),
+		"synced":              synced,
+		"total":               len(req.Knocks),
+		"rejected_timestamps": rejectedTimestamps,
+		"sync_token":          time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
