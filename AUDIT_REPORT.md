@@ -161,8 +161,7 @@
 - Middleware fallback from external → embedded is silent (only logged, not reported to health endpoint)
 
 ### E. NO HEALTH ENDPOINT... for subsystems ⚠️
-- `/healthz` exists but only returns `{"status":"ok"}` — 
-doesn't check DB, middleware, or disk
+- `/healthz` exists but only returns `{"status":"ok"}` — doesn't check DB, middleware, or disk
 - `/readiness` exists but only returns `{"ready":true}` — same issue
 - `/middleware/health` exists and checks middleware status but not called by `/healthz`
 - No liveness probe that checks database connectivity
