@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,20 +58,98 @@ type IVRResponse struct {
 	Timeout   int    `json:"timeout,omitempty"`
 }
 
-// IVRIncidentReport captures a voter-reported incident via voice.
-type IVRIncidentReport struct {
-	ID          string    `json:"id"`
-	CallerPhone string    `json:"caller_phone"`
-	PollingUnit string    `json:"polling_unit,omitempty"`
-	Description string    `json:"description"`
-	Language    string    `json:"language"`
-	Severity    string    `json:"severity"`
-	ReportedAt  time.Time `json:"reported_at"`
+// IVR sessions are persisted in the `ivr_sessions` table (migration
+// 000035_ivr_sessions) instead of a process-local map, so telephony
+// callbacks keep working across replicas and restarts (R5-120 sub-action).
+func ivrSaveSession(s *IVRSession) error {
+	if db == nil {
+		return fmt.Errorf("database unavailable")
+	}
+	_, err := db.Exec(`INSERT INTO ivr_sessions (session_id, caller_phone, language, state, started_at, last_action)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT (session_id) DO UPDATE SET language=EXCLUDED.language, state=EXCLUDED.state, last_action=EXCLUDED.last_action`,
+		s.SessionID, s.CallerPhone, s.Language, s.State, s.StartedAt.UTC(), s.LastAction.UTC())
+	return err
 }
 
-// In-memory session store (production: Redis with TTL)
-var ivrSessions = make(map[string]*IVRSession)
-var ivrIncidents []IVRIncidentReport
+func ivrLoadSession(sessionID string) (*IVRSession, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	var s IVRSession
+	err := db.QueryRow(`SELECT session_id, COALESCE(caller_phone,''), language, state, started_at, last_action
+		FROM ivr_sessions WHERE session_id=?`, sessionID).
+		Scan(&s.SessionID, &s.CallerPhone, &s.Language, &s.State, &s.StartedAt, &s.LastAction)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// ivrUssdStrings localizes the voter-services USSD menu (find PU, check
+// registration, report incident, results). Diacritics are intentionally
+// avoided: GSM-7 USSD transport cannot carry them reliably.
+var ivrUssdStrings = map[string]map[string]string{
+	"en": {
+		"vs_main_menu":    "CON INEC Voter Services\n1. Find Polling Unit\n2. Check Registration\n3. Report Incident\n4. Election Results",
+		"vs_enter_nin":    "CON Enter your NIN (11 digits):",
+		"vs_enter_vin":    "CON Enter your Voter Card Number:",
+		"vs_pu_found":     "END Your polling unit: %s\nWard: %s\nVoting: 8am - 5pm",
+		"vs_not_found":    "END No registration found. Please visit your nearest INEC office with your National ID.",
+		"vs_reg_found":    "END Registration found (status: %s). Ward: %s, LGA: %s.",
+		"vs_service_down": "END Service unavailable, please try again later.",
+		"vs_results_info": "END Results are being collated. Visit inec.gov.ng for live updates.",
+	},
+	"ha": {
+		"vs_main_menu":    "CON Sabis na Masu Jefa Kuri'a na INEC\n1. Nemo rumfar zabe\n2. Duba rajista\n3. Ba da rahoton lamari\n4. Sakamakon zabe",
+		"vs_enter_nin":    "CON Shigar da lambar NIN (lambobi 11):",
+		"vs_enter_vin":    "CON Shigar da lambar katin zabenka:",
+		"vs_pu_found":     "END Rumfar zabenka: %s\nWardi: %s\nJefa kuri'a: 8am - 5pm",
+		"vs_not_found":    "END Ba a sami rajista ba. Ziyarci ofishin INEC mafi kusa da katin shaida.",
+		"vs_reg_found":    "END An sami rajista (matsayi: %s). Wardi: %s, Karamar hukuma: %s.",
+		"vs_service_down": "END Sabis ba ya aiki yanzu, sake gwadawa daga baya.",
+		"vs_results_info": "END Ana tattara sakamakon. Duba inec.gov.ng don sabuntawa.",
+	},
+	"yo": {
+		"vs_main_menu":    "CON Ise INEC fun Oludibo\n1. Wa ile-idibo re\n2. Sayewo iforukosile re\n3. Jabo isele\n4. Abajade idibo",
+		"vs_enter_nin":    "CON Te nomba NIN re (onka 11):",
+		"vs_enter_vin":    "CON Te nomba kaadi oludibo re:",
+		"vs_pu_found":     "END Ile-idibo re: %s\nWadi: %s\nIdibo: 8am - 5pm",
+		"vs_not_found":    "END A ko ri iforukosile. Sabewo si ofisi INEC to sunmo pelu kaadi idanimo.",
+		"vs_reg_found":    "END A ri iforukosile (ipo: %s). Wadi: %s, Ijoba ibile: %s.",
+		"vs_service_down": "END Ise ko wa fun igba die, gbiyanju leekansi.",
+		"vs_results_info": "END Won n ka awon abajade jo. Wo inec.gov.ng fun imudojuiwon.",
+	},
+	"ig": {
+		"vs_main_menu":    "CON Oru INEC nke Ndi Vootu\n1. Chota ebe ntuli aka gi\n2. Lelee ndebanye aha gi\n3. Koo ihe mere\n4. Nsonaazu ntuli aka",
+		"vs_enter_nin":    "CON Tinye nomba NIN gi (onu ogugu 11):",
+		"vs_enter_vin":    "CON Tinye nomba kaadi vootu gi:",
+		"vs_pu_found":     "END Ebe ntuli aka gi: %s\nWard: %s\nNtuli aka: 8am - 5pm",
+		"vs_not_found":    "END Achotaghi ndebanye aha. Gaa ulo oru INEC kacha nso gi na kaadi njirimara mba.",
+		"vs_reg_found":    "END Achotala ndebanye aha (onodu: %s). Ward: %s, LGA: %s.",
+		"vs_service_down": "END Oru adighi ugbu a, nwaa ozo ma e mechaa.",
+		"vs_results_info": "END Ana aguko nsonaazu. Lelee inec.gov.ng maka mmelite.",
+	},
+	"pcm": {
+		"vs_main_menu":    "CON INEC Voter Service\n1. Find your polling unit\n2. Check your registration\n3. Report wahala\n4. Election results",
+		"vs_enter_nin":    "CON Enter your NIN (11 digits):",
+		"vs_enter_vin":    "CON Enter your Voter Card Number:",
+		"vs_pu_found":     "END Your polling unit: %s\nWard: %s\nVoting na 8am - 5pm",
+		"vs_not_found":    "END We no see your registration. Go di INEC office near you with your National ID.",
+		"vs_reg_found":    "END We see your registration (status: %s). Ward: %s, LGA: %s.",
+		"vs_service_down": "END Service no dey now, try again later.",
+		"vs_results_info": "END Dem dey collate results. Check inec.gov.ng for updates.",
+	},
+}
+
+func ivrUssdText(lang, key string) string {
+	if d, ok := ivrUssdStrings[lang]; ok {
+		if s, ok := d[key]; ok && s != "" {
+			return s
+		}
+	}
+	return ivrUssdStrings["en"][key]
+}
 
 // IVR menu prompts in all four languages
 var ivrPrompts = map[string]map[string]string{
@@ -162,23 +241,16 @@ func lookupVoterRegistration(value string) (status, wardName, lgaCode string, fo
 	return status, wardName, lgaCode, true, nil
 }
 
-// persistIVRIncident writes a voter-reported incident to the incidents table
-// and returns its reference ID. A non-nil error means the report was NOT
-// recorded — callers must not claim it was.
+// persistIVRIncident writes a voter-reported incident into the shared public
+// incident pipeline (public_incidents.go) and returns its reference ID. A
+// non-nil error means the report was NOT recorded — callers must not claim
+// it was.
 func persistIVRIncident(incidentType, description, severity string) (string, error) {
-	if db == nil {
-		return "", fmt.Errorf("database unavailable")
+	source := "ivr"
+	if incidentType == "ussd_report" {
+		source = "ussd"
 	}
-	var electionID int
-	if err := db.QueryRow(`SELECT id FROM elections ORDER BY election_date DESC, id DESC LIMIT 1`).Scan(&electionID); err != nil {
-		return "", fmt.Errorf("no election context for incident report: %w", err)
-	}
-	var id int64
-	if err := db.QueryRow(`INSERT INTO incidents (election_id, incident_type, description, severity)
-		VALUES ($1, $2, $3, $4) RETURNING id`, electionID, incidentType, description, severity).Scan(&id); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("INC-%d", id), nil
+	return persistPublicIncident(incidentType, description, severity, "", "", "", "", source)
 }
 
 // IVRStartHandler — initiates a new IVR session (called by telephony platform).
@@ -203,10 +275,14 @@ func IVRStartHandler(w http.ResponseWriter, r *http.Request) {
 		CallerPhone: req.CallerPhone,
 		Language:    lang,
 		State:       "menu",
-		StartedAt:   time.Now(),
-		LastAction:  time.Now(),
+		StartedAt:   time.Now().UTC(),
+		LastAction:  time.Now().UTC(),
 	}
-	ivrSessions[req.SessionID] = session
+	if err := ivrSaveSession(session); err != nil {
+		log.Error().Err(err).Msg("IVR session persistence failed")
+		http.Error(w, "session store unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
 	log.Info().Str("session", req.SessionID).Str("caller", req.CallerPhone).Msg("IVR session started")
 
@@ -228,12 +304,22 @@ func IVRActionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, ok := ivrSessions[action.SessionID]
-	if !ok {
-		http.Error(w, "session not found", http.StatusNotFound)
+	session, lerr := ivrLoadSession(action.SessionID)
+	if lerr != nil {
+		if lerr == sql.ErrNoRows {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		log.Error().Err(lerr).Msg("IVR session load failed")
+		http.Error(w, "session store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	session.LastAction = time.Now()
+	session.LastAction = time.Now().UTC()
+	defer func() {
+		if err := ivrSaveSession(session); err != nil {
+			log.Error().Err(err).Msg("IVR session save failed")
+		}
+	}()
 
 	var resp IVRResponse
 	lang := session.Language
@@ -262,7 +348,7 @@ func IVRActionHandler(w http.ResponseWriter, r *http.Request) {
 	case "3": // Report incident
 		// INTEGRITY: persist the report to the incidents table; only confirm
 		// receipt when the row actually exists.
-		incidentID, err := persistIVRIncident("ivr_report", "incident reported via IVR by "+session.CallerPhone, "medium")
+		incidentID, err := persistPublicIncident("ivr_report", "incident reported via IVR by "+session.CallerPhone, "medium", "", session.CallerPhone, "", "", "ivr")
 		if err != nil {
 			log.Error().Err(err).Msg("IVR incident persistence failed")
 			resp = IVRResponse{
@@ -271,13 +357,6 @@ func IVRActionHandler(w http.ResponseWriter, r *http.Request) {
 				Language: lang,
 			}
 		} else {
-			ivrIncidents = append(ivrIncidents, IVRIncidentReport{
-				ID:          incidentID,
-				CallerPhone: session.CallerPhone,
-				Language:    lang,
-				Severity:    "medium",
-				ReportedAt:  time.Now(),
-			})
 			resp = IVRResponse{
 				Action:   "say",
 				Text:     fmt.Sprintf(ivrPrompts["incident_received"][lang], incidentID),
@@ -355,84 +434,149 @@ func IVRActionHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// IVRIncidentsHandler — returns all IVR-reported incidents.
+// IVRIncidentsHandler — returns incidents reported through the public voice/
+// text channels (IVR, USSD, WhatsApp, web) from the durable incident pipeline.
+// Intended for staff triage UIs; register behind readAuth.
 func IVRIncidentsHandler(w http.ResponseWriter, r *http.Request) {
+	if db == nil {
+		writeError(w, 503, "database unavailable")
+		return
+	}
+	rows, err := db.Query(`SELECT id, incident_type, description, severity, COALESCE(reporter_phone,''), reported_at, status, source
+		FROM incidents WHERE source IN ('ivr','ussd','whatsapp','public_web')
+		ORDER BY reported_at DESC LIMIT 200`)
+	if err != nil {
+		log.Error().Err(err).Msg("IVR incidents query failed")
+		writeError(w, 500, "failed to list channel incidents")
+		return
+	}
+	defer rows.Close()
+	incidents := []map[string]interface{}{}
+	for rows.Next() {
+		var id int64
+		var itype, desc, sev, phone, status, source string
+		var reportedAt time.Time
+		if err := rows.Scan(&id, &itype, &desc, &sev, &phone, &reportedAt, &status, &source); err != nil {
+			continue
+		}
+		incidents = append(incidents, map[string]interface{}{
+			"id":           fmt.Sprintf("INC-%d", id),
+			"type":         itype,
+			"description":  desc,
+			"severity":     sev,
+			"caller_phone": phone,
+			"reported_at":  reportedAt,
+			"status":       status,
+			"source":       source,
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total":     len(ivrIncidents),
-		"incidents": ivrIncidents,
+		"total":     len(incidents),
+		"incidents": incidents,
 	})
 }
 
-// USSDHandler — USSD fallback for feature phones (Africa's Talking format).
+// USSDHandler — USSD fallback for feature phones (Africa's Talking form
+// format). Level 0 is a language menu (English/Hausa/Yorùbá/Igbo/Naija);
+// the chosen language travels in the cumulative session text so the handler
+// stays stateless (R5-077).
 func USSDHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	sessionID := r.FormValue("sessionId")
-	serviceCode := r.FormValue("serviceCode")
 	phoneNumber := r.FormValue("phoneNumber")
 	text := r.FormValue("text")
-
-	_ = sessionID
-	_ = serviceCode
-	_ = phoneNumber
 
 	var response string
 	parts := strings.Split(text, "*")
 	level := len(parts)
+	if text == "" {
+		level = 0
+	}
 
 	switch {
-	case text == "":
-		response = "CON Welcome to INEC Voter Services\n1. Find Polling Unit\n2. Check Registration\n3. Report Incident\n4. Election Results"
-	case parts[0] == "1" && level == 1:
-		response = "CON Enter your NIN (11 digits):"
-	case parts[0] == "1" && level == 2:
-		// INTEGRITY: real registry lookup — no hardcoded polling unit.
-		puCode, puName, wardName, found, err := lookupVoterPU(true, parts[1])
-		switch {
-		case err != nil:
-			log.Error().Err(err).Msg("USSD NIN lookup failed")
-			response = "END Service unavailable, please try again later."
-		case !found:
-			response = "END No registration found for that NIN. Please visit your nearest INEC office with your National ID."
-		default:
-			label := puName
-			if label == "" {
-				label = puCode
-			}
-			response = fmt.Sprintf("END Your polling unit: %s\nWard: %s\nVoting: 8am - 5pm", label, wardName)
-		}
-	case parts[0] == "2" && level == 1:
-		response = "CON Enter your Voter Card Number:"
-	case parts[0] == "2" && level == 2:
-		// INTEGRITY: only confirm a registration when a real row exists.
-		status, wardName, lgaCode, found, err := lookupVoterRegistration(parts[1])
-		switch {
-		case err != nil:
-			log.Error().Err(err).Msg("USSD voter-card lookup failed")
-			response = "END Service unavailable, please try again later."
-		case !found:
-			response = "END No registration found for that voter card number."
-		default:
-			response = fmt.Sprintf("END Registration found (status: %s). Ward: %s, LGA: %s.", status, wardName, lgaCode)
-		}
-	case parts[0] == "3" && level == 1:
-		response = "CON Describe the incident briefly:"
-	case parts[0] == "3" && level == 2:
-		// INTEGRITY: persist the incident; never issue a reference for a report
-		// that was not recorded.
-		incidentID, err := persistIVRIncident("ussd_report", parts[1], "medium")
-		if err != nil {
-			log.Error().Err(err).Msg("USSD incident persistence failed")
-			response = "END Service unavailable — your incident was NOT recorded. Please try again later."
+	case level == 0:
+		response = ussdText("en", "lang_menu")
+		dbExecLog("db_op", `INSERT INTO ussd_sessions (id, phone, stage, data) VALUES (?,?,'lang_menu','{}') ON CONFLICT (id) DO NOTHING`,
+			firstNonEmpty(sessionID, fmt.Sprintf("USSD-%d", time.Now().UnixNano())), phoneNumber)
+	case level == 1:
+		langIdx, err := strconv.Atoi(parts[0])
+		if err != nil || langIdx < 1 || langIdx > len(ussdSupportedLangs) {
+			response = ussdText("en", "invalid_lang")
 		} else {
-			response = fmt.Sprintf("END Incident reported. Reference: %s\nThank you for protecting Nigeria's democracy.", incidentID)
+			response = ivrUssdText(ussdSupportedLangs[langIdx-1], "vs_main_menu")
 		}
-	case parts[0] == "4":
-		response = "END Results are being collated. Visit inec.gov.ng for live updates."
+	case level == 2:
+		lang := ussdLangOf(parts[0])
+		switch parts[1] {
+		case "1":
+			response = ivrUssdText(lang, "vs_enter_nin")
+		case "2":
+			response = ivrUssdText(lang, "vs_enter_vin")
+		case "3":
+			response = ussdText(lang, "enter_incident")
+		case "4":
+			response = ivrUssdText(lang, "vs_results_info")
+		default:
+			response = ussdText(lang, "invalid")
+		}
+	case level >= 3:
+		lang := ussdLangOf(parts[0])
+		switch parts[1] {
+		case "1":
+			// INTEGRITY: real registry lookup — no hardcoded polling unit.
+			puCode, puName, wardName, found, err := lookupVoterPU(true, parts[2])
+			switch {
+			case err != nil:
+				log.Error().Err(err).Msg("USSD NIN lookup failed")
+				response = ivrUssdText(lang, "vs_service_down")
+			case !found:
+				response = ivrUssdText(lang, "vs_not_found")
+			default:
+				label := puName
+				if label == "" {
+					label = puCode
+				}
+				response = fmt.Sprintf(ivrUssdText(lang, "vs_pu_found"), label, wardName)
+			}
+		case "2":
+			// INTEGRITY: only confirm a registration when a real row exists.
+			status, wardName, lgaCode, found, err := lookupVoterRegistration(parts[2])
+			switch {
+			case err != nil:
+				log.Error().Err(err).Msg("USSD voter-card lookup failed")
+				response = ivrUssdText(lang, "vs_service_down")
+			case !found:
+				response = ivrUssdText(lang, "vs_not_found")
+			default:
+				response = fmt.Sprintf(ivrUssdText(lang, "vs_reg_found"), status, wardName, lgaCode)
+			}
+		case "3":
+			// INTEGRITY: persist the incident; never issue a reference for a
+			// report that was not recorded.
+			incidentID, err := persistPublicIncident("ussd_report", parts[2], "medium", "", phoneNumber, "", "", "ussd")
+			if err != nil {
+				log.Error().Err(err).Msg("USSD incident persistence failed")
+				response = ussdText(lang, "incident_fail")
+			} else {
+				response = fmt.Sprintf(ussdText(lang, "incident_ok"), incidentID)
+			}
+		default:
+			response = ussdText(lang, "invalid")
+		}
 	default:
-		response = "END Invalid option. Please try again."
+		response = ussdText("en", "invalid")
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte(response))
+}
+
+// ussdLangOf resolves the language digit at the head of the cumulative USSD
+// text to a language code, defaulting to English on anything unexpected.
+func ussdLangOf(langDigit string) string {
+	if langIdx, err := strconv.Atoi(langDigit); err == nil && langIdx >= 1 && langIdx <= len(ussdSupportedLangs) {
+		return ussdSupportedLangs[langIdx-1]
+	}
+	return "en"
 }
