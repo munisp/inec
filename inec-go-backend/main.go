@@ -999,23 +999,26 @@ func main() {
 	r.Handle("/metrics", metricsBearerGuard(metricsHandler())).Methods("GET")
 
 	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
+	// W8 server gate: minimum mobile app version (X-App-Version < MIN_APP_VERSION → 426).
+	initAppVersionGate()
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
-			otelTracingMiddleware(
-				tracingMiddleware(
-					accessLogMiddleware(
-						inputValidationMiddleware(
-							metricsMiddleware(
-								corsProductionMiddleware(
-									jwtAuthMiddleware(
-										csrfMiddleware(
-											enhancedSecurityHeaders(
-												wafMiddleware(
-													requestSizeLimit(
-														rateLimitMiddleware(
-															loadSheddingMiddleware(
-																roleBasedRateLimit(
-																	gzipMiddleware(r)))))))))))))))))
+			minAppVersionMiddleware(
+				otelTracingMiddleware(
+					tracingMiddleware(
+						accessLogMiddleware(
+							inputValidationMiddleware(
+								metricsMiddleware(
+									corsProductionMiddleware(
+										jwtAuthMiddleware(
+											csrfMiddleware(
+												enhancedSecurityHeaders(
+													wafMiddleware(
+														requestSizeLimit(
+															rateLimitMiddleware(
+																loadSheddingMiddleware(
+																	roleBasedRateLimit(
+																		gzipMiddleware(r))))))))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
