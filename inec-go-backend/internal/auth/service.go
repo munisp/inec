@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -172,6 +173,11 @@ func (s *Service) Login(ctx context.Context, username, password string) (*TokenP
 }
 
 // ValidateToken validates a JWT and returns its claims.
+//
+// R5-041: the revocation blacklist is now actually CHECKED here — previously
+// nothing in internal/auth read token_blacklist, so revoked tokens stayed
+// valid until expiry. Fail closed: a blacklist lookup error rejects the
+// token rather than silently skipping the revocation control.
 func (s *Service) ValidateToken(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -185,6 +191,18 @@ func (s *Service) ValidateToken(tokenStr string) (*Claims, error) {
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
+	}
+	if claims.JTI != "" && s.db != nil {
+		var revoked int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM token_blacklist WHERE jti=$1 AND expires_at > NOW()`, claims.JTI,
+		).Scan(&revoked); err != nil {
+			log.Error().Err(err).Msg("SECURITY: token blacklist check failed (fail closed)")
+			return nil, fmt.Errorf("token validation unavailable")
+		}
+		if revoked > 0 {
+			return nil, fmt.Errorf("token has been revoked")
+		}
 	}
 	return claims, nil
 }
@@ -207,6 +225,22 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*Token
 		Scan(&user.ID, &user.Username, &user.FullName, &user.Role, &user.StaffID, &user.State)
 	if err != nil {
 		return nil, fmt.Errorf("user not found or disabled")
+	}
+
+	// R5-038/041 rotation: the presented refresh token is single-use —
+	// blacklist it as part of the exchange so a stolen predecessor dies on
+	// first replay. ValidateToken (above) already rejects blacklisted jtis.
+	if claims.JTI != "" && claims.ExpiresAt != nil {
+		userID, _ := strconv.Atoi(claims.Subject)
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO token_blacklist (jti, user_id, expires_at, reason) VALUES ($1, $2, $3, 'refresh_rotation')
+			 ON CONFLICT (jti) DO NOTHING`,
+			claims.JTI, userID, claims.ExpiresAt.Time); err != nil {
+			// Fail closed: without rotation persistence a stolen refresh
+			// token is reusable — refuse to issue rather than skip.
+			log.Error().Err(err).Msg("SECURITY: refresh rotation persist failed (fail closed)")
+			return nil, fmt.Errorf("refresh failed: rotation unavailable")
+		}
 	}
 
 	return s.issueTokenPair(&user)
@@ -336,12 +370,55 @@ func (s *Service) Register(ctx context.Context, username, password, fullName, ro
 	return &User{ID: id, Username: username, FullName: fullName, Role: role}, nil
 }
 
-// Revoke blacklists a token JTI.
-func (s *Service) Revoke(ctx context.Context, tokenStr string) {
-	claims, err := s.ValidateToken(tokenStr)
+// Revoke blacklists a token JTI. R5-041: the previous INSERT omitted
+// user_id against a NOT NULL column (every revocation silently failed) and
+// the error was discarded. user_id is now taken from the token subject,
+// the reason is recorded, and failures are returned + logged loudly.
+func (s *Service) Revoke(ctx context.Context, tokenStr string) error {
+	// Parse WITHOUT the blacklist check: revoking an already-revoked token
+	// must stay idempotent, not error.
+	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return s.config.JWTSecret, nil
+	})
 	if err != nil {
-		return
+		return fmt.Errorf("revoke: token parse failed: %w", err)
 	}
-	s.db.ExecContext(ctx, `INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		claims.JTI, claims.ExpiresAt.Time)
+	claims, ok := token.Claims.(*Claims)
+	if !ok {
+		return fmt.Errorf("revoke: invalid token claims")
+	}
+	if claims.JTI == "" || claims.ExpiresAt == nil {
+		return fmt.Errorf("revoke: token lacks jti/expiry")
+	}
+	userID, _ := strconv.Atoi(claims.Subject)
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO token_blacklist (jti, user_id, expires_at, reason) VALUES ($1, $2, $3, 'logout')
+		 ON CONFLICT (jti) DO UPDATE SET revoked_at=CURRENT_TIMESTAMP, reason='logout'`,
+		claims.JTI, userID, claims.ExpiresAt.Time); err != nil {
+		log.Error().Err(err).Str("jti", claims.JTI).Msg("SECURITY: token revocation persist failed")
+		return fmt.Errorf("revoke: persist failed: %w", err)
+	}
+	return nil
+}
+
+// RevokeAllForUser blacklists every outstanding session JTI recorded for a
+// user ("revoke all sessions"). R5-041: this path previously did nothing at
+// all — there was no writer to token_blacklist that ValidateToken would
+// honor. Returns the number of sessions revoked.
+func (s *Service) RevokeAllForUser(ctx context.Context, userID int) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO token_blacklist (jti, user_id, expires_at, reason)
+		 SELECT jti, $1, expires_at, 'bulk_revocation' FROM active_sessions
+		 WHERE user_id=$1 AND expires_at > NOW()
+		 ON CONFLICT (jti) DO UPDATE SET revoked_at=CURRENT_TIMESTAMP, reason='bulk_revocation'`,
+		userID)
+	if err != nil {
+		log.Error().Err(err).Int("user_id", userID).Msg("SECURITY: revoke-all persist failed")
+		return 0, fmt.Errorf("revoke all: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

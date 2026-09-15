@@ -166,8 +166,14 @@ func (p *permifyHTTPClient) Close() error { return nil }
 // Zanzibar-style permission model: entity#relation@subject
 // Schema: election#admin@user:alice, polling_unit#presiding_officer@user:bob
 var permifyRBAC = map[string]map[string]bool{
-	"admin":             {"submit_result": true, "validate_result": true, "finalize_result": true, "dispute_result": true, "create_election": true, "update_election": true, "view_audit": true, "manage_incidents": true, "export_data": true, "view_dashboard": true, "manage_users": true, "rotate_keys": true, "manage_bvas": true, "resolve_duplicates": true, "manage_compliance": true},
-	"presiding_officer": {"submit_result": true, "view_dashboard": true, "accredit_voter": true, "manage_bvas": true, "report_incident": true},
+	// W2→W3 handoff: admin must also carry declare_result/correct_result —
+	// the declaration and correction handlers check these permissions and
+	// previously denied even admins on the static-map fallback path.
+	"admin": {"submit_result": true, "validate_result": true, "finalize_result": true, "dispute_result": true, "declare_result": true, "correct_result": true, "create_election": true, "update_election": true, "view_audit": true, "manage_incidents": true, "export_data": true, "view_dashboard": true, "manage_users": true, "rotate_keys": true, "manage_bvas": true, "resolve_duplicates": true, "manage_compliance": true},
+	// R5-043: presiding officers may dispute a result at their OWN assigned
+	// polling unit (the genuine PO must be able to challenge a fraudulent
+	// first submission). The handler enforces the PU binding.
+	"presiding_officer": {"submit_result": true, "dispute_result": true, "view_dashboard": true, "accredit_voter": true, "manage_bvas": true, "report_incident": true},
 	"collation_officer": {"validate_result": true, "finalize_result": true, "view_dashboard": true, "view_audit": true, "collate_results": true},
 	"observer":          {"dispute_result": true, "view_audit": true, "view_dashboard": true, "observe_election": true, "report_incident": true},
 	"returning_officer": {"finalize_result": true, "declare_result": true, "view_dashboard": true, "view_audit": true, "collate_results": true},

@@ -245,13 +245,16 @@ var rolePermissions = map[GOTVRole]map[string]bool{
 		"rides:write": true, "canvass": true,
 	},
 	RoleObserver: {
+		// R5-036/H3-20: observers and analysts no longer hold bulk-PII
+		// "export" — they were the floor every low-privilege credential
+		// claimed when the role was client-asserted.
 		"campaigns:read": true, "contacts:read": true, "volunteers:read": true,
 		"pledges:read": true, "rides:read": true, "tasks:read": true,
-		"koh": true, "scoring": true, "export": true,
+		"koh": true, "scoring": true,
 	},
 	RoleAnalyst: {
 		"campaigns:read": true, "contacts:read": true, "volunteers:read": true,
-		"pledges:read": true, "scoring": true, "koh": true, "export": true,
+		"pledges:read": true, "scoring": true, "koh": true,
 		"reports:generate": true,
 	},
 }
@@ -263,6 +266,12 @@ func hasPermission(role GOTVRole, permission string) bool {
 	return false
 }
 
+// requirePermission gates a route on a GOTV permission. SECURITY (R5-036):
+// the X-GOTV-Role header is set ONLY by the server-side auth middleware
+// (internal/gotv/auth.go Wrap), which deletes any client-supplied value
+// before authentication and derives the role from the party-membership /
+// credential tables. Mounted without that middleware there is no role at
+// all and every privileged route fails closed (401).
 func requirePermission(permission string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role := GOTVRole(r.Header.Get("X-GOTV-Role"))
@@ -275,11 +284,43 @@ func requirePermission(permission string, next http.HandlerFunc) http.HandlerFun
 			return
 		}
 		if !hasPermission(role, permission) {
+			log.Warn().
+				Str("user", r.Header.Get("X-GOTV-User")).
+				Str("role", string(role)).
+				Str("permission", permission).
+				Str("path", r.URL.Path).
+				Msg("SECURITY: GOTV permission denied")
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{"error": "insufficient permissions", "required": permission})
 			return
 		}
 		next(w, r)
+	}
+}
+
+// auditExport records a bulk-PII export against the real authenticated
+// identity (R5-036): party, user, server-derived role, resource and row
+// count. Best-effort insert into the GOTV audit trail plus a structured
+// security log line — an audit failure must never silently pass, so it is
+// logged at error level.
+func auditExport(r *http.Request, partyID int, resource string, rowCount int) {
+	actor := r.Header.Get("X-GOTV-User")
+	role := r.Header.Get("X-GOTV-Role")
+	log.Info().
+		Int("party_id", partyID).
+		Str("actor", actor).
+		Str("role", role).
+		Str("resource", resource).
+		Int("rows", rowCount).
+		Msg("SECURITY AUDIT: GOTV bulk export")
+	if dbConn == nil {
+		log.Error().Str("resource", resource).Msg("SECURITY: export audit insert skipped — no DB connection")
+		return
+	}
+	if _, err := dbConn.ExecContext(r.Context(),
+		`INSERT INTO gotv_audit_log (party_id, actor, action, resource_type, resource_id) VALUES ($1,$2,$3,$4,$5)`,
+		partyID, actor+" (role="+role+")", "export", resource, strconv.Itoa(rowCount)+" rows"); err != nil {
+		log.Error().Err(err).Str("resource", resource).Msg("SECURITY: export audit insert failed")
 	}
 }
 
@@ -374,6 +415,7 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "attachment; filename=contacts.csv")
 		writer := csv.NewWriter(w)
 		writer.Write([]string{"contact_id", "full_name", "phone", "state", "lga", "status", "opted_out", "created_at"})
+		rowCount := 0
 		for rows.Next() {
 			var cid, phoneEnc, state, lga, status string
 			var nameEnc sql.NullString
@@ -389,8 +431,10 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 				fullName, _ = svc.Decrypt(nameEnc.String)
 			}
 			writer.Write([]string{cid, fullName, masked, state, lga, status, strconv.FormatBool(optedOut), createdAt.Format(time.RFC3339)})
+			rowCount++
 		}
 		writer.Flush()
+		auditExport(r, partyID, "contacts", rowCount)
 		return
 	}
 
@@ -418,6 +462,7 @@ func handleExportContacts(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename=contacts.json")
 	json.NewEncoder(w).Encode(contacts)
+	auditExport(r, partyID, "contacts", len(contacts))
 }
 
 func handleExportVolunteers(w http.ResponseWriter, r *http.Request) {
@@ -435,6 +480,7 @@ func handleExportVolunteers(w http.ResponseWriter, r *http.Request) {
 			COALESCE(assigned_state,''), COALESCE(assigned_lga,''), COALESCE(assigned_ward,''),
 			doors_knocked, calls_made, rides_given, created_at
 		FROM gotv_volunteers WHERE party_id = $1 AND deleted_at IS NULL`, partyID)
+	rowCount := 0
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -445,9 +491,11 @@ func handleExportVolunteers(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			writer.Write([]string{vid, name, role, vs, st, lga, ward, strconv.Itoa(dk), strconv.Itoa(cm), strconv.Itoa(rg), ca.Format(time.RFC3339)})
+			rowCount++
 		}
 	}
 	writer.Flush()
+	auditExport(r, partyID, "volunteers", rowCount)
 }
 
 func handleExportTasks(w http.ResponseWriter, r *http.Request) {
@@ -465,6 +513,7 @@ func handleExportTasks(w http.ResponseWriter, r *http.Request) {
 			COALESCE(state_code,''), COALESCE(ward_code,''), target_count, completed_count,
 			COALESCE(due_date::text,''), created_at
 		FROM gotv_tasks WHERE party_id = $1`, partyID)
+	rowCount := 0
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -475,9 +524,11 @@ func handleExportTasks(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			writer.Write([]string{tid, tt, title, st, strconv.Itoa(pr), vid, sc, wc, strconv.Itoa(tc), strconv.Itoa(cc), dd, ca.Format(time.RFC3339)})
+			rowCount++
 		}
 	}
 	writer.Flush()
+	auditExport(r, partyID, "tasks", rowCount)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

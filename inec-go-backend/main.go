@@ -1191,6 +1191,9 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		{"/geo/tiles", limit("RATE_LIMIT_GEO_TILES", 120), time.Minute},
 		{"/dashboard/metrics", limit("RATE_LIMIT_DASHBOARD_METRICS", 30), time.Minute},
 		{"/results", limit("RATE_LIMIT_RESULTS", 60), time.Minute},
+		// R5-037: /inec/* was absent from the prefix list — the EC8A direct
+		// submit path was unthrottled.
+		{"/inec/", limit("RATE_LIMIT_INEC", 10), time.Minute},
 		{"/geo/reports", limit("RATE_LIMIT_GEO_REPORTS", 10), time.Minute},
 		{"/export/", limit("RATE_LIMIT_EXPORT", 2), time.Minute},
 	}

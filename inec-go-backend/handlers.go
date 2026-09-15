@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -226,17 +227,57 @@ func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Reject revoked refresh tokens (logout / session revocation by jti).
-	if jti, _ := claims["jti"].(string); jti != "" && blacklist.isBlacklisted(jti) {
+	oldJTI, _ := claims["jti"].(string)
+	if oldJTI != "" && blacklist.isBlacklisted(oldJTI) {
 		writeError(w, 401, "refresh token has been revoked")
 		return
 	}
-	// Issue new access + refresh tokens (preserving tenancy claims)
+
+	// R5-038: re-validate the ACCOUNT on every refresh. Previously the
+	// role/state/staff claims were copied from the old token verbatim, so a
+	// disabled or demoted insider (or a thief of the 7-day refresh token)
+	// kept minting fully-privileged tokens. The users table is now
+	// authoritative: disabled accounts are rejected and role/tenancy claims
+	// are re-read (demotion takes effect at the next refresh, not after 7
+	// days).
+	userSub, _ := claims["sub"].(string)
+	uid, _ := strconv.Atoi(userSub)
+	var dbRole, dbState, dbStaff string
+	var dbActive int
+	userErr := dbQueryRowCtx(r.Context(),
+		"SELECT role, COALESCE(state_code,''), COALESCE(staff_id,''), COALESCE(is_active,1) FROM users WHERE id=?",
+		uid).Scan(&dbRole, &dbState, &dbStaff, &dbActive)
+	if userErr != nil {
+		logAudit("TOKEN_REFRESH_REJECTED", "user", userSub, uid, map[string]interface{}{"reason": "account_not_found"})
+		writeError(w, 401, "account no longer exists")
+		return
+	}
+	if dbActive == 0 {
+		logAudit("TOKEN_REFRESH_REJECTED", "user", userSub, uid, map[string]interface{}{"reason": "account_disabled"})
+		writeError(w, 401, "account is disabled")
+		return
+	}
+
+	// R5-038 rotation: the presented refresh token is revoked as part of the
+	// exchange, so each refresh token is single-use and a stolen predecessor
+	// dies on its first replay.
+	newJTI := generateJTI()
 	baseClaims := map[string]interface{}{
-		"sub": claims["sub"], "username": claims["username"], "role": claims["role"], "full_name": claims["full_name"],
-		"staff_id": claims["staff_id"], "state_code": claims["state_code"],
+		"sub": claims["sub"], "username": claims["username"], "role": dbRole, "full_name": claims["full_name"],
+		"staff_id": dbStaff, "state_code": dbState,
+		"jti": newJTI,
 	}
 	newAccess, _ := createAccessToken(baseClaims)
 	newRefresh, _ := createRefreshToken(baseClaims)
+	if oldJTI != "" {
+		expiry := time.Now().Add(7 * 24 * time.Hour)
+		if expF, ok := claims["exp"].(float64); ok && expF > 0 {
+			expiry = time.Unix(int64(expF), 0)
+		}
+		blacklist.revokeToken(oldJTI, uid, expiry, "refresh_rotation")
+	}
+	// Record the rotated session so logout/revocation can target it.
+	recordSession(newJTI, uid, time.Now().Add(7*24*time.Hour), r)
 	writeJSON(w, 200, M{
 		"access_token": newAccess, "refresh_token": newRefresh, "token_type": "bearer", "expires_in": 3600,
 	})
@@ -265,6 +306,16 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 	if jti != "" {
 		expiresAt := time.Now().Add(24 * time.Hour)
 		blacklist.revokeToken(jti, userID, expiresAt, "user_logout")
+	}
+
+	// R5-038: logout must also kill the REFRESH token (and any rotated
+	// predecessor sessions) — previously only the presented access token's
+	// jti was blacklisted, so a held refresh token silently survived logout
+	// for up to 7 days. Revoke every recorded session jti for this user.
+	if userID > 0 {
+		if err := blacklist.revokeAllForUser(userID); err != nil {
+			log.Error().Err(err).Int("user_id", userID).Msg("SECURITY: logout bulk revocation failed")
+		}
 	}
 
 	// Remove all sessions for this user from active sessions
@@ -596,6 +647,12 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	if !enforceStateTenancy(w, r, user, req.PollingUnitCode) {
 		return
 	}
+	// R5-043: presiding officers are additionally bound to their ASSIGNED
+	// polling unit (election_staff_assignments) — state tenancy alone let a
+	// malicious PO submit for a rival PU and lock out the genuine officer.
+	if !enforceOfficerPUBinding(w, r, user, req.ElectionID, req.PollingUnitCode) {
+		return
+	}
 	// Duplicate guard considers only canonical results — superseded/voided
 	// rows are history and never block a correction or re-capture (R5-016).
 	var dupCheck int
@@ -812,9 +869,26 @@ func handleValidateResult(w http.ResponseWriter, r *http.Request) {
 	}
 	var status, puCode string
 	var electionID int
-	if err := tx.QueryRow(convertPlaceholders("SELECT status, polling_unit_code, election_id FROM results WHERE id=? FOR UPDATE"), id).Scan(&status, &puCode, &electionID); err != nil {
+	var submitterID sql.NullInt64
+	if err := tx.QueryRow(convertPlaceholders("SELECT status, polling_unit_code, election_id, presiding_officer_id FROM results WHERE id=? FOR UPDATE"), id).Scan(&status, &puCode, &electionID, &submitterID); err != nil {
 		tx.Rollback()
 		writeError(w, 404, "Result not found")
+		return
+	}
+	// R5-044: state tenancy applies to validation too — a State-A collation
+	// officer must not validate State-B results (previously tenancy was only
+	// enforced on submit + incident create).
+	if !enforceStateTenancy(w, r, user, puCode) {
+		tx.Rollback()
+		logAudit("RESULT_VALIDATE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "outside_state_tenancy", "polling_unit": puCode})
+		return
+	}
+	// R5-044 four-eyes: the officer who SUBMITTED a result may not also
+	// validate it — a single identity must never run the pipeline alone.
+	if submitterID.Valid && int(submitterID.Int64) == uid {
+		tx.Rollback()
+		logAudit("RESULT_VALIDATE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "separation_of_duties", "detail": "submitter cannot validate own result"})
+		writeError(w, 403, "separation of duties: the submitting officer cannot validate the same result")
 		return
 	}
 	if !canTransition(status, "validated") {
@@ -912,13 +986,37 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 
 	var status, puCode string
 	var electionID int
+	var submitterID sql.NullInt64
 	var tbTransferID sql.NullString
 	// R5-034: the row lock is unconditional — the deployment target is
 	// PostgreSQL (usePostgres is compile-fixed true), and skipping the lock
 	// under any configuration re-opens the double-finalize race.
-	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=? FOR UPDATE"
-	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &tbTransferID); err != nil {
+	query := "SELECT status, polling_unit_code, election_id, presiding_officer_id, tigerbeetle_transfer_id FROM results WHERE id=? FOR UPDATE"
+	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &submitterID, &tbTransferID); err != nil {
 		writeError(w, http.StatusNotFound, "Result not found")
+		return
+	}
+	// R5-044: state tenancy on finalize (previously enforced only on submit
+	// + incident create) — a State-A officer must not finalize State-B
+	// results.
+	if !enforceStateTenancy(w, r, user, puCode) {
+		logAudit("RESULT_FINALIZE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "outside_state_tenancy", "polling_unit": puCode})
+		return
+	}
+	// R5-044 four-eyes: the finalizer must be a DIFFERENT identity than both
+	// the submitter and the validator — a single admin identity previously
+	// ran submit→validate→finalize alone.
+	if submitterID.Valid && int(submitterID.Int64) == uid {
+		logAudit("RESULT_FINALIZE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "separation_of_duties", "detail": "submitter cannot finalize own result"})
+		writeError(w, http.StatusForbidden, "separation of duties: the submitting officer cannot finalize the same result")
+		return
+	}
+	var validatorID int
+	if err := dbReadQueryRow(r.Context(),
+		"SELECT COALESCE(user_id, 0) FROM audit_log WHERE action='RESULT_VALIDATED' AND entity_type='result' AND entity_id=? ORDER BY id DESC LIMIT 1",
+		id).Scan(&validatorID); err == nil && validatorID != 0 && validatorID == uid {
+		logAudit("RESULT_FINALIZE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "separation_of_duties", "detail": "validator cannot finalize the same result"})
+		writeError(w, http.StatusForbidden, "separation of duties: the validating officer cannot finalize the same result")
 		return
 	}
 	if !canTransition(status, "finalized") {
@@ -986,7 +1084,10 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
-	user, err := requireRole(r, "admin", "observer")
+	// R5-043: presiding officers MAY dispute — but only a result at their
+	// own assigned polling unit (enforced below via enforceOfficerPUBinding),
+	// so the genuine PO can challenge a fraudulent first submission.
+	user, err := requireRole(r, "admin", "observer", "presiding_officer")
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
@@ -1004,6 +1105,42 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := claimUserID(user)
 
+	// R5-045: disputes flip results to 'disputed' and block finalization —
+	// an anonymous self-registered observer could mass-dispute every result
+	// (collation DoS). Observers must therefore supply a justification and
+	// are quota-limited per hour (env-tunable); every attempt is audited.
+	var reqBody struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&reqBody) // optional body; reason validated below for observers
+	}
+	if userRole == "observer" {
+		if strings.TrimSpace(reqBody.Reason) == "" {
+			writeError(w, http.StatusBadRequest, "observers must supply a dispute reason")
+			return
+		}
+		quota := 5
+		if v := os.Getenv("OBSERVER_DISPUTE_QUOTA_PER_HOUR"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				quota = n
+			}
+		}
+		var recentDisputes int
+		if err := dbReadQueryRow(r.Context(),
+			"SELECT COUNT(*) FROM audit_log WHERE action='RESULT_DISPUTED' AND user_id=? AND created_at > NOW() - INTERVAL '1 hour'",
+			uid).Scan(&recentDisputes); err != nil {
+			log.Error().Err(err).Int("user_id", uid).Msg("SECURITY: dispute quota check failed (fail closed)")
+			writeError(w, http.StatusInternalServerError, "failed to verify dispute quota")
+			return
+		}
+		if recentDisputes >= quota {
+			logAudit("RESULT_DISPUTE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "observer_quota_exceeded", "quota_per_hour": quota})
+			writeError(w, http.StatusTooManyRequests, "dispute quota exceeded; escalate through your accreditation channel")
+			return
+		}
+	}
+
 	tx, err := db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "database transaction error")
@@ -1017,6 +1154,15 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=? FOR UPDATE"
 	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &tbTransferID); err != nil {
 		writeError(w, http.StatusNotFound, "Result not found")
+		return
+	}
+	// R5-044: state tenancy on disputes as well (was submit-only).
+	if !enforceStateTenancy(w, r, user, puCode) {
+		logAudit("RESULT_DISPUTE_REJECTED", "result", id, uid, map[string]interface{}{"reason": "outside_state_tenancy", "polling_unit": puCode})
+		return
+	}
+	// R5-043: a presiding officer may dispute only at their assigned PU.
+	if !enforceOfficerPUBinding(w, r, user, electionID, puCode) {
 		return
 	}
 	if !canTransition(status, "disputed") {
@@ -1055,7 +1201,7 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to commit dispute")
 		return
 	}
-	logAudit("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"phase": "Dispute", "polling_unit": puCode})
+	logAudit("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"phase": "Dispute", "polling_unit": puCode, "role": userRole, "reason": reqBody.Reason})
 	go broadcastWS(M{"type": "result_updated", "result_id": id})
 	go publishResultEvent(TopicResultDisputed, idInt, puCode, electionID, uid, map[string]interface{}{"phase": "Dispute"})
 	go publishAuditEvent("RESULT_DISPUTED", "result", id, uid, map[string]interface{}{"polling_unit": puCode})
@@ -1944,6 +2090,62 @@ func enforceStateTenancy(w http.ResponseWriter, r *http.Request, user jwt.MapCla
 		return false
 	}
 	return true
+}
+
+// enforceOfficerPUBinding (R5-043) binds presiding officers to their
+// assigned polling unit(s) from election_staff_assignments — state-level
+// tenancy alone let a malicious PO submit a false result for a rival PU in
+// their state, and first-writer-wins then locked out the genuine officer.
+// Hierarchy-aware: a polling_unit/ward/lga/state/national assignment that
+// CONTAINS the PU counts. Behavior:
+//   - non-presiding_officer roles: no-op (other controls apply);
+//   - matching active assignment: allow;
+//   - election has PU-level assignment data but none covers this officer/PU:
+//     DENY (403) and audit;
+//   - election has NO PU-level assignments at all: the registry has not been
+//     populated for this election — the control is unenforceable, so degrade
+//     to state tenancy with a loud warning log (never silently).
+// Query errors fail closed (500).
+func enforceOfficerPUBinding(w http.ResponseWriter, r *http.Request, user jwt.MapClaims, electionID int, puCode string) bool {
+	role, _ := user["role"].(string)
+	if role != "presiding_officer" {
+		return true
+	}
+	uid := claimUserID(user)
+	var covering int
+	err := dbReadQueryRow(r.Context(), `SELECT COUNT(*) FROM election_staff_assignments esa
+		WHERE esa.election_id=? AND esa.user_id=? AND esa.status IN ('assigned','deployed','active') AND (
+			esa.area_type='national'
+			OR (esa.area_type='polling_unit' AND esa.area_code=?)
+			OR (esa.area_type='ward' AND esa.area_code=(SELECT ward_code FROM polling_units WHERE code=?))
+			OR (esa.area_type='lga' AND esa.area_code=(SELECT w.lga_code FROM polling_units pu JOIN wards w ON w.code=pu.ward_code WHERE pu.code=?))
+			OR (esa.area_type='state' AND esa.area_code=(SELECT l.state_code FROM polling_units pu JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code WHERE pu.code=?))
+		)`, electionID, uid, puCode, puCode, puCode, puCode).Scan(&covering)
+	if err != nil {
+		log.Error().Err(err).Int("election_id", electionID).Str("pu", puCode).Msg("SECURITY: staff-assignment lookup failed (fail closed)")
+		writeError(w, 500, "failed to verify officer assignment")
+		return false
+	}
+	if covering > 0 {
+		return true
+	}
+	var electionHasPUAssignments int
+	if err := dbReadQueryRow(r.Context(),
+		"SELECT COUNT(*) FROM election_staff_assignments WHERE election_id=? AND area_type='polling_unit' AND status IN ('assigned','deployed','active')",
+		electionID).Scan(&electionHasPUAssignments); err != nil {
+		log.Error().Err(err).Int("election_id", electionID).Msg("SECURITY: assignment-registry probe failed (fail closed)")
+		writeError(w, 500, "failed to verify officer assignment")
+		return false
+	}
+	if electionHasPUAssignments == 0 {
+		log.Warn().Int("election_id", electionID).Int("user_id", uid).Str("pu", puCode).
+			Msg("SECURITY: election has no PU-level staff assignments — officer PU binding unenforceable, degraded to state tenancy")
+		return true
+	}
+	logAudit("RESULT_SUBMIT_REJECTED", "result", puCode, uid,
+		map[string]interface{}{"reason": "officer_not_assigned_to_pu", "election_id": electionID})
+	writeError(w, 403, "forbidden: you are not assigned to this polling unit for this election")
+	return false
 }
 
 // ── Incidents ──

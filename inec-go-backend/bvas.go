@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog/log"
 )
 
 // ── BVAS Device Registry & Accreditation ──
@@ -337,8 +338,16 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "verification_id (server-side biometric verification record) required")
 		return
 	}
-	var verifyResult string
-	verifyErr := db.QueryRow("SELECT result FROM biometric_verifications WHERE id=?", req.VerificationID).Scan(&verifyResult)
+	// R5-049(b): the verification record is bound to THIS election (and PU,
+	// when recorded) and is single-use — previously any verification_id with
+	// result='match' could be replayed to accredit arbitrary PVCs.
+	var verifyResult, verifyVIN string
+	var verifyElection sql.NullInt64
+	var verifyPUCode sql.NullString
+	var consumedAt sql.NullTime
+	verifyErr := db.QueryRow(`SELECT result, voter_vin, election_id, polling_unit_code, consumed_at
+		FROM biometric_verifications WHERE id=?`, req.VerificationID).
+		Scan(&verifyResult, &verifyVIN, &verifyElection, &verifyPUCode, &consumedAt)
 	if verifyErr == sql.ErrNoRows {
 		writeError(w, 403, "no server-side biometric verification on file; accreditation refused")
 		return
@@ -351,6 +360,20 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "biometric verification did not result in a match; accreditation refused")
 		return
 	}
+	if consumedAt.Valid {
+		auditWrite("BVAS_ACCREDITATION_REJECTED", "bvas_accreditation", "0", r, map[string]interface{}{"reason": "verification_replay", "verification_id": req.VerificationID})
+		writeError(w, 409, "biometric verification already consumed; a fresh verification is required per accreditation")
+		return
+	}
+	if verifyElection.Valid && verifyElection.Int64 != 0 && int(verifyElection.Int64) != req.ElectionID {
+		writeError(w, 403, "biometric verification belongs to a different election; accreditation refused")
+		return
+	}
+	if verifyPUCode.Valid && verifyPUCode.String != "" && verifyPUCode.String != req.PollingUnitCode {
+		writeError(w, 403, "biometric verification belongs to a different polling unit; accreditation refused")
+		return
+	}
+	_ = verifyVIN // retained for future VIN↔PVC registry linkage
 	// Server-attested values; the client-supplied flags are ignored.
 	biometricMatch := true
 	pvcVerified := true
@@ -377,30 +400,78 @@ func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fix #9: Geofence validation for BVAS accreditation
-	if req.DeviceLat != nil && req.DeviceLng != nil {
-		geoResult, err := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
-		if err == nil && geoResult != nil && !geoResult.WithinGeofence {
-			writeError(w, 403, fmt.Sprintf("Geofence violation: BVAS device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
-			return
-		}
+	// R5-040/W2-handoff: geofence validation for BVAS accreditation is
+	// MANDATORY and FAIL-CLOSED — previously a missing location or a
+	// geofence service error silently passed (fail-open), so a device
+	// anywhere could accredit voters at any polling unit.
+	if req.DeviceLat == nil || req.DeviceLng == nil {
+		writeError(w, 400, "device location (device_lat, device_lng) is required for accreditation")
+		return
+	}
+	geoResult, geoErr := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
+	if geoErr != nil {
+		auditWrite("BVAS_ACCREDITATION_REJECTED", "bvas_accreditation", "0", r, map[string]interface{}{"reason": "geofence_unavailable", "error": geoErr.Error()})
+		writeError(w, 403, "Geofence validation failed (fail-closed): "+geoErr.Error())
+		return
+	}
+	if geoResult != nil && !geoResult.WithinGeofence {
+		auditWrite("BVAS_ACCREDITATION_REJECTED", "bvas_accreditation", "0", r, map[string]interface{}{"reason": "geofence_violation", "distance_m": geoResult.DistanceMeters})
+		writeError(w, 403, fmt.Sprintf("Geofence violation: BVAS device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
+		return
 	}
 
 	h := sha256.Sum256([]byte(req.VoterPVCNumber))
 	pvcHash := hex.EncodeToString(h[:])
 
+	// R5-049(a): the duplicate check is election-wide (cross-PU), matching
+	// the UNIQUE(voter_pvc_hash, election_id) index — one voter, one
+	// accreditation per election, not one per polling unit.
 	var dupCount int
-	db.QueryRow("SELECT COUNT(*) FROM bvas_accreditations WHERE voter_pvc_hash=? AND election_id=? AND polling_unit_code=?",
-		pvcHash, req.ElectionID, req.PollingUnitCode).Scan(&dupCount)
+	db.QueryRow("SELECT COUNT(*) FROM bvas_accreditations WHERE voter_pvc_hash=? AND election_id=?",
+		pvcHash, req.ElectionID).Scan(&dupCount)
 	if dupCount > 0 {
-		writeError(w, 400, "Voter already accredited at this polling unit")
+		auditWrite("BVAS_ACCREDITATION_REJECTED", "bvas_accreditation", "0", r, map[string]interface{}{"reason": "duplicate_accreditation", "pu_code": req.PollingUnitCode})
+		writeError(w, 409, "Voter already accredited in this election")
 		return
 	}
 
-	lid := insertReturningID(db, `INSERT INTO bvas_accreditations (device_id, election_id, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, synced_at)
+	// R5-049(b): atomically consume the verification as part of the
+	// accreditation transaction — a concurrent replay loses the race.
+	tx, txErr := db.BeginTx(r.Context(), nil)
+	if txErr != nil {
+		writeError(w, 500, "database transaction failed")
+		return
+	}
+	defer tx.Rollback()
+	res, consumeErr := tx.ExecContext(r.Context(), convertPlaceholders(
+		"UPDATE biometric_verifications SET consumed_at=CURRENT_TIMESTAMP WHERE id=? AND consumed_at IS NULL"),
+		req.VerificationID)
+	if consumeErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "biometric verification service unavailable; accreditation refused")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		auditWrite("BVAS_ACCREDITATION_REJECTED", "bvas_accreditation", "0", r, map[string]interface{}{"reason": "verification_replay_race", "verification_id": req.VerificationID})
+		writeError(w, 409, "biometric verification already consumed; a fresh verification is required per accreditation")
+		return
+	}
+
+	lid, insertErr := integrityInsertReturningID(r.Context(), tx, `INSERT INTO bvas_accreditations (device_id, election_id, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, synced_at)
 		VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`,
 		req.DeviceID, req.ElectionID, req.PollingUnitCode, pvcHash,
 		boolToInt(biometricMatch), boolToInt(pvcVerified), req.Method)
+	if insertErr != nil {
+		// R5-040: persist failures were previously swallowed and the caller
+		// told "accredited". Fail loudly; the verification consumption is
+		// rolled back with the transaction so the voter can retry.
+		log.Error().Err(insertErr).Str("pu", req.PollingUnitCode).Msg("SECURITY: accreditation persist failed")
+		writeError(w, 500, "failed to persist accreditation: "+insertErr.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, 500, "commit failed")
+		return
+	}
 
 	dbExecLog("bvas_device", "UPDATE bvas_devices SET last_sync_at=CURRENT_TIMESTAMP WHERE id=?", req.DeviceID)
 	auditWrite("BVAS_ACCREDITATION", "bvas_accreditation", fmt.Sprintf("%d", lid), r, map[string]interface{}{"device_id": req.DeviceID, "pu_code": req.PollingUnitCode, "biometric_match": biometricMatch, "verification_id": req.VerificationID})

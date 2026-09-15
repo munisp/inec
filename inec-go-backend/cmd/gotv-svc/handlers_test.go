@@ -194,7 +194,8 @@ func TestRBACPermissions(t *testing.T) {
 		{RoleFieldWorker, "canvass", true},
 		{RoleFieldWorker, "campaigns:write", false},
 		{RoleFieldWorker, "vetting:approve", false},
-		{RoleObserver, "export", true},
+		{RoleObserver, "export", false}, // R5-036/H3-20: export dropped from observer/analyst
+		{RoleAnalyst, "export", false},
 		{RoleObserver, "campaigns:write", false},
 		{RoleAnalyst, "scoring", true},
 		{RoleAnalyst, "vetting:approve", false},

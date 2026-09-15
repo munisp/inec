@@ -119,7 +119,45 @@ func (s *Service) Accredit(ctx context.Context, deviceID string, electionID int,
 		return nil, fmt.Errorf("election is '%s' — accreditation only during 'voting'/'active'", electionStatus)
 	}
 
-	// Determine accreditation status
+	// R5-040 device-bound: a BVAS device may only accredit at the polling
+	// unit it is provisioned to. An unprovisioned device (empty PU) fails
+	// closed — it must never accredit anywhere.
+	if device.PollingUnitCode == "" {
+		return nil, fmt.Errorf("device %s is not provisioned to a polling unit", deviceID)
+	}
+	if device.PollingUnitCode != puCode {
+		return nil, fmt.Errorf("device %s is provisioned to polling unit %s, not %s", deviceID, device.PollingUnitCode, puCode)
+	}
+
+	// R5-040: the voter must EXIST and be registered at this polling unit —
+	// previously any VIN string with a client-supplied match_score was
+	// "accredited". Lookup errors fail closed.
+	var voterCount int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM voters WHERE vin=$1 AND polling_unit_code=$2`,
+		voterVIN, puCode).Scan(&voterCount); err != nil {
+		return nil, fmt.Errorf("voter registry unavailable; accreditation refused: %w", err)
+	}
+	if voterCount == 0 {
+		return nil, fmt.Errorf("voter not registered at this polling unit")
+	}
+
+	// R5-040/R5-049: one voter, one accreditation per election (also enforced
+	// by UNIQUE(election_id, voter_vin)); checked first for a clear error.
+	var dupCount int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM bvas_accreditations WHERE election_id=$1 AND voter_vin=$2`,
+		electionID, voterVIN).Scan(&dupCount); err != nil {
+		return nil, fmt.Errorf("accreditation registry unavailable; accreditation refused: %w", err)
+	}
+	if dupCount > 0 {
+		return nil, fmt.Errorf("voter already accredited in this election")
+	}
+
+	// Determine accreditation status. NOTE: the match score itself is
+	// device-asserted — real fingerprint matching is an EXTERNAL dependency;
+	// the server enforces every control around it (device/PU/voter/election
+	// binding, dedupe, persistence integrity) and records the claimed score.
 	status := "rejected"
 	if matchScore >= 0.75 {
 		status = "accredited"
@@ -137,15 +175,28 @@ func (s *Service) Accredit(ctx context.Context, deviceID string, electionID int,
 		Timestamp:       time.Now(),
 	}
 
-	// Persist
-	s.db.ExecContext(ctx,
-		`INSERT INTO bvas_accreditations (id, device_id, election_id, voter_vin, polling_unit_code, biometric_match, match_score, status, timestamp)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		result.ID, result.DeviceID, result.ElectionID, result.VoterVIN,
-		result.PollingUnitCode, result.BiometricMatch, result.MatchScore, result.Status, result.Timestamp)
+	// R5-040: persist errors were previously DISCARDED — failed writes still
+	// returned "accredited", making accreditation counts unfalsifiable. A
+	// failed INSERT (incl. a duplicate-key race) now fails the request.
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO bvas_accreditations (device_id, election_id, voter_vin, polling_unit_code, voter_pvc_hash, biometric_match, pvc_verified, method, accredited_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'biometric', $8)`,
+		result.DeviceID, result.ElectionID, result.VoterVIN,
+		result.PollingUnitCode, "vin:"+result.VoterVIN,
+		boolToInt(result.BiometricMatch), boolToInt(result.BiometricMatch), result.Timestamp); err != nil {
+		log.Error().Err(err).Str("device", deviceID).Str("vin", voterVIN).Msg("SECURITY: accreditation persist failed")
+		return nil, fmt.Errorf("failed to persist accreditation: %w", err)
+	}
 
 	log.Info().Str("device", deviceID).Str("vin", voterVIN).Str("status", status).Msg("Accreditation completed")
 	return result, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // FleetStats returns device fleet statistics.
