@@ -1090,7 +1090,7 @@ func handleLaunchCampaign(w http.ResponseWriter, r *http.Request) {
 	if totalContacts == 0 {
 		var targetState sql.NullString
 		svc.DB.QueryRow("SELECT target_state FROM gotv_campaigns WHERE campaign_id=$1", id).Scan(&targetState)
-		countQuery := "SELECT COUNT(*) FROM gotv_contacts WHERE party_id=$1 AND (opted_out IS NULL OR opted_out=FALSE) AND consent_id IS NOT NULL"
+		countQuery := "SELECT COUNT(*) FROM gotv_contacts c WHERE c.party_id=$1 AND (c.opted_out IS NULL OR c.opted_out=FALSE) AND EXISTS (SELECT 1 FROM gotv_consent_records cr WHERE cr.consent_id = c.consent_id AND cr.status='active')"
 		var countArgs []interface{}
 		countArgs = append(countArgs, pid)
 		if targetState.Valid && targetState.String != "" {
@@ -1206,15 +1206,65 @@ func handleListContacts(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]interface{}{"contacts": contacts, "total": len(contacts)})
 }
 
+// consentInput is the structured consent proof accepted at contact
+// creation/import (R5-096). Every consent_id linked to a contact must have a
+// corresponding gotv_consent_records row with channel/purpose/legal_basis/
+// timestamp/recorder — NDPR consent must be provable, not self-asserted.
+type consentInput struct {
+	Channel    string `json:"channel"`
+	Purpose    string `json:"purpose"`
+	LegalBasis string `json:"legal_basis"`
+	ProofRef   string `json:"proof_ref"`
+}
+
+// recordConsent creates (or verifies) the consent record for consentID and
+// returns the consent_id to link, or an error. A structured input generates a
+// fresh server-side consent_id; a bare legacy consent_id gets an honestly
+// labelled caller-asserted record so the link is always backed by a row.
+func recordConsent(partyID int, contactID, consentID string, in *consentInput, channel, recordedBy string) (string, error) {
+	if in != nil {
+		if strings.TrimSpace(in.Channel) == "" || strings.TrimSpace(in.LegalBasis) == "" {
+			return "", fmt.Errorf("consent.channel and consent.legal_basis are required")
+		}
+		purpose := strings.TrimSpace(in.Purpose)
+		if purpose == "" {
+			purpose = "campaign_outreach"
+		}
+		consentID = "gotv-consent-" + uuid.New().String()[:12]
+		_, err := svc.DB.Exec(
+			`INSERT INTO gotv_consent_records (consent_id, party_id, contact_id, channel, purpose, legal_basis, proof_ref, recorded_by)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			consentID, partyID, nullStr(contactID), in.Channel, purpose, in.LegalBasis, nullStr(in.ProofRef), recordedBy)
+		if err != nil {
+			return "", err
+		}
+		return consentID, nil
+	}
+	if strings.TrimSpace(consentID) == "" {
+		return "", nil
+	}
+	// Legacy free-text consent id: back it with a caller-asserted record
+	// (idempotent — the same id may be submitted for many contacts).
+	if _, err := svc.DB.Exec(
+		`INSERT INTO gotv_consent_records (consent_id, party_id, contact_id, channel, purpose, legal_basis, recorded_by)
+		 VALUES ($1,$2,$3,$4,'campaign_outreach','self_asserted',$5)
+		 ON CONFLICT (consent_id) DO NOTHING`,
+		consentID, partyID, nullStr(contactID), channel, recordedBy); err != nil {
+		return "", err
+	}
+	return consentID, nil
+}
+
 func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	pid, user := getParty(r)
 	var req struct {
-		Phone     string   `json:"phone"`
-		FullName  string   `json:"full_name"`
-		StateCode string   `json:"state_code"`
-		LGACode   string   `json:"lga_code"`
-		ConsentID string   `json:"consent_id"`
-		Tags      []string `json:"tags"`
+		Phone     string        `json:"phone"`
+		FullName  string        `json:"full_name"`
+		StateCode string        `json:"state_code"`
+		LGACode   string        `json:"lga_code"`
+		ConsentID string        `json:"consent_id"`
+		Consent   *consentInput `json:"consent"`
+		Tags      []string      `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, "invalid json", http.StatusBadRequest)
@@ -1243,11 +1293,17 @@ func handleCreateContact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contactID := "gotv-contact-" + uuid.New().String()[:8]
+	consentID, err := recordConsent(pid, contactID, req.ConsentID, req.Consent, "manual_create", user)
+	if err != nil {
+		jsonErr(w, "invalid consent: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	_, err = svc.DB.Exec(
 		`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, tags, consent_id)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		contactID, pid, phoneEnc, pHash, nameEnc, nullStr(req.StateCode), nullStr(req.LGACode),
-		pq.StringArray(req.Tags), nullStr(req.ConsentID),
+		pq.StringArray(req.Tags), nullStr(consentID),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
@@ -1361,10 +1417,24 @@ func handleImportContacts(w http.ResponseWriter, r *http.Request) {
 			lgaCode = sql.NullString{String: strings.TrimSpace(record[lc]), Valid: true}
 		}
 
+		// R5-096: bulk imports must create a provable consent record per
+		// consent id (channel csv_import, caller-asserted basis) before linking;
+		// rows without a consent column stay consent-less and unreachable by
+		// dispatch, which is the NDPR-safe default.
+		var consentID string
+		if cc, ok := colMap["consent_id"]; ok && len(record) > cc {
+			cid, cErr := recordConsent(pid, contactID, strings.TrimSpace(record[cc]), nil, "csv_import", user)
+			if cErr != nil {
+				skipped++
+				continue
+			}
+			consentID = cid
+		}
+
 		_, err = svc.DB.Exec(
-			`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (party_id, phone_hash) DO NOTHING`,
-			contactID, pid, phoneEnc, pHash, nameEnc, stateCode, lgaCode,
+			`INSERT INTO gotv_contacts (contact_id, party_id, phone_encrypted, phone_hash, full_name_encrypted, state_code, lga_code, consent_id)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (party_id, phone_hash) DO NOTHING`,
+			contactID, pid, phoneEnc, pHash, nameEnc, stateCode, lgaCode, nullStr(consentID),
 		)
 		if err != nil {
 			skipped++
@@ -1461,6 +1531,14 @@ func handleOptOut(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "contact not found", http.StatusNotFound)
 		return
 	}
+	// R5-096: opt-out must propagate to the consent ledger — the linked
+	// consent record is withdrawn so dispatch eligibility (which now requires
+	// an ACTIVE consent record) excludes the contact everywhere, not just via
+	// the opted_out flag.
+	svc.DB.Exec(
+		`UPDATE gotv_consent_records SET status='withdrawn', withdrawn_at=NOW()
+		 WHERE status='active' AND consent_id = (SELECT consent_id FROM gotv_contacts WHERE contact_id=$1 AND party_id=$2)`,
+		id, pid)
 	svc.Audit(pid, user, "opt_out", "contact", id)
 	jsonResp(w, map[string]interface{}{"opted_out": true})
 }
