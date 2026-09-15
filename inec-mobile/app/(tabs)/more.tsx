@@ -23,6 +23,7 @@ const MENU_SECTIONS: { title: string; items: MenuItem[] }[] = [
     items: [
       { id: 'elections', title: 'Elections', subtitle: 'View active elections', icon: 'podium-outline', color: '#166534', bg: '#dcfce7', route: '/elections' },
       { id: 'results', title: 'Results & Collation', subtitle: 'Live results by state and LGA', icon: 'bar-chart-outline', color: '#2563eb', bg: '#dbeafe', route: '/results' },
+      { id: 'result-capture', title: 'Result Capture', subtitle: 'Capture EC8A results (offline-first)', icon: 'create-outline', color: '#166534', bg: '#dcfce7', route: '/result-capture' },
       { id: 'voters', title: 'Voter Search', subtitle: 'Look up registered voters', icon: 'people-outline', color: '#0d9488', bg: '#ccfbf1', route: '/voter-search' },
     ],
   },
