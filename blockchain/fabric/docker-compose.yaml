@@ -165,6 +165,7 @@ services:
     ports:
       - "9051:9051"
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
       - ./organizations/peerOrganizations/observers.inec.gov.ng/peers/peer0.observers.inec.gov.ng/msp:/etc/hyperledger/fabric/msp
       - ./organizations/peerOrganizations/observers.inec.gov.ng/peers/peer0.observers.inec.gov.ng/tls:/etc/hyperledger/fabric/tls
     depends_on: [couchdb1]
