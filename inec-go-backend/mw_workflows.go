@@ -104,9 +104,10 @@ func runCollationInline(ctx context.Context, electionID int, wardCode string) {
 		return
 	}
 
-	// Persist collation result
-	dbExecLog("collation_save", "INSERT INTO collation_results (election_id, level, code, total_votes, status, collated_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
-		electionID, "ward", wardCode, result.TotalVotes, "collated")
+	// Persist collation result via the canonical rollup write path (R5-015).
+	if err := persistCollationRollup(ctx, electionID, "ward", wardCode); err != nil {
+		log.Error().Err(err).Str("ward", wardCode).Msg("inline collation persist failed")
+	}
 
 	// Publish event
 	if mwHub != nil && mwHub.Kafka != nil {

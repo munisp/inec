@@ -389,11 +389,11 @@ func handleElectionStats(w http.ResponseWriter, r *http.Request) {
 
 	var validV, rejectedV, castV, accreditedV sql.NullInt64
 	dbQueryRowCtx(r.Context(), `SELECT SUM(total_valid_votes), SUM(rejected_votes), SUM(total_votes_cast), SUM(accredited_voters)
-		FROM results WHERE election_id=? AND status IN ('finalized','validated')`, eid).Scan(&validV, &rejectedV, &castV, &accreditedV)
+		FROM results WHERE election_id=? AND status = 'finalized'`, eid).Scan(&validV, &rejectedV, &castV, &accreditedV)
 
 	rows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, SUM(rps.votes) as total_votes
 		FROM result_party_scores rps JOIN results r ON r.id=rps.result_id JOIN parties p ON p.code=rps.party_code
-		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code, p.name, p.color ORDER BY total_votes DESC`, eid)
+		WHERE r.election_id=? AND r.status = 'finalized' GROUP BY rps.party_code, p.name, p.color ORDER BY total_votes DESC`, eid)
 	partyScores := scanRows(rows)
 
 	comp := 0.0
@@ -476,6 +476,10 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		RejectedVotes    int      `json:"rejected_votes"`
 		DeviceLat        *float64 `json:"device_lat"`
 		DeviceLng        *float64 `json:"device_lng"`
+		DeviceAccuracy   *float64 `json:"device_accuracy"`
+		DeviceID         string   `json:"device_id"`
+		IdempotencyKey   string   `json:"idempotency_key"`
+		OverrideReason   string   `json:"override_reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid JSON body")
@@ -486,24 +490,105 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Geofence validation — if device location provided, enforce proximity to polling unit
-	if req.DeviceLat != nil && req.DeviceLng != nil {
-		geoResult, err := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
-		if err == nil && geoResult != nil && !geoResult.WithinGeofence {
-			writeError(w, 403, fmt.Sprintf("Geofence violation: device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
+	userSub, _ := user["sub"].(string)
+	userID, _ := strconv.Atoi(userSub)
+
+	// R5-025: client-supplied idempotency key — a retry of a committed
+	// submission returns the original result instead of a duplicate error.
+	if req.IdempotencyKey != "" {
+		var existingID int64
+		var existingStatus string
+		if err := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE idempotency_key=?", req.IdempotencyKey).Scan(&existingID, &existingStatus); err == nil {
+			writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
 			return
 		}
 	}
 
-	var eExists int
-	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM elections WHERE id=? AND status='active'", req.ElectionID).Scan(&eExists)
-	if eExists == 0 {
-		writeError(w, 400, "Election not found or not active")
+	// R5-024: fail-closed geofencing — device location is mandatory, the PU
+	// must have configured coordinates, and service errors block submission.
+	if req.DeviceLat == nil || req.DeviceLng == nil {
+		writeError(w, 400, "device location (device_lat, device_lng) is required for result submission")
 		return
+	}
+	geoResult, err := validateGeofence(*req.DeviceLat, *req.DeviceLng, req.PollingUnitCode)
+	if err != nil {
+		writeError(w, 403, "Geofence validation failed (fail-closed): "+err.Error())
+		return
+	}
+	if geoResult != nil && !geoResult.WithinGeofence {
+		writeError(w, 403, fmt.Sprintf("Geofence violation: device is %.0fm from polling unit (allowed: %dm)", geoResult.DistanceMeters, geoResult.AllowedRadiusM))
+		return
+	}
+	// Anti-spoof plausibility: impossible travel from the device's last known
+	// position blocks the submission (R5-024).
+	spoofKey := req.DeviceID
+	if spoofKey == "" {
+		spoofKey = fmt.Sprintf("user-%d", userID)
+	}
+	if mwHub != nil && mwHub.Redis != nil {
+		// Accuracy is optional sensor data: absent means "not reported" (-1,
+		// no accuracy-based scoring); an explicit 0 stays a mock indicator.
+		accuracy := -1.0
+		if req.DeviceAccuracy != nil {
+			accuracy = *req.DeviceAccuracy
+		}
+		current := &GPSTrackPoint{Lat: *req.DeviceLat, Lng: *req.DeviceLng, Timestamp: time.Now(), Accuracy: accuracy}
+		var previous *GPSTrackPoint
+		if prevJSON, gerr := mwHub.Redis.Get(r.Context(), "gps:last:"+spoofKey); gerr == nil && prevJSON != "" {
+			previous = &GPSTrackPoint{}
+			if json.Unmarshal([]byte(prevJSON), previous) != nil {
+				previous = nil
+			}
+		}
+		if analysis := analyzeGPSSpoofing(current, previous, nil); analysis.IsSpoofed {
+			logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
+				map[string]interface{}{"reason": "gps_spoofing", "indicators": analysis.Indicators, "election_id": req.ElectionID})
+			writeError(w, 403, "GPS spoofing detected: "+fmt.Sprintf("%v", analysis.Indicators))
+			return
+		}
+		data, _ := json.Marshal(current)
+		mwHub.Redis.Set(r.Context(), "gps:last:"+spoofKey, string(data), 12*time.Hour)
+	}
+
+	// R5-012: results are accepted while the election is open for capture —
+	// i.e. in 'active' (pre-poll-open operational window) or 'voting' (polls
+	// officially opened via the FSM). R5-018: rerun/supplementary elections
+	// additionally restrict submissions to their declared scope.
+	var elStatus, elKind string
+	if err := dbQueryRowCtx(r.Context(), "SELECT status, election_kind FROM elections WHERE id=?", req.ElectionID).Scan(&elStatus, &elKind); err != nil {
+		writeError(w, 400, "Election not found")
+		return
+	}
+	if elStatus != "active" && elStatus != "voting" {
+		writeError(w, 400, fmt.Sprintf("Election not open for result capture (status: %s)", elStatus))
+		return
+	}
+	if elKind != "general" {
+		inScope, scopeErr := puInRerunScope(r.Context(), req.ElectionID, req.PollingUnitCode)
+		if scopeErr != nil {
+			writeError(w, 500, "failed to verify rerun scope")
+			return
+		}
+		if !inScope {
+			writeError(w, 403, "polling unit is not in the declared scope of this "+elKind+" election")
+			return
+		}
 	}
 	var regVoters int
 	if err := dbQueryRowCtx(r.Context(), "SELECT registered_voters FROM polling_units WHERE code=?", req.PollingUnitCode).Scan(&regVoters); err != nil {
 		writeError(w, 400, "Polling unit not found")
+		return
+	}
+	// R5-023: accredited voters are cross-checked against BVAS accreditation
+	// records when the PU used BVAS — self-declared figures above the
+	// BVAS-verified count are rejected (anti-overvoting linkage).
+	var bvasAccredited int
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM bvas_accreditations WHERE election_id=? AND polling_unit_code=?",
+		req.ElectionID, req.PollingUnitCode).Scan(&bvasAccredited)
+	if bvasAccredited > 0 && req.AccreditedVoters > bvasAccredited {
+		logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
+			map[string]interface{}{"reason": "accredited_exceeds_bvas", "declared": req.AccreditedVoters, "bvas_verified": bvasAccredited, "election_id": req.ElectionID})
+		writeError(w, 422, fmt.Sprintf("accredited_voters (%d) exceeds BVAS-verified accreditations (%d) for this polling unit", req.AccreditedVoters, bvasAccredited))
 		return
 	}
 	// State-level tenancy: officers may only submit results for polling units
@@ -511,10 +596,16 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	if !enforceStateTenancy(w, r, user, req.PollingUnitCode) {
 		return
 	}
+	// Duplicate guard considers only canonical results — superseded/voided
+	// rows are history and never block a correction or re-capture (R5-016).
 	var dupCheck int
-	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND polling_unit_code=?", req.ElectionID, req.PollingUnitCode).Scan(&dupCheck)
+	dbQueryRowCtx(r.Context(), "SELECT COUNT(*) FROM results WHERE election_id=? AND polling_unit_code=? AND status NOT IN ('superseded','voided')", req.ElectionID, req.PollingUnitCode).Scan(&dupCheck)
 	if dupCheck > 0 {
-		writeError(w, 400, "Result already submitted for this polling unit")
+		// R5-016: rejected conflicting submissions are audit-logged — a
+		// malicious duplicate attempt must be visible in the trail.
+		logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
+			map[string]interface{}{"reason": "duplicate_submission", "election_id": req.ElectionID, "party_scores": req.PartyScores})
+		writeError(w, 409, "Result already submitted for this polling unit; use the correction flow to amend it")
 		return
 	}
 	totalValid := 0
@@ -536,14 +627,26 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		TotalValidVotes:  totalValid,
 		PartyResults:     partyEntries,
 	}
-	if violations := ValidateEC8A(ec8aForm); len(violations) > 0 {
-		writeError(w, 400, fmt.Sprintf("EC8A validation failed: %s", strings.Join(violations, "; ")))
-		return
+	// R5-017: hard validation failures are rejectable, but an authorized
+	// officer may record an anomalous-but-real PU (e.g. >95% turnout or an
+	// overvoted PU that procedure requires be captured-then-reviewed) by
+	// supplying an override reason. Overrides are audit-logged and the result
+	// is flagged disputed for mandatory review — never silently accepted.
+	violations := ValidateEC8A(ec8aForm)
+	overridden := false
+	if len(violations) > 0 {
+		softOverride := req.OverrideReason != "" && !hasHardViolation(violations)
+		if softOverride {
+			overridden = true
+			logAudit("RESULT_SUBMIT_OVERRIDE", "result", req.PollingUnitCode, userID,
+				map[string]interface{}{"violations": violations, "override_reason": req.OverrideReason, "election_id": req.ElectionID})
+		} else {
+			writeError(w, 400, fmt.Sprintf("EC8A validation failed: %s", strings.Join(violations, "; ")))
+			return
+		}
 	}
 
 	ec8aHash := computeEC8AHash(req.ElectionID, req.PollingUnitCode, partyEntries, req.AccreditedVoters, req.RejectedVotes)
-	userSub, _ := user["sub"].(string)
-	userID, _ := strconv.Atoi(userSub)
 
 	userRole, _ := user["role"].(string)
 	if !checkPermission(userRole, "submit_result") {
@@ -567,18 +670,36 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	// pre-check. A unique violation follows the existing duplicate semantics
 	// — the result is already recorded — reported as 409 Conflict instead of
 	// a 500 (insertReturningID previously swallowed the error, returning 0).
+	// Overridden results enter as 'disputed' so collation officers must review
+	// the anomaly before the figures can count (R5-017 flag-for-review path).
+	initialStatus := "pending"
+	if overridden {
+		initialStatus = "disputed"
+	}
 	var resultID int64
 	err = tx.QueryRowContext(r.Context(), convertPlaceholders(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
 		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
-		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`),
-		req.ElectionID, req.PollingUnitCode, userID, "pending",
+		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status, idempotency_key, correction_reason)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`),
+		req.ElectionID, req.PollingUnitCode, userID, initialStatus,
 		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
-		ec8aHash, nil, "NOT_APPLICABLE", "PENDING").Scan(&resultID)
+		ec8aHash, nil, "NOT_APPLICABLE", "PENDING", nilIfEmpty(req.IdempotencyKey), nilIfEmpty(req.OverrideReason)).Scan(&resultID)
 	if err != nil {
 		tx.Rollback()
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			writeError(w, http.StatusConflict, "Result already submitted for this polling unit")
+			// Unique-violation on idempotency key = committed retry; on
+			// (election, PU) = a canonical result already exists.
+			if req.IdempotencyKey != "" {
+				var existingID int64
+				var existingStatus string
+				if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE idempotency_key=?", req.IdempotencyKey).Scan(&existingID, &existingStatus); qerr == nil {
+					writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
+					return
+				}
+			}
+			logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
+				map[string]interface{}{"reason": "duplicate_submission_race", "election_id": req.ElectionID})
+			writeError(w, http.StatusConflict, "Result already submitted for this polling unit; use the correction flow to amend it")
 			return
 		}
 		log.Error().Err(err).Int("election_id", req.ElectionID).Str("pu", req.PollingUnitCode).Msg("result insert failed")
@@ -665,7 +786,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	invalidateCollationCache(req.ElectionID)
 
-	writeJSON(w, 200, M{"id": resultID, "status": "pending", "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "message": "Result submitted. Proceeding to Edge Validation."})
+	writeJSON(w, 200, M{"id": resultID, "status": initialStatus, "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "overridden": overridden, "message": "Result submitted. Proceeding to Edge Validation."})
 }
 
 func handleValidateResult(w http.ResponseWriter, r *http.Request) {
@@ -792,10 +913,10 @@ func handleFinalizeResult(w http.ResponseWriter, r *http.Request) {
 	var status, puCode string
 	var electionID int
 	var tbTransferID sql.NullString
-	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=?"
-	if usePostgres {
-		query += " FOR UPDATE"
-	}
+	// R5-034: the row lock is unconditional — the deployment target is
+	// PostgreSQL (usePostgres is compile-fixed true), and skipping the lock
+	// under any configuration re-opens the double-finalize race.
+	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=? FOR UPDATE"
 	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &tbTransferID); err != nil {
 		writeError(w, http.StatusNotFound, "Result not found")
 		return
@@ -892,10 +1013,8 @@ func handleDisputeResult(w http.ResponseWriter, r *http.Request) {
 	var status, puCode string
 	var electionID int
 	var tbTransferID sql.NullString
-	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=?"
-	if usePostgres {
-		query += " FOR UPDATE"
-	}
+	// R5-034: unconditional row lock (see handleFinalizeResult).
+	query := "SELECT status, polling_unit_code, election_id, tigerbeetle_transfer_id FROM results WHERE id=? FOR UPDATE"
 	if err := tx.QueryRowContext(r.Context(), convertPlaceholders(query), idInt).Scan(&status, &puCode, &electionID, &tbTransferID); err != nil {
 		writeError(w, http.StatusNotFound, "Result not found")
 		return
@@ -965,6 +1084,11 @@ func handleListResults(w http.ResponseWriter, r *http.Request) {
 		JOIN states s ON s.code=l.state_code
 		WHERE r.election_id=?`
 	params := []interface{}{eid}
+	// R5-016: reads return canonical results only; superseded history is
+	// available explicitly via include_superseded=1.
+	if r.URL.Query().Get("include_superseded") != "1" {
+		q += " AND r.status <> 'superseded'"
+	}
 	if status != "" {
 		q += " AND r.status=?"
 		params = append(params, status)
@@ -1132,7 +1256,7 @@ func handleMapData(w http.ResponseWriter, r *http.Request) {
 		AVG(pu.latitude) as avg_lat, AVG(pu.longitude) as avg_lng
 		FROM states s LEFT JOIN lgas l ON l.state_code=s.code
 		LEFT JOIN wards w ON w.lga_code=l.code LEFT JOIN polling_units pu ON pu.ward_code=w.code
-		LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
+		LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status = 'finalized'
 		GROUP BY s.code, s.name, s.geo_zone, s.capital ORDER BY s.name`, eid)
 	states := scanRows(stRows)
 
@@ -1406,11 +1530,11 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 
 	var validV, rejectedV, castV, accreditedV sql.NullInt64
 	dbQueryRowCtx(r.Context(), `SELECT SUM(total_valid_votes), SUM(rejected_votes), SUM(total_votes_cast), SUM(accredited_voters)
-		FROM results WHERE election_id=? AND status IN ('finalized','validated')`, eid).Scan(&validV, &rejectedV, &castV, &accreditedV)
+		FROM results WHERE election_id=? AND status = 'finalized'`, eid).Scan(&validV, &rejectedV, &castV, &accreditedV)
 
 	psRows, _ := dbQueryCtx(r.Context(), `SELECT rps.party_code, p.name as party_name, p.color, p.abbreviation, SUM(rps.votes) as total_votes
 		FROM result_party_scores rps JOIN results r ON r.id=rps.result_id JOIN parties p ON p.code=rps.party_code
-		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY rps.party_code, p.name, p.color, p.abbreviation ORDER BY total_votes DESC`, eid)
+		WHERE r.election_id=? AND r.status = 'finalized' GROUP BY rps.party_code, p.name, p.color, p.abbreviation ORDER BY total_votes DESC`, eid)
 	partyScores := scanRows(psRows)
 
 	srRows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone, COUNT(r.id) as results_count, SUM(r.total_valid_votes) as total_votes
@@ -1427,7 +1551,7 @@ func handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 	zRows, _ := dbQueryCtx(r.Context(), `SELECT s.geo_zone, SUM(r.total_valid_votes) as total_votes, COUNT(r.id) as results_count
 		FROM results r JOIN polling_units pu ON pu.code=r.polling_unit_code
 		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code JOIN states s ON s.code=l.state_code
-		WHERE r.election_id=? AND r.status IN ('finalized','validated') GROUP BY s.geo_zone`, eid)
+		WHERE r.election_id=? AND r.status = 'finalized' GROUP BY s.geo_zone`, eid)
 	zoneResults := scanRows(zRows)
 
 	comp := 0.0
@@ -1487,7 +1611,7 @@ func collationPartyScoresBatch(ctx context.Context, groupCol string, groupCodes 
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 			JOIN lgas l ON l.code=w.lga_code JOIN parties p ON p.code=rps.party_code
-			WHERE l.state_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
+			WHERE l.state_code IN (%s) AND res.election_id=? AND res.status = 'finalized'
 			GROUP BY l.state_code, rps.party_code, p.abbreviation, p.color ORDER BY l.state_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	case "lga_code":
@@ -1495,14 +1619,14 @@ func collationPartyScoresBatch(ctx context.Context, groupCol string, groupCodes 
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN wards w ON w.code=pu.ward_code
 			JOIN parties p ON p.code=rps.party_code
-			WHERE w.lga_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
+			WHERE w.lga_code IN (%s) AND res.election_id=? AND res.status = 'finalized'
 			GROUP BY w.lga_code, rps.party_code, p.abbreviation, p.color ORDER BY w.lga_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	case "ward_code":
 		q = fmt.Sprintf(`SELECT pu.ward_code as group_code, rps.party_code, p.abbreviation, p.color, SUM(rps.votes) as total_votes
 			FROM result_party_scores rps JOIN results res ON res.id=rps.result_id
 			JOIN polling_units pu ON pu.code=res.polling_unit_code JOIN parties p ON p.code=rps.party_code
-			WHERE pu.ward_code IN (%s) AND res.election_id=? AND res.status IN ('finalized','validated')
+			WHERE pu.ward_code IN (%s) AND res.election_id=? AND res.status = 'finalized'
 			GROUP BY pu.ward_code, rps.party_code, p.abbreviation, p.color ORDER BY pu.ward_code, total_votes DESC`,
 			strings.Join(placeholders, ","))
 	default:
@@ -1543,6 +1667,23 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch level {
+	case "national":
+		// R5-014: national rollup exists and uses the same canonical semantics.
+		nat, err := collateNational(r.Context(), eid)
+		if err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		payload := []M{{
+			"code": "NG", "name": "Federal Republic of Nigeria",
+			"total_pus": nat.TotalPUs, "reported_pus": nat.ChildCount,
+			"total_valid_votes": nat.TotalVotes, "disputed_pus": nat.DisputedPUs,
+			"status_counts": nat.StatusCounts, "party_scores": nat.PartyTotals,
+		}}
+		w.Header().Set("X-Cache", "MISS")
+		cacheSet(cacheKey, payload, 15*time.Second)
+		writeJSON(w, 200, payload)
+
 	case "state":
 		rows, _ := dbQueryCtx(r.Context(), `SELECT s.code, s.name, s.geo_zone,
 			COUNT(DISTINCT pu.code) as total_pus, COUNT(DISTINCT r.id) as reported_pus,
@@ -1550,7 +1691,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			SUM(r.total_votes_cast) as total_votes_cast
 			FROM states s LEFT JOIN lgas l ON l.state_code=s.code LEFT JOIN wards w ON w.lga_code=l.code
 			LEFT JOIN polling_units pu ON pu.ward_code=w.code
-			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
+			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status = 'finalized'
 			GROUP BY s.code, s.name, s.geo_zone, s.capital ORDER BY s.name`, eid)
 		results := scanRows(rows)
 		codes := make([]string, len(results))
@@ -1576,7 +1717,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			SUM(r.total_valid_votes) as total_valid_votes, SUM(r.rejected_votes) as rejected_votes,
 			SUM(r.total_votes_cast) as total_votes_cast
 			FROM lgas l LEFT JOIN wards w ON w.lga_code=l.code LEFT JOIN polling_units pu ON pu.ward_code=w.code
-			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
+			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status = 'finalized'
 			WHERE l.state_code=? GROUP BY l.code, l.name ORDER BY l.name`, eid, parentCode)
 		results := scanRows(rows)
 		codes := make([]string, len(results))
@@ -1602,7 +1743,7 @@ func handleCollation(w http.ResponseWriter, r *http.Request) {
 			SUM(r.total_valid_votes) as total_valid_votes, SUM(r.rejected_votes) as rejected_votes,
 			SUM(r.total_votes_cast) as total_votes_cast
 			FROM wards w LEFT JOIN polling_units pu ON pu.ward_code=w.code
-			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status IN ('finalized','validated')
+			LEFT JOIN results r ON r.polling_unit_code=pu.code AND r.election_id=? AND r.status = 'finalized'
 			WHERE w.lga_code=? GROUP BY w.code, w.name ORDER BY w.name`, eid, parentCode)
 		results := scanRows(rows)
 		codes := make([]string, len(results))

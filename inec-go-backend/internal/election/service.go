@@ -14,27 +14,35 @@ import (
 // State represents an election's lifecycle state.
 type State string
 
+// R5-013: ONE canonical lifecycle vocabulary shared with the monolith FSM
+// (election_fsm.go) and the elections_status_check constraint. The old
+// preparation/accreditation/collation states violated the DB CHECK and every
+// transition failed; they map to active/voting/collating respectively.
 const (
-	StateDraft         State = "draft"
-	StateScheduled     State = "scheduled"
-	StatePreparation   State = "preparation"
-	StateAccreditation State = "accreditation"
-	StateVoting        State = "voting"
-	StateCollation     State = "collation"
-	StateDeclared      State = "declared"
-	StateSuspended     State = "suspended"
-	StateCancelled     State = "cancelled"
+	StateDraft      State = "draft"
+	StateScheduled  State = "scheduled"
+	StateActive     State = "active"
+	StateVoting     State = "voting"
+	StateCollating  State = "collating"
+	StateClosed     State = "closed"
+	StateDeclared   State = "declared"
+	StateSuspended  State = "suspended"
+	StateCancelled  State = "cancelled"
+	StateDisputed   State = "disputed"
+	StatePostponed  State = "postponed"
 )
 
 // ValidTransitions defines the allowed state machine transitions.
 var ValidTransitions = map[State][]State{
-	StateDraft:         {StateScheduled, StateCancelled},
-	StateScheduled:     {StatePreparation, StateSuspended, StateCancelled},
-	StatePreparation:   {StateAccreditation, StateSuspended},
-	StateAccreditation: {StateVoting, StateSuspended},
-	StateVoting:        {StateCollation, StateSuspended},
-	StateCollation:     {StateDeclared, StateSuspended},
-	StateSuspended:     {StateVoting, StateCollation, StateCancelled},
+	StateDraft:     {StateScheduled, StateCancelled},
+	StateScheduled: {StateActive, StatePostponed, StateSuspended, StateCancelled},
+	StatePostponed: {StateScheduled, StateCancelled},
+	StateActive:    {StateVoting, StateSuspended, StateCancelled},
+	StateVoting:    {StateCollating, StateSuspended},
+	StateCollating: {StateClosed, StateSuspended},
+	StateClosed:    {StateDeclared, StateDisputed},
+	StateDisputed:  {StateClosed},
+	StateSuspended: {StateActive, StateVoting, StateCollating, StateCancelled},
 }
 
 // Election represents a single election.
@@ -182,12 +190,21 @@ func (s *Service) Transition(ctx context.Context, electionID int, targetState St
 		return fmt.Errorf("invalid transition: %s -> %s", election.State, targetState)
 	}
 
-	// Execute transition
+	// Execute transition — serialize concurrent transitions on the row lock.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	var locked string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status FROM elections WHERE id = $1 FOR UPDATE`, electionID).Scan(&locked); err != nil {
+		return fmt.Errorf("election not found")
+	}
+	if State(locked) != election.State {
+		return fmt.Errorf("concurrent transition: election is now %s", locked)
+	}
 
 	_, err = tx.ExecContext(ctx,
 		`UPDATE elections SET status = $1, updated_at = NOW() WHERE id = $2`, targetState, electionID)
@@ -204,10 +221,13 @@ func (s *Service) Transition(ctx context.Context, electionID int, targetState St
 		return err
 	}
 
-	// Handle state-specific logic (update timestamp on key transitions)
+	// Handle state-specific logic. Declaration proper (winner computation,
+	// completeness gate, audit) happens through the monolith declare endpoint;
+	// here we at least persist the declaration timestamp instead of the old
+	// no-op double update (R5-011).
 	switch targetState {
-	case StateVoting, StateDeclared:
-		_, _ = tx.ExecContext(ctx, `UPDATE elections SET updated_at = NOW() WHERE id = $1`, electionID)
+	case StateDeclared:
+		_, _ = tx.ExecContext(ctx, `UPDATE elections SET declared_at = COALESCE(declared_at, NOW()) WHERE id = $1`, electionID)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -226,12 +246,21 @@ func (s *Service) SubmitResult(ctx context.Context, result *Result) error {
 	}
 	defer tx.Rollback()
 
+	// Only accept submissions while the election is open for capture (R5-012).
+	var elStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM elections WHERE id = $1 FOR UPDATE`, result.ElectionID).Scan(&elStatus); err != nil {
+		return fmt.Errorf("election not found")
+	}
+	if elStatus != string(StateActive) && elStatus != string(StateVoting) {
+		return fmt.Errorf("election not open for result capture (status: %s)", elStatus)
+	}
+
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO results (election_id, polling_unit_code, state, lga, ward,
-		 total_votes, rejected_votes, accredited_voters, status, submitted_by, submitted_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, NOW())`,
-		result.ElectionID, result.PollingUnitCode, result.State, result.LGA, result.Ward,
-		result.TotalVotes, result.RejectedVotes, result.AccreditedVoters, result.SubmittedBy)
+		`INSERT INTO results (election_id, polling_unit_code,
+		 total_valid_votes, total_votes_cast, rejected_votes, accredited_voters, status, submitted_by, submitted_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, NOW())`,
+		result.ElectionID, result.PollingUnitCode,
+		result.TotalVotes, result.TotalVotes, result.RejectedVotes, result.AccreditedVoters, result.SubmittedBy)
 	if err != nil {
 		return fmt.Errorf("insert result: %w", err)
 	}
@@ -266,10 +295,16 @@ func (s *Service) Stats(ctx context.Context, electionID int) (map[string]interfa
 // ListResults returns all results for an election.
 func (s *Service) ListResults(ctx context.Context, electionID int) ([]Result, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, election_id, polling_unit_code, COALESCE(state,''), COALESCE(lga,''), COALESCE(ward,''),
-		        total_votes, COALESCE(rejected_votes,0), COALESCE(accredited_voters,0),
-		        status, COALESCE(submitted_by,0), submitted_at
-		 FROM results WHERE election_id = $1 ORDER BY submitted_at DESC`, electionID)
+		`SELECT r.id, r.election_id, r.polling_unit_code,
+		        COALESCE(s.name,''), COALESCE(l.name,''), COALESCE(w.name,''),
+		        COALESCE(r.total_votes_cast,0), COALESCE(r.rejected_votes,0), COALESCE(r.accredited_voters,0),
+		        r.status, COALESCE(r.submitted_by,0), r.submitted_at
+		 FROM results r
+		 LEFT JOIN polling_units pu ON pu.code = r.polling_unit_code
+		 LEFT JOIN wards w ON w.code = pu.ward_code
+		 LEFT JOIN lgas l ON l.code = w.lga_code
+		 LEFT JOIN states s ON s.code = l.state_code
+		 WHERE r.election_id = $1 ORDER BY r.submitted_at DESC`, electionID)
 	if err != nil {
 		return nil, err
 	}
@@ -304,10 +339,11 @@ func (s *Service) Collate(ctx context.Context, electionID int) (*CollationSummar
 		summary.Completion = float64(election.ResultsIn) / float64(election.TotalPUs) * 100
 	}
 
-	// Aggregate totals
+	// Aggregate totals — canonical collation semantics (R5-014): only
+	// finalized results count toward official figures.
 	err = s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(total_votes), 0), COALESCE(SUM(rejected_votes), 0)
-		 FROM results WHERE election_id = $1`, electionID).
+		`SELECT COALESCE(SUM(total_votes_cast), 0), COALESCE(SUM(rejected_votes), 0)
+		 FROM results WHERE election_id = $1 AND status = 'finalized'`, electionID).
 		Scan(&summary.TotalVotes, &summary.RejectedVotes)
 	if err != nil {
 		return nil, err
@@ -320,7 +356,7 @@ func (s *Service) Collate(ctx context.Context, electionID int) (*CollationSummar
 		`SELECT rps.party_code, COALESCE(SUM(rps.votes), 0)
 		 FROM result_party_scores rps
 		 JOIN results r ON r.id = rps.result_id
-		 WHERE r.election_id = $1
+		 WHERE r.election_id = $1 AND r.status = 'finalized'
 		 GROUP BY rps.party_code
 		 ORDER BY SUM(rps.votes) DESC`, electionID)
 	if err == nil {

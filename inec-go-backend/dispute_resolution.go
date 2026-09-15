@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -92,6 +93,7 @@ func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ElectionID      int      `json:"election_id" validate:"required"`
 		PollingUnitCode string   `json:"polling_unit_code"`
+		ResultID        *int     `json:"result_id"`
 		Party           string   `json:"party"`
 		Category        string   `json:"category" validate:"required"`
 		Description     string   `json:"description" validate:"required"`
@@ -137,11 +139,24 @@ func handleFileDispute(w http.ResponseWriter, r *http.Request) {
 	username, _ := claims["username"].(string)
 	evidenceJSON, _ := json.Marshal(req.Evidence)
 
+	// R5-020: a dispute may be linked to the specific result it challenges.
+	if req.ResultID != nil {
+		var rElection int
+		if err := db.QueryRow("SELECT election_id FROM results WHERE id=?", *req.ResultID).Scan(&rElection); err != nil {
+			writeError(w, 400, "referenced result not found")
+			return
+		}
+		if rElection != req.ElectionID {
+			writeError(w, 400, "referenced result belongs to a different election")
+			return
+		}
+	}
+
 	result, err := db.Exec(
-		`INSERT INTO disputes (election_id, polling_unit_code, filed_by, party, category, description, evidence, priority)
-		 VALUES (?,?,?,?,?,?,?,?)`,
+		`INSERT INTO disputes (election_id, polling_unit_code, filed_by, party, category, description, evidence, priority, result_id)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
 		req.ElectionID, req.PollingUnitCode, username, req.Party, req.Category,
-		req.Description, string(evidenceJSON), priority,
+		req.Description, string(evidenceJSON), priority, req.ResultID,
 	)
 	if err != nil {
 		writeError(w, 500, "failed to file dispute")
@@ -172,7 +187,7 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 	status := queryParam(r, "status", "")
 	priority := queryParam(r, "priority", "")
 
-	query := "SELECT id, election_id, COALESCE(polling_unit_code,''), filed_by, COALESCE(party,''), category, description, COALESCE(evidence,'[]'), status, COALESCE(assigned_to,''), COALESCE(resolution,''), COALESCE(resolved_by,''), filed_at, COALESCE(resolved_at,filed_at), priority FROM disputes WHERE 1=1"
+	query := "SELECT id, election_id, COALESCE(polling_unit_code,''), filed_by, COALESCE(party,''), category, description, COALESCE(evidence,'[]'), status, COALESCE(assigned_to,''), COALESCE(resolution,''), COALESCE(resolved_by,''), filed_at, COALESCE(resolved_at,filed_at), priority, COALESCE(result_id,0), COALESCE(outcome,'') FROM disputes WHERE 1=1"
 	args := []interface{}{}
 
 	if electionID > 0 {
@@ -198,11 +213,11 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 
 	var disputes []M
 	for rows.Next() {
-		var id, elID int
+		var id, elID, resultID int
 		var puCode, filedBy, party, category, description, evidenceStr, statusStr string
-		var assignedTo, resolution, resolvedBy, filedAt, resolvedAt, prio string
+		var assignedTo, resolution, resolvedBy, filedAt, resolvedAt, prio, outcome string
 		if rows.Scan(&id, &elID, &puCode, &filedBy, &party, &category, &description,
-			&evidenceStr, &statusStr, &assignedTo, &resolution, &resolvedBy, &filedAt, &resolvedAt, &prio) == nil {
+			&evidenceStr, &statusStr, &assignedTo, &resolution, &resolvedBy, &filedAt, &resolvedAt, &prio, &resultID, &outcome) == nil {
 
 			var evidence []string
 			json.Unmarshal([]byte(evidenceStr), &evidence)
@@ -214,6 +229,7 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 				"status": statusStr, "assigned_to": assignedTo,
 				"resolution": resolution, "resolved_by": resolvedBy,
 				"filed_at": filedAt, "resolved_at": resolvedAt, "priority": prio,
+				"result_id": resultID, "outcome": outcome,
 			})
 		}
 	}
@@ -221,7 +237,20 @@ func handleListDisputes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"disputes": disputes, "total": len(disputes)})
 }
 
+// disputeOutcomes is the controlled remediation vocabulary (R5-020).
+var disputeOutcomes = map[string]bool{
+	"upheld":             true, // dispute valid; result stays disputed pending correction
+	"dismissed":          true, // dispute rejected; result restored to its prior status
+	"correction_ordered": true, // result must be corrected via the correction flow
+	"result_annulled":    true, // result voided; PU may be re-captured or re-run
+	"rerun_ordered":      true, // result voided and a rerun/supplementary is required
+}
+
 // handleResolveDispute resolves or escalates a dispute.
+// R5-033: the whole transition runs in one transaction with FOR UPDATE so
+// concurrent resolutions serialize. R5-027: every transition is audit-logged.
+// R5-020: resolution outcomes remediate the linked result (restore, void,
+// or order correction/rerun) instead of leaving figures untouched.
 func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 	claims, err := requireRole(r, "admin")
 	if err != nil {
@@ -234,23 +263,37 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action     string `json:"action" validate:"required"`
 		Resolution string `json:"resolution"`
+		Outcome    string `json:"outcome"`
 		AssignTo   string `json:"assign_to"`
 	}
 	if err := decodeAndValidate(r, &req); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
+	resolvedBy, _ := claims["username"].(string)
+	uid := claimUserID(claims)
 
-	// Verify dispute exists
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeError(w, 500, "database transaction error")
+		return
+	}
+	defer tx.Rollback()
+
 	var currentStatus string
-	err = db.QueryRow("SELECT status FROM disputes WHERE id=?", disputeID).Scan(&currentStatus)
+	var electionID int
+	var resultID sql.NullInt64
+	var puCode sql.NullString
+	err = tx.QueryRowContext(r.Context(),
+		"SELECT status, election_id, result_id, COALESCE(polling_unit_code,'') FROM disputes WHERE id=? FOR UPDATE",
+		disputeID).Scan(&currentStatus, &electionID, &resultID, &puCode)
 	if err != nil {
 		writeError(w, 404, "dispute not found")
 		return
 	}
 
-	resolvedBy, _ := claims["username"].(string)
 	var newStatus DisputeStatus
+	remediation := ""
 
 	switch req.Action {
 	case "review":
@@ -259,8 +302,11 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newStatus = DisputeStatusUnderReview
-		dbExecLog("dispute_review", "UPDATE disputes SET status=?, assigned_to=? WHERE id=?",
-			string(newStatus), req.AssignTo, disputeID)
+		if _, err := tx.ExecContext(r.Context(), "UPDATE disputes SET status=?, assigned_to=? WHERE id=?",
+			string(newStatus), req.AssignTo, disputeID); err != nil {
+			writeError(w, 500, "failed to update dispute")
+			return
+		}
 
 	case "escalate":
 		if currentStatus != string(DisputeStatusUnderReview) && currentStatus != string(DisputeStatusFiled) {
@@ -268,50 +314,124 @@ func handleResolveDispute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newStatus = DisputeStatusEscalated
-		dbExecLog("dispute_escalate", "UPDATE disputes SET status=?, assigned_to=? WHERE id=?",
-			string(newStatus), req.AssignTo, disputeID)
-
-	case "resolve":
-		if req.Resolution == "" {
-			writeError(w, 400, "resolution is required when resolving a dispute")
+		if _, err := tx.ExecContext(r.Context(), "UPDATE disputes SET status=?, assigned_to=? WHERE id=?",
+			string(newStatus), req.AssignTo, disputeID); err != nil {
+			writeError(w, 500, "failed to update dispute")
 			return
 		}
-		newStatus = DisputeStatusResolved
-		dbExecLog("dispute_resolve", "UPDATE disputes SET status=?, resolution=?, resolved_by=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?",
-			string(newStatus), req.Resolution, resolvedBy, disputeID)
 
-		// Check if all disputes for this election are resolved — auto-close
-		var electionID int
-		db.QueryRow("SELECT election_id FROM disputes WHERE id=?", disputeID).Scan(&electionID)
+	case "resolve", "dismiss":
+		if currentStatus == string(DisputeStatusResolved) || currentStatus == string(DisputeStatusDismissed) {
+			writeError(w, 409, "dispute is already closed")
+			return
+		}
+		if req.Resolution == "" {
+			writeError(w, 400, "resolution is required when resolving or dismissing a dispute")
+			return
+		}
+		outcome := req.Outcome
+		if outcome == "" {
+			if req.Action == "dismiss" {
+				outcome = "dismissed"
+			} else {
+				outcome = "upheld"
+			}
+		}
+		if !disputeOutcomes[outcome] {
+			writeError(w, 400, fmt.Sprintf("invalid outcome: must be one of upheld, dismissed, correction_ordered, result_annulled, rerun_ordered"))
+			return
+		}
+		if req.Action == "dismiss" && outcome != "dismissed" {
+			writeError(w, 400, "dismiss action requires outcome 'dismissed'")
+			return
+		}
+		if outcome == "dismissed" {
+			newStatus = DisputeStatusDismissed
+		} else {
+			newStatus = DisputeStatusResolved
+		}
+
+		// Remediate the linked result (R5-020): re-sync results.status with
+		// the dispute outcome — never leave a result stranded in 'disputed'.
+		if resultID.Valid {
+			var rStatus string
+			var validatedAt sql.NullTime
+			if err := tx.QueryRowContext(r.Context(),
+				"SELECT status, validated_at FROM results WHERE id=? FOR UPDATE", resultID.Int64).
+				Scan(&rStatus, &validatedAt); err == nil {
+				switch outcome {
+				case "dismissed":
+					// Restore the result to its pre-dispute status.
+					if rStatus == "disputed" {
+						restore := "pending"
+						if validatedAt.Valid {
+							restore = "validated"
+						}
+						if _, err := tx.ExecContext(r.Context(), "UPDATE results SET status=? WHERE id=?", restore, resultID.Int64); err == nil {
+							remediation = "result_restored_to_" + restore
+						}
+					}
+				case "result_annulled", "rerun_ordered":
+					// Annul: result becomes voided history; the PU can be
+					// re-captured or included in a rerun scope.
+					if rStatus != "superseded" && rStatus != "voided" {
+						if _, err := tx.ExecContext(r.Context(), "UPDATE results SET status='voided' WHERE id=?", resultID.Int64); err == nil {
+							remediation = "result_voided"
+							logAudit("RESULT_ANNULLED", "result", fmt.Sprintf("%d", resultID.Int64), uid, map[string]interface{}{
+								"dispute_id": disputeID, "outcome": outcome, "prior_status": rStatus,
+							})
+						}
+					}
+				case "correction_ordered":
+					remediation = "correction_required"
+				case "upheld":
+					remediation = "result_remains_disputed"
+				}
+			}
+		}
+
+		if _, err := tx.ExecContext(r.Context(),
+			"UPDATE disputes SET status=?, resolution=?, outcome=?, resolved_by=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?",
+			string(newStatus), req.Resolution, outcome, resolvedBy, disputeID); err != nil {
+			writeError(w, 500, "failed to update dispute")
+			return
+		}
+
+		// When the last dispute closes, the election may proceed to
+		// declaration — log it so operators know the path is clear.
 		var openDisputes int
-		db.QueryRow("SELECT COUNT(*) FROM disputes WHERE election_id=? AND status NOT IN ('resolved','dismissed')", electionID).Scan(&openDisputes)
+		tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM disputes WHERE election_id=? AND status NOT IN ('resolved','dismissed')", electionID).Scan(&openDisputes)
 		if openDisputes == 0 {
 			log.Info().Int("election_id", electionID).Msg("all disputes resolved, election can be finalized")
 		}
-
-	case "dismiss":
-		if req.Resolution == "" {
-			writeError(w, 400, "resolution is required when dismissing a dispute")
-			return
-		}
-		newStatus = DisputeStatusDismissed
-		dbExecLog("dispute_dismiss", "UPDATE disputes SET status=?, resolution=?, resolved_by=?, resolved_at=CURRENT_TIMESTAMP WHERE id=?",
-			string(newStatus), req.Resolution, resolvedBy, disputeID)
 
 	default:
 		writeError(w, 400, "action must be: review, escalate, resolve, or dismiss")
 		return
 	}
 
+	if err := tx.Commit(); err != nil {
+		writeError(w, 500, "failed to commit dispute transition")
+		return
+	}
+
+	// R5-027: dispute lifecycle transitions are part of the tamper-evident trail.
+	logAudit("DISPUTE_"+strings.ToUpper(req.Action), "dispute", disputeID, uid, map[string]interface{}{
+		"election_id": electionID, "from_status": currentStatus, "to_status": string(newStatus),
+		"resolution": req.Resolution, "outcome": req.Outcome, "remediation": remediation,
+		"result_id": resultID.Int64, "polling_unit_code": puCode.String,
+	})
+
 	dispatchWebhook("dispute.updated", M{
 		"dispute_id": disputeID, "action": req.Action, "new_status": string(newStatus),
 	})
 
 	writeJSON(w, 200, M{
-		"dispute_id": disputeID,
-		"status":     string(newStatus),
-		"action":     req.Action,
-		"message":    fmt.Sprintf("Dispute %s successfully", req.Action+"d"),
+		"dispute_id":  disputeID,
+		"status":      string(newStatus),
+		"action":      req.Action,
+		"remediation": remediation,
+		"message":     fmt.Sprintf("Dispute %s successfully", req.Action+"d"),
 	})
 }
 

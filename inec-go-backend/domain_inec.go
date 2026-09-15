@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -234,6 +235,182 @@ func handleSubmitEC8A(w http.ResponseWriter, r *http.Request) {
 
 // --- Hierarchical Collation ---
 
+// R5-014: ONE canonical collation semantics for the whole platform.
+// Official collation totals count ONLY finalized results. Disputed results
+// are excluded from totals and reported separately; pending/validated
+// results are provisional progress, never part of official figures.
+// Rerun/supplementary child elections contribute their scoped finalized
+// results, replacing the parent result for any PU they cover (INEC
+// supplementary-election semantics: rerun results merge into parent totals).
+//
+// Every collation path (hierarchical API, dashboard collation, evidence
+// bundle builder, election-svc, persisted rollups) must use
+// canonicalResultsCTE / canonicalPartyTotals — never a hand-rolled filter.
+const canonicalResultStatus = "finalized"
+
+// canonicalResultsCTE is the shared SQL fragment computing, for election $1,
+// the canonical per-PU result set: the parent's own finalized results plus
+// scoped finalized results of rerun/supplementary/by-election children
+// (child result replaces the parent result for the same PU).
+const canonicalResultsCTE = `
+WITH child_elections AS (
+	SELECT id FROM elections
+	WHERE parent_election_id = $1 AND election_kind IN ('rerun','supplementary','by_election') AND status <> 'cancelled'
+),
+scoped_pus AS (
+	SELECT rs.election_id AS child_id, pu.code AS pu_code
+	FROM rerun_scopes rs JOIN child_elections ce ON ce.id = rs.election_id
+	JOIN polling_units pu ON rs.scope_type = 'polling_unit' AND pu.code = rs.area_code
+	UNION
+	SELECT rs.election_id, pu.code
+	FROM rerun_scopes rs JOIN child_elections ce ON ce.id = rs.election_id
+	JOIN polling_units pu ON rs.scope_type = 'ward' AND pu.ward_code = rs.area_code
+	UNION
+	SELECT rs.election_id, pu.code
+	FROM rerun_scopes rs JOIN child_elections ce ON ce.id = rs.election_id
+	JOIN wards ww ON rs.scope_type = 'lga' AND ww.lga_code = rs.area_code
+	JOIN polling_units pu ON pu.ward_code = ww.code
+),
+child_results AS (
+	SELECT sp.pu_code, r.id AS result_id
+	FROM scoped_pus sp
+	JOIN results r ON r.election_id = sp.child_id AND r.polling_unit_code = sp.pu_code AND r.status = '` + canonicalResultStatus + `'
+),
+parent_results AS (
+	SELECT r.polling_unit_code AS pu_code, r.id AS result_id
+	FROM results r
+	WHERE r.election_id = $1 AND r.status = '` + canonicalResultStatus + `'
+	  AND NOT EXISTS (SELECT 1 FROM child_results cr WHERE cr.pu_code = r.polling_unit_code)
+),
+canonical AS (
+	SELECT pu_code, result_id FROM parent_results
+	UNION ALL
+	SELECT pu_code, result_id FROM child_results
+)`
+
+// collationGeoFilter maps a collation level to the SQL predicate restricting
+// polling units to the requested area. $2 is the area code.
+func collationGeoFilter(level string) (string, error) {
+	switch level {
+	case "ward":
+		return "pu.ward_code = $2", nil
+	case "lga":
+		return "w.lga_code = $2", nil
+	case "state":
+		return "l.state_code = $2", nil
+	case "national":
+		return "TRUE", nil
+	}
+	return "", fmt.Errorf("invalid collation level: must be ward, lga, state, or national")
+}
+
+// canonicalPartyTotals computes official party totals for an election at a
+// geographic level using the canonical semantics (finalized only, rerun
+// children merged). Returns party totals, total votes, and PU count.
+func canonicalPartyTotals(ctx context.Context, electionID int, level, areaCode string) (map[string]int64, int64, int, error) {
+	filter, err := collationGeoFilter(level)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	q := canonicalResultsCTE + `
+SELECT rps.party_code, COALESCE(SUM(rps.votes),0) AS total, COUNT(DISTINCT c.pu_code) AS pu_count
+FROM canonical c
+JOIN result_party_scores rps ON rps.result_id = c.result_id
+JOIN polling_units pu ON pu.code = c.pu_code
+JOIN wards w ON w.code = pu.ward_code
+JOIN lgas l ON l.code = w.lga_code
+WHERE ` + filter + `
+GROUP BY rps.party_code`
+	args := []interface{}{electionID}
+	if level != "national" {
+		args = append(args, areaCode)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	defer rows.Close()
+	totals := map[string]int64{}
+	var totalVotes int64
+	puCount := 0
+	for rows.Next() {
+		var party string
+		var total int64
+		var cnt int
+		if err := rows.Scan(&party, &total, &cnt); err != nil {
+			return nil, 0, 0, err
+		}
+		totals[party] = total
+		totalVotes += total
+		puCount = cnt
+	}
+	return totals, totalVotes, puCount, rows.Err()
+}
+
+// resultStatusCounts returns per-status PU counts for an election at a level
+// (provisional progress + disputed flagging, reported alongside totals).
+func resultStatusCounts(ctx context.Context, electionID int, level, areaCode string) (map[string]int, int, error) {
+	filter, err := collationGeoFilter(level)
+	if err != nil {
+		return nil, 0, err
+	}
+	q := `SELECT COALESCE(r.status,'none'), COUNT(DISTINCT pu.code)
+	FROM polling_units pu
+	JOIN wards w ON w.code = pu.ward_code
+	JOIN lgas l ON l.code = w.lga_code
+	LEFT JOIN results r ON r.polling_unit_code = pu.code AND r.election_id = $1 AND r.status <> 'superseded'
+	WHERE ` + filter + `
+	GROUP BY COALESCE(r.status,'none')`
+	args := []interface{}{electionID}
+	if level != "national" {
+		args = append(args, areaCode)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	total := 0
+	for rows.Next() {
+		var st string
+		var cnt int
+		if err := rows.Scan(&st, &cnt); err != nil {
+			return nil, 0, err
+		}
+		counts[st] += cnt
+		total += cnt
+	}
+	return counts, total, rows.Err()
+}
+
+// electionChildIDs returns IDs of active rerun/supplementary child elections.
+func electionChildIDs(ctx context.Context, electionID int) []int {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id FROM elections WHERE parent_election_id = $1 AND election_kind IN ('rerun','supplementary','by_election') AND status <> 'cancelled'`, electionID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// electionIDsWithChildren returns electionID plus its rerun/supplementary
+// children — the set of elections whose submissions belong to this contest.
+func electionIDsWithChildren(ctx context.Context, electionID int) []int {
+	ids := append([]int{electionID}, electionChildIDs(ctx, electionID)...)
+	// A rerun election itself also rolls up into its parent, but when queried
+	// directly it reports only its own scope.
+	return ids
+}
+
 type CollationLevel struct {
 	Level       string           `json:"level"`
 	Code        string           `json:"code"`
@@ -241,9 +418,14 @@ type CollationLevel struct {
 	PartyTotals map[string]int64 `json:"party_totals"`
 	TotalVotes  int64            `json:"total_votes"`
 	ChildCount  int              `json:"child_count"`
-	Status      string           `json:"status"`
-	CollatedAt  string           `json:"collated_at"`
-	CollatedBy  string           `json:"collated_by"`
+	// R5-014: provisional progress and disputed PUs are reported separately
+	// from the official (finalized-only) totals.
+	StatusCounts map[string]int   `json:"status_counts"`
+	TotalPUs     int              `json:"total_pus"`
+	DisputedPUs  int              `json:"disputed_pus"`
+	Status       string           `json:"status"`
+	CollatedAt   string           `json:"collated_at"`
+	CollatedBy   string           `json:"collated_by"`
 }
 
 // handleHierarchicalCollation performs collation at ward → LGA → state → national levels.
@@ -277,93 +459,261 @@ func handleHierarchicalCollation(w http.ResponseWriter, r *http.Request) {
 }
 
 func collateWard(ctx context.Context, electionID int, wardCode string) (*CollationLevel, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code) as pu_count
-		 FROM results r
-		 JOIN result_party_scores rps ON rps.result_id = r.id
-		 JOIN polling_units pu ON r.polling_unit_code = pu.code
-		 WHERE r.election_id = $1 AND pu.ward_code = $2 AND r.status IN ('pending','validated')
-		 GROUP BY rps.party_code`, electionID, wardCode)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return buildCollation("ward", wardCode, rows)
+	return collateLevel(ctx, electionID, "ward", wardCode)
 }
 
 func collateLGA(ctx context.Context, electionID int, lgaCode string) (*CollationLevel, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code)
-		 FROM results r
-		 JOIN result_party_scores rps ON rps.result_id = r.id
-		 JOIN polling_units pu ON r.polling_unit_code = pu.code
-		 JOIN wards w ON pu.ward_code = w.code
-		 WHERE r.election_id = $1 AND w.lga_code = $2 AND r.status IN ('pending','validated')
-		 GROUP BY rps.party_code`, electionID, lgaCode)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return buildCollation("lga", lgaCode, rows)
+	return collateLevel(ctx, electionID, "lga", lgaCode)
 }
 
 func collateState(ctx context.Context, electionID int, stateCode string) (*CollationLevel, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code)
-		 FROM results r
-		 JOIN result_party_scores rps ON rps.result_id = r.id
-		 JOIN polling_units pu ON r.polling_unit_code = pu.code
-		 JOIN wards w ON pu.ward_code = w.code
-		 JOIN lgas l ON w.lga_code = l.code
-		 WHERE r.election_id = $1 AND l.state_code = $2 AND r.status IN ('pending','validated')
-		 GROUP BY rps.party_code`, electionID, stateCode)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return buildCollation("state", stateCode, rows)
+	return collateLevel(ctx, electionID, "state", stateCode)
 }
 
 func collateNational(ctx context.Context, electionID int) (*CollationLevel, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT rps.party_code, SUM(rps.votes) as total, COUNT(DISTINCT r.polling_unit_code)
-		 FROM results r
-		 JOIN result_party_scores rps ON rps.result_id = r.id
-		 WHERE r.election_id = $1 AND r.status IN ('pending','validated')
-		 GROUP BY rps.party_code`, electionID)
+	return collateLevel(ctx, electionID, "national", "NG")
+}
+
+// collateLevel is the single canonical collation computation (R5-014):
+// finalized results only, rerun children merged, disputed flagged separately.
+func collateLevel(ctx context.Context, electionID int, level, areaCode string) (*CollationLevel, error) {
+	partyTotals, totalVotes, puCount, err := canonicalPartyTotals(ctx, electionID, level, areaCode)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return buildCollation("national", "NG", rows)
+	counts, totalPUs, err := resultStatusCounts(ctx, electionID, level, areaCode)
+	if err != nil {
+		return nil, err
+	}
+	status := "in_progress"
+	if totalPUs > 0 && counts[canonicalResultStatus] >= totalPUs-counts["voided"] {
+		status = "completed"
+	}
+	if counts["disputed"] > 0 {
+		status = "disputed"
+	}
+	return &CollationLevel{
+		Level:        level,
+		Code:         areaCode,
+		PartyTotals:  partyTotals,
+		TotalVotes:   totalVotes,
+		ChildCount:   puCount,
+		StatusCounts: counts,
+		TotalPUs:     totalPUs,
+		DisputedPUs:  counts["disputed"],
+		Status:       status,
+		CollatedAt:   time.Now().UTC().Format(time.RFC3339),
+	}, nil
 }
 
-func buildCollation(level, code string, rows *sql.Rows) (*CollationLevel, error) {
-	partyTotals := make(map[string]int64)
-	var totalVotes int64
-	childCount := 0
+// --- Persisted collation rollups (R5-015) ---
 
-	for rows.Next() {
-		var party string
-		var total int64
-		var puCount int
-		if err := rows.Scan(&party, &total, &puCount); err != nil {
-			continue
+// collationAreaName resolves the display name for a collation area.
+func collationAreaName(ctx context.Context, level, areaCode string) string {
+	var name string
+	var q string
+	switch level {
+	case "ward":
+		q = "SELECT name FROM wards WHERE code=$1"
+	case "lga":
+		q = "SELECT name FROM lgas WHERE code=$1"
+	case "state":
+		q = "SELECT name FROM states WHERE code=$1"
+	default:
+		return "Federal"
+	}
+	if err := db.QueryRowContext(ctx, q, areaCode).Scan(&name); err != nil {
+		return areaCode
+	}
+	return name
+}
+
+// persistCollationRollup computes the canonical collation for (level, area)
+// and durably upserts it into collation_results + collation_party_scores.
+// This is the freeze point sign-off and the LGA→state→national write path.
+func persistCollationRollup(ctx context.Context, electionID int, level, areaCode string) error {
+	if _, err := collationGeoFilter(level); err != nil {
+		return err
+	}
+	c, err := collateLevel(ctx, electionID, level, areaCode)
+	if err != nil {
+		return err
+	}
+	// Registered/accredited/cast aggregates for the area.
+	var registered, accredited, cast, rejected int64
+	filter, _ := collationGeoFilter(level)
+	aggQ := canonicalResultsCTE + `
+SELECT COALESCE(SUM(pu.registered_voters),0), COALESCE(SUM(r.accredited_voters),0),
+       COALESCE(SUM(r.total_votes_cast),0), COALESCE(SUM(r.rejected_votes),0)
+FROM canonical c
+JOIN results r ON r.id = c.result_id
+JOIN polling_units pu ON pu.code = c.pu_code
+JOIN wards w ON w.code = pu.ward_code
+JOIN lgas l ON l.code = w.lga_code
+WHERE ` + filter
+	aggArgs := []interface{}{electionID}
+	if level != "national" {
+		aggArgs = append(aggArgs, areaCode)
+	}
+	if err := db.QueryRowContext(ctx, aggQ, aggArgs...).Scan(&registered, &accredited, &cast, &rejected); err != nil {
+		return err
+	}
+	// Total registered voters covers ALL PUs in the area, not just reported ones.
+	var areaRegistered int64
+	regQ := `SELECT COALESCE(SUM(pu.registered_voters),0) FROM polling_units pu
+		JOIN wards w ON w.code = pu.ward_code JOIN lgas l ON l.code = w.lga_code WHERE ` +
+		strings.Replace(filter, "$2", "$1", 1)
+	if level == "national" {
+		if err := db.QueryRowContext(ctx, regQ).Scan(&areaRegistered); err == nil {
+			registered = areaRegistered
 		}
-		partyTotals[party] = total
-		totalVotes += total
-		childCount = puCount
+	} else if err := db.QueryRowContext(ctx, regQ, areaCode).Scan(&areaRegistered); err == nil {
+		registered = areaRegistered
 	}
 
-	return &CollationLevel{
-		Level:       level,
-		Code:        code,
-		PartyTotals: partyTotals,
-		TotalVotes:  totalVotes,
-		ChildCount:  childCount,
-		Status:      "collated",
-		CollatedAt:  time.Now().UTC().Format(time.RFC3339),
-	}, nil
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var collationID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO collation_results (election_id, level, area_code, area_name,
+			total_registered_voters, total_accredited_voters, total_valid_votes,
+			total_rejected_votes, total_votes_cast, polling_units_reported,
+			polling_units_total, status, last_updated)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CURRENT_TIMESTAMP)
+		ON CONFLICT (election_id, level, area_code) DO UPDATE SET
+			area_name = EXCLUDED.area_name,
+			total_registered_voters = EXCLUDED.total_registered_voters,
+			total_accredited_voters = EXCLUDED.total_accredited_voters,
+			total_valid_votes = EXCLUDED.total_valid_votes,
+			total_rejected_votes = EXCLUDED.total_rejected_votes,
+			total_votes_cast = EXCLUDED.total_votes_cast,
+			polling_units_reported = EXCLUDED.polling_units_reported,
+			polling_units_total = EXCLUDED.polling_units_total,
+			status = EXCLUDED.status,
+			last_updated = CURRENT_TIMESTAMP
+		RETURNING id`,
+		electionID, level, areaCode, collationAreaName(ctx, level, areaCode),
+		registered, accredited, c.TotalVotes, rejected, cast,
+		c.ChildCount, c.TotalPUs, c.Status).Scan(&collationID)
+	if err != nil {
+		return fmt.Errorf("persist collation rollup: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM collation_party_scores WHERE collation_result_id=$1", collationID); err != nil {
+		return err
+	}
+	for party, votes := range c.PartyTotals {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO collation_party_scores (collation_result_id, party_code, votes) VALUES ($1,$2,$3)",
+			collationID, party, votes); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// rollupCollationHierarchy persists ward→LGA→state→national rollups for the
+// whole election (the real hierarchical write path of R5-015). When wardCode
+// is non-empty only the chain containing that ward is refreshed.
+func rollupCollationHierarchy(ctx context.Context, electionID int, wardCode string) error {
+	type area struct{ level, code string }
+	var wards, lgas, states []string
+	if wardCode != "" {
+		wards = []string{wardCode}
+		var lga string
+		db.QueryRowContext(ctx, "SELECT lga_code FROM wards WHERE code=$1", wardCode).Scan(&lga)
+		if lga != "" {
+			lgas = []string{lga}
+			var st string
+			db.QueryRowContext(ctx, "SELECT state_code FROM lgas WHERE code=$1", lga).Scan(&st)
+			if st != "" {
+				states = []string{st}
+			}
+		}
+	} else {
+		for q, dst := range map[string]*[]string{
+			"SELECT code FROM wards":  &wards,
+			"SELECT code FROM lgas":   &lgas,
+			"SELECT code FROM states": &states,
+		} {
+			rows, err := db.QueryContext(ctx, q)
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var code string
+				if rows.Scan(&code) == nil {
+					*dst = append(*dst, code)
+				}
+			}
+			rows.Close()
+		}
+	}
+	var areas []area
+	for _, w := range wards {
+		areas = append(areas, area{"ward", w})
+	}
+	for _, l := range lgas {
+		areas = append(areas, area{"lga", l})
+	}
+	for _, s := range states {
+		areas = append(areas, area{"state", s})
+	}
+	areas = append(areas, area{"national", "NG"})
+	for _, a := range areas {
+		if err := persistCollationRollup(ctx, electionID, a.level, a.code); err != nil {
+			return fmt.Errorf("rollup %s/%s: %w", a.level, a.code, err)
+		}
+	}
+	return nil
+}
+
+// handlePersistCollation triggers a durable collation rollup write.
+// POST /inec/collation/persist  {election_id, level?, code?}
+// Without level/code it rolls up the full ward→LGA→state→national hierarchy.
+func handlePersistCollation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardWrite(w, r, "collate_results", "admin", "collation_officer", "returning_officer")
+	if !ok {
+		return
+	}
+	var req struct {
+		ElectionID int    `json:"election_id" validate:"required,gt=0"`
+		Level      string `json:"level"`
+		Code       string `json:"code"`
+	}
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	ctx := r.Context()
+	var elStatus string
+	if err := db.QueryRowContext(ctx, "SELECT status FROM elections WHERE id=$1", req.ElectionID).Scan(&elStatus); err != nil {
+		writeError(w, 404, "election not found")
+		return
+	}
+	if req.Level != "" {
+		if _, err := collationGeoFilter(req.Level); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if req.Code == "" {
+			writeError(w, 400, "code is required when level is given")
+			return
+		}
+		if err := persistCollationRollup(ctx, req.ElectionID, req.Level, req.Code); err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+	} else if err := rollupCollationHierarchy(ctx, req.ElectionID, ""); err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	username, _ := claims["username"].(string)
+	logAudit("COLLATION_PERSISTED", "election", fmt.Sprintf("%d", req.ElectionID), claimUserID(claims),
+		map[string]interface{}{"level": req.Level, "code": req.Code, "actor": username})
+	writeJSON(w, 200, M{"status": "persisted", "election_id": req.ElectionID, "level": req.Level, "code": req.Code})
 }
 
 // --- Ballot Reconciliation ---
@@ -460,12 +810,12 @@ func handleDualLedgerReconciliation(w http.ResponseWriter, r *http.Request) {
 	electionID := queryParamInt(r, "election_id", 1)
 	ctx := r.Context()
 
-	// Get PostgreSQL totals
+	// Get PostgreSQL totals — canonical semantics (R5-014): finalized only.
 	rows, err := db.QueryContext(ctx,
 		`SELECT rps.party_code, SUM(rps.votes)
 		 FROM results r
 		 JOIN result_party_scores rps ON rps.result_id = r.id
-		 WHERE r.election_id = $1 AND r.status IN ('pending','validated')
+		 WHERE r.election_id = $1 AND r.status = '`+canonicalResultStatus+`'
 		 GROUP BY rps.party_code ORDER BY SUM(rps.votes) DESC`, electionID)
 	if err != nil {
 		writeError(w, 500, err.Error())
