@@ -377,6 +377,9 @@ func main() {
 	r.HandleFunc("/bvas/devices/{id}", readAuth(handleGetBVASDevice)).Methods("GET")
 	r.HandleFunc("/bvas/devices", writeAuth(handleRegisterBVASDevice)).Methods("POST")
 	r.HandleFunc("/bvas/devices/{id}", writeAuth(handleUpdateBVASDevice)).Methods("PATCH")
+	// R5-048: fleet revocation — lost/stolen devices are killed fleet-wide
+	// with a mandatory reason (accreditation fails closed on non-active).
+	r.HandleFunc("/bvas/devices/{id}/revoke", adminOnly(handleRevokeBVASDevice)).Methods("POST")
 	r.HandleFunc("/bvas/accreditation", writeAuth(handleBVASAccreditation)).Methods("POST")
 	r.HandleFunc("/bvas/accreditation/feed", readAuth(handleBVASAccreditationFeed)).Methods("GET")
 	r.HandleFunc("/bvas/accreditation/timeline", readAuth(handleBVASAccreditationTimeline)).Methods("GET")

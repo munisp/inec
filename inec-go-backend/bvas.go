@@ -306,6 +306,48 @@ func handleUpdateBVASDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"message": "Device updated"})
 }
 
+// handleRevokeBVASDevice (R5-048) revokes a device from the BVAS fleet —
+// lost, stolen, misused or retired. A reason is mandatory; the revocation
+// is audited with the revoking identity. Accreditation and every other
+// device-gated path fail closed on any status != 'active', so this takes
+// effect immediately and is not reversible through this endpoint (re-issue
+// requires a fresh registration + admin re-activation).
+func handleRevokeBVASDevice(w http.ResponseWriter, r *http.Request) {
+	user, err := requireRole(r, "admin")
+	if err != nil {
+		writeError(w, 403, err.Error())
+		return
+	}
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Reason   string `json:"reason" validate:"required,min=4"`
+		MarkLost bool   `json:"mark_lost"`
+	}
+	if !decodeAndValidateBody(w, r, &req) {
+		return
+	}
+	newStatus := "decommissioned"
+	if req.MarkLost {
+		newStatus = "lost"
+	}
+	uid := claimUserID(user)
+	res, err := db.Exec(convertPlaceholders(`UPDATE bvas_devices
+		SET status=?, revoked_at=CURRENT_TIMESTAMP, revoked_by=?, revoke_reason=?, last_sync_at=CURRENT_TIMESTAMP
+		WHERE id=? AND status != 'decommissioned'`),
+		newStatus, uid, req.Reason, id)
+	if err != nil {
+		writeError(w, 500, "failed to revoke device")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, 404, "device not found or already decommissioned")
+		return
+	}
+	log.Warn().Str("device_id", id).Str("status", newStatus).Int("revoked_by", uid).Msg("SECURITY: BVAS device revoked")
+	auditWrite("BVAS_DEVICE_REVOKED", "bvas_device", id, r, map[string]interface{}{"status": newStatus, "reason": req.Reason, "revoked_by": uid})
+	writeJSON(w, 200, M{"message": "device revoked", "device_id": id, "status": newStatus})
+}
+
 func handleBVASAccreditation(w http.ResponseWriter, r *http.Request) {
 	if rejectLegacyDeviceIngress(w) {
 		return
