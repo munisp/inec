@@ -13,7 +13,7 @@
  *   compliance-svc  → /compliance/*
  */
 
-import { api, API_URL, getToken } from './api';
+import { api } from './api';
 
 // --- Auth ---
 

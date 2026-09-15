@@ -8,6 +8,7 @@ import type { EventSubscription } from 'expo-modules-core';
 import { getDb } from '../src/lib/offline';
 import { NetworkBanner } from '../src/components/NetworkBanner';
 import { onAuthExpired } from '../src/lib/api';
+import { initI18n } from '../src/lib/i18n';
 import { getAuthMode, setAuthMode, isRouteAllowed, PUBLIC_ROUTES, type AuthMode } from '../lib/auth-context';
 
 Notifications.setNotificationHandler({
@@ -56,6 +57,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     getDb();
+    initI18n();
 
     registerForPushNotificationsAsync().then(token => {
       if (token) setExpoPushToken(token);

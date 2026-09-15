@@ -14,6 +14,7 @@ import { getCurrentLocation } from '../../src/lib/location';
 import {
   getPendingReports, queueReport, persistCapturedPhoto, PendingReport,
 } from '../../src/lib/offline';
+import { useI18n } from '../../src/lib/i18n';
 import { EmptyState } from '../../src/components/EmptyState';
 import { FeedSkeleton } from '../../src/components/SkeletonLoader';
 
@@ -50,6 +51,7 @@ export default function ReportsScreen() {
   // R5-107: the backend requires election_id — resolve it from the shared
   // election context; submission is gated until it resolves.
   const { electionId, loading: electionLoading, error: electionError } = useResolvedElection();
+  const { t } = useI18n();
 
   // Restore an unsent draft after a crash/restart.
   useEffect(() => {
@@ -207,15 +209,13 @@ export default function ReportsScreen() {
             <View style={styles.permissionIcon}>
               <Ionicons name="camera" size={32} color="#166534" />
             </View>
-            <Text style={styles.permissionTitle}>Camera Access Needed</Text>
-            <Text style={styles.permissionDesc}>
-              Take photos of EC8A result sheets for verification and evidence
-            </Text>
+            <Text style={styles.permissionTitle}>{t('reports.cameraAccess')}</Text>
+            <Text style={styles.permissionDesc}>{t('reports.cameraAccessDesc')}</Text>
             <TouchableOpacity style={styles.permissionButton} onPress={requestPermission} activeOpacity={0.8}>
-              <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
+              <Text style={styles.permissionButtonText}>{t('reports.grantCamera')}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowCamera(false)}>
-              <Text style={styles.cancelText}>Cancel</Text>
+              <Text style={styles.cancelText}>{t('reports.cancel')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -230,7 +230,7 @@ export default function ReportsScreen() {
               <TouchableOpacity onPress={() => setShowCamera(false)} style={styles.cameraCloseBtn}>
                 <Ionicons name="close" size={24} color="#fff" />
               </TouchableOpacity>
-              <Text style={styles.cameraHint}>Align EC8A form within frame</Text>
+              <Text style={styles.cameraHint}>{t('reports.alignFrame')}</Text>
             </View>
             <View style={styles.cameraFrame}>
               <View style={[styles.corner, { top: 0, left: 0 }]} />
@@ -255,7 +255,7 @@ export default function ReportsScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.formCard}>
-        <Text style={styles.formTitle}>New Report</Text>
+        <Text style={styles.formTitle}>{t('reports.title')}</Text>
 
         {photo && (
           <View style={styles.photoPreview}>
@@ -286,19 +286,19 @@ export default function ReportsScreen() {
             <Ionicons name="camera" size={20} color="#166534" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.cameraButtonText}>{photo ? 'Retake Photo' : 'Take Photo of EC8A Form'}</Text>
-            <Text style={styles.cameraButtonHint}>Photograph the result sheet for verification</Text>
+            <Text style={styles.cameraButtonText}>{photo ? t('reports.retakePhoto') : t('reports.takePhoto')}</Text>
+            <Text style={styles.cameraButtonHint}>{t('reports.photoHint')}</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
         </TouchableOpacity>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Polling Unit Code</Text>
+          <Text style={styles.label}>{t('reports.puCode')}</Text>
           <View style={styles.inputWrapper}>
             <Ionicons name="location-outline" size={16} color="#9ca3af" style={{ marginLeft: 12 }} />
             <TextInput
               style={styles.input}
-              placeholder="e.g. PU-23-014-001"
+              placeholder={t('reports.puCodePlaceholder')}
               placeholderTextColor="#9ca3af"
               value={puCode}
               onChangeText={setPuCode}
@@ -309,10 +309,10 @@ export default function ReportsScreen() {
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Description (optional)</Text>
+          <Text style={styles.label}>{t('reports.description')}</Text>
           <TextInput
             style={styles.textArea}
-            placeholder="Any observations about the results or process..."
+            placeholder={t('reports.descriptionPlaceholder')}
             placeholderTextColor="#9ca3af"
             value={description}
             onChangeText={setDescription}
@@ -333,7 +333,7 @@ export default function ReportsScreen() {
         >
           <Ionicons name={submitting ? 'hourglass-outline' : 'cloud-upload'} size={18} color="#fff" />
           <Text style={styles.submitText}>
-            {submitting ? 'Submitting...' : electionLoading ? 'Resolving election...' : 'Submit Report'}
+            {submitting ? t('reports.submitting') : electionLoading ? t('reports.resolvingElection') : t('reports.submit')}
           </Text>
         </TouchableOpacity>
       </View>
@@ -343,7 +343,7 @@ export default function ReportsScreen() {
           <View style={styles.sectionHeader}>
             <View style={styles.pendingBadge}>
               <Ionicons name="cloud-upload-outline" size={14} color="#92400e" />
-              <Text style={styles.pendingText}>{pendingReports.length} Pending Upload</Text>
+              <Text style={styles.pendingText}>{pendingReports.length} {t('reports.pendingUpload')}</Text>
             </View>
           </View>
           {pendingReports.map((r) => (
@@ -364,7 +364,7 @@ export default function ReportsScreen() {
       )}
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Submitted Reports</Text>
+        <Text style={styles.sectionTitle}>{t('reports.submittedReports')}</Text>
         {loading ? <FeedSkeleton /> : reports.length > 0 ? (
           reports.map((r) => (
             <View key={r.id} style={styles.reportCard}>
@@ -385,8 +385,8 @@ export default function ReportsScreen() {
         ) : (
           <EmptyState
             icon="document-text-outline"
-            title="No reports yet"
-            description="Submit your first observer report to help verify election results"
+            title={t('reports.noReports')}
+            description={t('reports.noReportsDesc')}
           />
         )}
       </View>

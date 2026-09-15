@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from 'expo-router';
 import { useResolvedElection } from '../src/lib/election';
+import { useI18n } from '../src/lib/i18n';
 import { getCurrentLocation } from '../src/lib/location';
 import {
   queueResult, getPendingResults, syncPendingResults, type PendingResult,
@@ -32,6 +33,7 @@ const newRow = (): PartyScoreRow => ({ key: `row-${++rowSeq}`, party_code: '', v
 
 export default function ResultCaptureScreen() {
   const { electionId, election, loading: electionLoading, error: electionError } = useResolvedElection();
+  const { t } = useI18n();
   const [puCode, setPuCode] = useState('');
   const [scores, setScores] = useState<PartyScoreRow[]>([newRow()]);
   const [accredited, setAccredited] = useState('');
@@ -107,17 +109,14 @@ export default function ResultCaptureScreen() {
       const summary = await runSync();
       if (summary.synced > 0 || summary.duplicates > 0) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Submitted', 'The result was received by the server.');
+        Alert.alert(t('capture.submitted'), t('capture.submittedDesc'));
         setPuCode('');
         setScores([newRow()]);
         setAccredited('');
         setRejected('');
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        Alert.alert(
-          'Queued Offline',
-          'The result is saved on this device and will sync automatically when connectivity returns.'
-        );
+        Alert.alert(t('capture.queued'), t('capture.queuedDesc'));
         setPuCode('');
         setScores([newRow()]);
         setAccredited('');
@@ -138,17 +137,17 @@ export default function ResultCaptureScreen() {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.card}>
-        <Text style={styles.title}>Capture EC8A Result</Text>
+        <Text style={styles.title}>{t('capture.title')}</Text>
         <Text style={styles.subtitle}>
           {electionLoading
-            ? 'Resolving election...'
+            ? t('reports.resolvingElection')
             : election
               ? `${election.name} (ID ${election.id})`
               : 'No active election resolved'}
         </Text>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Polling Unit Code</Text>
+          <Text style={styles.label}>{t('reports.puCode')}</Text>
           <TextInput
             style={styles.input}
             placeholder="e.g. PU-23-014-001"
@@ -160,7 +159,7 @@ export default function ResultCaptureScreen() {
           />
         </View>
 
-        <Text style={styles.label}>Party Scores</Text>
+        <Text style={styles.label}>{t('capture.partyScores')}</Text>
         {scores.map((row) => (
           <View key={row.key} style={styles.scoreRow}>
             <TextInput
@@ -197,12 +196,12 @@ export default function ResultCaptureScreen() {
           accessibilityRole="button"
         >
           <Ionicons name="add-circle-outline" size={18} color="#166534" />
-          <Text style={styles.addRowText}>Add party</Text>
+          <Text style={styles.addRowText}>{t('capture.addParty')}</Text>
         </TouchableOpacity>
 
         <View style={styles.rowInputs}>
           <View style={[styles.inputGroup, { flex: 1 }]}>
-            <Text style={styles.label}>Accredited Voters</Text>
+            <Text style={styles.label}>{t('capture.accredited')}</Text>
             <TextInput
               style={styles.input}
               placeholder="0"
@@ -214,7 +213,7 @@ export default function ResultCaptureScreen() {
             />
           </View>
           <View style={[styles.inputGroup, { flex: 1 }]}>
-            <Text style={styles.label}>Rejected Votes</Text>
+            <Text style={styles.label}>{t('capture.rejected')}</Text>
             <TextInput
               style={styles.input}
               placeholder="0"
@@ -237,7 +236,7 @@ export default function ResultCaptureScreen() {
           accessibilityState={{ disabled: submitting || electionLoading, busy: submitting }}
         >
           <Ionicons name={submitting ? 'hourglass-outline' : 'checkmark-circle'} size={18} color="#fff" />
-          <Text style={styles.submitText}>{submitting ? 'Saving...' : 'Capture Result'}</Text>
+          <Text style={styles.submitText}>{submitting ? t('capture.saving') : t('capture.submit')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -246,7 +245,7 @@ export default function ResultCaptureScreen() {
           <View style={styles.pendingHeader}>
             <View style={styles.pendingBadge}>
               <Ionicons name="cloud-upload-outline" size={14} color="#92400e" />
-              <Text style={styles.pendingBadgeText}>{pending.length} Result{pending.length === 1 ? '' : 's'} Pending Sync</Text>
+              <Text style={styles.pendingBadgeText}>{pending.length} {t('capture.pendingSync')}</Text>
             </View>
             <TouchableOpacity
               onPress={runSync}
@@ -254,7 +253,7 @@ export default function ResultCaptureScreen() {
               accessibilityLabel="Sync pending results now"
               accessibilityRole="button"
             >
-              <Text style={styles.syncNow}>{syncing ? 'Syncing...' : 'Sync now'}</Text>
+              <Text style={styles.syncNow}>{syncing ? t('capture.syncing') : t('capture.syncNow')}</Text>
             </TouchableOpacity>
           </View>
           {pending.map((r) => (

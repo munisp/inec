@@ -11,17 +11,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { electionApi, type Election } from './api';
+import { pickLatestActiveElection } from './election-picker';
+
+export { pickLatestActiveElection };
 
 const SELECTED_ELECTION_KEY = 'inec_selected_election_id';
-
-/** Latest ACTIVE election by date; falls back to the most recent election. */
-export function pickLatestActiveElection(elections: Election[]): Election | null {
-  if (!elections.length) return null;
-  const active = elections.filter((e) => (e.status ?? '').toLowerCase() === 'active');
-  const pool = active.length > 0 ? active : elections;
-  const sorted = [...pool].sort((a, b) => Date.parse(b.date ?? '') - Date.parse(a.date ?? ''));
-  return sorted[0] ?? null;
-}
 
 export interface ResolvedElection {
   electionId: number | null;

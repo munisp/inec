@@ -563,16 +563,8 @@ export const disputeApi = {
 
 // ── Elections & Results API ──
 
-export interface Election {
-  id: number;
-  name: string;
-  type: string;
-  date: string;
-  status: string;
-  total_polling_units: number;
-  results_submitted: number;
-  registered_voters: number;
-}
+export type { Election } from './api-types';
+import type { Election } from './api-types';
 
 export interface Result {
   id: number;
