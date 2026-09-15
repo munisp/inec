@@ -57,15 +57,36 @@ const STATES = ['FC','LA','KN','RV','OG','AN','EN','OY','KD','BO','AD','BA','BE'
 
 export function setup() {
   const res = http.post(`${BASE_URL}/auth/login`, JSON.stringify({
-    username: 'admin', password: 'admin123',
+    username: __ENV.LOADTEST_USERNAME || 'admin',
+    password: __ENV.LOADTEST_PASSWORD || 'admin123',
   }), { headers: { 'Content-Type': 'application/json' } });
   if (res.status !== 200) {
-    console.error(`Login failed: ${res.status} ${res.body}`);
-    return { token: '' };
+    throw new Error(`Login failed: ${res.status} ${res.body}`);
   }
   const body = JSON.parse(res.body);
+  const token = body.access_token;
   console.log('Setup: token obtained successfully');
-  return { token: body.access_token };
+  // Discover a REAL active election + REAL polling-unit codes — the submit
+  // handler 400s on fabricated ids/codes (R5-090).
+  const auth = { headers: { 'Authorization': `Bearer ${token}` } };
+  let electionId = 0;
+  const elRes = http.get(`${BASE_URL}/elections`, auth);
+  if (elRes.status === 200) {
+    const parsed = JSON.parse(elRes.body);
+    const list = Array.isArray(parsed) ? parsed : (parsed.elections || parsed.data || []);
+    const active = list.find((e) => e.status === 'active') || list[0];
+    if (active) electionId = active.id;
+  }
+  if (!electionId) throw new Error('no election found — seed an election first');
+  let puCodes = [];
+  const puRes = http.get(`${BASE_URL}/geo/polling-units?limit=1000`);
+  if (puRes.status === 200) {
+    const parsed = JSON.parse(puRes.body);
+    const list = Array.isArray(parsed) ? parsed : (parsed.polling_units || parsed.data || []);
+    puCodes = list.map((pu) => pu.code).filter(Boolean);
+  }
+  if (puCodes.length === 0) throw new Error('no polling units found — seed geography first');
+  return { token, electionId, puCodes };
 }
 
 function authHeaders(data) {
@@ -119,16 +140,18 @@ export function readQueries(data) {
 
 export function writeSubmissions(data) {
   const headers = authHeaders(data);
-  const state = STATES[Math.floor(Math.random() * STATES.length)];
-  const puCode = `${state}/${String(Math.floor(Math.random() * 44) + 1).padStart(2, '0')}/${String(Math.floor(Math.random() * 774) + 1).padStart(3, '0')}/${String(Math.floor(Math.random() * 9999) + 1).padStart(4, '0')}`;
+  // Real seeded PU codes — fabricated codes 400 "Polling unit not found".
+  const puCode = data.puCodes[Math.floor(Math.random() * data.puCodes.length)];
 
   group('write_submissions', () => {
+    // Real write path (POST /results/submit) + real payload shape:
+    // accredited_voters + rejected_votes; there is NO total_votes_cast or
+    // rejected_ballots field (R5-090).
     const payload = JSON.stringify({
-      election_id: 1,
+      election_id: data.electionId,
       polling_unit_code: puCode,
       accredited_voters: Math.floor(Math.random() * 500) + 100,
-      total_votes_cast: Math.floor(Math.random() * 400) + 100,
-      rejected_ballots: Math.floor(Math.random() * 10),
+      rejected_votes: Math.floor(Math.random() * 10),
       party_scores: [
         { party_code: 'APC', votes: Math.floor(Math.random() * 200) },
         { party_code: 'PDP', votes: Math.floor(Math.random() * 150) },
@@ -137,7 +160,7 @@ export function writeSubmissions(data) {
       ],
     });
 
-    const res = http.post(`${BASE_URL}/results`, payload, {
+    const res = http.post(`${BASE_URL}/results/submit`, payload, {
       headers: Object.assign({}, headers, {
         'Content-Type': 'application/json',
         'X-Idempotency-Key': `${puCode}-${Date.now()}-${Math.random()}`,
@@ -145,7 +168,11 @@ export function writeSubmissions(data) {
       tags: { name: 'submit_result' },
     });
     responseTime.add(res.timings.duration);
-    const ok = check(res, { 'result submitted': (r) => [200, 201, 409, 429].includes(r.status) });
+    const ok = check(res, {
+      'result submitted': (r) =>
+        [200, 201, 429].includes(r.status) ||
+        (r.status === 400 && r.body && r.body.includes('already submitted')),
+    });
     if (!ok) errorRate.add(1);
     resultSubmissions.add(1);
 
