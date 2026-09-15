@@ -13,6 +13,13 @@ alerting:
 scrape_configs:
   - job_name: "inec-backend"
     metrics_path: "/metrics"
+    # The backend FAILS CLOSED on /metrics in production: without a bearer
+    # token every scrape is 401 and Prometheus shows the target down
+    # (metricsBearerGuard, inec-go-backend/metrics.go). The token file is
+    # mounted from observability/prometheus/secrets/metrics_token and must
+    # contain the same value as METRICS_BEARER_TOKEN given to go-backend
+    # (see observability/docker-compose.monitoring.yml).
+    bearer_token_file: /etc/prometheus/secrets/metrics_token
     static_configs:
       - targets: ["go-backend:8088"]  # compose service name is go-backend
     # In Kubernetes, use service discovery:

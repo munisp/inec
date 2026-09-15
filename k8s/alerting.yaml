@@ -1,3 +1,25 @@
+# INEC backend PrometheusRule.
+#
+# R5-088 (2026 audit): the previous revision queried http_requests_total,
+# http_request_duration_seconds_bucket, waf_blocked_requests_total,
+# auth_failed_attempts_total, rate_limited_requests_total,
+# inec_middleware_connected, inec_database_healthy and
+# inec_collation_discrepancy_count — series the app NEVER emitted, so only
+# the `up{}` alert could ever fire. Every expression below is written
+# against series the monolith actually registers/emits
+# (inec-go-backend/metrics.go, inec-go-backend/mw_openappsec.go):
+#   inec_http_requests_total{method,path,status}          (emitted per request)
+#   inec_http_request_duration_seconds_bucket{method,path}(emitted per request)
+#   inec_results_submitted_total{state_code,status}       (emitted per submit)
+#   inec_handler_panics_total{path}                       (emitted per panic)
+#   inec_middleware_healthy{component}                    (15s exporter, metrics.go)
+#   inec_database_healthy                                 (15s exporter, metrics.go)
+#   inec_db_connections_active                            (15s exporter, metrics.go)
+#   inec_db_query_duration_seconds_bucket{query_type}     (emitted per query)
+#   inec_waf_inactive_requests_total                      (emitted when WAF detached)
+# Remaining metric-emission gaps (geofence violations, collation
+# discrepancy, per-handler resultsSubmitted increments) are tracked in
+# ops/HANDOFF-W6.md — no alert below references a non-existent series.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -23,8 +45,8 @@ spec:
 
         - alert: INECBackendHighErrorRate
           expr: |
-            sum(rate(http_requests_total{job="inec-backend", status=~"5.."}[5m]))
-            / sum(rate(http_requests_total{job="inec-backend"}[5m])) > 0.05
+            sum(rate(inec_http_requests_total{job="inec-backend", status=~"5.."}[5m]))
+            / sum(rate(inec_http_requests_total{job="inec-backend"}[5m])) > 0.05
           for: 5m
           labels:
             severity: warning
@@ -36,7 +58,7 @@ spec:
         - alert: INECBackendHighLatency
           expr: |
             histogram_quantile(0.95,
-              sum(rate(http_request_duration_seconds_bucket{job="inec-backend"}[5m])) by (le)
+              sum(rate(inec_http_request_duration_seconds_bucket{job="inec-backend"}[5m])) by (le)
             ) > 2.0
           for: 5m
           labels:
@@ -46,22 +68,38 @@ spec:
             summary: "P95 latency > 2s on INEC Backend"
             description: "95th percentile response time is {{ $value }}s"
 
+        - alert: INECBackendHandlerPanics
+          expr: |
+            sum(rate(inec_handler_panics_total{job="inec-backend"}[5m])) > 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "HTTP handlers are panicking"
+            description: "{{ $value }} panics/sec recovered on {{ $labels.path }}"
+
     - name: inec-backend.security
       rules:
-        - alert: INECWAFHighBlockRate
+        # WAF block-rate alert replaced: the app emits no waf_blocked_requests_total.
+        # inec_waf_inactive_requests_total > 0 means traffic reached the backend
+        # WITHOUT WAF inspection (OpenAppSec detached) — the alertable condition.
+        - alert: INECWAFInactive
           expr: |
-            sum(rate(waf_blocked_requests_total{job="inec-backend"}[5m])) > 10
-          for: 3m
+            sum(rate(inec_waf_inactive_requests_total{job="inec-backend"}[5m])) > 0
+          for: 5m
           labels:
             severity: warning
             team: security
           annotations:
-            summary: "WAF blocking > 10 req/sec — possible attack"
-            description: "WAF is blocking {{ $value }} requests per second"
+            summary: "Traffic bypassing WAF (OpenAppSec inactive)"
+            description: "{{ $value }} req/s reached the backend without WAF inspection"
 
+        # Proxy for a dedicated auth_failed_attempts_total (see ops/HANDOFF-W6.md):
+        # failed logins surface as 401/403 on /auth/*.
         - alert: INECAuthBruteForce
           expr: |
-            sum(rate(auth_failed_attempts_total{job="inec-backend"}[5m])) > 5
+            sum(rate(inec_http_requests_total{job="inec-backend", path=~"/auth/login", status=~"401|403"}[5m])) > 5
           for: 2m
           labels:
             severity: critical
@@ -72,19 +110,20 @@ spec:
 
         - alert: INECRateLimitExceeded
           expr: |
-            sum(rate(rate_limited_requests_total{job="inec-backend"}[5m])) > 20
+            sum(rate(inec_http_requests_total{job="inec-backend", status="429"}[5m])) > 20
           for: 5m
           labels:
             severity: info
             team: platform
           annotations:
             summary: "Rate limiting triggered frequently"
+            description: "{{ $value }} requests/sec rejected with 429"
 
     - name: inec-backend.middleware
       rules:
         - alert: INECMiddlewareDisconnected
           expr: |
-            inec_middleware_connected{job="inec-backend"} == 0
+            inec_middleware_healthy{job="inec-backend"} == 0
           for: 5m
           labels:
             severity: warning
@@ -104,8 +143,36 @@ spec:
             summary: "Database health check failing"
             description: "Database has been unhealthy for > 1 minute"
 
+        - alert: INECDatabasePoolExhaustion
+          expr: |
+            inec_db_connections_active{job="inec-backend"} > 45
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "DB connection pool near exhaustion"
+            description: "{{ $value }} open connections (pool limit ~50)"
+
+        - alert: INECDatabaseSlowQueries
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(inec_db_query_duration_seconds_bucket{job="inec-backend"}[5m])) by (le)
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "DB query p95 > 1s"
+            description: "Database queries are slow — check indexes/lock contention"
+
     - name: inec-backend.election
       rules:
+        # NOTE: inec_results_submitted_total is registered but per-handler
+        # increments are pending (ops/HANDOFF-W6.md). Until that lands this
+        # alert will report "stalled" — treat as a known limitation, not a
+        # pipeline outage.
         - alert: INECResultSubmissionStalled
           expr: |
             rate(inec_results_submitted_total[15m]) == 0
@@ -117,25 +184,3 @@ spec:
           annotations:
             summary: "No results submitted in 30 minutes during election hours"
             description: "Result submission pipeline may be stalled"
-
-        - alert: INECGeofenceViolationSpike
-          expr: |
-            sum(rate(geofence_violations_total[5m])) > 5
-          for: 5m
-          labels:
-            severity: critical
-            team: security
-          annotations:
-            summary: "High geofence violation rate — possible fraud"
-            description: "{{ $value }} geofence violations per second"
-
-        - alert: INECCollationDiscrepancy
-          expr: |
-            inec_collation_discrepancy_count > 0
-          for: 1m
-          labels:
-            severity: critical
-            team: elections
-          annotations:
-            summary: "Collation discrepancy detected"
-            description: "{{ $value }} results have mismatched collation totals"

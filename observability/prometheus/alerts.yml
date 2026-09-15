@@ -71,16 +71,20 @@ groups:
           description: "Database queries are slow. Check for missing indexes or lock contention."
 
       # --- Circuit Breakers ---
-      - alert: INECCircuitBreakerOpen
-        expr: inec_arch_circuit_breaker_state == 1
-        for: 1m
+      # REMOVED (R5-088): INECCircuitBreakerOpen queried
+      # inec_arch_circuit_breaker_state, a metric nothing in the repo emits —
+      # the alert could never fire. Re-add once the architecture layer emits
+      # breaker state (tracked in ops/HANDOFF-W6.md). Until then, breaker
+      # trips surface as elevated 5xx on dependent routes (INECHighErrorRate).
+      - alert: INECMiddlewareDisconnected
+        expr: inec_middleware_healthy == 0
+        for: 5m
         labels:
-          severity: critical
+          severity: warning
           team: platform
         annotations:
-          summary: "Circuit breaker OPEN for {{ $labels.service }}"
-          description: "Service {{ $labels.service }} has tripped its circuit breaker. Requests to this service are failing fast."
-          runbook: "https://github.com/munisp/inec/blob/main/observability/runbooks/circuit-breaker-open.md"
+          summary: "Middleware {{ $labels.component }} disconnected"
+          description: "Component {{ $labels.component }} has reported unhealthy for >5 minutes."
 
       # --- Rate Limiting ---
       - alert: INECHighRateLimitRejections
@@ -107,28 +111,25 @@ groups:
           summary: "No election results submitted in 15 minutes"
           description: "During election hours (08:00-20:00), no results have been submitted. Possible system outage or connectivity issue."
 
-      - alert: INECBiometricFailureRateHigh
+      # REMOVED (R5-088): INECBiometricFailureRateHigh and
+      # INECGeofenceViolationSpike queried inec_arch_biometric_verifications_total
+      # and inec_arch_events_published_total — metrics nothing in the repo
+      # emits, so these alerts could never fire. They are restored in
+      # ops/HANDOFF-W6.md pending emission of the underlying series by the
+      # owning Go modules (architecture/biometric layers). A coarse proxy is
+      # the 403-rate on /results/submit (geofence violations are rejected
+      # with 403 by handleSubmitResult):
+      - alert: INECGeofenceRejectionSpike
         expr: |
-          sum(rate(inec_arch_biometric_verifications_total{result="failure"}[10m]))
-          / sum(rate(inec_arch_biometric_verifications_total[10m])) > 0.2
-        for: 10m
-        labels:
-          severity: warning
-          team: election-ops
-        annotations:
-          summary: "Biometric failure rate >20%"
-          description: "High biometric verification failure rate may indicate device issues or environmental factors."
-
-      - alert: INECGeofenceViolationSpike
-        expr: |
-          sum(rate(inec_arch_events_published_total{event_type="geofence.violation"}[5m])) * 60 > 5
+          # path label is sanitizePath()-normalized: /results/submit -> /results/:id
+          sum(rate(inec_http_requests_total{path="/results/:id", status="403"}[5m])) * 60 > 5
         for: 5m
         labels:
           severity: warning
           team: security
         annotations:
-          summary: "Geofence violation spike ({{ $value }}/min)"
-          description: "Multiple election officials detected outside their assigned polling unit geofences."
+          summary: "Geofence/authorization rejection spike on result submit ({{ $value }}/min)"
+          description: "Multiple result submissions rejected with 403 — possible geofence violations or mis-scoped officer accounts."
 
   - name: inec-slo
     rules:

@@ -337,6 +337,10 @@ services:
     - RUST_INFERENCE_URL=http://inference-engine:8091
     - INTEGRITY_SIGNING_REQUIRED=${INTEGRITY_SIGNING_REQUIRED:?INTEGRITY_SIGNING_REQUIRED must be set}
     - INTEGRITY_SERVICE_TOKEN=${INTEGRITY_SERVICE_TOKEN:?INTEGRITY_SERVICE_TOKEN must be set}
+    # /metrics bearer token — without it the backend refuses to serve metrics
+    # in production and Prometheus scrapes 401 (R5-094 blind spot). The same
+    # value must be placed in observability/prometheus/secrets/metrics_token.
+    - METRICS_BEARER_TOKEN=${METRICS_BEARER_TOKEN:?METRICS_BEARER_TOKEN must be set}
     - INEC_CVR_URL=${INEC_CVR_URL:?INEC_CVR_URL must be set}
     - BIOMETRIC_PIPELINE_URL=http://biometric-go:8092
     - SATELLITE_SERVICE_URL=http://satellite-change-detection:8204
