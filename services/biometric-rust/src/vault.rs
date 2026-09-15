@@ -592,6 +592,35 @@ impl BiometricVault {
         Ok(())
     }
 
+    /// NDPR right-to-erasure (R5-060): permanently delete every stored
+    /// biometric artefact for a voter — encrypted vault templates AND
+    /// cancelable transforms (including their seeds). Previously the service
+    /// exposed no delete route at all, so backend "erasure" left ciphertext
+    /// and transforms behind. The operation itself is audit-logged.
+    pub async fn erase_voter_templates(&self, voter_vin: &str, actor: &str) -> Result<u64, VaultError> {
+        let templates = sqlx::query("DELETE FROM vault_templates WHERE voter_vin = $1")
+            .bind(voter_vin)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        let transforms = sqlx::query("DELETE FROM cancelable_transforms WHERE voter_vin = $1")
+            .bind(voter_vin)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        self.log_audit(
+            "erase_voter_templates",
+            None,
+            Some(voter_vin),
+            None,
+            actor,
+            true,
+            None,
+        )
+        .await;
+        Ok(templates + transforms)
+    }
+
     /// Probe PostgreSQL reachability for health/readiness checks.
     pub async fn health_check(&self) -> Result<(), VaultError> {
         sqlx::query("SELECT 1").execute(&self.pool).await?;

@@ -47,18 +47,26 @@ class KafkaArrowConsumer:
         """
         from confluent_kafka import Consumer  # hard requirement when enabled
 
+        # R5-062: "inec.ballots.cast" is RETIRED — no producer exists anywhere
+        # in the repo, so the subscription was dead weight. Default topics are
+        # the produced result-lifecycle topics; override via KAFKA_TOPICS.
         topics = getattr(self.cfg, "KAFKA_TOPICS", None) or [
             "inec.results.submitted",
-            "inec.ballots.cast",
+            "inec.results.validated",
+            "inec.results.finalized",
         ]
 
         # Consumer configuration for maximum throughput
         self.consumer_config = {
             "bootstrap.servers": self.brokers,
             "group.id": self.group_id,
-            "auto.offset.reset": "latest",
-            "enable.auto.commit": True,
-            "auto.commit.interval.ms": 5000,
+            # R5-062: "latest" silently discarded the entire backlog for a new
+            # consumer group; "earliest" is the only safe default for audit/
+            # pipeline data. Offsets are committed MANUALLY after records are
+            # handed to the processing queue (at-least-once) — auto-commit
+            # could acknowledge messages that were never processed.
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": False,
             "fetch.min.bytes": 1_048_576,           # 1MB
             "max.partition.fetch.bytes": 10_485_760,  # 10MB
             "queued.max.messages.kbytes": 2_097_152,  # 2GB
@@ -102,6 +110,9 @@ class KafkaArrowConsumer:
                         await output_queue.put(records)
                         self.total_consumed += len(records)
                         self.total_batches += 1
+                        # R5-062: commit offsets only AFTER the batch reached
+                        # the processing queue (at-least-once delivery).
+                        await asyncio.to_thread(consumer.commit, asynchronous=False)
                     except asyncio.QueueFull:
                         log.warning("output queue full, applying backpressure",
                                     queue_size=output_queue.qsize())

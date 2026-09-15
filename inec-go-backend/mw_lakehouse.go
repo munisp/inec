@@ -219,11 +219,10 @@ func (l *embeddedLakehouse) Ingest(_ context.Context, table string, records []ma
 	if len(records) == 0 || table == "" {
 		return nil
 	}
-	// Build and execute INSERT for each record into the audit_log for traceability
+	// Traceability: route through the hash-chained audit writer (R5-053 — the
+	// previous direct INSERT bypassed the chain with a NULL block_hash).
 	for _, rec := range records {
-		data, _ := json.Marshal(rec)
-		dbExecLog("audit_log", "INSERT INTO audit_log (action, details, performed_by, performed_at) VALUES (?,?,?,CURRENT_TIMESTAMP)",
-			"lakehouse_ingest:"+table, string(data), "system")
+		logAuditCtx(context.Background(), "lakehouse_ingest:"+table, "lakehouse", table, 0, rec)
 	}
 	log.Info().Str("table", table).Int("count", len(records)).Msg("lakehouse ingested records")
 	return nil

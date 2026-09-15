@@ -60,6 +60,10 @@ func handleExportResults(w http.ResponseWriter, r *http.Request) {
 		results = append(results, row)
 	}
 
+	// R5-058: bulk exports are audited (hash-chained) with exporter identity.
+	logAuditCtx(r.Context(), "export_results", "election", fmt.Sprint(electionID), extractUserID(r),
+		M{"rows": len(results), "format": format, "state_code": stateCode})
+
 	switch format {
 	case "csv":
 		w.Header().Set("Content-Type", "text/csv")
@@ -94,8 +98,11 @@ func handleExportVoters(w http.ResponseWriter, r *http.Request) {
 	stateCode := queryParam(r, "state_code", "")
 	limit := queryParamInt(r, "limit", 10000)
 
-	query := `SELECT v.vin, v.full_name, v.date_of_birth, v.gender, v.phone,
-		v.polling_unit_code, v.status, v.created_at
+	// Columns match the live schema (migrations/000021: first_name/last_name,
+	// registered_at) — the previous query referenced non-existent
+	// v.full_name/v.created_at and errored on PostgreSQL.
+	query := `SELECT v.vin, (v.first_name || ' ' || v.last_name) AS full_name, v.date_of_birth, v.gender, v.phone,
+		v.polling_unit_code, v.status, v.registered_at AS created_at
 		FROM voters v`
 	args := []interface{}{}
 	if stateCode != "" {
@@ -135,6 +142,11 @@ func handleExportVoters(w http.ResponseWriter, r *http.Request) {
 		voters = append(voters, v)
 	}
 
+	// R5-058: bulk PII export is audited (hash-chained) with exporter identity —
+	// exfiltrating the register must be distinguishable from normal use.
+	logAuditCtx(r.Context(), "export_voters_pii", "voters", stateCode, extractUserID(r),
+		M{"rows": len(voters), "format": format, "limit": limit, "pii": true})
+
 	switch format {
 	case "csv":
 		w.Header().Set("Content-Type", "text/csv")
@@ -151,15 +163,24 @@ func handleExportVoters(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleExportCollation exports collation results at any level.
+// R5-061: by default only validated+finalized results are aggregated —
+// 'pending' (unverified) figures must not leak into "official" totals.
+// ?include_pending=true (officers only, route-guarded) opts back in and the
+// response is explicitly watermarked provisional.
 func handleExportCollation(w http.ResponseWriter, r *http.Request) {
 	level := queryParam(r, "level", "state")
 	electionID := queryParamInt(r, "election_id", 1)
+	includePending := queryParam(r, "include_pending", "false") == "true"
 
+	statusFilter := `('validated','finalized')`
+	if includePending {
+		statusFilter = `('pending','validated','finalized')`
+	}
 	rows, err := db.QueryContext(r.Context(),
 		`SELECT rps.party_code, SUM(rps.votes) as total_votes, COUNT(DISTINCT r.polling_unit_code) as pu_count
 		 FROM results r
 		 JOIN result_party_scores rps ON rps.result_id = r.id
-		 WHERE r.election_id = $1 AND r.status IN ('pending','validated','finalized')
+		 WHERE r.election_id = $1 AND r.status IN `+statusFilter+`
 		 GROUP BY rps.party_code ORDER BY total_votes DESC`, electionID)
 	if err != nil {
 		writeError(w, 500, err.Error())
@@ -180,6 +201,10 @@ func handleExportCollation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// R5-058: bulk exports are audited (hash-chained) with exporter identity.
+	logAuditCtx(r.Context(), "export_collation", "election", fmt.Sprint(electionID), extractUserID(r),
+		M{"level": level, "include_pending": includePending})
+
 	format := queryParam(r, "format", "json")
 	switch format {
 	case "csv":
@@ -193,10 +218,12 @@ func handleExportCollation(w http.ResponseWriter, r *http.Request) {
 		writer.Flush()
 	default:
 		writeJSON(w, 200, M{
-			"level":       level,
-			"election_id": electionID,
-			"parties":     parties,
-			"exported_at": time.Now().UTC().Format(time.RFC3339),
+			"level":           level,
+			"election_id":     electionID,
+			"parties":         parties,
+			"status_filter":   statusFilter,
+			"provisional":     includePending,
+			"exported_at":     time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }
@@ -232,6 +259,10 @@ func handleAuditExport(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+
+	// R5-058: bulk exports are audited (hash-chained) with exporter identity.
+	logAuditCtx(r.Context(), "export_audit_trail", "audit_log", "", extractUserID(r),
+		M{"rows": len(entries), "category": category, "limit": limit})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=audit_trail.json")

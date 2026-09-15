@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -13,11 +14,13 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 )
 
@@ -341,6 +344,36 @@ func initPlatformEnhancements(database interface{}) {
 	}
 	for _, ddl := range tables {
 		dbExecLog("enhancements", ddl)
+	}
+
+	// R5-054: bring SQLite dev databases to the production column set for
+	// result_signatures (PostgreSQL gains these via migration 000024). ALTERs
+	// are idempotent — "duplicate column" errors are expected and ignored.
+	for _, col := range []string{
+		`ALTER TABLE result_signatures ADD COLUMN algorithm TEXT`,
+		`ALTER TABLE result_signatures ADD COLUMN signature_hash TEXT`,
+		`ALTER TABLE result_signatures ADD COLUMN signer_id INTEGER`,
+		`ALTER TABLE result_signatures ADD COLUMN signer_role TEXT`,
+		`ALTER TABLE result_signatures ADD COLUMN verification_status TEXT`,
+	} {
+		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			log.Warn().Err(err).Msg("result_signatures column upgrade skipped")
+		}
+	}
+	// R5-054: append-only parity for SQLite dev/test (PostgreSQL enforces the
+	// same via triggers in migration 000033). Executed standalone because
+	// trigger syntax does not survive execMulti's semicolon splitter.
+	if !usePostgres {
+		for _, stmt := range []string{
+			`CREATE TRIGGER IF NOT EXISTS trg_result_signatures_no_update BEFORE UPDATE ON result_signatures BEGIN SELECT RAISE(ABORT, 'result_signatures is append-only'); END`,
+			`CREATE TRIGGER IF NOT EXISTS trg_result_signatures_no_delete BEFORE DELETE ON result_signatures BEGIN SELECT RAISE(ABORT, 'result_signatures is append-only'); END`,
+			`CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (7-year legal hold)'); END`,
+			`CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (7-year legal hold)'); END`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				log.Warn().Err(err).Msg("failed to install SQLite append-only trigger")
+			}
+		}
 	}
 
 	// Seed election templates
@@ -814,6 +847,83 @@ func handleCitizenVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"results": results, "count": len(results), "verified_at": time.Now().UTC(), "source": "INEC Official"})
 }
 
+// ── Result signing (R5-054): real ed25519 asymmetric signatures ─────────────
+//
+// The previous implementation stored sha256(resultHash:prevHash:unixTime:
+// caller_supplied_officer_pubkey) — every input public, no private key — and
+// INSERT OR REPLACE silently overwrote history. Signatures are now produced
+// with an ed25519 private key held only by the server (RESULT_SIGNING_KEY,
+// hex-encoded 32-byte seed or 64-byte private key, expected from an HSM/KMS in
+// production). Records are append-only (UNIQUE(result_id) + no-update/no-delete
+// triggers, migration 000033) and the verify endpoint exposes the signer
+// identity and re-verifies the signature cryptographically.
+
+var (
+	resultSigningKeyOnce sync.Once
+	resultSigningPriv    ed25519.PrivateKey
+	resultSigningPubHex  string
+	// resultSignChainMu serializes prev-hash read + insert so concurrent
+	// signing cannot fork the signature chain in-process; UNIQUE(chain_position)
+	// (migration 000034) enforces the same across replicas.
+	resultSignChainMu sync.Mutex
+)
+
+func resultSigningKey() (ed25519.PrivateKey, string) {
+	resultSigningKeyOnce.Do(func() {
+		keyHex := strings.TrimSpace(os.Getenv("RESULT_SIGNING_KEY"))
+		if keyHex == "" {
+			if isProductionLike() {
+				log.Fatal().Msg("RESULT_SIGNING_KEY must be set in production/staging (hex-encoded ed25519 seed or private key from HSM/KMS)")
+			}
+			// Dev-only: deterministic key for local development, mirroring the
+			// BIOMETRIC_VAULT_MASTER_KEY fail-closed pattern.
+			log.Warn().Msg("RESULT_SIGNING_KEY not set — using dev-only deterministic signing key (NOT FOR PRODUCTION)")
+			seed := sha256.Sum256([]byte("DEV-ONLY-RESULT-SIGNING-KEY-NOT-FOR-PRODUCTION"))
+			resultSigningPriv = ed25519.NewKeyFromSeed(seed[:])
+		} else {
+			raw, err := hex.DecodeString(keyHex)
+			if err != nil || (len(raw) != ed25519.SeedSize && len(raw) != ed25519.PrivateKeySize) {
+				log.Fatal().Msg("RESULT_SIGNING_KEY must be a hex-encoded ed25519 seed (64 hex chars) or private key (128 hex chars)")
+			}
+			if len(raw) == ed25519.SeedSize {
+				resultSigningPriv = ed25519.NewKeyFromSeed(raw)
+			} else {
+				resultSigningPriv = ed25519.PrivateKey(raw)
+			}
+		}
+		resultSigningPubHex = hex.EncodeToString(resultSigningPriv.Public().(ed25519.PublicKey))
+	})
+	return resultSigningPriv, resultSigningPubHex
+}
+
+// resultSignaturePreimage is the exact, canonical byte string that is signed.
+// It uses only values stored verbatim in result_signatures so verification can
+// recompute it without ambiguity.
+func resultSignaturePreimage(resultHash, prevHash string, signerID int) string {
+	return fmt.Sprintf("inec-result-signature:v1:%s:%s:%d", resultHash, prevHash, signerID)
+}
+
+func enhStr(m M, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
+}
+
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+		return true
+	}
+	return strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "duplicate key")
+}
+
 func handleCitizenVerifySignature(w http.ResponseWriter, r *http.Request) {
 	rid := r.URL.Query().Get("result_id")
 	if rid == "" {
@@ -831,14 +941,46 @@ func handleCitizenVerifySignature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	currentHash := computeResultHash(result)
-	writeJSON(w, 200, M{"result": result, "signed": true, "signature": sig,
-		"hash_valid":      currentHash == fmt.Sprint(sig["result_hash"]),
-		"tamper_detected": currentHash != fmt.Sprint(sig["result_hash"])})
+
+	// R5-054: cryptographically re-verify the ed25519 signature against the
+	// stored preimage and expose the signer identity.
+	_, pubHex := resultSigningKey()
+	signatureValid := false
+	if sigBytes, derr := hex.DecodeString(enhStr(sig, "signature")); derr == nil {
+		if pubBytes, perr := hex.DecodeString(enhStr(sig, "officer_pubkey")); perr == nil && len(pubBytes) == ed25519.PublicKeySize {
+			preimage := resultSignaturePreimage(enhStr(sig, "result_hash"), enhStr(sig, "prev_hash"), enhToInt(sig["signer_id"]))
+			signatureValid = ed25519.Verify(ed25519.PublicKey(pubBytes), []byte(preimage), sigBytes)
+		}
+	}
+	writeJSON(w, 200, M{
+		"result": result, "signed": true, "signature": sig,
+		"hash_valid":       currentHash == enhStr(sig, "result_hash"),
+		"signature_valid":  signatureValid,
+		"algorithm":        "ed25519",
+		"signer_id":        enhToInt(sig["signer_id"]),
+		"signer_role":      enhStr(sig, "signer_role"),
+		"signer_pubkey":    enhStr(sig, "officer_pubkey"),
+		"server_pubkey":    pubHex,
+		"tamper_detected":  currentHash != enhStr(sig, "result_hash") || !signatureValid,
+	})
 }
 
 func handleSignResult(w http.ResponseWriter, r *http.Request) {
+	// The route is already writeAuth-gated; requireRole additionally binds the
+	// signer identity to the authenticated officer for non-repudiation.
+	claims, err := requireRole(r, "admin", "presiding_officer", "collation_officer")
+	if err != nil {
+		writeError(w, 403, "signing requires an authenticated election officer")
+		return
+	}
+	signerID := extractUserID(r)
+	signerRole, _ := claims["role"].(string)
+
 	var body struct {
-		ResultID   int    `json:"result_id"`
+		ResultID int `json:"result_id"`
+		// OfficerKey is accepted for backward compatibility but ignored — the
+		// signature is produced with the server-held ed25519 key, never with
+		// caller-supplied material.
 		OfficerKey string `json:"officer_pubkey"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -850,29 +992,50 @@ func handleSignResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "result not found")
 		return
 	}
+	priv, pubHex := resultSigningKey()
+
+	// Serialize prev-hash read + insert so concurrent signers cannot fork the
+	// chain (cross-replica safety: UNIQUE(chain_position), migration 000034).
+	resultSignChainMu.Lock()
+	defer resultSignChainMu.Unlock()
+
 	prevRow, _ := querySingleRowCtx(r.Context(), `SELECT result_hash, chain_position FROM result_signatures ORDER BY chain_position DESC LIMIT 1`)
 	prevHash := ""
 	chainPos := 0
 	if prevRow != nil {
-		prevHash = fmt.Sprint(prevRow["result_hash"])
+		prevHash = enhStr(prevRow, "result_hash")
 		chainPos = enhToInt(prevRow["chain_position"]) + 1
 	}
 	resultHash := computeResultHash(result)
-	sigData := fmt.Sprintf("%s:%s:%d:%s", resultHash, prevHash, time.Now().Unix(), body.OfficerKey)
-	sigHash := sha256.Sum256([]byte(sigData))
-	sig := hex.EncodeToString(sigHash[:])
-	if _, err := dbExecCtx(r.Context(), `INSERT OR REPLACE INTO result_signatures (result_id, officer_pubkey, signature, prev_hash, result_hash, chain_position) VALUES (?,?,?,?,?,?)`,
-		body.ResultID, body.OfficerKey, sig, prevHash, resultHash, chainPos); err != nil {
+	sig := ed25519.Sign(priv, []byte(resultSignaturePreimage(resultHash, prevHash, signerID)))
+	sigHex := hex.EncodeToString(sig)
+	sigDigest := sha256.Sum256(sig)
+
+	// Append-only: a plain INSERT. A second signature for the same result is
+	// rejected (409) — history is never overwritten.
+	if _, err := dbExecCtx(r.Context(), `INSERT INTO result_signatures
+		(result_id, officer_pubkey, signature, prev_hash, result_hash, chain_position, algorithm, signature_hash, signer_id, signer_role, verification_status)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		body.ResultID, pubHex, sigHex, prevHash, resultHash, chainPos,
+		"ed25519", hex.EncodeToString(sigDigest[:]), signerID, signerRole, "verified"); err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, 409, "result already signed — signature records are append-only and cannot be overwritten")
+			return
+		}
+		log.Error().Err(err).Int("result_id", body.ResultID).Msg("failed to persist result signature")
 		writeError(w, 500, "failed to persist result signature")
 		return
 	}
 	if mwHub != nil && mwHub.Kafka != nil {
-		mwHub.Kafka.Produce(r.Context(), KafkaMessage{Topic: "result-chain.signed", Key: fmt.Sprint(body.ResultID), Value: M{"result_id": body.ResultID, "hash": resultHash, "chain_position": chainPos}, Timestamp: time.Now()})
+		if perr := mwHub.Kafka.Produce(r.Context(), KafkaMessage{Topic: "result-chain.signed", Key: fmt.Sprint(body.ResultID), Value: M{"result_id": body.ResultID, "hash": resultHash, "chain_position": chainPos, "signer_id": signerID}, Timestamp: time.Now()}); perr != nil {
+			log.Error().Err(perr).Int("result_id", body.ResultID).Msg("SECURITY: result-signature event publish failed")
+		}
 	}
 	// TigerBeetle is intentionally not used for result-signature activity. It is
 	// reserved for independently approved device logistics/reimbursement commitments
 	// and must not carry result, voter, ballot, or electoral outcome information.
-	writeJSON(w, 200, M{"status": "signed", "signature": sig, "result_hash": resultHash, "chain_position": chainPos})
+	writeJSON(w, 200, M{"status": "signed", "signature": sigHex, "result_hash": resultHash, "chain_position": chainPos,
+		"algorithm": "ed25519", "signer_id": signerID, "signer_pubkey": pubHex})
 }
 
 func handleResultQRData(w http.ResponseWriter, r *http.Request) {
@@ -972,8 +1135,8 @@ func handleExportPDFReport(w http.ResponseWriter, r *http.Request) {
 	if mwHub != nil && mwHub.OpenSearch != nil {
 		mwHub.OpenSearch.Index(ctx, "reports", fmt.Sprintf("report-%d", time.Now().Unix()), data)
 	}
-	dbExecCtx(ctx, `INSERT INTO audit_log (action, entity_type, details) VALUES (?,?,?)`,
-		"export_report", "report", "type="+reportType+" format="+format)
+	// R5-053: route through the hash-chained audit writer (no NULL block_hash bypass).
+	logAuditCtx(ctx, "export_report", "report", reportType, extractUserID(r), M{"type": reportType, "format": format})
 	if format == "html" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		renderHTMLReport(w, title, data)
@@ -1313,18 +1476,196 @@ func handleDataClassification(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"status": "classified"})
 }
 
+// ── NDPR right-to-erasure (R5-060 completeness, R5-067 lifecycle) ───────────
+//
+// Previously erasure blanked only biometric_profiles and left voter PII,
+// biometric_templates ciphertext, and the Rust vault (templates + cancelable
+// seeds) intact — and its audit row bypassed the hash chain. Erasure now:
+//   1. pseudonymizes voters PII (NOT NULL columns get '[ERASED]'/''; the row
+//      and electoral-geography keys survive because the Electoral Act requires
+//      the register itself to be retained — documented retention conflict);
+//   2. deletes biometric_templates ciphertext;
+//   3. blanks biometric_profiles;
+//   4. hard-deletes the Rust vault templates + cancelable transforms via the
+//      new /vault/erase route (failure is reported, never silently claimed);
+//   5. writes the audit entry through the hash-chained logAuditCtx.
+
+func biometricVaultErase(ctx context.Context, vin string) (int64, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("BIOMETRIC_SERVICE_URL")), "/")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:8091"
+	}
+	apiKey := strings.TrimSpace(os.Getenv("BIOMETRIC_VAULT_API_KEY"))
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("VAULT_API_TOKEN"))
+	}
+	if apiKey == "" {
+		return 0, fmt.Errorf("BIOMETRIC_VAULT_API_KEY not configured — cannot erase vault templates")
+	}
+	payload, _ := json.Marshal(M{"voter_vin": vin})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/vault/erase", bytes.NewReader(payload))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("vault erase call failed: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		RecordsDeleted int64  `json:"records_deleted"`
+		Error          string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("vault erase response decode: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("vault erase rejected (%d): %s", resp.StatusCode, out.Error)
+	}
+	return out.RecordsDeleted, nil
+}
+
+// executeDataErasure performs the full erasure and returns a per-step summary.
+func executeDataErasure(ctx context.Context, vin, reason string, actorID int) M {
+	summary := M{"vin": vin, "reason": reason, "steps": M{}}
+	steps := summary["steps"].(M)
+
+	if _, err := dbExecCtx(ctx, `UPDATE voters SET first_name='[ERASED]', last_name='[ERASED]', middle_name=NULL,
+		date_of_birth='', phone=NULL, email=NULL, address=NULL, biometric_hash=NULL, photo_hash=NULL, updated_at=CURRENT_TIMESTAMP
+		WHERE vin=?`, vin); err != nil {
+		steps["voters_pii"] = "error: " + err.Error()
+	} else {
+		steps["voters_pii"] = "pseudonymized"
+	}
+	if _, err := dbExecCtx(ctx, `DELETE FROM biometric_templates WHERE voter_vin=?`, vin); err != nil {
+		steps["biometric_templates"] = "error: " + err.Error()
+	} else {
+		steps["biometric_templates"] = "deleted"
+	}
+	if _, err := dbExecCtx(ctx, `UPDATE biometric_profiles SET template_data='[ERASED]', face_template='[ERASED]' WHERE voter_vin=?`, vin); err != nil {
+		steps["biometric_profiles"] = "error: " + err.Error()
+	} else {
+		steps["biometric_profiles"] = "blanked"
+	}
+	if deleted, err := biometricVaultErase(ctx, vin); err != nil {
+		steps["rust_vault"] = "error: " + err.Error()
+	} else {
+		steps["rust_vault"] = fmt.Sprintf("deleted %d records", deleted)
+	}
+
+	// Chained audit entry (R5-053: no more NULL block_hash bypass).
+	logAuditCtx(ctx, "data_erasure", "voter", vin, actorID, M{"reason": reason, "framework": "NDPR", "steps": steps})
+	return summary
+}
+
+// handleDataErasure is the legacy immediate-erasure endpoint (admin-only via
+// route guard). New integrations should use the dual-control lifecycle below.
 func handleDataErasure(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		VIN    string `json:"vin"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.VIN == "" {
 		writeError(w, 400, "vin and reason required")
 		return
 	}
-	dbExecCtx(r.Context(), `UPDATE biometric_profiles SET template_data='[ERASED]', face_template='[ERASED]' WHERE voter_vin=?`, body.VIN)
-	dbExecCtx(r.Context(), `INSERT INTO audit_log (action, entity_type, entity_id, details) VALUES (?,?,?,?)`, "data_erasure", "voter", body.VIN, "NDPR: "+body.Reason)
-	writeJSON(w, 200, M{"status": "erased", "vin": body.VIN})
+	actorID := extractUserID(r)
+	summary := executeDataErasure(r.Context(), body.VIN, body.Reason, actorID)
+	// Record an executed lifecycle row when the table exists (best effort —
+	// pre-migration dev databases may lack it).
+	if _, err := dbExecCtx(r.Context(), `INSERT INTO data_erasure_requests (vin, reason, requested_by, status, reviewed_by, reviewed_at, executed_at, review_notes)
+		VALUES (?,?,?,'executed',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'immediate admin erasure via /data/erasure')`,
+		body.VIN, body.Reason, actorID, actorID); err != nil {
+		log.Warn().Err(err).Msg("data_erasure_requests insert skipped (table missing?)")
+	}
+	summary["status"] = "erased"
+	writeJSON(w, 200, summary)
+}
+
+// handleDataErasureRequest creates a pending erasure request (R5-067 dual
+// control: the requester cannot approve their own request).
+func handleDataErasureRequest(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		VIN    string `json:"vin"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.VIN == "" || body.Reason == "" {
+		writeError(w, 400, "vin and reason required")
+		return
+	}
+	actorID := extractUserID(r)
+	res, err := dbExecCtx(r.Context(), `INSERT INTO data_erasure_requests (vin, reason, requested_by) VALUES (?,?,?)`,
+		body.VIN, body.Reason, actorID)
+	if err != nil {
+		writeError(w, 500, "failed to record erasure request (data_erasure_requests table required — migration 000033)")
+		return
+	}
+	id, _ := res.LastInsertId()
+	logAuditCtx(r.Context(), "data_erasure_request", "voter", body.VIN, actorID, M{"reason": body.Reason})
+	writeJSON(w, 201, M{"status": "pending", "request_id": id, "vin": body.VIN})
+}
+
+// handleDataErasureReview approves (and executes) or rejects a pending request.
+func handleDataErasureReview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RequestID int    `json:"request_id"`
+		Decision  string `json:"decision"` // "approve" | "reject"
+		Notes     string `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Decision != "approve" && body.Decision != "reject") {
+		writeError(w, 400, "request_id and decision (approve|reject) required")
+		return
+	}
+	reviewerID := extractUserID(r)
+	row, err := querySingleRowCtx(r.Context(), `SELECT * FROM data_erasure_requests WHERE id=?`, body.RequestID)
+	if err != nil {
+		writeError(w, 404, "erasure request not found")
+		return
+	}
+	if enhStr(row, "status") != "pending" {
+		writeError(w, 409, "request already "+enhStr(row, "status"))
+		return
+	}
+	// Dual control: requester may not review their own request.
+	if enhToInt(row["requested_by"]) == reviewerID && reviewerID != 0 {
+		writeError(w, 403, "dual control: the requester cannot review their own erasure request")
+		return
+	}
+	vin := enhStr(row, "vin")
+	if body.Decision == "reject" {
+		dbExecCtx(r.Context(), `UPDATE data_erasure_requests SET status='rejected', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, review_notes=? WHERE id=?`,
+			reviewerID, body.Notes, body.RequestID)
+		logAuditCtx(r.Context(), "data_erasure_rejected", "voter", vin, reviewerID, M{"request_id": body.RequestID, "notes": body.Notes})
+		writeJSON(w, 200, M{"status": "rejected", "request_id": body.RequestID})
+		return
+	}
+	summary := executeDataErasure(r.Context(), vin, enhStr(row, "reason"), reviewerID)
+	dbExecCtx(r.Context(), `UPDATE data_erasure_requests SET status='executed', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, executed_at=CURRENT_TIMESTAMP, review_notes=? WHERE id=?`,
+		reviewerID, body.Notes, body.RequestID)
+	summary["status"] = "executed"
+	summary["request_id"] = body.RequestID
+	writeJSON(w, 200, summary)
+}
+
+// handleDataErasureRequests lists erasure requests (optionally ?status=pending).
+func handleDataErasureRequests(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	q := `SELECT * FROM data_erasure_requests`
+	var args []interface{}
+	if status != "" {
+		q += ` WHERE status=?`
+		args = append(args, status)
+	}
+	q += ` ORDER BY requested_at DESC LIMIT 200`
+	rows, err := dbQueryCtx(r.Context(), q, args...)
+	if err != nil {
+		writeError(w, 500, "data_erasure_requests table required (migration 000033)")
+		return
+	}
+	writeJSON(w, 200, M{"requests": scanRows(rows)})
 }
 
 func handleObserverPhotoVerify(w http.ResponseWriter, r *http.Request) {
@@ -1356,29 +1697,93 @@ func handleObserverPhotoVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, M{"consensus_score": consensus, "observers_count": cnt + 1, "full_consensus": consensus >= 1})
 }
 
+// handleOfflineConflictResolve (R5-063) — the previous implementation compared
+// client-supplied timestamps, wrote one audit row, and returned a "merged"
+// object while changing no server state. Now the resolution is real:
+//   - the authoritative server version is read from the database, never from
+//     the client-echoed server_data;
+//   - server_wins / last_writer_wins against a still-mutable ('pending') result
+//     atomically applies the winning vote figures to the results table;
+//   - conflicts on validated/finalized results are refused (409) and must go
+//     through the reconciliation-case machinery (R5-016 immutability);
+//   - every resolution is audit-logged through the hash chain (R5-053).
 func handleOfflineConflictResolve(w http.ResponseWriter, r *http.Request) {
+	if _, err := requireRole(r, "admin", "presiding_officer", "collation_officer"); err != nil {
+		writeError(w, 403, "conflict resolution requires an election officer")
+		return
+	}
 	var body struct {
 		ResultID int    `json:"result_id"`
 		Local    M      `json:"local_data"`
 		Server   M      `json:"server_data"`
 		Strategy string `json:"strategy"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, 400, "invalid request")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ResultID <= 0 {
+		writeError(w, 400, "result_id and a valid strategy are required")
 		return
 	}
-	merged := body.Server
-	if body.Strategy == "last_writer_wins" {
-		if fmt.Sprint(body.Local["submitted_at"]) > fmt.Sprint(body.Server["submitted_at"]) {
-			merged = body.Local
+	if body.Strategy != "last_writer_wins" && body.Strategy != "server_wins" && body.Strategy != "local_wins" {
+		writeError(w, 400, "strategy must be one of: last_writer_wins, server_wins, local_wins")
+		return
+	}
+
+	serverRow, err := querySingleRowCtx(r.Context(), `SELECT * FROM results WHERE id=?`, body.ResultID)
+	if err != nil {
+		writeError(w, 404, "result not found")
+		return
+	}
+	status := enhStr(serverRow, "status")
+	if status != "pending" {
+		writeError(w, 409, fmt.Sprintf("result is %s — immutable; open a reconciliation case (/results/%d/reconciliation) instead of offline conflict resolution", status, body.ResultID))
+		return
+	}
+
+	winner := "server"
+	if body.Strategy == "local_wins" ||
+		(body.Strategy == "last_writer_wins" && fmt.Sprint(body.Local["submitted_at"]) > enhStr(serverRow, "submitted_at")) {
+		winner = "local"
+	}
+
+	updated := false
+	if winner == "local" {
+		// Apply only the scalar vote fields the offline client can authoritatively
+		// carry; anything absent keeps the server value.
+		totalValid := enhToInt(serverRow["total_valid_votes"])
+		rejected := enhToInt(serverRow["rejected_votes"])
+		totalCast := enhToInt(serverRow["total_votes_cast"])
+		accredited := enhToInt(serverRow["accredited_voters"])
+		if v, ok := body.Local["total_valid_votes"]; ok {
+			totalValid = enhToInt(v)
+		}
+		if v, ok := body.Local["rejected_votes"]; ok {
+			rejected = enhToInt(v)
+		}
+		if v, ok := body.Local["total_votes_cast"]; ok {
+			totalCast = enhToInt(v)
+		}
+		if v, ok := body.Local["accredited_voters"]; ok {
+			accredited = enhToInt(v)
+		}
+		if totalCast < totalValid+rejected {
+			writeError(w, 422, "local_data fails EC8A arithmetic (total_votes_cast < total_valid_votes + rejected_votes) — refusing to apply")
+			return
+		}
+		if _, err := dbExecCtx(r.Context(), `UPDATE results SET total_valid_votes=?, rejected_votes=?, total_votes_cast=?, accredited_voters=? WHERE id=? AND status='pending'`,
+			totalValid, rejected, totalCast, accredited, body.ResultID); err != nil {
+			writeError(w, 500, "failed to apply conflict resolution")
+			return
+		}
+		updated = true
+	}
+
+	logAuditCtx(r.Context(), "conflict_resolution", "result", fmt.Sprint(body.ResultID), extractUserID(r),
+		M{"strategy": body.Strategy, "winner": winner, "applied": updated})
+	if mwHub != nil && mwHub.Fluvio != nil {
+		if ferr := mwHub.Fluvio.Produce(r.Context(), "conflict-resolution", FluvioRecord{Topic: "conflict-resolution", Key: fmt.Sprint(body.ResultID), Value: M{"result_id": body.ResultID, "strategy": body.Strategy, "winner": winner}, Timestamp: time.Now()}); ferr != nil {
+			log.Error().Err(ferr).Int("result_id", body.ResultID).Msg("conflict-resolution event publish failed")
 		}
 	}
-	dbExecCtx(r.Context(), `INSERT INTO audit_log (action, entity_type, entity_id, details) VALUES (?,?,?,?)`,
-		"conflict_resolution", "result", fmt.Sprint(body.ResultID), "strategy="+body.Strategy)
-	if mwHub != nil && mwHub.Fluvio != nil {
-		mwHub.Fluvio.Produce(r.Context(), "conflict-resolution", FluvioRecord{Topic: "conflict-resolution", Key: fmt.Sprint(body.ResultID), Value: M{"result_id": body.ResultID, "strategy": body.Strategy}, Timestamp: time.Now()})
-	}
-	writeJSON(w, 200, M{"status": "resolved", "strategy": body.Strategy, "merged": merged})
+	writeJSON(w, 200, M{"status": "resolved", "strategy": body.Strategy, "winner": winner, "applied": updated})
 }
 
 func handleIVRVerify(w http.ResponseWriter, r *http.Request) {

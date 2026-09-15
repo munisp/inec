@@ -42,6 +42,33 @@ const (
 	TopicFluvioIngest    = "inec.fluvio.ingest"
 )
 
+// Topic consumer inventory (R5-062): produced-but-unconsumed topics are
+// deleted by broker retention — events on them are silently lost.
+//   - inec.results.submitted/validated/finalized: consumed by
+//     services/python-pipeline-optimizer (earliest offset, manual commit).
+//   - inec.results.disputed, inec.audit.log, inec.incidents.reported,
+//     inec.ingestion.*: NO consumer — the canonical result-write consumer is
+//     owned by wave W1 (see assurance handoff W4-HANDOFF.md).
+//   - inec.ballots.cast: RETIRED — no producer exists anywhere in the repo.
+//   - result-chain.signed: produced by handleSignResult; awaiting a consumer
+//     assignment (W1/W6 coordination).
+
+// ProduceCritical publishes a platform event whose loss is a security/audit
+// incident (R5-062). Unlike the fire-and-forget Produce call sites in
+// mw_handlers.go, failures are logged at error level AND returned so the
+// caller can fail the request instead of silently losing the event.
+func ProduceCritical(ctx context.Context, client KafkaClient, msg KafkaMessage) error {
+	if client == nil {
+		return fmt.Errorf("kafka client not configured")
+	}
+	if err := client.Produce(ctx, msg); err != nil {
+		log.Error().Err(err).Str("topic", msg.Topic).Str("key", msg.Key).
+			Msg("SECURITY: critical Kafka event publish failed — event may be lost")
+		return err
+	}
+	return nil
+}
+
 // unavailableKafkaClient never stores, synthesizes, or substitutes Kafka delivery.
 // It preserves the dependency error for callers until the configured native brokers recover.
 type unavailableKafkaClient struct {

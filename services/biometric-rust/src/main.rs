@@ -107,6 +107,13 @@ async fn main() {
                 move || vault_audit(s)
             }),
         )
+        .route(
+            "/vault/erase",
+            post({
+                let s = state.clone();
+                move |actor, body| vault_erase(s, actor, body)
+            }),
+        )
         // Cancelable biometrics
         .route(
             "/cancelable/create",
@@ -355,6 +362,11 @@ struct RotateKeyRequest {
     key_id: String,
 }
 
+#[derive(Deserialize)]
+struct EraseRequest {
+    voter_vin: String,
+}
+
 async fn vault_stats(state: Arc<AppState>) -> impl IntoResponse {
     match state.vault.get_stats().await {
         Ok(stats) => Json(stats).into_response(),
@@ -443,6 +455,40 @@ async fn vault_decrypt(
         .into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// NDPR right-to-erasure (R5-060): hard-delete all vault templates and
+/// cancelable transforms for a voter. Authenticated by the same fail-closed
+/// API-key middleware as the other vault routes.
+async fn vault_erase(
+    state: Arc<AppState>,
+    Extension(actor): Extension<VaultActor>,
+    Json(req): Json<EraseRequest>,
+) -> impl IntoResponse {
+    if req.voter_vin.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "voter_vin is required"})),
+        )
+            .into_response();
+    }
+    match state
+        .vault
+        .erase_voter_templates(&req.voter_vin, &actor.0)
+        .await
+    {
+        Ok(deleted) => Json(serde_json::json!({
+            "status": "erased",
+            "voter_vin": req.voter_vin,
+            "records_deleted": deleted,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response(),
