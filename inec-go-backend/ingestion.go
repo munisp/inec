@@ -924,7 +924,7 @@ func processOfflineSync(job *IngestionJob) error {
 		if applyErr == nil {
 			res.Source = "offline_sync"
 			res.SourceRef = deviceID
-			_, applyErr = applyIngestedResult(context.Background(), res)
+			_, _, applyErr = applyIngestedResult(context.Background(), res)
 		}
 	case "accreditation":
 		_, applyErr = applyIngestedAccreditation(context.Background(), payload)
