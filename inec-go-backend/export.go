@@ -218,12 +218,12 @@ func handleExportCollation(w http.ResponseWriter, r *http.Request) {
 		writer.Flush()
 	default:
 		writeJSON(w, 200, M{
-			"level":           level,
-			"election_id":     electionID,
-			"parties":         parties,
-			"status_filter":   statusFilter,
-			"provisional":     includePending,
-			"exported_at":     time.Now().UTC().Format(time.RFC3339),
+			"level":         level,
+			"election_id":   electionID,
+			"parties":       parties,
+			"status_filter": statusFilter,
+			"provisional":   includePending,
+			"exported_at":   time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }
