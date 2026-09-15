@@ -349,7 +349,7 @@ func handleDataRetentionStatus(w http.ResponseWriter, r *http.Request) {
 		cutoff := time.Now().AddDate(0, 0, -p.RetentionDays).Format("2006-01-02")
 		var total, expired int
 		var totalErr, expiredErr error
-		totalErr = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", p.Table)).Scan(&total)          // #nosec G201 -- hardcoded table literal
+		totalErr = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", p.Table)).Scan(&total)                                          // #nosec G201 -- hardcoded table literal
 		expiredErr = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s < ?", p.Table, p.TimestampCol), cutoff).Scan(&expired) // #nosec G201 -- hardcoded literals
 
 		entry := M{

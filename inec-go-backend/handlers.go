@@ -7,13 +7,16 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -491,22 +494,56 @@ func logAudit(action, entityType, entityID string, userID int, details map[strin
 	logAuditCtx(context.Background(), action, entityType, entityID, userID, details)
 }
 
+// auditChainMu serializes audit-chain appends in-process (the cross-process
+// guarantee comes from the FOR UPDATE tail lock inside the transaction).
+var auditChainMu sync.Mutex
+
+// logAuditCtx appends to the hash-chained audit log. W4-HANDOFF §1:
+// (a) the preimage binds details + user_id + entity_type + the exact stored
+// timestamp, so tampering with any field is detectable on recomputation;
+// (b) the tail read and the INSERT run in ONE transaction with SELECT ...
+// FOR UPDATE on the tail row (plus an in-process mutex), so concurrent
+// writers on this or another replica cannot fork the chain;
+// (c) failures stay loud. The Go-computed timestamp is stored explicitly so
+// verifiers can recompute the exact preimage.
 func logAuditCtx(ctx context.Context, action, entityType, entityID string, userID int, details map[string]interface{}) {
+	detailsJSON, _ := json.Marshal(details)
+	auditChainMu.Lock()
+	defer auditChainMu.Unlock()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Error().Err(err).Msg("SECURITY: audit chain tx begin failed")
+		return
+	}
+	defer tx.Rollback()
+	tailQ := "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+	if usePostgres {
+		tailQ += " FOR UPDATE"
+	}
 	var prevHash sql.NullString
-	dbQueryRowCtx(ctx, "SELECT block_hash FROM audit_log ORDER BY id DESC LIMIT 1").Scan(&prevHash)
+	if err := tx.QueryRowContext(ctx, tailQ).Scan(&prevHash); err != nil && err != sql.ErrNoRows {
+		log.Error().Err(err).Msg("SECURITY: audit chain tail read failed")
+		return
+	}
 	prev := strings.Repeat("0", 64)
 	if prevHash.Valid {
 		prev = prevHash.String
 	}
-	blockData := fmt.Sprintf("%s%s%s%s", prev, action, entityID, time.Now().UTC().Format(time.RFC3339))
+	ts := time.Now().UTC().Format(time.RFC3339)
+	blockData := fmt.Sprintf("%s|%s|%s|%s|%d|%s|%s",
+		prev, action, entityType, entityID, userID, ts, string(detailsJSON))
 	h := sha256.Sum256([]byte(blockData))
 	blockHash := hex.EncodeToString(h[:])
-	detailsJSON, _ := json.Marshal(details)
 	// Audit failures must be loud, not silent — the chain is a security control.
-	if _, err := dbExecCtx(ctx, "INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash) VALUES (?,?,?,?,?,?,?)",
-		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, block_hash, prev_block_hash, \"timestamp\") VALUES (?,?,?,?,?,?,?,?)",
+		action, entityType, entityID, userID, string(detailsJSON), blockHash, prev, ts); err != nil {
 		log.Error().Err(err).Str("action", action).Str("entity_type", entityType).Str("entity_id", entityID).
 			Msg("SECURITY: audit log write failed")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Error().Err(err).Msg("SECURITY: audit chain commit failed")
 	}
 }
 
@@ -703,8 +740,6 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ec8aHash := computeEC8AHash(req.ElectionID, req.PollingUnitCode, partyEntries, req.AccreditedVoters, req.RejectedVotes)
-
 	userRole, _ := user["role"].(string)
 	if !checkPermission(userRole, "submit_result") {
 		writeError(w, 403, "Permission denied by Permify")
@@ -715,93 +750,64 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	// Result integrity is governed by the immutable evidence chain and approved
 	// cryptographic controls, not an operational-settlement ledger.
 
-	// Use transaction for atomic result + party scores insert
+	// W1 handoff (R5-001): the interactive submit path goes through the SAME
+	// canonical apply as queue ingestion — one transaction covering the
+	// results row, party scores, policy version, and immutable evidence
+	// event; one implementation of idempotency (R5-025), override
+	// flag-for-review (R5-017), and first-writer-wins conflict handling.
 	tx, txErr := db.BeginTx(r.Context(), nil)
 	if txErr != nil {
 		writeError(w, 500, "database transaction error")
 		return
 	}
-	// Insert with explicit error handling (R4-22): the UNIQUE constraint on
-	// results(election_id, polling_unit_code) (migration 000028) closes the
-	// TOCTOU race where two concurrent submissions both passed the COUNT
-	// pre-check. A unique violation follows the existing duplicate semantics
-	// — the result is already recorded — reported as 409 Conflict instead of
-	// a 500 (insertReturningID previously swallowed the error, returning 0).
-	// Overridden results enter as 'disputed' so collation officers must review
-	// the anomaly before the figures can count (R5-017 flag-for-review path).
-	initialStatus := "pending"
-	if overridden {
-		initialStatus = "disputed"
-	}
-	var resultID int64
-	err = tx.QueryRowContext(r.Context(), convertPlaceholders(`INSERT INTO results (election_id, polling_unit_code, presiding_officer_id, status,
-		total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
-		ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status, idempotency_key, correction_reason)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`),
-		req.ElectionID, req.PollingUnitCode, userID, initialStatus,
-		totalValid, req.RejectedVotes, totalCast, req.AccreditedVoters,
-		ec8aHash, nil, "NOT_APPLICABLE", "PENDING", nilIfEmpty(req.IdempotencyKey), nilIfEmpty(req.OverrideReason)).Scan(&resultID)
-	if err != nil {
+	outcome, resultID, applyErr := applyResultTx(r.Context(), tx, ingestedResult{
+		ElectionID:       req.ElectionID,
+		PollingUnitCode:  req.PollingUnitCode,
+		PartyScores:      partyEntries,
+		AccreditedVoters: req.AccreditedVoters,
+		RejectedVotes:    req.RejectedVotes,
+		SubmittedBy:      userID,
+		Source:           "ingestion_api",
+		SourceRef:        req.IdempotencyKey,
+		IdempotencyKey:   req.IdempotencyKey,
+		OverrideReason:   req.OverrideReason,
+	})
+	if applyErr != nil {
 		tx.Rollback()
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			// Unique-violation on idempotency key = committed retry; on
-			// (election, PU) = a canonical result already exists.
-			if req.IdempotencyKey != "" {
-				var existingID int64
-				var existingStatus string
-				if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE idempotency_key=?", req.IdempotencyKey).Scan(&existingID, &existingStatus); qerr == nil {
-					writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
-					return
-				}
+		// The UNIQUE constraint on results.idempotency_key (R5-025) surfaces
+		// as 23505 when a committed retry races our replay pre-check.
+		var pqErr *pq.Error
+		if errors.As(applyErr, &pqErr) && pqErr.Code == "23505" && req.IdempotencyKey != "" {
+			var existingID int64
+			var existingStatus string
+			if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE idempotency_key=?", req.IdempotencyKey).Scan(&existingID, &existingStatus); qerr == nil {
+				writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
+				return
 			}
-			logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
-				map[string]interface{}{"reason": "duplicate_submission_race", "election_id": req.ElectionID})
-			writeError(w, http.StatusConflict, "Result already submitted for this polling unit; use the correction flow to amend it")
+		}
+		if strings.Contains(applyErr.Error(), "evidence could not be recorded") {
+			writeError(w, http.StatusServiceUnavailable, applyErr.Error())
 			return
 		}
-		log.Error().Err(err).Int("election_id", req.ElectionID).Str("pu", req.PollingUnitCode).Msg("result insert failed")
+		log.Error().Err(applyErr).Int("election_id", req.ElectionID).Str("pu", req.PollingUnitCode).Msg("result apply failed")
 		writeError(w, 500, "failed to save result")
 		return
 	}
-
-	// Batch insert party scores (single multi-value INSERT on PostgreSQL)
-	if err := batchInsertPartyScores(tx, resultID, req.PartyScores); err != nil {
+	if outcome != resultApplied {
+		// The COUNT pre-check above already rejected non-race duplicates; an
+		// outcome here means a concurrent submission won the race (R4-22).
 		tx.Rollback()
-		writeError(w, 500, "failed to save party scores")
-		return
-	}
-
-	// A submission is not considered an integrity-controlled lifecycle event until
-	// it has an immutable evidence record. In production this also requires an
-	// approved policy version and a reachable Ed25519 signing service.
-	policyVersionID, err := requirePolicyVersion(r.Context(), tx, req.ElectionID)
-	if err != nil {
-		tx.Rollback()
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if _, err := recordIntegrityEventTx(r.Context(), tx, integrityEventInput{
-		ResultID:        resultID,
-		EventType:       "RESULT_SUBMITTED",
-		PolicyVersionID: policyVersionID,
-		Visibility:      integrityVisibilityObserver,
-		CreatedBy:       userID,
-		PublicPayload: M{
-			"polling_unit_code": req.PollingUnitCode,
-			"status":            "pending",
-			"total_votes_cast":  totalCast,
-		},
-		PrivatePayload: M{
-			"election_id":       req.ElectionID,
-			"polling_unit_code": req.PollingUnitCode,
-			"party_scores":      req.PartyScores,
-			"accredited_voters": req.AccreditedVoters,
-			"rejected_votes":    req.RejectedVotes,
-			"ec8a_hash":         ec8aHash,
-		},
-	}); err != nil {
-		tx.Rollback()
-		writeError(w, http.StatusServiceUnavailable, "result evidence could not be recorded: "+err.Error())
+		if outcome == resultDuplicate && req.IdempotencyKey != "" {
+			var existingID int64
+			var existingStatus string
+			if qerr := dbQueryRowCtx(r.Context(), "SELECT id, status FROM results WHERE election_id=? AND polling_unit_code=?", req.ElectionID, req.PollingUnitCode).Scan(&existingID, &existingStatus); qerr == nil {
+				writeJSON(w, 200, M{"id": existingID, "status": existingStatus, "duplicate": true, "message": "Submission already recorded (idempotent replay)"})
+				return
+			}
+		}
+		logAudit("RESULT_SUBMIT_REJECTED", "result", req.PollingUnitCode, userID,
+			map[string]interface{}{"reason": "duplicate_submission_race", "election_id": req.ElectionID, "outcome": string(outcome)})
+		writeError(w, http.StatusConflict, "Result already submitted for this polling unit; use the correction flow to amend it")
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -817,6 +823,8 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 	dbReadQueryRow(r.Context(), `SELECT s.code FROM polling_units pu
 		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code
 		JOIN states s ON s.code=l.state_code WHERE pu.code=?`, req.PollingUnitCode).Scan(&puStateCode)
+	// W6 handoff: metric emission point for the result-submission hot path.
+	resultsSubmitted.WithLabelValues(puStateCode, "submitted").Inc()
 	go broadcastWSSharded(M{"type": "result_updated", "pu_code": req.PollingUnitCode, "election_id": req.ElectionID, "state_code": puStateCode}, puStateCode)
 
 	// Broadcast to SSE observers
@@ -843,7 +851,7 @@ func handleSubmitResult(w http.ResponseWriter, r *http.Request) {
 
 	invalidateCollationCache(req.ElectionID)
 
-	writeJSON(w, 200, M{"id": resultID, "status": initialStatus, "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "overridden": overridden, "message": "Result submitted. Proceeding to Edge Validation."})
+	writeJSON(w, 200, M{"id": resultID, "status": submittedStatus(overridden), "tigerbeetle_status": "NOT_APPLICABLE", "workflow_id": wfID, "phase": "Pre-Validation", "overridden": overridden, "message": "Result submitted. Proceeding to Edge Validation."})
 }
 
 func handleValidateResult(w http.ResponseWriter, r *http.Request) {
@@ -1994,15 +2002,82 @@ func handleRecentClientMetrics(w http.ResponseWriter, r *http.Request) {
 
 // ── Audit ──
 
+// auditPIIKeyPattern matches JSON keys whose values are personal data and
+// must never leave the audit trail unredacted for non-admin viewers (R5-066).
+var auditPIIKeyPattern = regexp.MustCompile(`(?i)phone|email|vin|pvc|nin|passport|password|token|secret|api_key|apikey|address|lat|lng|gps|location|full_name|device_id|imei`)
+
+// redactAuditDetailsPII returns the details JSON with PII values masked.
+// Fail-closed: unparseable-but-nonempty payloads are replaced entirely.
+func redactAuditDetailsPII(details string) string {
+	if strings.TrimSpace(details) == "" {
+		return details
+	}
+	var payload interface{}
+	if err := json.Unmarshal([]byte(details), &payload); err != nil {
+		return `"***REDACTED***"`
+	}
+	masked := redactPIIValue(payload)
+	out, err := json.Marshal(masked)
+	if err != nil {
+		return `"***REDACTED***"`
+	}
+	return string(out)
+}
+
+func redactPIIValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, val := range t {
+			if auditPIIKeyPattern.MatchString(k) {
+				t[k] = "***REDACTED***"
+			} else {
+				t[k] = redactPIIValue(val)
+			}
+		}
+		return t
+	case []interface{}:
+		for i, val := range t {
+			t[i] = redactPIIValue(val)
+		}
+		return t
+	default:
+		return v
+	}
+}
+
+// handleAuditTrail serves the hash-chained audit trail to staff. R5-066:
+// gated to admin/collation_officer; explicit column projection; staff
+// identities (username/full_name) are exposed to ADMIN only; PII inside the
+// details payloads is redacted for non-admin viewers.
 func handleAuditTrail(w http.ResponseWriter, r *http.Request) {
+	user, err := getCurrentUser(r)
+	if err != nil {
+		writeError(w, 401, "authentication required")
+		return
+	}
+	role, _ := user["role"].(string)
+	if role != "admin" && role != "collation_officer" {
+		writeError(w, 403, "insufficient role for audit trail access")
+		return
+	}
+	isAdmin := role == "admin"
+
 	et := r.URL.Query().Get("entity_type")
 	eid := r.URL.Query().Get("entity_id")
 	action := r.URL.Query().Get("action")
 	limit := queryParamInt(r, "limit", 50)
 	offset := queryParamInt(r, "offset", 0)
 
-	q := "SELECT a.*, u.username, u.full_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE 1=1"
+	// Explicit projection (R5-066): no a.*, no staff identity join unless admin.
+	projection := "a.id, a.action, a.entity_type, a.entity_id, a.user_id, a.details, a.block_hash, a.prev_block_hash, a.\"timestamp\""
+	join := ""
+	if isAdmin {
+		projection += ", u.username, u.full_name"
+		join = " LEFT JOIN users u ON u.id=a.user_id"
+	}
+	q := "SELECT " + projection + " FROM audit_log a" + join + " WHERE 1=1"
 	var params []interface{}
+	// Whitelisted, bound filters only.
 	if et != "" {
 		q += " AND a.entity_type=?"
 		params = append(params, et)
@@ -2015,14 +2090,35 @@ func handleAuditTrail(w http.ResponseWriter, r *http.Request) {
 		q += " AND a.action=?"
 		params = append(params, action)
 	}
-	countQ := strings.Replace(q, "SELECT a.*, u.username, u.full_name", "SELECT COUNT(*) as total", 1)
+	countQ := "SELECT COUNT(*) FROM audit_log a WHERE 1=1"
+	var countParams []interface{}
+	if et != "" {
+		countQ += " AND a.entity_type=?"
+		countParams = append(countParams, et)
+	}
+	if eid != "" {
+		countQ += " AND a.entity_id=?"
+		countParams = append(countParams, eid)
+	}
+	if action != "" {
+		countQ += " AND a.action=?"
+		countParams = append(countParams, action)
+	}
 	var total int
-	dbQueryRowCtx(r.Context(), countQ, params...).Scan(&total)
+	dbQueryRowCtx(r.Context(), countQ, countParams...).Scan(&total)
 
 	q += " ORDER BY a.timestamp DESC LIMIT ? OFFSET ?"
 	params = append(params, limit, offset)
 	rows, _ := dbQueryCtx(r.Context(), q, params...)
-	writeJSON(w, 200, M{"total": total, "entries": scanRows(rows)})
+	entries := scanRows(rows)
+	if !isAdmin {
+		for _, e := range entries {
+			if d, ok := e["details"].(string); ok {
+				e["details"] = redactAuditDetailsPII(d)
+			}
+		}
+	}
+	writeJSON(w, 200, M{"total": total, "entries": entries})
 }
 
 func handleVerifyResult(w http.ResponseWriter, r *http.Request) {
@@ -2105,6 +2201,7 @@ func enforceStateTenancy(w http.ResponseWriter, r *http.Request, user jwt.MapCla
 //   - election has NO PU-level assignments at all: the registry has not been
 //     populated for this election — the control is unenforceable, so degrade
 //     to state tenancy with a loud warning log (never silently).
+//
 // Query errors fail closed (500).
 func enforceOfficerPUBinding(w http.ResponseWriter, r *http.Request, user jwt.MapClaims, electionID int, puCode string) bool {
 	role, _ := user["role"].(string)

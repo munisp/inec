@@ -244,15 +244,23 @@ func publishResultEvent(topic string, resultID int64, puCode string, electionID 
 	for k, v := range extra {
 		event[k] = v
 	}
-	mwHub.Kafka.Produce(ctx, KafkaMessage{
+	// W4-HANDOFF §6 (R5-062): result lifecycle events are audit-critical —
+	// a lost publish leaves downstream collation/audit consumers blind. Use
+	// ProduceCritical so failures are loud error logs, not silent drops.
+	if err := ProduceCritical(ctx, mwHub.Kafka, KafkaMessage{
 		Topic: topic,
 		Key:   fmt.Sprintf("result-%d", resultID),
 		Value: event,
-	})
-	mwHub.Fluvio.Produce(ctx, TopicFluvioIngest, FluvioRecord{
+	}); err != nil {
+		log.Error().Err(err).Str("topic", topic).Int64("result_id", resultID).
+			Msg("SECURITY: result event lost — downstream consumers will not see this lifecycle transition")
+	}
+	if err := mwHub.Fluvio.Produce(ctx, TopicFluvioIngest, FluvioRecord{
 		Key:   fmt.Sprintf("result-%d", resultID),
 		Value: event,
-	})
+	}); err != nil {
+		log.Error().Err(err).Int64("result_id", resultID).Msg("SECURITY: Fluvio result event publish failed")
+	}
 	mwHub.Dapr.PublishEvent(ctx, "inec-pubsub", topic, event)
 }
 
@@ -266,11 +274,15 @@ func publishAuditEvent(action, entityType, entityID string, userID int, details 
 		"details":     details,
 		"timestamp":   time.Now().UTC().Format(time.RFC3339),
 	}
-	mwHub.Kafka.Produce(ctx, KafkaMessage{
+	// W4-HANDOFF §6: audit events are audit-critical — ProduceCritical.
+	if err := ProduceCritical(ctx, mwHub.Kafka, KafkaMessage{
 		Topic: TopicAuditLog,
 		Key:   fmt.Sprintf("%s-%s", entityType, entityID),
 		Value: event,
-	})
+	}); err != nil {
+		log.Error().Err(err).Str("action", action).Str("entity_id", entityID).
+			Msg("SECURITY: audit event lost — Kafka audit trail will be incomplete")
+	}
 }
 
 func cacheGet(key string) (string, error) {

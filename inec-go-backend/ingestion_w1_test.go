@@ -53,12 +53,12 @@ func w1ProvisionScratch(baseDSN string) {
 		}
 		defer raw.Close()
 		for _, f := range []string{
-			"migrations/000001_initial_schema.up.sql",     // elections, polling_units, results, parties
-			"migrations/000006_bvas_extended.up.sql",      // bvas_accreditations
-			"migrations/000012_api_integrations.up.sql",   // ingestion_jobs, offline_sync_queue, dead_letter_queue
-			"migrations/000021_core_extended.up.sql",      // audit_log
+			"migrations/000001_initial_schema.up.sql",      // elections, polling_units, results, parties
+			"migrations/000006_bvas_extended.up.sql",       // bvas_accreditations
+			"migrations/000012_api_integrations.up.sql",    // ingestion_jobs, offline_sync_queue, dead_letter_queue
+			"migrations/000021_core_extended.up.sql",       // audit_log
 			"migrations/000022_election_management.up.sql", // result_party_scores
-			"migrations/000028_results_unique_constraint.up.sql",
+
 			"../migrations/000019_election_evidence_integrity.sql", // result_evidence_events
 			"migrations/000023_biometric.up.sql",                   // biometric_profiles, offline_enrollment_queue
 			"migrations/000033_ingestion_apply_and_idempotency.up.sql",
@@ -77,6 +77,16 @@ func w1ProvisionScratch(baseDSN string) {
 		compat := openPgCompat(dsn)
 		defer compat.Close()
 		initIngestionTables(compat)
+		// results columns the canonical apply writes (from 000036, which
+		// itself depends on tables outside this harness — mirror just the
+		// columns, exactly as production has them).
+		if _, err := compat.Exec(`ALTER TABLE results ADD COLUMN IF NOT EXISTS correction_reason text;
+			ALTER TABLE results ADD COLUMN IF NOT EXISTS idempotency_key text;
+			CREATE UNIQUE INDEX IF NOT EXISTS results_idempotency_key_unique ON results (idempotency_key) WHERE idempotency_key IS NOT NULL;
+			CREATE UNIQUE INDEX IF NOT EXISTS results_canonical_pu_unique ON results (election_id, polling_unit_code) WHERE status <> ALL (ARRAY['superseded','voided'])`); err != nil {
+			w1ScratchErr = fmt.Errorf("results idempotency columns: %w", err)
+			return
+		}
 		// Seed: one active election, one PU, parties.
 		seed := `
 		INSERT INTO parties (code, name, abbreviation) VALUES ('APC','All Progressives','APC'),('PDP','Peoples Democratic','PDP') ON CONFLICT (code) DO NOTHING;
@@ -348,6 +358,12 @@ func TestW1RecoverPendingDrainsEverything(t *testing.T) {
 	if _, err := testDB.Exec("DELETE FROM ingestion_jobs"); err != nil {
 		t.Fatal(err)
 	}
+	// Clean prior runs' applied results too — the canonical apply is
+	// first-writer-wins (ON CONFLICT DO NOTHING), so a leftover row from an
+	// earlier suite run would make this test assert on stale state.
+	if _, err := testDB.Exec("DELETE FROM results WHERE polling_unit_code LIKE 'PU-W1-R%'"); err != nil {
+		t.Fatal(err)
+	}
 	// 7 pending + 1 stale in_progress on PUs dedicated to this test.
 	pus := []string{"PU-W1-R01", "PU-W1-R02", "PU-W1-R03", "PU-W1-R04", "PU-W1-R05", "PU-W1-R06", "PU-W1-R07", "PU-W1-R08"}
 	for i, pu := range pus {
@@ -471,13 +487,13 @@ func TestW1AccreditationSyncAppliesAndDedupes(t *testing.T) {
 	w1TestDB(t)
 	hash := strings.Repeat("ab", 32)
 	payload := map[string]interface{}{
-		"device_id":          "BVAS-T9",
-		"election_id":        1,
-		"polling_unit_code":  "PU-W1-001",
-		"voter_pvc_hash":     hash,
-		"biometric_match":    true,
-		"pvc_verified":       true,
-		"method":             "biometric",
+		"device_id":         "BVAS-T9",
+		"election_id":       1,
+		"polling_unit_code": "PU-W1-001",
+		"voter_pvc_hash":    hash,
+		"biometric_match":   true,
+		"pvc_verified":      true,
+		"method":            "biometric",
 	}
 	outcome, err := applyIngestedAccreditation(context.Background(), payload)
 	if err != nil || outcome != resultApplied {

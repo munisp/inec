@@ -159,7 +159,6 @@ func main() {
 	initPgBouncerAwarePooling(db)
 	initPgpool()
 	go periodicPoolStats()
-	initRingBufferQueue()
 	initShardedWSHub()
 	initCollationCache()
 	go trackIngestionThroughput()
@@ -212,6 +211,15 @@ func main() {
 	if shouldSeedE2EFixtures() {
 		log.Info().Msg("Seeding declared E2E fixtures in explicit non-production environment")
 		seedDatabase(db)
+	}
+	// W6 handoff: --migrate-only runs schema init + migrations and exits
+	// cleanly (for deploy init containers / CI schema gates) — no HTTP
+	// server, no background workers.
+	for _, arg := range os.Args[1:] {
+		if arg == "--migrate-only" {
+			log.Info().Msg("--migrate-only: schema init and migrations complete, exiting")
+			os.Exit(0)
+		}
 	}
 	initOpenAPIRoutes()
 
@@ -454,12 +462,29 @@ func main() {
 	r.HandleFunc("/security/data-classification", adminOnly(handleDataClassificationList)).Methods("GET")
 	r.HandleFunc("/security/events", adminOnly(handleSecurityEvents)).Methods("GET")
 
-	// SMS/USSD Gateway — auth required
-	r.HandleFunc("/sms/verify", authRequired(handleSMSVerify)).Methods("POST")
+	// SMS/USSD Gateway — W5_HANDOFF §1: telco aggregator callbacks cannot
+	// carry JWTs; they authenticate via the provider HMAC guard
+	// (telcoProviderAuth, fail-closed on TELCO_WEBHOOK_SECRET).
+	r.HandleFunc("/sms/verify", telcoProviderAuth(handleSMSVerify)).Methods("POST")
 	r.HandleFunc("/sms/stats", readAuth(handleSMSStats)).Methods("GET")
-	r.HandleFunc("/ussd/gateway", authRequired(handleUSSDGateway)).Methods("POST")
-	r.HandleFunc("/ussd/session", authRequired(handleUSSDSession)).Methods("POST")
+	r.HandleFunc("/ussd/gateway", telcoProviderAuth(handleUSSDGateway)).Methods("POST")
+	r.HandleFunc("/ussd/session", telcoProviderAuth(handleUSSDSession)).Methods("POST")
 	r.HandleFunc("/ussd/dashboard", adminOnly(handleUSSDDashboard)).Methods("GET")
+
+	// W5 voter-channel routes (R5-071/072/073/078).
+	r.HandleFunc("/sms/inbound", telcoProviderAuth(handleSMSVerify)).Methods("POST") // MO-SMS webhook (RESULT/VERIFY/STATUS)
+	r.HandleFunc("/ussd/voter", telcoProviderAuth(USSDHandler)).Methods("POST")      // AT-form multilingual voter-services USSD
+	r.HandleFunc("/ivr/start", telcoProviderAuth(IVRStartHandler)).Methods("POST")
+	r.HandleFunc("/ivr/action", telcoProviderAuth(IVRActionHandler)).Methods("POST")
+	r.HandleFunc("/ivr/incidents", readAuth(IVRIncidentsHandler)).Methods("GET")
+
+	// Public voter complaint channel (self-rate-limited; no auth wall by design).
+	r.HandleFunc("/public/incidents", handlePublicIncident).Methods("POST")
+	r.HandleFunc("/public/incidents/meta", handlePublicIncidentMeta).Methods("GET")
+
+	// WhatsApp voter self-service (X-Hub-Signature-256 checked inside the
+	// handler; GET is Meta's webhook verification).
+	r.HandleFunc("/webhooks/whatsapp", handleWhatsAppVoterWebhook).Methods("GET", "POST")
 
 	// AI Analytics (proxy to Python service) — auth required
 	r.HandleFunc("/ai/anomalies", readAuth(handleAIAnomalies)).Methods("GET")
@@ -866,6 +891,11 @@ func main() {
 	// Data Sovereignty (#20) + Erasure
 	r.HandleFunc("/data/classification", adminOnly(handleDataClassification)).Methods("GET", "POST")
 	r.HandleFunc("/data/erasure", adminOnly(handleDataErasure)).Methods("POST")
+	// W4-HANDOFF §7 (R5-067): dual-control erasure lifecycle — request by any
+	// staff identity, review/approve by a DIFFERENT admin, admin list.
+	r.HandleFunc("/data/erasure/requests", writeAuth(handleDataErasureRequest)).Methods("POST")
+	r.HandleFunc("/data/erasure/requests", adminOnly(handleDataErasureRequests)).Methods("GET")
+	r.HandleFunc("/data/erasure/review", adminOnly(handleDataErasureReview)).Methods("POST")
 
 	// Observer Photo Verification (#18)
 	r.HandleFunc("/observer/photo-verify", writeAuth(handleObserverPhotoVerify)).Methods("POST")
@@ -969,23 +999,26 @@ func main() {
 	r.Handle("/metrics", metricsBearerGuard(metricsHandler())).Methods("GET")
 
 	// Middleware chain: panic recovery → request ID → tracing → access log → input validation → metrics → CORS → auth → CSRF → security → WAF → rate limit → load shed → role rate → gzip → size limit
+	// W8 server gate: minimum mobile app version (X-App-Version < MIN_APP_VERSION → 426).
+	initAppVersionGate()
 	handler := panicRecoveryMiddleware(
 		requestIDMiddleware(
-			otelTracingMiddleware(
-				tracingMiddleware(
-					accessLogMiddleware(
-						inputValidationMiddleware(
-							metricsMiddleware(
-								corsProductionMiddleware(
-									jwtAuthMiddleware(
-										csrfMiddleware(
-											enhancedSecurityHeaders(
-												wafMiddleware(
-													requestSizeLimit(
-														rateLimitMiddleware(
-															loadSheddingMiddleware(
-																roleBasedRateLimit(
-																	gzipMiddleware(r)))))))))))))))))
+			minAppVersionMiddleware(
+				otelTracingMiddleware(
+					tracingMiddleware(
+						accessLogMiddleware(
+							inputValidationMiddleware(
+								metricsMiddleware(
+									corsProductionMiddleware(
+										jwtAuthMiddleware(
+											csrfMiddleware(
+												enhancedSecurityHeaders(
+													wafMiddleware(
+														requestSizeLimit(
+															rateLimitMiddleware(
+																loadSheddingMiddleware(
+																	roleBasedRateLimit(
+																		gzipMiddleware(r))))))))))))))))))
 
 	addr := ":8088"
 	if p := os.Getenv("PORT"); p != "" {
@@ -1031,6 +1064,13 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	// W1 handoff (R5-008): drain in-flight ingestion jobs before releasing
+	// middleware/DB dependencies; survivors stay 'pending' and are recovered
+	// on next start.
+	if !waitForIngestionDrain(10 * time.Second) {
+		log.Warn().Msg("ingestion drain timed out during shutdown — pending jobs will be recovered on next start")
+	}
 
 	// Stop durable workers before releasing middleware or database dependencies.
 	stopExternalIntegrationDeliveryWorker()

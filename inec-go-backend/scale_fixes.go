@@ -1,7 +1,6 @@
 package main
 
 import (
-	"container/ring"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -17,161 +16,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 )
-
-// ── CRITICAL #2: Bounded Ring Buffer Ingestion Queue ──
-// Replaces unbounded []IngestionJob with a fixed-capacity ring buffer.
-// At 176K polling units, the old queue would grow without bound and
-// linear scan (O(n) per job) would become a bottleneck.
-
-const ingestionQueueCapacity = 10000
-
-type RingBufferQueue struct {
-	mu       sync.RWMutex
-	buf      *ring.Ring
-	index    map[string]*IngestionJob // O(1) lookup by ID
-	idempMap map[string]string        // idempotency_key → job_id
-	size     int
-	capacity int
-	nextID   int64
-}
-
-func newRingBufferQueue(capacity int) *RingBufferQueue {
-	return &RingBufferQueue{
-		buf:      ring.New(capacity),
-		index:    make(map[string]*IngestionJob, capacity),
-		idempMap: make(map[string]string, capacity),
-		capacity: capacity,
-	}
-}
-
-// Enqueue adds a job. If the buffer is full, the oldest completed/failed job is evicted.
-func (q *RingBufferQueue) Enqueue(job *IngestionJob) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	// Evict oldest if at capacity
-	if q.size >= q.capacity {
-		q.evictOldest()
-	}
-
-	q.buf.Value = job
-	q.buf = q.buf.Next()
-	q.index[job.ID] = job
-	if job.IdempotencyKey != "" {
-		q.idempMap[job.IdempotencyKey] = job.ID
-	}
-	q.size++
-}
-
-func (q *RingBufferQueue) evictOldest() {
-	// Walk the ring and find the oldest completed/failed job to evict
-	r := q.buf
-	for i := 0; i < q.capacity; i++ {
-		if r.Value != nil {
-			job := r.Value.(*IngestionJob)
-			if job.Status == "completed" || job.Status == "dead_letter" || job.Status == "failed" {
-				delete(q.index, job.ID)
-				delete(q.idempMap, job.IdempotencyKey)
-				r.Value = nil
-				q.size--
-				return
-			}
-		}
-		r = r.Next()
-	}
-	// If no completed jobs, evict the oldest regardless
-	r = q.buf
-	for i := 0; i < q.capacity; i++ {
-		if r.Value != nil {
-			job := r.Value.(*IngestionJob)
-			delete(q.index, job.ID)
-			delete(q.idempMap, job.IdempotencyKey)
-			r.Value = nil
-			q.size--
-			return
-		}
-		r = r.Next()
-	}
-}
-
-// Lookup returns a job by ID in O(1).
-func (q *RingBufferQueue) Lookup(id string) *IngestionJob {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	return q.index[id]
-}
-
-// LookupByIdempotencyKey returns a job by its idempotency key in O(1).
-func (q *RingBufferQueue) LookupByIdempotencyKey(key string) *IngestionJob {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	if id, ok := q.idempMap[key]; ok {
-		return q.index[id]
-	}
-	return nil
-}
-
-// UpdateStatus updates a job's status in O(1).
-func (q *RingBufferQueue) UpdateStatus(id, status string) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if job, ok := q.index[id]; ok {
-		job.Status = status
-	}
-}
-
-// Size returns the current queue size.
-func (q *RingBufferQueue) Size() int {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	return q.size
-}
-
-// Stats returns queue statistics.
-func (q *RingBufferQueue) Stats() map[string]int {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	stats := map[string]int{
-		"size":     q.size,
-		"capacity": q.capacity,
-	}
-	pending, inProgress, completed, failed := 0, 0, 0, 0
-	for _, job := range q.index {
-		switch job.Status {
-		case "pending":
-			pending++
-		case "in_progress":
-			inProgress++
-		case "completed":
-			completed++
-		case "dead_letter", "failed":
-			failed++
-		}
-	}
-	stats["pending"] = pending
-	stats["in_progress"] = inProgress
-	stats["completed"] = completed
-	stats["failed"] = failed
-	return stats
-}
-
-// Deprecated (R5-003): the ring buffer was initialized but never referenced —
-// the live ingestion queue in ingestion.go is now DB-backed, prunes terminal
-// jobs, and caps in-flight work only, making this structure unnecessary. The
-// init call in main.go (W2-owned) should be removed; this remains only to
-// keep that call compiling.
-var ringQueue *RingBufferQueue
-
-func initRingBufferQueue() {
-	cap := ingestionQueueCapacity
-	if envCap := os.Getenv("INGESTION_QUEUE_CAPACITY"); envCap != "" {
-		if v, err := strconv.Atoi(envCap); err == nil && v > 0 {
-			cap = v
-		}
-	}
-	ringQueue = newRingBufferQueue(cap)
-	log.Info().Int("capacity", cap).Msg("Ring buffer ingestion queue initialized")
-}
 
 // ── CRITICAL #4: Sharded WebSocket Broadcast ──
 // Replaces O(n) broadcast across ALL clients with state/LGA-sharded fan-out.
@@ -510,12 +354,7 @@ func handleScaleHealth(w http.ResponseWriter, r *http.Request) {
 			"writer_pool":       dbWriter.Stats(),
 			"pgbouncer_enabled": strings.Contains(os.Getenv("DATABASE_URL"), "pgbouncer") || os.Getenv("PGBOUNCER_ENABLED") == "true",
 		},
-		"ingestion_queue": func() interface{} {
-			if ringQueue != nil {
-				return ringQueue.Stats()
-			}
-			return M{"type": "legacy_unbounded"}
-		}(),
+		"ingestion_queue": M{"type": "durable_db_backed"},
 		"websocket": func() interface{} {
 			if shardedWSHub != nil {
 				return shardedWSHub.Stats()

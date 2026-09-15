@@ -424,7 +424,14 @@ func processJob(jobID string) {
 	for i := range ingestionQueue {
 		if ingestionQueue[i].ID == jobID {
 			ingestionQueue[i].Status = "in_progress"
-			job = &ingestionQueue[i]
+			// Take the job BY VALUE. A pointer into the slice aliases
+			// whatever element removeJobFromQueueLocked's in-place shift
+			// moves into slot i, so a concurrent terminal job would swap
+			// this processor's payload/status with a different job's
+			// (observed: job completed with another job's PU applied and
+			// its own result never written — R5-008 race).
+			jobCopy := ingestionQueue[i]
+			job = &jobCopy
 			break
 		}
 	}
@@ -522,6 +529,14 @@ type ingestedResult struct {
 	SubmittedBy      int    // 0 when device-originated (no user identity)
 	Source           string // offline_sync | batch | device_gateway | ingestion_api
 	SourceRef        string // device_id / batch_id / correlation id
+	// IdempotencyKey (interactive-submit parity, R5-025): persisted to
+	// results.idempotency_key so a client retry of a committed submission
+	// replays the original row instead of conflicting.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// OverrideReason (R5-017): non-empty lets SOFT EC8A violations through,
+	// forces initial status 'disputed' (flag-for-review), and is recorded as
+	// correction_reason. Hard violations always reject.
+	OverrideReason string `json:"override_reason,omitempty"`
 }
 
 // parseIngestedResult extracts and validates a result payload from a job map.
@@ -613,25 +628,41 @@ func applyResultTx(ctx context.Context, tx *sql.Tx, res ingestedResult) (resultA
 		TotalValidVotes:  totalValid,
 		PartyResults:     res.PartyScores,
 	}
+	// R5-017: an authorized officer may capture an anomalous-but-real PU by
+	// supplying an override reason — soft violations are then tolerated and
+	// the result enters 'disputed' for mandatory review. Hard violations
+	// (e.g. overvoting) always reject, override or not.
+	initialStatus := "pending"
 	if violations := ValidateEC8A(ec8aForm); len(violations) > 0 {
-		return "", 0, fmt.Errorf("EC8A validation failed: %s", strings.Join(violations, "; "))
+		if res.OverrideReason != "" && !hasHardViolation(violations) {
+			initialStatus = "disputed"
+		} else {
+			return "", 0, fmt.Errorf("EC8A validation failed: %s", strings.Join(violations, "; "))
+		}
+	} else if res.OverrideReason != "" {
+		// Override supplied without violations still flags for review —
+		// the reason must always be looked at by a second pair of eyes.
+		initialStatus = "disputed"
 	}
 
 	ec8aHash := computeEC8AHash(res.ElectionID, res.PollingUnitCode, res.PartyScores, res.AccreditedVoters, res.RejectedVotes)
 
-	// NOTE: the live handler inserts tigerbeetle_status='NOT_APPLICABLE', which
-	// violates the results_tigerbeetle_status_check constraint ('PENDING',
-	// 'POSTED', 'VOIDED') on PostgreSQL — the applier uses the constraint-
-	// compliant 'PENDING'. Constraint/literal alignment is handed off to W2.
+	// NOTE: tigerbeetle_status uses the constraint-compliant 'PENDING'
+	// (results_tigerbeetle_status_check allows 'PENDING','POSTED','VOIDED').
+	// The uniqueness arbiter is the PARTIAL index results_canonical_pu_unique
+	// (migration 000036): superseded/voided rows are history and must not
+	// block a correction or re-capture (R5-016).
 	insertRes, err := tx.ExecContext(ctx, convertPlaceholders(`INSERT INTO results
 		(election_id, polling_unit_code, presiding_officer_id, status,
 		 total_valid_votes, rejected_votes, total_votes_cast, accredited_voters,
-		 ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT (election_id, polling_unit_code) DO NOTHING`),
-		res.ElectionID, res.PollingUnitCode, nullableInt(res.SubmittedBy), "pending",
+		 ec8a_hash, tigerbeetle_transfer_id, tigerbeetle_status, hyperledger_status,
+		 idempotency_key, correction_reason)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (election_id, polling_unit_code) WHERE status <> ALL (ARRAY['superseded','voided']) DO NOTHING`),
+		res.ElectionID, res.PollingUnitCode, nullableInt(res.SubmittedBy), initialStatus,
 		totalValid, res.RejectedVotes, totalCast, res.AccreditedVoters,
-		ec8aHash, nil, "PENDING", "PENDING")
+		ec8aHash, nil, "PENDING", "PENDING",
+		nilIfEmpty(res.IdempotencyKey), nilIfEmpty(res.OverrideReason))
 	if err != nil {
 		return "", 0, fmt.Errorf("insert result: %w", err)
 	}
@@ -639,11 +670,12 @@ func applyResultTx(ctx context.Context, tx *sql.Tx, res ingestedResult) (resultA
 	var resultID int64
 	var existingHash sql.NullString
 	if affected, _ := insertRes.RowsAffected(); affected == 0 {
-		// A result already exists for this (election, PU). Idempotent retry with
-		// identical figures → duplicate (safe no-op). Divergent figures → conflict:
-		// first-writer-wins, nothing overwritten, caller records an audit row.
+		// A canonical result already exists for this (election, PU). Idempotent
+		// retry with identical figures → duplicate (safe no-op). Divergent
+		// figures → conflict: first-writer-wins, nothing overwritten, caller
+		// records an audit row.
 		if err := tx.QueryRowContext(ctx, convertPlaceholders(
-			"SELECT id, ec8a_hash FROM results WHERE election_id=? AND polling_unit_code=?"),
+			"SELECT id, ec8a_hash FROM results WHERE election_id=? AND polling_unit_code=? AND status NOT IN ('superseded','voided')"),
 			res.ElectionID, res.PollingUnitCode).Scan(&resultID, &existingHash); err != nil {
 			return "", 0, fmt.Errorf("load existing result: %w", err)
 		}
@@ -654,7 +686,7 @@ func applyResultTx(ctx context.Context, tx *sql.Tx, res ingestedResult) (resultA
 	}
 
 	if err := tx.QueryRowContext(ctx, convertPlaceholders(
-		"SELECT id FROM results WHERE election_id=? AND polling_unit_code=?"),
+		"SELECT id FROM results WHERE election_id=? AND polling_unit_code=? AND status NOT IN ('superseded','voided') ORDER BY id DESC LIMIT 1"),
 		res.ElectionID, res.PollingUnitCode).Scan(&resultID); err != nil {
 		return "", 0, fmt.Errorf("load inserted result id: %w", err)
 	}
@@ -684,7 +716,7 @@ func applyResultTx(ctx context.Context, tx *sql.Tx, res ingestedResult) (resultA
 		CreatedBy:       res.SubmittedBy,
 		PublicPayload: M{
 			"polling_unit_code": res.PollingUnitCode,
-			"status":            "pending",
+			"status":            initialStatus,
 			"total_votes_cast":  totalCast,
 			"source":            res.Source,
 		},
@@ -1311,4 +1343,14 @@ func handleOfflineSyncQueue(w http.ResponseWriter, r *http.Request) {
 	q += " ORDER BY created_at DESC LIMIT 100"
 	rows, _ := db.Query(q, params...)
 	writeJSON(w, 200, scanRows(rows))
+}
+
+// submittedStatus reports the initial status a submitter sees: an overridden
+// capture enters 'disputed' for mandatory review (R5-017), anything else is
+// 'pending'. Mirrors applyResultTx's initial-status derivation.
+func submittedStatus(overridden bool) string {
+	if overridden {
+		return "disputed"
+	}
+	return "pending"
 }

@@ -215,7 +215,12 @@ func (k *realKafkaClient) getWriter(topic string) *kafka.Writer {
 		Topic:        topic,
 		Balancer:     &kafka.LeastBytes{},
 		BatchTimeout: 10 * time.Millisecond,
-		RequiredAcks: kafka.RequireOne,
+		// W6 handoff: acks must match the audit-critical semantics — a
+		// leader-only ack (RequireOne) can lose acknowledged result events
+		// on broker failover. RequireAll waits for all in-sync replicas.
+		// (kafka-go has no idempotent-producer knob; at-least-once +
+		// consumer idempotency keys is the documented contract.)
+		RequiredAcks: kafka.RequireAll,
 		Async:        false,
 	}
 	k.writers[topic] = writer

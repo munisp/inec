@@ -1464,27 +1464,26 @@ func handleBuildCollationEvidenceBundle(w http.ResponseWriter, r *http.Request) 
 }
 
 func collectCollationEvidence(ctx context.Context, tx *sql.Tx, electionID int, level, areaCode string) ([]M, M, error) {
-	query := `SELECT r.id, COALESCE((SELECT event_hash FROM result_evidence_events ree WHERE ree.result_id=r.id ORDER BY sequence_no DESC LIMIT 1), '')
-		FROM results r JOIN polling_units pu ON pu.code=r.polling_unit_code
-		JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code
-		WHERE r.election_id=? AND r.status IN ('validated','finalized')`
-	args := []interface{}{electionID}
-	switch level {
-	case "ward":
-		query += " AND pu.ward_code=?"
-		args = append(args, areaCode)
-	case "lga":
-		query += " AND w.lga_code=?"
-		args = append(args, areaCode)
-	case "state":
-		query += " AND l.state_code=?"
-		args = append(args, areaCode)
-	case "national":
-		// no additional scope
-	default:
-		return nil, nil, fmt.Errorf("invalid collation level")
+	// W2→W4 handoff: the bundle must bind the SAME canonical result set as
+	// collation — finalized-only, with scoped rerun/supplementary child
+	// results overriding the parent's for the same PU. The previous
+	// hand-rolled filter leaked merely-'validated' results into signed
+	// evidence and was blind to rerun overrides.
+	filter, err := collationGeoFilter(level)
+	if err != nil {
+		return nil, nil, err
 	}
-	query += " ORDER BY r.id ASC"
+	query := canonicalResultsCTE + `
+SELECT c.result_id, COALESCE((SELECT event_hash FROM result_evidence_events ree WHERE ree.result_id=c.result_id ORDER BY sequence_no DESC LIMIT 1), '')
+FROM canonical c
+JOIN polling_units pu ON pu.code = c.pu_code
+JOIN wards w ON w.code=pu.ward_code JOIN lgas l ON l.code=w.lga_code
+WHERE ` + filter + `
+ORDER BY c.result_id ASC`
+	args := []interface{}{electionID}
+	if level != "national" {
+		args = append(args, areaCode)
+	}
 	rows, err := tx.QueryContext(ctx, convertPlaceholders(query), args...)
 	if err != nil {
 		return nil, nil, err
