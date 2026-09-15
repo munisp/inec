@@ -405,6 +405,10 @@ func main() {
 	r.HandleFunc("/gotv/mobile/shift/end", mauth(handleMobileShiftEnd)).Methods("POST")
 	r.HandleFunc("/gotv/mobile/knock", mauth(handleMobileDoorKnock)).Methods("POST")
 	r.HandleFunc("/gotv/mobile/sync", mauth(handleMobileSync)).Methods("POST")
+	// W8 handoff: parked sync-conflict ingest + resolution
+	r.HandleFunc("/gotv/mobile/sync/conflicts", mauth(handleMobileSyncConflictsIngest)).Methods("POST")
+	r.HandleFunc("/gotv/mobile/sync/conflicts", mauth(handleMobileSyncConflictsList)).Methods("GET")
+	r.HandleFunc("/gotv/mobile/sync/conflicts/{id}/resolve", mauth(handleMobileSyncConflictResolve)).Methods("POST")
 	r.HandleFunc("/gotv/mobile/dashboard", mauth(handleMobileDashboard)).Methods("GET")
 
 	// ─── V2: Enhanced Campaign Dispatch ─────────────────────────────────
@@ -2678,7 +2682,17 @@ const (
 // validateKnockTimestamp returns nil for an absent timestamp (server NOW()
 // applies) or the normalized UTC timestamp; an error for unparseable or
 // out-of-window values.
-func validateKnockTimestamp(raw string) (interface{}, error) {
+// syncOutcomeAllowed is the single source of truth for valid door-knock
+// outcomes (used by initial sync and conflict ingest).
+var syncOutcomeAllowed = map[string]bool{
+	"home": true, "not_home": true, "refused": true, "pledged": true,
+	"already_voted": true, "moved": true, "callback": true,
+}
+
+// parseKnockTimestamp parses a client timestamp without the R5-010 freshness
+// window — used for parked conflicts whose genuine capture time may be older
+// than 72h. Returns nil for absent input, the normalized UTC time otherwise.
+func parseKnockTimestamp(raw string) (interface{}, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
@@ -2694,6 +2708,19 @@ func validateKnockTimestamp(raw string) (interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unparseable timestamp %q (use RFC3339)", raw)
 	}
+	return ts.UTC().Format(time.RFC3339), nil
+}
+
+func validateKnockTimestamp(raw string) (interface{}, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parsed, err := parseKnockTimestamp(raw)
+	if err != nil {
+		return nil, err
+	}
+	ts, _ := time.Parse(time.RFC3339, parsed.(string))
 	now := time.Now().UTC()
 	if ts.Before(now.Add(-maxKnockTimestampAge)) {
 		return nil, fmt.Errorf("timestamp %s is older than %v", raw, maxKnockTimestampAge)
@@ -2701,7 +2728,7 @@ func validateKnockTimestamp(raw string) (interface{}, error) {
 	if ts.After(now.Add(maxKnockTimestampSkew)) {
 		return nil, fmt.Errorf("timestamp %s is more than %v in the future", raw, maxKnockTimestampSkew)
 	}
-	return ts.UTC().Format(time.RFC3339), nil
+	return parsed, nil
 }
 
 func nullVal(ns sql.NullString) interface{} {
@@ -3034,11 +3061,10 @@ func handleMobileSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	syncOutcomes := map[string]bool{"home": true, "not_home": true, "refused": true, "pledged": true, "already_voted": true, "moved": true, "callback": true}
 	synced := 0
 	rejectedTimestamps := 0
 	for _, k := range req.Knocks {
-		if k.Outcome != "" && !syncOutcomes[k.Outcome] {
+		if k.Outcome != "" && !syncOutcomeAllowed[k.Outcome] {
 			continue
 		}
 		knockedAt, tsErr := validateKnockTimestamp(k.Timestamp)

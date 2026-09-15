@@ -131,6 +131,29 @@ func (s *Service) InitTables(ctx context.Context) error {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_gotv_consent_party ON gotv_consent_records(party_id);
+
+	-- W8 handoff: mobile devices park GOTV sync conflicts (HTTP 409 on a
+	-- duplicate/conflicting record) locally; this ledger ingests them for
+	-- server-side resolution. Idempotent on (party, volunteer, entity, local id).
+	-- NOTE: the monolith-owned migration copy of this DDL is a HANDOFF item
+	-- (another wave owns inec-go-backend/migrations numbering).
+	CREATE TABLE IF NOT EXISTS gotv_sync_conflicts (
+		conflict_id TEXT PRIMARY KEY,
+		party_id INTEGER NOT NULL,
+		volunteer_id TEXT,
+		entity_type TEXT NOT NULL,
+		local_id TEXT NOT NULL,
+		server_id TEXT,
+		conflict_reason TEXT,
+		client_payload TEXT,
+		status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved_client','resolved_server','discarded')),
+		resolution_note TEXT,
+		resolved_by TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		resolved_at TIMESTAMP,
+		UNIQUE (party_id, volunteer_id, entity_type, local_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_gotv_sync_conflicts_party ON gotv_sync_conflicts(party_id, status);
 	CREATE INDEX IF NOT EXISTS idx_gotv_consent_contact ON gotv_consent_records(contact_id);
 
 	CREATE TABLE IF NOT EXISTS gotv_volunteers (
