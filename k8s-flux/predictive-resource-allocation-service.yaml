@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: predictive-resource-allocation
+  namespace: inec
+spec:
+  clusterIP: 10.96.41.118
+  clusterIPs:
+  - 10.96.41.118
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 8205
+    protocol: TCP
+    targetPort: 8205
+  selector:
+    app.kubernetes.io/name: predictive-resource-allocation
+  sessionAffinity: None
+  type: ClusterIP

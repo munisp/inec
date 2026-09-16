@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: biometric-go
+  namespace: inec
+spec:
+  clusterIP: 10.96.44.11
+  clusterIPs:
+  - 10.96.44.11
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 8092
+    protocol: TCP
+    targetPort: 8092
+  selector:
+    app.kubernetes.io/name: biometric-go
+  sessionAffinity: None
+  type: ClusterIP

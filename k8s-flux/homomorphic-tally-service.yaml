@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: homomorphic-tally
+  namespace: inec
+spec:
+  clusterIP: 10.96.53.155
+  clusterIPs:
+  - 10.96.53.155
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 8201
+    protocol: TCP
+    targetPort: 8201
+  selector:
+    app.kubernetes.io/name: homomorphic-tally
+  sessionAffinity: None
+  type: ClusterIP

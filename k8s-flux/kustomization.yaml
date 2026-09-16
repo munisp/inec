@@ -1,0 +1,36 @@
+# Clean, git-tracked extraction of the 13 app services' live Deployment+
+# Service state. These were previously managed by newwave_platform_terraform's
+# apps/inec-newwave-dev/ module (kubernetes_deployment_v1/kubernetes_service_v1
+# resources) - removed from that module's state so Flux can own them here
+# without the two fighting over the same objects. inec-postgres stays
+# Terraform-managed since it's third-party infrastructure (postgis image),
+# not something this repo's CI builds.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ai-anomaly-detection-deployment.yaml
+  - ai-anomaly-detection-service.yaml
+  - biometric-go-deployment.yaml
+  - biometric-go-service.yaml
+  - biometric-python-deployment.yaml
+  - biometric-python-service.yaml
+  - campaign-planning-deployment.yaml
+  - campaign-planning-service.yaml
+  - digital-twin-simulation-deployment.yaml
+  - digital-twin-simulation-service.yaml
+  - document-ai-deployment.yaml
+  - document-ai-service.yaml
+  - federated-fraud-detection-deployment.yaml
+  - federated-fraud-detection-service.yaml
+  - homomorphic-tally-deployment.yaml
+  - homomorphic-tally-service.yaml
+  - inec-backend-deployment.yaml
+  - inec-backend-service.yaml
+  - inec-frontend-deployment.yaml
+  - inec-frontend-service.yaml
+  - inference-engine-deployment.yaml
+  - inference-engine-service.yaml
+  - predictive-resource-allocation-deployment.yaml
+  - predictive-resource-allocation-service.yaml
+  - satellite-change-detection-deployment.yaml
+  - satellite-change-detection-service.yaml

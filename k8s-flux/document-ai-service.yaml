@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-ai
+  namespace: inec
+spec:
+  clusterIP: 10.96.161.142
+  clusterIPs:
+  - 10.96.161.142
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: http
+    port: 8089
+    protocol: TCP
+    targetPort: 8089
+  selector:
+    app.kubernetes.io/name: document-ai
+  sessionAffinity: None
+  type: ClusterIP

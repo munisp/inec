@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictive-resource-allocation
+  namespace: inec
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: predictive-resource-allocation
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: predictive-resource-allocation
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: database-url
+              name: inec-postgres-secrets
+              optional: false
+        - name: MODEL_DIR
+          value: /app/models
+        - name: MIN_TRAINING_SAMPLES
+          value: "10"
+        - name: RESOURCE_BALLOT_BUFFER
+          value: "0.1"
+        - name: RESOURCE_VOTERS_PER_CLERK
+          value: "500"
+        - name: RESOURCE_MIN_POLL_CLERKS
+          value: "3"
+        - name: RESOURCE_MIN_SECURITY_PERSONNEL
+          value: "2"
+        image: registry.digitalocean.com/talentgraph-auth/predictive-resource-allocation:archive-20260722-014352 # {"$imagepolicy": "flux-system:inec-predictive-resource-allocation"}
+        imagePullPolicy: IfNotPresent
+        name: predictive-resource-allocation
+        ports:
+        - containerPort: 8205
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      imagePullSecrets:
+      - name: talentgraph-auth-pull
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      shareProcessNamespace: false
+      terminationGracePeriodSeconds: 30

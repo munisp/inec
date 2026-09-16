@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inec-backend
+  namespace: inec
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inec-backend
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inec-backend
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - env:
+        - name: PORT
+          value: "8088"
+        - name: APP_ENV
+          value: demo
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: database-url
+              name: inec-postgres-secrets
+              optional: false
+        - name: CORS_ORIGINS
+          value: '*'
+        - name: ALLOWED_ORIGINS
+          value: '*'
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: jwt-secret
+              name: inec-secrets
+              optional: false
+        - name: SEED_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: seed-admin-password
+              name: inec-secrets
+              optional: false
+        - name: SEED_OBSERVER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: seed-observer-password
+              name: inec-secrets
+              optional: false
+        - name: BIOMETRIC_VAULT_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              key: biometric-vault-master-key
+              name: inec-postgres-secrets
+              optional: false
+        - name: HSM_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              key: hsm-master-key
+              name: inec-postgres-secrets
+              optional: false
+        - name: GOTV_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              key: gotv-encryption-key
+              name: inec-postgres-secrets
+              optional: false
+        - name: REDIS_ADDR
+          value: redis-master.redis.svc.cluster.local:6379
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: redis-password
+              name: inec-redis-secrets
+              optional: false
+        - name: CAMPAIGN_PLANNING_URL
+          value: http://campaign-planning:8206
+        - name: ANOMALY_SERVICE_URL
+          value: http://ai-anomaly-detection:8200
+        - name: BIOMETRIC_PIPELINE_URL
+          value: http://biometric-go:8092
+        - name: BIOMETRIC_SERVICE_URL
+          value: http://biometric-python:8090
+        - name: HOMOMORPHIC_SERVICE_URL
+          value: http://homomorphic-tally:8201
+        - name: FEDERATED_SERVICE_URL
+          value: http://federated-fraud-detection:8202
+        - name: DIGITAL_TWIN_SERVICE_URL
+          value: http://digital-twin-simulation:8203
+        - name: PREDICTIVE_ALLOC_URL
+          value: http://predictive-resource-allocation:8205
+        - name: RUST_INFERENCE_URL
+          value: http://inference-engine:8091
+        - name: DOCUMENT_AI_URL
+          value: http://document-ai:8089
+        image: registry.digitalocean.com/talentgraph-auth/inec-backend:archive-20260727-143405 # {"$imagepolicy": "flux-system:inec-inec-backend"}
+        imagePullPolicy: IfNotPresent
+        name: backend
+        ports:
+        - containerPort: 8088
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      imagePullSecrets:
+      - name: talentgraph-auth-pull
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      shareProcessNamespace: false
+      terminationGracePeriodSeconds: 30

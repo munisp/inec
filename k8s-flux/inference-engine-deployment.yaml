@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-engine
+  namespace: inec
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inference-engine
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inference-engine
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - env:
+        - name: NEO4J_URI
+          value: bolt://neo4j.neo4j.svc.cluster.local:7687
+        - name: NEO4J_USER
+          value: neo4j
+        - name: NEO4J_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: neo4j-password
+              name: inec-neo4j-secrets
+              optional: false
+        image: registry.digitalocean.com/talentgraph-auth/inference-engine:archive-20260722-015433 # {"$imagepolicy": "flux-system:inec-inference-engine"}
+        imagePullPolicy: IfNotPresent
+        name: inference-engine
+        ports:
+        - containerPort: 8091
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 512Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      imagePullSecrets:
+      - name: talentgraph-auth-pull
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      shareProcessNamespace: false
+      terminationGracePeriodSeconds: 30
