@@ -22,7 +22,7 @@ spec:
     spec:
       automountServiceAccountToken: true
       containers:
-      - image: registry.digitalocean.com/talentgraph-auth/homomorphic-tally:archive-20260722-014109 # {"$imagepolicy": "flux-system:inec-homomorphic-tally"}
+      - image: registry.digitalocean.com/talentgraph-auth/homomorphic-tally:20260916-1317 # {"$imagepolicy": "flux-system:inec-homomorphic-tally"}
         imagePullPolicy: IfNotPresent
         name: homomorphic-tally
         ports:
