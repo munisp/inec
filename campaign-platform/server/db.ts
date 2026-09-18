@@ -542,6 +542,117 @@ export async function getTransparencyReport(profileId: number) {
   };
 }
 
+// ─── W13: Consented survey panel + message experiments (CA-parity analytics) ─
+
+/**
+ * Enroll a survey panelist. FAIL-CLOSED on consent: the referenced consent
+ * record must exist, belong to this profile, be granted and not withdrawn.
+ * This is the load-bearing difference from the CA model — psychographic data
+ * is only ever collected from people who opted in, provably.
+ */
+export async function addSurveyPanelist(
+  data: typeof schema.surveyPanelists.$inferInsert,
+) {
+  const db = getDb();
+  if (!db) return null;
+  const consent = await db
+    .select()
+    .from(schema.consentRecords)
+    .where(and(
+      eq(schema.consentRecords.id, data.consentId),
+      eq(schema.consentRecords.profileId, data.profileId),
+    ));
+  const c = consent[0];
+  if (!c) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "consentId does not reference a consent record for this profile" });
+  }
+  if (!c.consentGranted || c.withdrawnAt) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Panel enrollment refused: consent is not active (not granted or withdrawn). NDPA 2023 — psychographic data requires explicit, current consent.",
+    });
+  }
+  const rows = await db.insert(schema.surveyPanelists).values(data).returning();
+  return rows[0];
+}
+
+export async function recordSurveyResponses(
+  profileId: number,
+  panelistId: number,
+  instrument: string,
+  responses: Array<{ itemKey: string; score: number }>,
+) {
+  const db = getDb();
+  if (!db) return { inserted: 0 };
+  // Panelist must exist, belong to this profile (tenant isolation), and still
+  // be active (withdrawn panelists keep history but accept no new responses).
+  const p = await db
+    .select()
+    .from(schema.surveyPanelists)
+    .where(and(
+      eq(schema.surveyPanelists.id, panelistId),
+      eq(schema.surveyPanelists.profileId, profileId),
+    ));
+  if (!p[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Panelist not found" });
+  if (p[0].status !== "active") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Panelist is not active (consent withdrawn)" });
+  }
+  for (const r of responses) {
+    if (!Number.isInteger(r.score) || r.score < 1 || r.score > 5) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Likert scores must be integers 1-5" });
+    }
+  }
+  const inserted = await db
+    .insert(schema.surveyResponses)
+    .values(responses.map(r => ({ panelistId, instrument, itemKey: r.itemKey, score: r.score })))
+    .returning({ id: schema.surveyResponses.id });
+  return { inserted: inserted.length };
+}
+
+export async function createMessageTest(
+  profileId: number,
+  name: string,
+  channel: string | undefined,
+  variants: Array<{ label: string; body: string }>,
+) {
+  const db = getDb();
+  if (!db) return null;
+  if (variants.length < 2) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "A/B tests require at least 2 variants" });
+  }
+  const t = await db
+    .insert(schema.messageTests)
+    .values({ profileId, name, channel: channel ?? null })
+    .returning();
+  const vs = await db
+    .insert(schema.messageVariants)
+    .values(variants.map(v => ({ testId: t[0].id, label: v.label, body: v.body })))
+    .returning();
+  return { test: t[0], variants: vs };
+}
+
+export async function recordMessageEvent(profileId: number, variantId: number, eventType: string) {
+  const db = getDb();
+  if (!db) return null;
+  if (!["impression", "response", "conversion"].includes(eventType)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "eventType must be impression|response|conversion" });
+  }
+  // Tenant isolation: the variant must belong to a test owned by this profile.
+  const v = await db
+    .select({ testProfileId: schema.messageTests.profileId })
+    .from(schema.messageVariants)
+    .innerJoin(schema.messageTests, eq(schema.messageTests.id, schema.messageVariants.testId))
+    .where(eq(schema.messageVariants.id, variantId));
+  if (!v[0] || v[0].testProfileId !== profileId) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Message variant not found" });
+  }
+  const rows = await db
+    .insert(schema.messageEvents)
+    .values({ variantId, eventType })
+    .returning({ id: schema.messageEvents.id });
+  return rows[0];
+}
+
 // ─── Polling Units ──────────────────────────────────────────────────────────
 // `polling_units` is the canonical, Go-owned national PU registry (code/name/
 // ward_code/registered_voters/latitude/longitude). Per-candidate operational

@@ -462,7 +462,6 @@ def engine_eligibility(candidate_id: int, office_type: str, state_code: str, par
 # wired to a real computation path (see engines below); do not re-add an
 # entry here while a wired engine exists for it.
 DISABLED_DATA_FEATURES = {
-    "sentiment_analysis": "authoritative social-listening and media-ingestion data",
     "debate_tracker": "approved NLP model and verified debate transcript data",
 }
 
@@ -778,10 +777,6 @@ def engine_schedule(candidate_id: str, election_id: str, state_code: str,
                 "official INEC timetable; none are asserted here.",
         "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-
-
-def engine_sentiment(candidate_id: str, period: str) -> Dict:
-    return campaign_data_unavailable("sentiment_analysis")
 
 
 async def engine_opponents(candidate_id: str, state_code: str, office_type: str) -> Dict:
@@ -1123,6 +1118,404 @@ async def engine_volunteer_network(candidate_id: str, state_code: str) -> Dict:
     }
 
 
+# ── W13: CA-Parity Analytics Engines ─────────────────────────────────────────
+# The lawful analogue of Cambridge Analytica's psychographic/micro-targeting
+# stack. Every score is computed from the campaign's own CONSENTED panel and
+# real event data (campaign-platform migration 0007 tables). No inference over
+# non-consenting individuals, ever; absent data fails closed.
+
+# OCEAN trait → item-key prefixes. Item keys ending in 'r' are reverse-scored
+# (6 - score), standard psychometric practice (IPIP convention).
+_OCEAN_TRAITS = ("O", "C", "E", "A", "N")
+
+
+def _score_panel_rows(rows) -> Dict[int, Dict[str, float]]:
+    """Trait means per panelist from raw response rows. Real psychometric
+    aggregation: mean of item scores per trait, reverse-keyed items flipped."""
+    per: Dict[int, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        key = r["item_key"]
+        trait = key[0].upper()
+        if trait not in _OCEAN_TRAITS:
+            continue
+        score = int(r["score"])
+        if key.endswith("r"):
+            score = 6 - score
+        per[int(r["panelist_id"])][trait].append(score)
+    return {
+        pid: {t: round(sum(v) / len(v), 3) for t, v in traits.items() if v}
+        for pid, traits in per.items()
+    }
+
+
+async def engine_panel_scores(candidate_id: str) -> Dict:
+    """Psychometric trait scores for the consented survey panel."""
+    pid = _profile_id(candidate_id)
+    if pid is None:
+        raise HTTPException(status_code=400, detail="candidate_id must be the numeric campaign profile id")
+    rows = await _fetch_table(
+        "survey_responses", "panel_scores",
+        """SELECT sr.panelist_id, sr.instrument, sr.item_key, sr.score
+           FROM survey_responses sr
+           JOIN survey_panelists sp ON sp.id = sr.panelist_id
+           WHERE sp.profile_id = $1 AND sp.status = 'active'""", pid)
+    scores = _score_panel_rows(rows)
+    return {
+        "candidate_id": candidate_id,
+        "data_source": "survey_responses (consented panel)",
+        "panelists_scored": len(scores),
+        "scores": [
+            {"panelist_id": p, "traits": t} for p, t in scores.items()
+        ],
+        "method": "OCEAN trait means over Likert 1-5 items, reverse-keyed items flipped (IPIP convention)",
+        "note": "Scores exist only for consented panelists who actually responded. "
+                "The platform never infers personality for non-respondents.",
+        "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _kmeans(vectors: List[List[float]], k: int, iterations: int = 50) -> List[int]:
+    """Deterministic k-means (farthest-point init, no RNG) over trait vectors."""
+    n = len(vectors)
+    if n == 0 or k <= 0:
+        return []
+    k = min(k, n)
+    centroids = [vectors[0]]
+    while len(centroids) < k:  # farthest-point initialisation — deterministic
+        nxt = max(vectors, key=lambda v: min(
+            sum((a - b) ** 2 for a, b in zip(v, c)) for c in centroids))
+        centroids.append(nxt)
+    assign = [0] * n
+    for _ in range(iterations):
+        changed = False
+        for i, v in enumerate(vectors):
+            best = min(range(k), key=lambda c: sum((a - b) ** 2 for a, b in zip(v, centroids[c])))
+            if best != assign[i]:
+                assign[i] = best
+                changed = True
+        for c in range(k):
+            members = [vectors[i] for i in range(n) if assign[i] == c]
+            if members:
+                centroids[c] = [sum(m[j] for m in members) / len(members)
+                                for j in range(len(vectors[0]))]
+        if not changed:
+            break
+    return assign
+
+
+async def engine_segments(candidate_id: str, k: int = 4) -> Dict:
+    """Audience segmentation: deterministic k-means over consented-panel trait
+    vectors joined to panelist geography. Segments carry real member counts."""
+    pid = _profile_id(candidate_id)
+    if pid is None:
+        raise HTTPException(status_code=400, detail="candidate_id must be the numeric campaign profile id")
+    if not 2 <= k <= 10:
+        raise HTTPException(status_code=400, detail="k must be between 2 and 10")
+    rows = await _fetch_table(
+        "survey_responses", "audience_segmentation",
+        """SELECT sr.panelist_id, sr.item_key, sr.score,
+                  sp.state_code, sp.lga, sp.age_band, sp.gender
+           FROM survey_responses sr
+           JOIN survey_panelists sp ON sp.id = sr.panelist_id
+           WHERE sp.profile_id = $1 AND sp.status = 'active'""", pid)
+    meta: Dict[int, Dict] = {}
+    for r in rows:
+        meta[int(r["panelist_id"])] = {
+            "state_code": r["state_code"], "lga": r["lga"],
+            "age_band": r["age_band"], "gender": r["gender"],
+        }
+    scores = _score_panel_rows(rows)
+    full = [p for p, t in scores.items() if len(t) == len(_OCEAN_TRAITS)]
+    if len(full) < 2:
+        return {
+            "candidate_id": candidate_id, "data_source": "survey_responses (consented panel)",
+            "segments": [], "panelists_with_full_vectors": len(full),
+            "note": "Fewer than 2 panelists have complete OCEAN vectors — no segmentation "
+                    "computed rather than fabricated. Collect more consented responses.",
+            "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+    vectors = [[scores[p][t] for t in _OCEAN_TRAITS] for p in full]
+    assign = _kmeans(vectors, k)
+    segments: Dict[int, List[int]] = defaultdict(list)
+    for p, a in zip(full, assign):
+        segments[a].append(p)
+    out = []
+    for idx, members in sorted(segments.items()):
+        centroid = {t: round(sum(scores[p][t] for p in members) / len(members), 3)
+                    for t in _OCEAN_TRAITS}
+        lgas: Dict[str, int] = defaultdict(int)
+        for p in members:
+            lga = meta.get(p, {}).get("lga") or "unspecified"
+            lgas[lga] += 1
+        out.append({
+            "segment": idx, "member_count": len(members),
+            "trait_centroid": centroid,
+            "top_lgas": sorted(lgas.items(), key=lambda kv: kv[1], reverse=True)[:5],
+        })
+    return {
+        "candidate_id": candidate_id,
+        "data_source": "survey_responses (consented panel)",
+        "algorithm": "deterministic k-means (farthest-point init) over OCEAN vectors",
+        "k_requested": k,
+        "segments": out,
+        "note": "Segments are computed from consented panel responses only; membership "
+                "counts are real. Projection onto non-panel voters requires their consent.",
+        "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _chi2_sf(x: float, df: int) -> float:
+    """Survival function P(χ²_df ≥ x) via the regularised upper incomplete gamma
+    (series/continued-fraction, Numerical Recipes). Real statistics, no scipy."""
+    if x <= 0:
+        return 1.0
+    a = df / 2.0
+    x = x / 2.0  # χ²_df CDF = P(df/2, x/2), the regularised lower gamma
+
+    def gammainc_help(a: float, x: float):
+        # returns (P, Q) regularised lower/upper incomplete gamma
+        gln = math.lgamma(a)
+        if x < a + 1.0:  # series for P
+            ap, s, delta = a, 1.0 / a, 1.0 / a
+            for _ in range(1000):
+                ap += 1
+                delta *= x / ap
+                s += delta
+                if abs(delta) < abs(s) * 1e-12:
+                    break
+            p = s * math.exp(-x + a * math.log(x) - gln)
+            return p, 1.0 - p
+        # continued fraction for Q
+        b, c, d = x + 1.0 - a, 1e300, 1.0 / (x + 1.0 - a)
+        h = d
+        for i in range(1, 1000):
+            an = -i * (i - a)
+            b += 2.0
+            d = an * d + b
+            if abs(d) < 1e-300:
+                d = 1e-300
+            c = b + an / c
+            if abs(c) < 1e-300:
+                c = 1e-300
+            d = 1.0 / d
+            delta = d * c
+            h *= delta
+            if abs(delta - 1.0) < 1e-12:
+                break
+        q = math.exp(-x + a * math.log(x) - gln) * h
+        return 1.0 - q, q
+
+    _, q = gammainc_help(a, x)
+    return min(max(q, 0.0), 1.0)
+
+
+async def engine_message_test(test_id: int) -> Dict:
+    """A/B message-test analysis: real chi-square independence test on response
+    rates across variants, with effect size and honest power assessment."""
+    variants = await _fetch_table(
+        "message_variants", "message_testing",
+        "SELECT id, label, body FROM message_variants WHERE test_id = $1 ORDER BY id",
+        test_id)
+    if not variants:
+        raise HTTPException(status_code=404, detail="message test not found")
+    counts = await _fetch_table(
+        "message_events", "message_testing",
+        """SELECT variant_id, event_type, COUNT(*) AS n
+           FROM message_events
+           WHERE variant_id = ANY($1::int[])
+           GROUP BY variant_id, event_type""", [v["id"] for v in variants])
+    per_variant: Dict[int, Dict[str, int]] = {v["id"]: defaultdict(int) for v in variants}
+    for r in counts:
+        per_variant[int(r["variant_id"])][r["event_type"]] = int(r["n"])
+
+    table = []
+    for v in variants:
+        c = per_variant[v["id"]]
+        imp, resp, conv = c.get("impression", 0), c.get("response", 0), c.get("conversion", 0)
+        table.append({
+            "variant_id": v["id"], "label": v["label"],
+            "impressions": imp, "responses": resp, "conversions": conv,
+            "response_rate": round(resp / imp, 4) if imp else None,
+        })
+
+    total_imp = sum(t["impressions"] for t in table)
+    total_resp = sum(t["responses"] for t in table)
+    analysis: Dict
+    if len(table) < 2 or total_imp == 0:
+        analysis = {"status": "insufficient_data",
+                    "note": "No impressions recorded yet — no result asserted."}
+    else:
+        # χ² test of independence on responded/not-responded × variant.
+        chi2 = 0.0
+        for t in table:
+            for observed, expected in (
+                (t["responses"], total_resp * t["impressions"] / total_imp),
+                (t["impressions"] - t["responses"],
+                 (total_imp - total_resp) * t["impressions"] / total_imp),
+            ):
+                if expected > 0:
+                    chi2 += (observed - expected) ** 2 / expected
+        df = len(table) - 1
+        p_value = round(_chi2_sf(chi2, df), 4)
+        best = max((t for t in table if t["response_rate"] is not None),
+                   key=lambda t: t["response_rate"], default=None)
+        analysis = {
+            "status": "analysed",
+            "chi2_statistic": round(chi2, 4),
+            "degrees_of_freedom": df,
+            "p_value": p_value,
+            "significant_at_95": p_value < 0.05,
+            "leading_variant": best["label"] if best else None,
+            "note": "Chi-square independence test over real recorded events. "
+                    "p ≥ 0.05 means no statistically significant difference — "
+                    "reported honestly, not smoothed over.",
+        }
+    return {
+        "test_id": test_id,
+        "data_source": "message_events",
+        "variants": table,
+        "analysis": analysis,
+        "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+async def engine_sentiment(candidate_id: str, period: str) -> Dict:
+    """Press-sentiment aggregation over the campaign's recorded media items
+    (media_items table — real monitored coverage with human/system-assigned
+    sentiment labels). Social listening remains unavailable without a feed."""
+    pid = _profile_id(candidate_id)
+    if pid is None:
+        raise HTTPException(status_code=400, detail="candidate_id must be the numeric campaign profile id")
+    days = {"7d": 7, "30d": 30, "90d": 90}.get(period)
+    if days is None:
+        raise HTTPException(status_code=400, detail="period must be one of 7d, 30d, 90d")
+    rows = await _fetch_table(
+        "media_items", "sentiment_analysis",
+        """SELECT sentiment, source_type, zone, published_at, reach
+           FROM media_items
+           WHERE profile_id = $1
+             AND published_at >= NOW() - ($2 || ' days')::interval""",
+        pid, str(days))
+    by_sentiment: Dict[str, int] = defaultdict(int)
+    by_zone: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    by_source: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    reach_by_sentiment: Dict[str, int] = defaultdict(int)
+    for r in rows:
+        s = (r["sentiment"] or "unlabeled").lower()
+        by_sentiment[s] += 1
+        by_zone[r["zone"] or "unspecified"][s] += 1
+        by_source[r["source_type"] or "unspecified"][s] += 1
+        reach_by_sentiment[s] += int(r["reach"] or 0)
+    total = sum(by_sentiment.values())
+    return {
+        "candidate_id": candidate_id, "period": period,
+        "data_source": "media_items (campaign-recorded press monitoring)",
+        "items_analysed": total,
+        "by_sentiment": dict(by_sentiment),
+        "reach_by_sentiment": dict(reach_by_sentiment),
+        "by_zone": {z: dict(v) for z, v in by_zone.items()},
+        "by_source_type": {s: dict(v) for s, v in by_source.items()},
+        "note": "Aggregates the campaign's own recorded media items. Social-listening "
+                "feeds are NOT integrated; unlabeled items are reported as unlabeled, "
+                "never auto-classified by an unapproved model.",
+        "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _cosine(a: List[float], b: List[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+async def engine_lookalike(candidate_id: str, panelist_id: int, top_n: int = 10) -> Dict:
+    """Lookalike expansion WITHIN the consented panel: cosine similarity over
+    OCEAN trait vectors. Never expands into non-consenting populations."""
+    pid = _profile_id(candidate_id)
+    if pid is None:
+        raise HTTPException(status_code=400, detail="candidate_id must be the numeric campaign profile id")
+    rows = await _fetch_table(
+        "survey_responses", "lookalike_expansion",
+        """SELECT sr.panelist_id, sr.item_key, sr.score
+           FROM survey_responses sr
+           JOIN survey_panelists sp ON sp.id = sr.panelist_id
+           WHERE sp.profile_id = $1 AND sp.status = 'active'""", pid)
+    scores = _score_panel_rows(rows)
+    full = {p: [t[t2] for t2 in _OCEAN_TRAITS] for p, t in scores.items()
+            if len(t) == len(_OCEAN_TRAITS)}
+    if panelist_id not in full:
+        raise HTTPException(
+            status_code=404,
+            detail="panelist not found or lacks a complete OCEAN vector "
+                   "(score exists only for consented respondents)")
+    target = full[panelist_id]
+    sims = [
+        {"panelist_id": p, "similarity": round(_cosine(target, vec), 4)}
+        for p, vec in full.items() if p != panelist_id
+    ]
+    sims.sort(key=lambda s: s["similarity"], reverse=True)
+    return {
+        "candidate_id": candidate_id, "seed_panelist_id": panelist_id,
+        "data_source": "survey_responses (consented panel)",
+        "method": "cosine similarity over OCEAN trait vectors",
+        "lookalikes": sims[: max(1, min(top_n, 100))],
+        "note": "Expansion is strictly within the consented panel. Projecting onto "
+                "non-panel voters requires their consent (NDPA 2023).",
+        "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+async def engine_persuasion(candidate_id: str, state_code: str, office_type: str) -> Dict:
+    """Persuasion-priority ranking at WARD level (aggregate only). A labeled
+    statistical planning model over real polling-unit registration counts:
+    priority = registered_voters × zone_priority_weight. The platform
+    deliberately does NOT score individual non-consenting voters — persuasion
+    insight at individual level comes only from the consented panel."""
+    pid = _profile_id(candidate_id)
+    if pid is None:
+        raise HTTPException(status_code=400, detail="candidate_id must be the numeric campaign profile id")
+    st = state_code.upper()
+    if st not in {s["code"] for s in STATES}:
+        raise HTTPException(status_code=400, detail=f"Unknown state code: {st}")
+    rows = await _fetch_table(
+        "polling_units", "persuasion_model",
+        """SELECT ward_code,
+                  COUNT(*) AS polling_units,
+                  COALESCE(SUM(registered_voters), 0)::bigint AS registered_voters
+           FROM polling_units
+           WHERE code LIKE $1
+           GROUP BY ward_code""", f"{st}/%")
+    zone = next((z for z, info in ZONES.items() if st in info["states"]), None)
+    priorities = ZONE_PRIORITIES.get(zone, {})
+    zone_weight = round(sum(priorities.values()) / len(priorities), 3) if priorities else 1.0
+    wards = [
+        {
+            "ward_code": r["ward_code"],
+            "polling_units": int(r["polling_units"]),
+            "registered_voters": int(r["registered_voters"] or 0),
+            "persuasion_priority": round(int(r["registered_voters"] or 0) * zone_weight, 1),
+        }
+        for r in rows
+    ]
+    wards.sort(key=lambda w: w["persuasion_priority"], reverse=True)
+    return {
+        "candidate_id": candidate_id, "state_code": st, "office_type": office_type,
+        "data_source": "polling_units (registration counts) + zone priorities",
+        "model": "persuasion_priority = registered_voters × zone salience — a labeled "
+                 "aggregate planning heuristic, not a voter-level score",
+        "zone": zone,
+        "zone_salience": {"value": zone_weight,
+                          "definition": "mean of ZONE_PRIORITIES policy weights for the zone"},
+        "wards_ranked": len(wards),
+        "top_wards": wards[:20],
+        "note": "Ward-level aggregation only. Individual-level persuasion scoring of "
+                "non-consenting voters is intentionally not implemented (NDPA 2023); "
+                "individual-level insight exists solely inside the consented panel.",
+        "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 async def engine_speech(speech_type: str, name: str, office: str,
                          state_code: str, policies: List[str], lang: str) -> str:
     st = _state(state_code)
@@ -1318,14 +1711,58 @@ async def campaign_schedule(req: ScheduleReq):
 
 @app.post("/api/v1/campaign/sentiment", tags=["Sentiment Analysis"])
 async def sentiment_analysis(req: SentimentReq):
-    """Real-time sentiment analysis with platform breakdown and trend decomposition."""
-    return engine_sentiment(req.candidate_id, req.period)
+    """Press-sentiment aggregation over the campaign's recorded media items."""
+    return await engine_sentiment(req.candidate_id, req.period)
 
 
 @app.post("/api/v1/campaign/opponents", tags=["Opponent Intelligence"])
 async def opponent_analysis(req: OpponentReq):
     """Innovation 3: Opponent vulnerability scanner."""
     return await engine_opponents(req.candidate_id, req.state_code, req.office_type)
+
+
+# ── W13 analytics endpoints (CA-parity, consent-first) ────────────────────────
+
+class PanelScoresReq(BaseModel):
+    candidate_id: str
+
+class SegmentsReq(BaseModel):
+    candidate_id: str; k: int = 4
+
+class LookalikeReq(BaseModel):
+    candidate_id: str; panelist_id: int; top_n: int = 10
+
+class PersuasionReq(BaseModel):
+    candidate_id: str; state_code: str; office_type: str
+
+@app.post("/api/v1/campaign/analytics/panel-scores", tags=["Analytics (CA-Parity)"])
+async def analytics_panel_scores(req: PanelScoresReq):
+    """Psychometric OCEAN trait scores for the consented survey panel."""
+    return await engine_panel_scores(req.candidate_id)
+
+
+@app.post("/api/v1/campaign/analytics/segments", tags=["Analytics (CA-Parity)"])
+async def analytics_segments(req: SegmentsReq):
+    """Audience segmentation (deterministic k-means) over consented-panel trait vectors."""
+    return await engine_segments(req.candidate_id, req.k)
+
+
+@app.get("/api/v1/campaign/analytics/message-test/{test_id}", tags=["Analytics (CA-Parity)"])
+async def analytics_message_test(test_id: int):
+    """A/B message-test analysis with a real chi-square independence test."""
+    return await engine_message_test(test_id)
+
+
+@app.post("/api/v1/campaign/analytics/lookalike", tags=["Analytics (CA-Parity)"])
+async def analytics_lookalike(req: LookalikeReq):
+    """Lookalike expansion within the consented panel (cosine similarity over OCEAN vectors)."""
+    return await engine_lookalike(req.candidate_id, req.panelist_id, req.top_n)
+
+
+@app.post("/api/v1/campaign/analytics/persuasion", tags=["Analytics (CA-Parity)"])
+async def analytics_persuasion(req: PersuasionReq):
+    """Ward-level persuasion-priority ranking (labeled aggregate model only)."""
+    return await engine_persuasion(req.candidate_id, req.state_code, req.office_type)
 
 
 @app.post("/api/v1/campaign/canvassing-routes", tags=["Canvassing Optimiser"])
@@ -1472,6 +1909,8 @@ async def health():
             "campaign_schedule", "canvassing_routes", "fundraising",
             "media_buy", "policy_resonance", "war_room", "opponent_analysis",
             "volunteer_network", "stakeholder_recommendations",
+            "sentiment_analysis", "panel_scores", "audience_segmentation",
+            "message_testing", "lookalike_expansion", "persuasion_model",
         ],
     }
     return JSONResponse(status_code=503 if degraded else 200, content=body)

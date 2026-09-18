@@ -50,6 +50,13 @@
       "when": 1785700000000,
       "tag": "0006_ca_compliance",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785800000000,
+      "tag": "0007_w13_analytics",
+      "breakpoints": true
     }
   ]
 }

@@ -662,3 +662,72 @@ export const dataSubjectRequests = pgTable("data_subject_requests", {
   index("dsar_profile_idx").on(table.profileId, table.status),
 ]);
 export type DataSubjectRequest = typeof dataSubjectRequests.$inferSelect;
+
+// ─── W13: CA-Parity Analytics (migration 0007) ───────────────────────────────
+// Lawful analogue of Cambridge Analytica's psychographic + micro-targeting
+// stack: psychometrics computed ONLY from consented panel responses, message
+// experiments run ONLY on the campaign's own audiences with real event data.
+
+// Consented survey panel — consent_id links to the W12 consent substrate;
+// application code refuses panelists without an active consent record.
+export const surveyPanelists = pgTable("survey_panelists", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  consentId: integer("consent_id").notNull().references(() => consentRecords.id),
+  fullName: varchar("full_name", { length: 200 }).notNull(),
+  stateCode: varchar("state_code", { length: 10 }),
+  lga: varchar("lga", { length: 100 }),
+  ward: varchar("ward", { length: 100 }),
+  ageBand: varchar("age_band", { length: 10 }),
+  gender: varchar("gender", { length: 20 }),
+  status: varchar("status", { length: 20 }).default("active").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("survey_panelists_profile_idx").on(table.profileId, table.status),
+]);
+export type SurveyPanelist = typeof surveyPanelists.$inferSelect;
+
+// Psychometric item responses (Likert 1–5). The ONLY lawful input to trait
+// scoring — the platform never infers personality for non-respondents.
+export const surveyResponses = pgTable("survey_responses", {
+  id: serial("id").primaryKey(),
+  panelistId: integer("panelist_id").notNull().references(() => surveyPanelists.id),
+  instrument: varchar("instrument", { length: 40 }).notNull(), // e.g. OCEAN20
+  itemKey: varchar("item_key", { length: 20 }).notNull(),      // e.g. E1, N3r (r = reverse)
+  score: integer("score").notNull(),
+  respondedAt: timestamp("responded_at").defaultNow().notNull(),
+}, (table) => [
+  index("survey_responses_panelist_idx").on(table.panelistId, table.instrument),
+]);
+export type SurveyResponse = typeof surveyResponses.$inferSelect;
+
+// A/B message experiments on the campaign's own consented audiences.
+export const messageTests = pgTable("message_tests", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  name: varchar("name", { length: 200 }).notNull(),
+  channel: varchar("channel", { length: 40 }),
+  status: varchar("status", { length: 20 }).default("draft").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type MessageTest = typeof messageTests.$inferSelect;
+
+export const messageVariants = pgTable("message_variants", {
+  id: serial("id").primaryKey(),
+  testId: integer("test_id").notNull().references(() => messageTests.id),
+  label: varchar("label", { length: 40 }).notNull(),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type MessageVariant = typeof messageVariants.$inferSelect;
+
+// Real event counts per variant; analysis is computed from these rows only.
+export const messageEvents = pgTable("message_events", {
+  id: serial("id").primaryKey(),
+  variantId: integer("variant_id").notNull().references(() => messageVariants.id),
+  eventType: varchar("event_type", { length: 20 }).notNull(), // impression|response|conversion
+  occurredAt: timestamp("occurred_at").defaultNow().notNull(),
+}, (table) => [
+  index("message_events_variant_idx").on(table.variantId, table.eventType),
+]);
+export type MessageEvent = typeof messageEvents.$inferSelect;

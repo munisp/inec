@@ -381,6 +381,54 @@ export const appRouter = router({
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getTransparencyReport(input.profileId)),
   }),
+
+  // ─── W13: Analytics data capture (consented panel + message experiments) ──
+  // The lawful analogue of CA's psychographic/micro-targeting stack: data is
+  // captured ONLY from consented panelists and the campaign's own audiences.
+  // Analysis engines live in services/campaign-planning (FastAPI).
+  analytics: router({
+    enrollPanelist: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        consentId: z.number(), // must reference an ACTIVE consent record
+        fullName: z.string().min(1).max(200),
+        stateCode: z.string().max(10).optional(),
+        lga: z.string().max(100).optional(),
+        ward: z.string().max(100).optional(),
+        ageBand: z.string().max(10).optional(),
+        gender: z.string().max(20).optional(),
+      }))
+      .mutation(({ input }) => db.addSurveyPanelist(input)),
+    recordResponses: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        panelistId: z.number(),
+        instrument: z.string().min(1).max(40),
+        responses: z.array(z.object({
+          itemKey: z.string().min(1).max(20),
+          score: z.number().int().min(1).max(5),
+        })).min(1),
+      }))
+      .mutation(({ input }) => db.recordSurveyResponses(input.profileId, input.panelistId, input.instrument, input.responses)),
+    createMessageTest: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        name: z.string().min(1).max(200),
+        channel: z.string().max(40).optional(),
+        variants: z.array(z.object({
+          label: z.string().min(1).max(40),
+          body: z.string().min(1),
+        })).min(2).max(8),
+      }))
+      .mutation(({ input }) => db.createMessageTest(input.profileId, input.name, input.channel, input.variants)),
+    recordEvent: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        variantId: z.number(),
+        eventType: z.enum(["impression", "response", "conversion"]),
+      }))
+      .mutation(({ input }) => db.recordMessageEvent(input.profileId, input.variantId, input.eventType)),
+  }),
   // ─── Polling Units ─────────────────────────────────────────────────────────
   pollingUnits: router({
     // SECURITY: tenancy enforced — viewer reads, manager writes.

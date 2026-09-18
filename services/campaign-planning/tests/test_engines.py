@@ -167,6 +167,13 @@ def test_policy_resonance_scores_mapped_and_nulls_unmapped(client):
      {"candidate_id": "1", "state_code": "LA", "office_type": "house"}),
     ("/api/v1/campaign/volunteer-network",
      {"candidate_id": "1", "state_code": "LA", "num_volunteers": 50}),
+    ("/api/v1/campaign/sentiment", {"candidate_id": "1", "period": "30d"}),
+    ("/api/v1/campaign/analytics/panel-scores", {"candidate_id": "1"}),
+    ("/api/v1/campaign/analytics/segments", {"candidate_id": "1", "k": 4}),
+    ("/api/v1/campaign/analytics/lookalike",
+     {"candidate_id": "1", "panelist_id": 1, "top_n": 5}),
+    ("/api/v1/campaign/analytics/persuasion",
+     {"candidate_id": "1", "state_code": "LA", "office_type": "house"}),
 ])
 def test_db_backed_engines_fail_closed_without_schema(client, path, payload):
     resp = client.post(path, headers=AUTH, json=payload)
@@ -244,20 +251,17 @@ def test_nearest_neighbour_visits_all_and_starts_at_first():
 
 # ── Genuinely external features stay honestly disabled ───────────────────────
 
-@pytest.mark.parametrize("path,payload", [
-    ("/api/v1/campaign/sentiment", {"candidate_id": "1", "period": "30d"}),
-    ("/api/v1/campaign/debate-tracker", {"candidate_id": "1", "statements": ["x"]}),
-])
-def test_external_data_features_remain_disabled(client, path, payload):
-    resp = client.post(path, headers=AUTH, json=payload)
+def test_debate_tracker_remains_disabled(client):
+    resp = client.post("/api/v1/campaign/debate-tracker", headers=AUTH,
+                       json={"candidate_id": "1", "statements": ["x"]})
     assert resp.status_code == 503
     assert resp.json()["detail"]["status"] == "disabled"
 
 
 # ── No-orphan guarantees ─────────────────────────────────────────────────────
 
-def test_disabled_registry_matches_exactly_the_two_external_features():
-    assert sorted(service.DISABLED_DATA_FEATURES) == ["debate_tracker", "sentiment_analysis"]
+def test_disabled_registry_matches_exactly_the_remaining_external_feature():
+    assert sorted(service.DISABLED_DATA_FEATURES) == ["debate_tracker"]
 
 
 def test_every_engine_is_wired_to_an_endpoint():
@@ -270,11 +274,110 @@ def test_every_engine_is_wired_to_an_endpoint():
         assert calls >= 2, f"{name} is defined but never invoked (orphan)"
 
 
+def test_message_test_fails_closed_without_schema(client):
+    resp = client.get("/api/v1/campaign/analytics/message-test/1", headers=AUTH)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["status"] == "unavailable"
+
+
+# ── W13 analytics: pure-statistics correctness ───────────────────────────────
+
+def test_score_panel_rows_reverse_scoring_and_means():
+    rows = [
+        {"panelist_id": 1, "item_key": "E1", "score": 4},
+        {"panelist_id": 1, "item_key": "E2r", "score": 1},   # reversed → 5
+        {"panelist_id": 1, "item_key": "N1", "score": 2},
+        {"panelist_id": 1, "item_key": "X9", "score": 5},    # unknown trait ignored
+        {"panelist_id": 2, "item_key": "E1", "score": 2},
+    ]
+    scores = service._score_panel_rows(rows)
+    assert scores[1]["E"] == 4.5          # mean of 4 and reversed 5
+    assert scores[1]["N"] == 2.0
+    assert "X" not in scores[1]
+    assert scores[2]["E"] == 2.0
+
+
+def test_kmeans_deterministic_and_partitions_all_points():
+    vectors = [[1.0, 1.0], [1.2, 0.8], [0.9, 1.1],
+               [5.0, 5.0], [4.8, 5.2], [5.1, 4.9]]
+    a = service._kmeans(vectors, 2)
+    b = service._kmeans(vectors, 2)
+    assert a == b                          # deterministic (farthest-point init)
+    assert len(a) == len(vectors)
+    assert set(a) == {0, 1}                # two clearly separable clusters
+    sizes = {c: a.count(c) for c in set(a)}
+    assert sorted(sizes.values()) == [3, 3]
+
+
+def test_chi2_sf_against_known_critical_values():
+    # Standard chi-square critical values at α = 0.05:
+    # df=1 → 3.841, df=2 → 5.991, df=5 → 11.070.
+    assert abs(service._chi2_sf(3.841, 1) - 0.05) < 0.001
+    assert abs(service._chi2_sf(5.991, 2) - 0.05) < 0.001
+    assert abs(service._chi2_sf(11.070, 5) - 0.05) < 0.001
+    assert service._chi2_sf(0.0, 1) == 1.0
+    assert service._chi2_sf(10.828, 1) < 0.001 + 0.001  # α = 0.001 critical value
+
+
+def test_cosine_similarity_bounds_and_identity():
+    assert abs(service._cosine([1, 2, 3], [1, 2, 3]) - 1.0) < 1e-9
+    assert abs(service._cosine([1, 0], [0, 1])) < 1e-9
+    assert service._cosine([0, 0], [1, 1]) == 0.0
+
+
+def test_message_test_engine_chi_square_end_to_end(monkeypatch):
+    """Engine-level: known 2×2 table (A 20/100 vs B 10/100 responses) must yield
+    χ² = 3.9216, df = 1, p ≈ 0.0477 — significant at 95%, A leads."""
+    import asyncio
+    tables = {
+        "message_variants": [
+            {"id": 1, "label": "A", "body": "msg A"},
+            {"id": 2, "label": "B", "body": "msg B"},
+        ],
+        "message_events": [
+            {"variant_id": 1, "event_type": "impression", "n": 100},
+            {"variant_id": 1, "event_type": "response", "n": 20},
+            {"variant_id": 2, "event_type": "impression", "n": 100},
+            {"variant_id": 2, "event_type": "response", "n": 10},
+        ],
+    }
+
+    async def fake_fetch(table, feature, sql, *args):
+        return tables[table]
+
+    monkeypatch.setattr(service, "_fetch_table", fake_fetch)
+    out = asyncio.run(service.engine_message_test(1))
+    ana = out["analysis"]
+    assert ana["status"] == "analysed"
+    assert abs(ana["chi2_statistic"] - 3.9216) < 0.001
+    assert ana["degrees_of_freedom"] == 1
+    assert abs(ana["p_value"] - 0.0477) < 0.001
+    assert ana["significant_at_95"] is True
+    assert ana["leading_variant"] == "A"
+    assert out["variants"][0]["response_rate"] == 0.2
+
+
+def test_message_test_engine_honest_when_no_events(monkeypatch):
+    import asyncio
+
+    async def fake_fetch(table, feature, sql, *args):
+        if table == "message_variants":
+            return [{"id": 1, "label": "A", "body": "a"},
+                    {"id": 2, "label": "B", "body": "b"}]
+        return []
+
+    monkeypatch.setattr(service, "_fetch_table", fake_fetch)
+    out = asyncio.run(service.engine_message_test(1))
+    assert out["analysis"]["status"] == "insufficient_data"
+
+
 def test_health_reports_wired_features(client):
     resp = client.get("/api/v1/campaign/health")
     body = resp.json()
-    assert body["disabled_features"] == ["debate_tracker", "sentiment_analysis"]
+    assert body["disabled_features"] == ["debate_tracker"]
     for f in ("campaign_plan", "budget_allocation", "voter_targeting", "canvassing_routes",
               "fundraising", "media_buy", "policy_resonance", "war_room",
-              "opponent_analysis", "volunteer_network", "stakeholder_recommendations"):
+              "opponent_analysis", "volunteer_network", "stakeholder_recommendations",
+              "sentiment_analysis", "panel_scores", "audience_segmentation",
+              "message_testing", "lookalike_expansion", "persuasion_model"):
         assert f in body["enabled_features"]
