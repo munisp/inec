@@ -32,7 +32,7 @@ describe("voters.bulkImport bounds", () => {
     }));
 
     const err = await caller.voters
-      .bulkImport({ profileId: 1, rows })
+      .bulkImport({ profileId: 1, rows, dataSource: "event_signup", consentBasis: "consent", consentMethod: "written", purpose: "voter contact for campaign events" })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(TRPCError);
@@ -60,7 +60,7 @@ describe("voters.bulkImport bounds", () => {
     }));
 
     await expect(
-      caller.voters.bulkImport({ profileId: 1, rows }),
+      caller.voters.bulkImport({ profileId: 1, rows, dataSource: "event_signup", consentBasis: "consent", consentMethod: "written", purpose: "voter contact for campaign events" }),
     ).resolves.toBeDefined();
   });
 });

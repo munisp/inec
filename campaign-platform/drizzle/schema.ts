@@ -561,3 +561,104 @@ export const rateLimits = pgTable("rate_limits", {
   primaryKey({ columns: [table.key, table.windowStart] }),
 ]);
 export type RateLimit = typeof rateLimits.$inferSelect;
+
+// ─── W12: CA-Lessons Compliance Substrate (migration 0006) ──────────────────
+// The Cambridge Analytica scandal's core architectural failure: personal data
+// held with no persisted consent, no provenance, no access audit, no data-
+// subject rights path. These tables are that infrastructure, aligned to the
+// Nigeria Data Protection Act 2023 (ss.25/36/37). See
+// /mnt/agents/output/research/ca_insight.md.
+
+/** NDPA s.25 lawful bases usable for campaign processing. */
+export const lawfulBasisEnum = pgEnum("lawful_basis", [
+  "consent", "contract", "legal_obligation", "vital_interest",
+  "public_interest", "legitimate_interest",
+]);
+
+/** Personal-data tables covered by the compliance substrate. */
+export const subjectTableEnum = pgEnum("subject_table", [
+  "voter_registrations", "diaspora_contacts", "stakeholder_contacts",
+  "volunteers", "petition_signatures",
+]);
+
+// Per-subject, per-purpose consent registry. Withdrawal is a state transition
+// (withdrawn_at), never a deletion — history must remain auditable.
+export const consentRecords = pgTable("consent_records", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  subjectTable: subjectTableEnum("subject_table").notNull(),
+  subjectId: integer("subject_id").notNull(),
+  lawfulBasis: lawfulBasisEnum("lawful_basis").notNull(),
+  purpose: varchar("purpose", { length: 120 }).notNull(),
+  consentMethod: varchar("consent_method", { length: 20 }), // verbal/written/digital
+  consentGranted: boolean("consent_granted").default(false).notNull(),
+  consentedAt: timestamp("consented_at"),
+  withdrawnAt: timestamp("withdrawn_at"),
+  retentionUntil: date("retention_until"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("consent_records_subject_idx").on(table.subjectTable, table.subjectId),
+  index("consent_records_profile_idx").on(table.profileId),
+]);
+export type ConsentRecord = typeof consentRecords.$inferSelect;
+
+// Append-only origin record for every personal-data row. Application code
+// exposes no update/delete path — provenance opacity is what made the CA
+// breach unauditable and the 2015 deletion certifications unverifiable.
+export const dataProvenanceLedger = pgTable("data_provenance_ledger", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  subjectTable: subjectTableEnum("subject_table").notNull(),
+  subjectId: integer("subject_id").notNull(),
+  source: varchar("source", { length: 40 }).notNull(), // door_to_door/event_signup/...
+  collectedBy: varchar("collected_by", { length: 200 }),
+  collectedAt: timestamp("collected_at").defaultNow().notNull(),
+  lawfulBasis: lawfulBasisEnum("lawful_basis").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("provenance_subject_idx").on(table.subjectTable, table.subjectId),
+  index("provenance_profile_idx").on(table.profileId),
+]);
+export type DataProvenanceEntry = typeof dataProvenanceLedger.$inferSelect;
+
+// Append-only log of PII list reads/exports: actor, table, rows, purpose.
+export const dataAccessAudit = pgTable("data_access_audit", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  actorId: integer("actor_id"),
+  actorName: varchar("actor_name", { length: 200 }),
+  subjectTable: subjectTableEnum("subject_table").notNull(),
+  action: varchar("action", { length: 30 }).notNull(), // list/export/dsar_erasure/...
+  rowCount: integer("row_count"),
+  purpose: varchar("purpose", { length: 200 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("access_audit_profile_idx").on(table.profileId),
+]);
+export type DataAccessAuditEntry = typeof dataAccessAudit.$inferSelect;
+
+// DSAR workflow — NDPA rights: access/rectification/erasure/restriction/
+// portability/objection. due_at tracks the 30-day response expectation.
+export const dataSubjectRequests = pgTable("data_subject_requests", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  requestType: varchar("request_type", { length: 20 }).notNull(),
+  subjectName: varchar("subject_name", { length: 200 }).notNull(),
+  subjectContact: varchar("subject_contact", { length: 320 }),
+  subjectTable: subjectTableEnum("subject_table"),
+  subjectId: integer("subject_id"),
+  status: varchar("status", { length: 20 }).default("open").notNull(),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+  dueAt: date("due_at").notNull(),
+  fulfilledAt: timestamp("fulfilled_at"),
+  rejectionReason: text("rejection_reason"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("dsar_profile_idx").on(table.profileId, table.status),
+]);
+export type DataSubjectRequest = typeof dataSubjectRequests.$inferSelect;

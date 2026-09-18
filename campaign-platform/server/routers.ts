@@ -229,8 +229,27 @@ export const appRouter = router({
   voters: router({
     // SECURITY: tenancy enforced — viewer reads, manager writes.
     list: profileScopedProcedure("viewer")
-      .input(z.object({ profileId: z.number() }))
-      .query(({ input }) => db.getVoterRegistrations(input.profileId)),
+      .input(z.object({
+        profileId: z.number(),
+        // W12: access to PII lists is audit-logged with a declared purpose.
+        purpose: z.string().max(200).optional(),
+      }))
+      .query(async ({ input, ctx }) => {
+        const rows = await db.getVoterRegistrations(input.profileId);
+        await db.logDataAccess({
+          profileId: input.profileId,
+          actorId: ctx.user?.id ?? null,
+          actorName: ctx.user?.fullName ?? null,
+          subjectTable: "voter_registrations",
+          action: "list",
+          rowCount: rows.length,
+          purpose: input.purpose ?? null,
+        });
+        return rows;
+      }),
+    // W12 ETHICS GATE (CA lessons / NDPA 2023): voter PII writes require a
+    // declared collection source + lawful basis + purpose. Written together
+    // with consent + provenance records in db.ts.
     add: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
@@ -245,10 +264,18 @@ export const appRouter = router({
         // Accept the legacy client key as an alias for backwards compatibility.
         vinNumber: z.string().optional(),
         status: z.string().optional(),
+        dataSource: z.enum(["door_to_door", "event_signup", "campaign_website", "referral", "field_agent", "other_declared"]),
+        consentBasis: z.enum(["consent", "contract", "legal_obligation", "vital_interest", "public_interest", "legitimate_interest"]),
+        consentMethod: z.enum(["verbal", "written", "digital"]).optional(),
+        purpose: z.string().min(1).max(120),
+        collectedBy: z.string().max(200).optional(),
       }))
       .mutation(({ input }) => {
-        const { vinNumber, ...rest } = input;
-        return db.addVoterRegistration({ ...rest, vin: input.vin ?? vinNumber } as any);
+        const { vinNumber, dataSource, consentBasis, consentMethod, purpose, collectedBy, ...rest } = input;
+        return db.addVoterRegistration(
+          { ...rest, vin: input.vin ?? vinNumber } as any,
+          { dataSource, consentBasis, consentMethod, purpose, collectedBy },
+        );
       }),
     bulkImport: profileScopedProcedure("manager")
       .input(z.object({
@@ -263,8 +290,96 @@ export const appRouter = router({
           pollingUnit: z.string().optional(),
           phone: z.string().optional(),
         })).max(db.MAX_BULK_IMPORT_ROWS),
+        // W12: the same provenance/consent declaration covers the whole batch;
+        // per-row overrides are a future enhancement, never silently skipped.
+        dataSource: z.enum(["door_to_door", "event_signup", "campaign_website", "referral", "field_agent", "other_declared"]),
+        consentBasis: z.enum(["consent", "contract", "legal_obligation", "vital_interest", "public_interest", "legitimate_interest"]),
+        consentMethod: z.enum(["verbal", "written", "digital"]).optional(),
+        purpose: z.string().min(1).max(120),
+        collectedBy: z.string().max(200).optional(),
       }))
-      .mutation(({ input }) => db.bulkAddVoterRegistrations(input.profileId, input.rows)),
+      .mutation(({ input }) =>
+        db.bulkAddVoterRegistrations(input.profileId, input.rows, {
+          dataSource: input.dataSource,
+          consentBasis: input.consentBasis,
+          consentMethod: input.consentMethod,
+          purpose: input.purpose,
+          collectedBy: input.collectedBy,
+        })),
+  }),
+
+  // ─── W12: Data protection (consent / provenance / DSAR / transparency) ─────
+  // Cambridge Analytica lessons made operational; NDPA 2023 aligned.
+  // Named dataProtection — the existing `compliance` router owns the
+  // regulatory-checklist items (compliance_items table).
+  dataProtection: router({
+    recordConsent: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        subjectTable: z.enum(["voter_registrations", "diaspora_contacts", "stakeholder_contacts", "volunteers", "petition_signatures"]),
+        subjectId: z.number(),
+        lawfulBasis: z.enum(["consent", "contract", "legal_obligation", "vital_interest", "public_interest", "legitimate_interest"]),
+        purpose: z.string().min(1).max(120),
+        consentMethod: z.enum(["verbal", "written", "digital"]).optional(),
+        consentGranted: z.boolean(),
+        retentionUntil: z.string().optional(), // YYYY-MM-DD
+        notes: z.string().optional(),
+      }))
+      .mutation(({ input }) => db.recordConsent({
+        ...input,
+        consentMethod: input.consentMethod ?? null,
+        retentionUntil: input.retentionUntil ?? null,
+        consentGranted: input.consentGranted,
+        consentedAt: input.consentGranted ? new Date() : null,
+      })),
+    withdrawConsent: profileScopedProcedure("manager")
+      .input(z.object({ profileId: z.number(), consentId: z.number() }))
+      .mutation(({ input }) => db.withdrawConsent(input.consentId, input.profileId)),
+    consentStatus: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        subjectTable: z.enum(["voter_registrations", "diaspora_contacts", "stakeholder_contacts", "volunteers", "petition_signatures"]),
+        subjectId: z.number(),
+      }))
+      .query(({ input }) => db.getConsentFor(input.profileId, input.subjectTable, input.subjectId)),
+    provenance: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        subjectTable: z.enum(["voter_registrations", "diaspora_contacts", "stakeholder_contacts", "volunteers", "petition_signatures"]),
+        subjectId: z.number(),
+      }))
+      .query(({ input }) => db.getProvenanceFor(input.profileId, input.subjectTable, input.subjectId)),
+    fileDsar: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        requestType: z.enum(["access", "rectification", "erasure", "restriction", "portability", "objection"]),
+        subjectName: z.string().min(1).max(200),
+        subjectContact: z.string().max(320).optional(),
+        subjectTable: z.enum(["voter_registrations", "diaspora_contacts", "stakeholder_contacts", "volunteers", "petition_signatures"]).optional(),
+        subjectId: z.number().optional(),
+        notes: z.string().optional(),
+      }))
+      .mutation(({ input }) => {
+        // NDPA: respond without undue delay — 30-day tracked deadline.
+        const due = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+        return db.fileDsar({ ...input, dueAt: due });
+      }),
+    listDsars: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number(), status: z.string().optional() }))
+      .query(({ input }) => db.listDsars(input.profileId, input.status)),
+    resolveDsar: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        dsarId: z.number(),
+        action: z.enum(["fulfill", "reject"]),
+        rejectionReason: z.string().optional(),
+      }))
+      .mutation(({ input }) =>
+        db.resolveDsar(input.dsarId, input.profileId, input.action, { rejectionReason: input.rejectionReason })),
+    // Real aggregates only — nothing asserted that is not computed from tables.
+    transparencyReport: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(({ input }) => db.getTransparencyReport(input.profileId)),
   }),
   // ─── Polling Units ─────────────────────────────────────────────────────────
   pollingUnits: router({

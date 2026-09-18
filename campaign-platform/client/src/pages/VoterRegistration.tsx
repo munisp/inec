@@ -56,7 +56,14 @@ export default function VoterRegistration() {
   });
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ fullName: "", vin: "", lga: "", ward: "", pollingUnit: "", phone: "" });
+  const [form, setForm] = useState({
+    fullName: "", vin: "", lga: "", ward: "", pollingUnit: "", phone: "",
+    // W12: NDPA 2023 compliance fields — required, no silent defaults.
+    dataSource: "", consentBasis: "", consentMethod: "", purpose: "",
+  });
+  const [bulkMeta, setBulkMeta] = useState({ dataSource: "", consentBasis: "", consentMethod: "", purpose: "" });
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const pendingRowsRef = useRef<Array<Record<string, unknown>>>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const filtered = voters.filter(v =>
@@ -71,7 +78,10 @@ export default function VoterRegistration() {
       try {
         const rows = parseVoterCSV(ev.target?.result as string);
         if (rows.length === 0) return toast.error("No valid rows found in CSV");
-        bulkMut.mutate({ profileId, rows });
+        // W12: bulk PII import requires a declared source + lawful basis BEFORE
+        // upload — no silent import of third-party lists (CA lesson).
+        pendingRowsRef.current = rows;
+        setBulkConfirmOpen(true);
       } catch (err: any) {
         toast.error(err.message ?? "CSV parse error");
       }
@@ -130,9 +140,119 @@ export default function VoterRegistration() {
                 <Input placeholder="Ward" value={form.ward} onChange={e=>setForm(f=>({...f,ward:e.target.value}))}/>
                 <Input placeholder="Polling Unit" value={form.pollingUnit} onChange={e=>setForm(f=>({...f,pollingUnit:e.target.value}))}/>
                 <Input placeholder="Phone" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/>
-                <Button onClick={() => { if (!profileId || !form.fullName) return toast.error("Name required"); addMut.mutate({ profileId, ...form }); }}
+                {/* W12: NDPA 2023 compliance — source, lawful basis, purpose are
+                    required. No voter PII is recorded without them. */}
+                <div className="border-t pt-3 mt-1">
+                  <p className="text-xs font-semibold text-gray-700 mb-2">Data protection (NDPA 2023) — required</p>
+                  <select className="w-full border rounded px-2 py-2 text-sm mb-2" value={form.dataSource}
+                    onChange={e=>setForm(f=>({...f,dataSource:e.target.value}))}>
+                    <option value="">Collection source *</option>
+                    <option value="door_to_door">Door-to-door canvassing</option>
+                    <option value="event_signup">Event signup</option>
+                    <option value="campaign_website">Campaign website</option>
+                    <option value="referral">Referral</option>
+                    <option value="field_agent">Field agent</option>
+                    <option value="other_declared">Other (declared)</option>
+                  </select>
+                  <select className="w-full border rounded px-2 py-2 text-sm mb-2" value={form.consentBasis}
+                    onChange={e=>setForm(f=>({...f,consentBasis:e.target.value}))}>
+                    <option value="">Lawful basis (NDPA s.25) *</option>
+                    <option value="consent">Consent</option>
+                    <option value="legitimate_interest">Legitimate interest</option>
+                    <option value="public_interest">Public interest</option>
+                    <option value="legal_obligation">Legal obligation</option>
+                    <option value="contract">Contract</option>
+                    <option value="vital_interest">Vital interest</option>
+                  </select>
+                  {form.consentBasis === "consent" && (
+                    <select className="w-full border rounded px-2 py-2 text-sm mb-2" value={form.consentMethod}
+                      onChange={e=>setForm(f=>({...f,consentMethod:e.target.value}))}>
+                      <option value="">How was consent given? *</option>
+                      <option value="verbal">Verbal</option>
+                      <option value="written">Written</option>
+                      <option value="digital">Digital</option>
+                    </select>
+                  )}
+                  <Input placeholder="Purpose of processing (e.g. campaign outreach) *" value={form.purpose}
+                    onChange={e=>setForm(f=>({...f,purpose:e.target.value}))}/>
+                </div>
+                <Button onClick={() => {
+                    if (!profileId || !form.fullName) return toast.error("Name required");
+                    if (!form.dataSource || !form.consentBasis || !form.purpose)
+                      return toast.error("Collection source, lawful basis and purpose are required (NDPA 2023)");
+                    if (form.consentBasis === "consent" && !form.consentMethod)
+                      return toast.error("Consent method is required when lawful basis is consent");
+                    addMut.mutate({
+                      profileId, fullName: form.fullName, vin: form.vin || undefined,
+                      lga: form.lga || undefined, ward: form.ward || undefined,
+                      pollingUnit: form.pollingUnit || undefined, phone: form.phone || undefined,
+                      dataSource: form.dataSource as any, consentBasis: form.consentBasis as any,
+                      consentMethod: (form.consentMethod || undefined) as any, purpose: form.purpose,
+                    });
+                  }}
                   disabled={addMut.isPending || !canEdit} style={{ background: "#4A1525", color: "white" }}>
                   {addMut.isPending ? <Loader2 size={14} className="animate-spin"/> : "Register"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+          {/* W12: bulk-import compliance declaration dialog */}
+          <Dialog open={bulkConfirmOpen} onOpenChange={setBulkConfirmOpen}>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Declare data source — {pendingRowsRef.current.length} rows</DialogTitle></DialogHeader>
+              <p className="text-xs text-gray-600">
+                Nigeria Data Protection Act 2023: personal data may only be imported with a declared
+                collection source and lawful basis. This declaration is recorded in the provenance
+                ledger for every imported row.
+              </p>
+              <div className="grid gap-2 py-2">
+                <select className="w-full border rounded px-2 py-2 text-sm" value={bulkMeta.dataSource}
+                  onChange={e=>setBulkMeta(m=>({...m,dataSource:e.target.value}))}>
+                  <option value="">Collection source *</option>
+                  <option value="door_to_door">Door-to-door canvassing</option>
+                  <option value="event_signup">Event signup</option>
+                  <option value="campaign_website">Campaign website</option>
+                  <option value="referral">Referral</option>
+                  <option value="field_agent">Field agent</option>
+                  <option value="other_declared">Other (declared)</option>
+                </select>
+                <select className="w-full border rounded px-2 py-2 text-sm" value={bulkMeta.consentBasis}
+                  onChange={e=>setBulkMeta(m=>({...m,consentBasis:e.target.value}))}>
+                  <option value="">Lawful basis (NDPA s.25) *</option>
+                  <option value="consent">Consent</option>
+                  <option value="legitimate_interest">Legitimate interest</option>
+                  <option value="public_interest">Public interest</option>
+                  <option value="legal_obligation">Legal obligation</option>
+                  <option value="contract">Contract</option>
+                  <option value="vital_interest">Vital interest</option>
+                </select>
+                {bulkMeta.consentBasis === "consent" && (
+                  <select className="w-full border rounded px-2 py-2 text-sm" value={bulkMeta.consentMethod}
+                    onChange={e=>setBulkMeta(m=>({...m,consentMethod:e.target.value}))}>
+                    <option value="">How was consent given? *</option>
+                    <option value="verbal">Verbal</option>
+                    <option value="written">Written</option>
+                    <option value="digital">Digital</option>
+                  </select>
+                )}
+                <Input placeholder="Purpose of processing *" value={bulkMeta.purpose}
+                  onChange={e=>setBulkMeta(m=>({...m,purpose:e.target.value}))}/>
+                <Button style={{ background: "#4A1525", color: "white" }}
+                  disabled={bulkMut.isPending}
+                  onClick={() => {
+                    if (!bulkMeta.dataSource || !bulkMeta.consentBasis || !bulkMeta.purpose)
+                      return toast.error("Source, lawful basis and purpose are required");
+                    if (bulkMeta.consentBasis === "consent" && !bulkMeta.consentMethod)
+                      return toast.error("Consent method is required when lawful basis is consent");
+                    if (!profileId) return;
+                    bulkMut.mutate({
+                      profileId, rows: pendingRowsRef.current as any,
+                      dataSource: bulkMeta.dataSource as any, consentBasis: bulkMeta.consentBasis as any,
+                      consentMethod: (bulkMeta.consentMethod || undefined) as any, purpose: bulkMeta.purpose,
+                    });
+                    setBulkConfirmOpen(false);
+                  }}>
+                  {bulkMut.isPending ? <Loader2 size={14} className="animate-spin"/> : "Import with declaration"}
                 </Button>
               </div>
             </DialogContent>

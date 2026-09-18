@@ -200,22 +200,97 @@ function normalizeVoterRow(row: Record<string, unknown>) {
   return { ...rest, vin: (rest.vin as string | undefined) ?? (vinNumber as string | undefined) };
 }
 
-export async function addVoterRegistration(
-  data: typeof schema.voterRegistrations.$inferInsert & { vinNumber?: string }
+// ─── W12: Consent-gated voter writes (CA lessons → NDPA 2023) ────────────────
+// ETHICS GATE: voter PII may only be written with a declared collection source
+// AND a declared NDPA s.25 lawful basis. The voter row, its consent record and
+// its provenance entry are written together — a voter row with no consent/
+// provenance trail cannot exist through these paths. This is the direct lesson
+// of the CA scandal: personal data with no recorded provenance or consent is
+// unauditable and its deletion is unverifiable.
+export type VoterComplianceMeta = {
+  dataSource: string;       // door_to_door | event_signup | campaign_website | referral | field_agent | other_declared
+  consentBasis: "consent" | "contract" | "legal_obligation" | "vital_interest" | "public_interest" | "legitimate_interest";
+  consentMethod?: string;   // verbal | written | digital (required when basis = consent)
+  purpose: string;          // purpose binding — no repurposing (FTC order lesson)
+  collectedBy?: string;
+};
+
+function assertVoterCompliance(meta: VoterComplianceMeta | undefined): asserts meta is VoterComplianceMeta {
+  if (!meta || typeof meta.dataSource !== "string" || meta.dataSource.trim().length === 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "dataSource is required: voter PII cannot be recorded without a declared collection source (NDPA 2023 transparency duty)",
+    });
+  }
+  const bases = ["consent", "contract", "legal_obligation", "vital_interest", "public_interest", "legitimate_interest"];
+  if (!bases.includes(meta.consentBasis)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `consentBasis must be one of ${bases.join(", ")} (NDPA 2023 s.25)`,
+    });
+  }
+  if (meta.consentBasis === "consent" && !meta.consentMethod) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "consentMethod (verbal|written|digital) is required when consentBasis is 'consent' — consent must be demonstrable",
+    });
+  }
+  if (typeof meta.purpose !== "string" || meta.purpose.trim().length === 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "purpose is required: processing must be purpose-bound (no repurposing without fresh basis)",
+    });
+  }
+}
+
+async function writeVoterComplianceTrail(
+  profileId: number,
+  voterId: number,
+  meta: VoterComplianceMeta,
 ) {
+  const db = getDb();
+  if (!db) return;
+  await db.insert(schema.consentRecords).values({
+    profileId,
+    subjectTable: "voter_registrations",
+    subjectId: voterId,
+    lawfulBasis: meta.consentBasis,
+    purpose: meta.purpose,
+    consentMethod: meta.consentMethod ?? null,
+    consentGranted: meta.consentBasis === "consent",
+    consentedAt: meta.consentBasis === "consent" ? new Date() : null,
+  });
+  await db.insert(schema.dataProvenanceLedger).values({
+    profileId,
+    subjectTable: "voter_registrations",
+    subjectId: voterId,
+    source: meta.dataSource,
+    collectedBy: meta.collectedBy ?? null,
+    lawfulBasis: meta.consentBasis,
+  });
+}
+
+export async function addVoterRegistration(
+  data: typeof schema.voterRegistrations.$inferInsert & { vinNumber?: string },
+  compliance?: VoterComplianceMeta,
+) {
+  assertVoterCompliance(compliance);
   const db = getDb();
   if (!db) return null;
   const rows = await db
     .insert(schema.voterRegistrations)
     .values(normalizeVoterRow(data as Record<string, unknown>) as typeof schema.voterRegistrations.$inferInsert)
     .returning();
+  if (rows[0]) await writeVoterComplianceTrail(rows[0].profileId!, rows[0].id, compliance);
   return rows[0];
 }
 
 export async function bulkAddVoterRegistrations(
   profileId: number,
-  rows: Array<Record<string, unknown>>
+  rows: Array<Record<string, unknown>>,
+  compliance?: VoterComplianceMeta,
 ) {
+  assertVoterCompliance(compliance);
   const db = getDb();
   if (!db) return { inserted: 0 };
   assertBulkImportSize(rows, "voter bulk import");
@@ -230,9 +305,241 @@ export async function bulkAddVoterRegistrations(
       .insert(schema.voterRegistrations)
       .values(chunk as Array<typeof schema.voterRegistrations.$inferInsert>)
       .returning({ id: schema.voterRegistrations.id });
+    for (const r of result) {
+      await writeVoterComplianceTrail(profileId, r.id, compliance);
+    }
     inserted += result.length;
   }
   return { inserted };
+}
+
+// ─── W12: Compliance substrate (consent / provenance / audit / DSAR) ────────
+
+export async function recordConsent(data: typeof schema.consentRecords.$inferInsert) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db.insert(schema.consentRecords).values(data).returning();
+  return rows[0];
+}
+
+export async function withdrawConsent(id: number, profileId: number) {
+  const db = getDb();
+  if (!db) return null;
+  // Withdrawal is a state transition with a timestamp — history is never deleted.
+  const rows = await db
+    .update(schema.consentRecords)
+    .set({ withdrawnAt: new Date(), consentGranted: false, updatedAt: new Date() })
+    .where(and(eq(schema.consentRecords.id, id), eq(schema.consentRecords.profileId, profileId)))
+    .returning();
+  if (rows.length === 0) throw new TRPCError({ code: "NOT_FOUND", message: "Consent record not found" });
+  return rows[0];
+}
+
+export async function getConsentFor(
+  profileId: number,
+  subjectTable: (typeof schema.subjectTableEnum.enumValues)[number],
+  subjectId: number,
+) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.consentRecords)
+    .where(and(
+      eq(schema.consentRecords.profileId, profileId),
+      eq(schema.consentRecords.subjectTable, subjectTable),
+      eq(schema.consentRecords.subjectId, subjectId),
+    ))
+    .orderBy(desc(schema.consentRecords.createdAt));
+}
+
+export async function getProvenanceFor(
+  profileId: number,
+  subjectTable: (typeof schema.subjectTableEnum.enumValues)[number],
+  subjectId: number,
+) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.dataProvenanceLedger)
+    .where(and(
+      eq(schema.dataProvenanceLedger.profileId, profileId),
+      eq(schema.dataProvenanceLedger.subjectTable, subjectTable),
+      eq(schema.dataProvenanceLedger.subjectId, subjectId),
+    ))
+    .orderBy(desc(schema.dataProvenanceLedger.createdAt));
+}
+
+/** Append-only access log entry for PII reads/exports. */
+export async function logDataAccess(entry: typeof schema.dataAccessAudit.$inferInsert) {
+  const db = getDb();
+  if (!db) return;
+  await db.insert(schema.dataAccessAudit).values(entry);
+}
+
+export async function fileDsar(data: typeof schema.dataSubjectRequests.$inferInsert) {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db.insert(schema.dataSubjectRequests).values(data).returning();
+  return rows[0];
+}
+
+export async function listDsars(profileId: number, status?: string) {
+  const db = getDb();
+  if (!db) return [];
+  const conds = [eq(schema.dataSubjectRequests.profileId, profileId)];
+  if (status) conds.push(eq(schema.dataSubjectRequests.status, status));
+  return db
+    .select()
+    .from(schema.dataSubjectRequests)
+    .where(and(...conds))
+    .orderBy(desc(schema.dataSubjectRequests.receivedAt));
+}
+
+/**
+ * Fulfill or reject a DSAR. Erasure fulfillment performs a REAL deletion of the
+ * subject row (plus tombstone access-audit entry) — never a fake "deleted" flag.
+ * This is the FTC Nix/Kogan deletion-order lesson made operational.
+ */
+export async function resolveDsar(
+  id: number,
+  profileId: number,
+  action: "fulfill" | "reject",
+  opts: { rejectionReason?: string } = {},
+) {
+  const db = getDb();
+  if (!db) return null;
+  const existing = await db
+    .select()
+    .from(schema.dataSubjectRequests)
+    .where(and(eq(schema.dataSubjectRequests.id, id), eq(schema.dataSubjectRequests.profileId, profileId)));
+  if (existing.length === 0) throw new TRPCError({ code: "NOT_FOUND", message: "DSAR not found" });
+  const req = existing[0];
+
+  if (action === "reject") {
+    if (!opts.rejectionReason?.trim()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "rejectionReason is required when rejecting a DSAR" });
+    }
+    const rows = await db
+      .update(schema.dataSubjectRequests)
+      .set({ status: "rejected", rejectionReason: opts.rejectionReason, updatedAt: new Date() })
+      .where(eq(schema.dataSubjectRequests.id, id))
+      .returning();
+    return rows[0];
+  }
+
+  // Fulfill: for erasure requests with a located subject row, delete it for real.
+  if (req.requestType === "erasure" && req.subjectTable && req.subjectId) {
+    if (req.subjectTable === "petition_signatures") {
+      // petition_signatures has no profile_id — tenancy is enforced through
+      // the parent petition (still tenant-scoped, never a bare id delete).
+      await db
+        .delete(schema.petitionSignatures)
+        .where(and(
+          eq(schema.petitionSignatures.id, req.subjectId),
+          inArray(
+            schema.petitionSignatures.petitionId,
+            db.select({ id: schema.petitions.id })
+              .from(schema.petitions)
+              .where(eq(schema.petitions.profileId, profileId)),
+          ),
+        ));
+    } else {
+      const tableMap = {
+        voter_registrations: schema.voterRegistrations,
+        diaspora_contacts: schema.diasporaContacts,
+        stakeholder_contacts: schema.stakeholderContacts,
+        volunteers: schema.volunteers,
+      } as const;
+      const table = tableMap[req.subjectTable];
+      await db
+        .delete(table)
+        .where(and(eq(table.id, req.subjectId), eq(table.profileId, profileId)));
+    }
+    await logDataAccess({
+      profileId,
+      subjectTable: req.subjectTable,
+      action: "dsar_erasure",
+      rowCount: 1,
+      purpose: `DSAR #${id} erasure fulfilled for ${req.subjectName}`,
+    });
+  }
+  const rows = await db
+    .update(schema.dataSubjectRequests)
+    .set({ status: "fulfilled", fulfilledAt: new Date(), updatedAt: new Date() })
+    .where(eq(schema.dataSubjectRequests.id, id))
+    .returning();
+  return rows[0];
+}
+
+/**
+ * Transparency report — every figure is a real aggregate from the database.
+ * Nothing here is asserted that is not computed from tables (FTC-order lesson:
+ * accountability must be evidenced, not claimed).
+ */
+export async function getTransparencyReport(profileId: number) {
+  const db = getDb();
+  if (!db) return null;
+
+  const voterCount = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.voterRegistrations)
+    .where(eq(schema.voterRegistrations.profileId, profileId));
+  const consentStats = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      active: sql<number>`count(*) filter (where ${schema.consentRecords.consentGranted} and ${schema.consentRecords.withdrawnAt} is null)::int`,
+      withdrawn: sql<number>`count(*) filter (where ${schema.consentRecords.withdrawnAt} is not null)::int`,
+    })
+    .from(schema.consentRecords)
+    .where(eq(schema.consentRecords.profileId, profileId));
+  const provenanceBySource = await db
+    .select({ source: schema.dataProvenanceLedger.source, n: sql<number>`count(*)::int` })
+    .from(schema.dataProvenanceLedger)
+    .where(eq(schema.dataProvenanceLedger.profileId, profileId))
+    .groupBy(schema.dataProvenanceLedger.source);
+  const dsarStats = await db
+    .select({
+      status: schema.dataSubjectRequests.status,
+      n: sql<number>`count(*)::int`,
+    })
+    .from(schema.dataSubjectRequests)
+    .where(eq(schema.dataSubjectRequests.profileId, profileId))
+    .groupBy(schema.dataSubjectRequests.status);
+  const overdueDsars = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.dataSubjectRequests)
+    .where(and(
+      eq(schema.dataSubjectRequests.profileId, profileId),
+      inArray(schema.dataSubjectRequests.status, ["open", "in_progress"]),
+      lt(schema.dataSubjectRequests.dueAt, new Date().toISOString().slice(0, 10)),
+    ));
+  const accessStats = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.dataAccessAudit)
+    .where(eq(schema.dataAccessAudit.profileId, profileId));
+
+  const voters = voterCount[0]?.n ?? 0;
+  const activeConsent = consentStats[0]?.active ?? 0;
+  return {
+    profileId,
+    generatedAt: new Date().toISOString(),
+    records: { voterRegistrations: voters },
+    consent: {
+      totalRecords: consentStats[0]?.total ?? 0,
+      active: activeConsent,
+      withdrawn: consentStats[0]?.withdrawn ?? 0,
+      voterConsentCoveragePct: voters > 0 ? Math.round((activeConsent / voters) * 1000) / 10 : null,
+    },
+    provenanceBySource: provenanceBySource.map(r => ({ source: r.source, count: r.n })),
+    dsar: {
+      byStatus: dsarStats.map(r => ({ status: r.status, count: r.n })),
+      overdueOpen: overdueDsars[0]?.n ?? 0,
+    },
+    accessAuditEntries: accessStats[0]?.n ?? 0,
+    note: "All figures are live aggregates from the compliance tables; empty tables yield zeros, never estimates.",
+  };
 }
 
 // ─── Polling Units ──────────────────────────────────────────────────────────
@@ -1300,7 +1607,23 @@ export async function seedProfileData(profileId: number): Promise<void> {
     { fullName: "Kabiru Aliyu Danmusa", vin: "19KN0007890123", lga: "Municipal", ward: "Kano Municipal A", pollingUnit: "MUNICIPAL GOVT SCHOOL", phone: "08057890123", isVerified: true },
     { fullName: "Rabi Usman Bello", vin: "19KN0008901234", lga: "Ungogo", ward: "Ungogo North", pollingUnit: "UNGOGO CENTRAL SCHOOL", phone: "08078901234", isVerified: false },
   ];
-  await db.insert(voterRegistrations).values(voters.map(v => ({ ...v, profileId, stateCode: "KN" })));
+  const seededVoters = await db.insert(voterRegistrations)
+    .values(voters.map(v => ({ ...v, profileId, stateCode: "KN" })))
+    .returning({ id: voterRegistrations.id });
+  // W12: seed rows also carry a compliance trail — demo data must not bypass
+  // the provenance/consent substrate (source is honestly labeled as demo seed).
+  for (const v of seededVoters) {
+    await db.insert(schema.consentRecords).values({
+      profileId, subjectTable: "voter_registrations", subjectId: v.id,
+      lawfulBasis: "legitimate_interest", purpose: "demo seed data — replace with real consented records",
+      consentGranted: false,
+    });
+    await db.insert(schema.dataProvenanceLedger).values({
+      profileId, subjectTable: "voter_registrations", subjectId: v.id,
+      source: "demo_seed", lawfulBasis: "legitimate_interest",
+      notes: "Seeded demo record; not a real consented voter contact.",
+    });
+  }
 
   // ── Volunteers ────────────────────────────────────────────────────────────
   const volData = [
