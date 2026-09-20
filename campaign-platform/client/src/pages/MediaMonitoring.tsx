@@ -39,7 +39,56 @@ const EXPORT_COLS_M = [
   { header: "Reach", key: "reach" },
   { header: "Zone", key: "zone" },
   { header: "Headline", key: "headline" },
+  { header: "Compliance", key: "complianceStatus" },
 ];
+
+// GAP-6: NBC media/advert compliance gate — enum mirrors the zod schema of
+// media.updateCompliance in server/routers.ts exactly.
+const COMPLIANCE_STATUSES = ["unreviewed", "compliant", "breach", "cleared"] as const;
+type ComplianceStatus = (typeof COMPLIANCE_STATUSES)[number];
+const COMPLIANCE_COLORS: Record<string, string> = {
+  unreviewed: "#6b7280",
+  compliant: "#008751",
+  breach: "#C0392B",
+  cleared: "#1A3A5C",
+};
+
+/** Per-item NBC compliance control (manager only). */
+function ComplianceControl({ item, profileId }: { item: any; profileId: number }) {
+  const utils = trpc.useUtils();
+  const [status, setStatus] = useState<ComplianceStatus>((item.complianceStatus ?? "unreviewed") as ComplianceStatus);
+  const [notes, setNotes] = useState(item.complianceNotes ?? "");
+  const mut = trpc.media.updateCompliance.useMutation({
+    onSuccess: () => { utils.media.list.invalidate(); toast.success("Compliance status updated"); },
+    onError: e => toast.error(e.message),
+  });
+  const dirty = status !== (item.complianceStatus ?? "unreviewed") || notes !== (item.complianceNotes ?? "");
+  return (
+    <div className="flex items-center gap-2 mt-2 flex-wrap">
+      <Select value={status} onValueChange={v => setStatus(v as ComplianceStatus)}>
+        <SelectTrigger className="h-7 text-xs w-32"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {COMPLIANCE_STATUSES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      <Input
+        placeholder="Compliance notes (optional)"
+        className="h-7 text-xs flex-1 min-w-40"
+        value={notes}
+        onChange={e => setNotes(e.target.value)}
+      />
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-7 text-xs"
+        disabled={mut.isPending || !dirty}
+        onClick={() => mut.mutate({ profileId, id: item.id, status, notes: notes || undefined })}
+      >
+        {mut.isPending ? <Loader2 size={12} className="animate-spin" /> : "Save"}
+      </Button>
+    </div>
+  );
+}
 export default function MediaMonitoring() {
   const { profileId, canEdit, canDelete } = useCandidateProfile();
   const utils = trpc.useUtils();
@@ -240,7 +289,21 @@ export default function MediaMonitoring() {
                     {m.zone && <span>{m.zone}</span>}
                     {m.reach && <span>{m.reach >= 1_000_000 ? `${(m.reach / 1_000_000).toFixed(1)}M reach` : `${(m.reach / 1000).toFixed(0)}K reach`}</span>}
                     <span>{new Date(m.createdAt ?? Date.now()).toLocaleDateString("en-NG", { day: "numeric", month: "short" })}</span>
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+                      style={{
+                        background: (COMPLIANCE_COLORS[m.complianceStatus ?? "unreviewed"] ?? "#6b7280") + "18",
+                        color: COMPLIANCE_COLORS[m.complianceStatus ?? "unreviewed"] ?? "#6b7280",
+                      }}
+                      title="NBC media/advert compliance status"
+                    >
+                      {(m.complianceStatus ?? "unreviewed")}
+                    </span>
                   </div>
+                  {m.complianceNotes && (
+                    <p className="text-xs text-gray-500 mt-1 italic">Compliance: {m.complianceNotes}</p>
+                  )}
+                  {canEdit && profileId && <ComplianceControl item={m} profileId={profileId} />}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <SentimentIcon s={m.sentiment ?? "neutral"} />

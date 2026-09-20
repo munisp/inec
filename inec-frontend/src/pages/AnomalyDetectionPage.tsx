@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
+import { useResolvedElection } from '@/lib/gotv-session';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -53,8 +54,12 @@ export default function AnomalyDetectionPage() {
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [gnnScore, setGnnScore] = useState<Record<string, unknown> | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
+  const [dataErrors, setDataErrors] = useState<string[]>([]);
+  // Election scope resolves from the elections store — never hardcoded.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   const loadData = async () => {
+    if (!electionId) { setLoading(false); return; }
     setLoading(true);
     try {
       setServiceError(null);
@@ -69,13 +74,15 @@ export default function AnomalyDetectionPage() {
         setBenford(null);
         setMethods([]);
         setGnnScore(null);
+        setDataErrors([]);
       } else {
+      const failures: string[] = [];
       const [anomalyRes, integrityRes, benfordRes, methodsRes, gnnRes] = await Promise.all([
-        api.getAIAnomalies(1, severityFilter || undefined).catch(() => ({ anomalies: [], summary: {} })),
-        api.getAIIntegrity(1).catch(() => null),
-        api.getAIBenford(1).catch(() => null),
-        api.getAIMethods().catch(() => ({ methods: [] })),
-        api.getGNNScore(1).catch(() => null),
+        api.getAIAnomalies(electionId, severityFilter || undefined).catch(() => { failures.push('anomaly list'); return null; }),
+        api.getAIIntegrity(electionId).catch(() => { failures.push('integrity score'); return null; }),
+        api.getAIBenford(electionId).catch(() => { failures.push('Benford analysis'); return null; }),
+        api.getAIMethods().catch(() => { failures.push('method catalogue'); return null; }),
+        api.getGNNScore(electionId).catch(() => { failures.push('GNN graph score'); return null; }),
       ]);
       setAnomalies(anomalyRes?.anomalies || []);
       setSummary(anomalyRes?.summary || {});
@@ -83,14 +90,18 @@ export default function AnomalyDetectionPage() {
       setBenford(benfordRes);
       setMethods(methodsRes?.methods || []);
       setGnnScore(gnnRes);
+      setDataErrors(failures);
       }
     } catch {
-      // fallback
+      setDataErrors(['analysis service']);
     }
     setLoading(false);
   };
 
-  useEffect(() => { loadData(); }, [severityFilter]);
+  useEffect(() => {
+    if (electionId) loadData();
+    else if (!electionLoading) setLoading(false);
+  }, [severityFilter, electionId, electionLoading]);
 
   const gradeColor = (grade: string) => {
     if (grade === 'A' || grade === 'B') return 'text-green-700';
@@ -117,6 +128,27 @@ export default function AnomalyDetectionPage() {
         <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div><p className="font-semibold">Anomaly analysis is temporarily unavailable</p><p className="mt-1">{serviceError}</p><p className="mt-1 text-xs">No anomaly, integrity, Benford, or graph score is shown until the approved inference service responds.</p></div>
+        </div>
+      ) : null}
+
+      {!electionId && !electionLoading ? (
+        <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div><p className="font-semibold">No election selected</p><p className="mt-1">Anomaly, integrity, Benford, and graph analyses are election-scoped. Select an election to run them — no election id is assumed by default.</p></div>
+        </div>
+      ) : null}
+
+      {dataErrors.length > 0 ? (
+        <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/30 dark:text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div className="flex-1">
+            <p className="font-semibold">Some analyses failed to load</p>
+            <p className="mt-1">Failed: {dataErrors.join(', ')}. Affected sections are shown as unavailable below — empty figures here do not mean "no anomalies".</p>
+          </div>
+          <Button onClick={loadData} disabled={loading || !electionId} variant="outline" size="sm" className="shrink-0">
+            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            {t('refresh')}
+          </Button>
         </div>
       ) : null}
 
@@ -294,7 +326,7 @@ export default function AnomalyDetectionPage() {
                   </thead>
                   <tbody>
                     {anomalies.length === 0 ? (
-                      <tr><td colSpan={4} className="py-8 text-center text-zinc-400">{t('no_anomalies')}</td></tr>
+                      <tr><td colSpan={4} className="py-8 text-center text-zinc-400">{dataErrors.includes('anomaly list') ? 'Anomaly list failed to load — use Retry above.' : t('no_anomalies')}</td></tr>
                     ) : anomalies.map((a, i) => (
                       <tr key={i} className="border-b hover:bg-zinc-50">
                         <td className="py-2 px-3 font-mono text-xs">{a.polling_unit_code}</td>
@@ -350,7 +382,7 @@ export default function AnomalyDetectionPage() {
                   ) : null}
                 </div>
               ) : (
-                <p className="text-sm text-zinc-400 text-center py-8">GNN data not available — model may need training first</p>
+                <p className="text-sm text-zinc-400 text-center py-8">{dataErrors.includes('GNN graph score') ? 'GNN score failed to load — use Retry above.' : 'GNN data not available — model may need training first'}</p>
               )}
             </CardContent>
           </Card>

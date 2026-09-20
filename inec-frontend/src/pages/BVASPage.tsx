@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
 
@@ -32,21 +33,25 @@ export default function BVASPage() {
   const [tab, setTab] = useState<'overview' | 'devices' | 'reconciliation' | 'ingestion'>('overview');
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Election scope resolves from the elections store — never hardcoded.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   useEffect(() => {
+    if (!electionId) { setLoading(false); return; }
     loadAll();
     const iv = setInterval(loadAll, 30000);
     return () => clearInterval(iv);
-  }, [flaggedOnly, refreshKey]);
+  }, [flaggedOnly, refreshKey, electionId]);
 
   async function loadAll() {
+    if (!electionId) return;
     try {
       setError(null);
       const [summary, recon, tl, fd, ing] = await Promise.all([
-        api.getBVASSummary(1),
-        api.getBVASReconciliation(1, flaggedOnly),
-        api.getBVASAccreditationTimeline(1, 'hour'),
-        api.getBVASAccreditationFeed(1, 20),
+        api.getBVASSummary(electionId),
+        api.getBVASReconciliation(electionId, flaggedOnly),
+        api.getBVASAccreditationTimeline(electionId, 'hour'),
+        api.getBVASAccreditationFeed(electionId, 20),
         api.getIngestionStats(),
       ]);
       setDevices(summary.devices);
@@ -78,6 +83,13 @@ export default function BVASPage() {
       default: return 'bg-green-100 text-green-800';
     }
   };
+
+  if (!electionId && !electionLoading) return (
+    <AuthoritativeDataUnavailable
+      title="No election selected"
+      description="BVAS accreditation, device, and reconciliation data are election-scoped. Select an election to load them — no election id is assumed by default."
+    />
+  );
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600" /></div>;
 
@@ -321,14 +333,27 @@ function RateBar({ label, rate, color }: { label: string; rate: number; color: s
 function DevicesTab() {
   const [devices, setDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Election scope resolves from the elections store — never hardcoded.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   useEffect(() => {
-    api.getBVASDevices({ election_id: '1', limit: '50' })
+    if (!electionId) { if (!electionLoading) setLoading(false); return; }
+    setLoading(true);
+    setError(null);
+    api.getBVASDevices({ election_id: String(electionId), limit: '50' })
       .then(d => setDevices(Array.isArray(d) ? d : []))
-      .catch(e => console.error('bvas devices:', e))
+      .catch(() => { setDevices([]); setError('bvas-devices-source-unavailable'); })
       .finally(() => setLoading(false));
-  }, []);
+  }, [electionId, electionLoading]);
 
+  if (!electionId && !electionLoading) return <div className="text-center py-8 text-gray-500">No election selected — device inventory is election-scoped.</div>;
+  if (error) return (
+    <div className="text-center py-8">
+      <p className="text-gray-500">BVAS device inventory could not be retrieved. No device list is shown.</p>
+      <p className="text-xs text-gray-400 mt-1">Reference: {error}</p>
+    </div>
+  );
   if (loading) return <div className="text-center py-8 text-gray-500">Loading devices...</div>;
 
   const statusColor = (s: string) => {

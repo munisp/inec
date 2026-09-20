@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
+import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -16,14 +18,16 @@ export default function AdminConsolePage() {
   const [materialStats, setMaterialStats] = useState<any>(null);
   const [tab, setTab] = useState<'dashboard'|'lifecycle'|'staff'|'materials'>('dashboard');
   const [search, setSearch] = useState('');
+  // Election scope resolves from the elections store — never hardcoded.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { if (electionId) loadAll(electionId); }, [electionId]);
 
-  const loadAll = async () => {
+  const loadAll = async (id: number) => {
     try {
       const [d, lc, s, m, ms] = await Promise.all([
-        api.getEMSDashboard(1),
-        api.getEMSLifecycle(1),
+        api.getEMSDashboard(id),
+        api.getEMSLifecycle(id),
         api.getEMSStaff(),
         api.getEMSMaterials(),
         api.getEMSMaterialStats(),
@@ -51,6 +55,13 @@ export default function AdminConsolePage() {
       default: return 'bg-zinc-100 text-zinc-800';
     }
   };
+
+  if (!electionId && !electionLoading) return (
+    <AuthoritativeDataUnavailable
+      title="No election selected"
+      description="Select an election to view its lifecycle dashboard, staff deployment, and materials tracking. No election id is assumed by default."
+    />
+  );
 
   return (
     <div className="space-y-6">
