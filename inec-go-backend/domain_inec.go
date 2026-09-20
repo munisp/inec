@@ -639,13 +639,23 @@ WHERE ` + filter
 		return err
 	}
 	defer tx.Rollback()
+	// GAP-2: the rollup IS the EC8B (ward) / EC8C (LGA) form body — stamp the
+	// form identity so every rollup row names the statutory form it represents.
+	// State/national rollups have no EC8B/C form (NULL).
+	var formType interface{}
+	switch level {
+	case "ward":
+		formType = "EC8B"
+	case "lga":
+		formType = "EC8C"
+	}
 	var collationID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO collation_results (election_id, level, area_code, area_name,
 			total_registered_voters, total_accredited_voters, total_valid_votes,
 			total_rejected_votes, total_votes_cast, polling_units_reported,
-			polling_units_total, status, last_updated)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CURRENT_TIMESTAMP)
+			polling_units_total, status, form_type, last_updated)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,CURRENT_TIMESTAMP)
 		ON CONFLICT (election_id, level, area_code) DO UPDATE SET
 			area_name = EXCLUDED.area_name,
 			total_registered_voters = EXCLUDED.total_registered_voters,
@@ -656,11 +666,12 @@ WHERE ` + filter
 			polling_units_reported = EXCLUDED.polling_units_reported,
 			polling_units_total = EXCLUDED.polling_units_total,
 			status = EXCLUDED.status,
+			form_type = EXCLUDED.form_type,
 			last_updated = CURRENT_TIMESTAMP
 		RETURNING id`,
 		electionID, level, areaCode, collationAreaName(ctx, level, areaCode),
 		registered, accredited, c.TotalVotes, rejected, cast,
-		c.ChildCount, c.TotalPUs, c.Status).Scan(&collationID)
+		c.ChildCount, c.TotalPUs, c.Status, formType).Scan(&collationID)
 	if err != nil {
 		return fmt.Errorf("persist collation rollup: %w", err)
 	}
@@ -777,6 +788,54 @@ func handlePersistCollation(w http.ResponseWriter, r *http.Request) {
 	logAudit("COLLATION_PERSISTED", "election", fmt.Sprintf("%d", req.ElectionID), claimUserID(claims),
 		map[string]interface{}{"level": req.Level, "code": req.Code, "actor": username})
 	writeJSON(w, 200, M{"status": "persisted", "election_id": req.ElectionID, "level": req.Level, "code": req.Code})
+}
+
+// handleAttachCollationForm (GAP-2): records the statutory form identity of a
+// ward (EC8B) or LGA (EC8C) collation — serial number, scanned-image hash and
+// signatory — against its persisted rollup. The rollup must already exist:
+// a form certifies computed figures, it never creates them.
+func handleAttachCollationForm(w http.ResponseWriter, r *http.Request) {
+	claims, ok := guardWrite(w, r, "collate_results", "admin", "collation_officer", "returning_officer")
+	if !ok {
+		return
+	}
+	var req struct {
+		ElectionID    int    `json:"election_id" validate:"required,gt=0"`
+		Level         string `json:"level" validate:"required,oneof=ward lga"`
+		Code          string `json:"code" validate:"required"`
+		FormSerial    string `json:"form_serial" validate:"required"`
+		FormImageHash string `json:"form_image_hash"`
+		SignedBy      string `json:"signed_by" validate:"required"`
+	}
+	if err := decodeAndValidate(r, &req); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	expectedForm := "EC8B"
+	if req.Level == "lga" {
+		expectedForm = "EC8C"
+	}
+	ctx := r.Context()
+	res, err := db.ExecContext(ctx, `
+		UPDATE collation_results
+		SET form_type=$4, form_serial=$5, form_image_hash=$6, signed_by=$7,
+		    form_submitted_at=CURRENT_TIMESTAMP
+		WHERE election_id=$1 AND level=$2 AND area_code=$3`,
+		req.ElectionID, req.Level, req.Code, expectedForm,
+		req.FormSerial, req.FormImageHash, req.SignedBy)
+	if err != nil {
+		writeError(w, 500, "failed to record form identity")
+		return
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		writeError(w, 404, "no persisted collation rollup for this area — persist the rollup before attaching its form")
+		return
+	}
+	username, _ := claims["username"].(string)
+	logAudit("COLLATION_FORM_ATTACHED", "election", fmt.Sprintf("%d", req.ElectionID), claimUserID(claims),
+		map[string]interface{}{"level": req.Level, "code": req.Code, "form_type": expectedForm, "form_serial": req.FormSerial, "actor": username})
+	writeJSON(w, 200, M{"status": "form_recorded", "form_type": expectedForm, "election_id": req.ElectionID, "level": req.Level, "code": req.Code})
 }
 
 // --- Ballot Reconciliation ---
