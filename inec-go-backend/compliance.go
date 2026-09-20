@@ -223,8 +223,10 @@ func verifyDataSubjectIdentity(r *http.Request, nin string) error {
 		return fmt.Errorf("invalid authentication context")
 	}
 	role, _ := userClaims["role"].(string)
-	// Admin and DPO can access any subject's data
-	if role == "admin" || role == "dpo" || role == "data_protection_officer" {
+	// Admin and DPO can access any subject's data. SEC-14: the canonical role
+	// is "dpo" (users.role CHECK, migrations/000050); "data_protection_officer"
+	// was an unreachable alias — no user could ever hold it.
+	if role == "admin" || role == "dpo" {
 		return nil
 	}
 	// Regular users can only access their own data — match NIN from their profile
