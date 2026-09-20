@@ -257,6 +257,9 @@ func main() {
 	r.HandleFunc("/auth/login", handleLogin).Methods("POST")
 	r.HandleFunc("/auth/register", handleRegister).Methods("POST")
 	r.HandleFunc("/auth/refresh", handleRefreshToken).Methods("POST")
+	// SEC-11: authenticated password change (self-service forgot-password needs
+	// an email/SMS provider contract — tracked as blocked, not faked).
+	r.HandleFunc("/auth/change-password", handleChangePassword).Methods("POST")
 	r.HandleFunc("/auth/me", readAuth(handleMe)).Methods("GET")
 	r.HandleFunc("/auth/logout", writeAuth(handleLogout)).Methods("POST")
 	r.HandleFunc("/auth/sessions", readAuth(handleListSessions)).Methods("GET")
@@ -296,6 +299,9 @@ func main() {
 	r.HandleFunc("/elections/{id:[0-9]+}/reruns", readAuth(handleListReruns)).Methods("GET")
 	// Persisted collation rollup write path (R5-015)
 	r.HandleFunc("/inec/collation/persist", writeAuth(handlePersistCollation)).Methods("POST")
+	// GAP-2: attach EC8B/EC8C statutory form identity (serial, image hash,
+	// signatory) to a persisted ward/LGA collation rollup.
+	r.HandleFunc("/inec/collation/form", writeAuth(handleAttachCollationForm)).Methods("POST")
 	// Presiding-officer handover (R5-026)
 	r.HandleFunc("/ems/assignments/handover", adminOnly(handleStaffHandover)).Methods("POST")
 	// Party-agent countersigning (R5-032)
@@ -1225,9 +1231,13 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		{"/auth/login", limit("RATE_LIMIT_LOGIN", loginDefault), time.Minute},          // 5 login attempts per minute per IP
 		{"/auth/register", limit("RATE_LIMIT_REGISTER", 3), time.Minute},               // 3 registrations per minute per IP
 		{"/auth/refresh", limit("RATE_LIMIT_REFRESH", 10), time.Minute},                // 10 token refreshes per minute
-		{"/auth/forgot-password", limit("RATE_LIMIT_FORGOT_PASSWORD", 2), time.Minute}, // 2 password reset requests per minute
-		{"/sms/send-otp", limit("RATE_LIMIT_SMS_OTP_SEND", 2), time.Minute},            // 2 OTP sends per minute
-		{"/sms/verify-otp", limit("RATE_LIMIT_SMS_OTP_VERIFY", 5), time.Minute},        // 5 OTP verifications per minute
+		{"/auth/change-password", limit("RATE_LIMIT_CHANGE_PASSWORD", 5), time.Minute}, // SEC-11: brute-force guard on current-password verification
+		// NOTE (SEC-11): the former /auth/forgot-password rule was dead config —
+		// no such route existed. Self-service reset requires an email/SMS
+		// provider contract (blocked, same class as SEC-13); until then there is
+		// no route to throttle, so no rule is declared.
+		{"/sms/send-otp", limit("RATE_LIMIT_SMS_OTP_SEND", 2), time.Minute},     // 2 OTP sends per minute
+		{"/sms/verify-otp", limit("RATE_LIMIT_SMS_OTP_VERIFY", 5), time.Minute}, // 5 OTP verifications per minute
 		// Data endpoints
 		{"/geo/tiles", limit("RATE_LIMIT_GEO_TILES", 120), time.Minute},
 		{"/dashboard/metrics", limit("RATE_LIMIT_DASHBOARD_METRICS", 30), time.Minute},
