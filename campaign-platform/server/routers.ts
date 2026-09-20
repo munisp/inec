@@ -16,7 +16,6 @@ import { hitRateLimit } from "./_core/rateLimit";
 // HTTP server as a side effect (circular import).
 import { broadcastWarRoomUpdate } from "./_core/sse";
 import { createHeartbeatJob, deleteHeartbeatJob, listHeartbeatJobs } from "./_core/heartbeat";
-import { parse as parseCookie } from "cookie";
 import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
 
@@ -264,6 +263,8 @@ export const appRouter = router({
         // Accept the legacy client key as an alias for backwards compatibility.
         vinNumber: z.string().optional(),
         status: z.string().optional(),
+        // W14 (audit GAP-7): optional PWD accessibility needs (consented).
+        accessibilityNeeds: z.string().max(120).optional(),
         dataSource: z.enum(["door_to_door", "event_signup", "campaign_website", "referral", "field_agent", "other_declared"]),
         consentBasis: z.enum(["consent", "contract", "legal_obligation", "vital_interest", "public_interest", "legitimate_interest"]),
         consentMethod: z.enum(["verbal", "written", "digital"]).optional(),
@@ -449,6 +450,8 @@ export const appRouter = router({
         agentName: z.string().optional(),
         agentPhone: z.string().optional(),
         status: z.string().optional(),
+        // W14 (audit GAP-7): PWD-accessible designation, campaign-side flag.
+        pwdAccessible: z.boolean().optional(),
       }))
       .mutation(({ input }) => db.upsertPollingUnit(input as any)),
     bulkImport: profileScopedProcedure("manager")
@@ -575,9 +578,8 @@ export const appRouter = router({
         hashtags: z.array(z.string()).optional(),
       }))
       .mutation(({ input }) => {
-        // FIX: hashtags arrive as a string array; store as space-joined text.
-        // HANDOFF (db/schema agent): social_media_posts needs a `hashtags`
-        // text column — until it exists drizzle silently drops this key.
+        // Hashtags arrive as a string array; stored as space-joined text in
+        // the social_media_posts.hashtags column (exists since 0001).
         const { hashtags, ...rest } = input;
         return db.saveSocialPost({
           ...rest,
@@ -627,6 +629,14 @@ export const appRouter = router({
         notes: z.string().optional(),
       }))
       .mutation(({ input }) => db.upsertComplianceItem(input as any)),
+    // GAP-1/GAP-6: statutory checklist presets (EA 2022 / INEC / NBC) —
+    // viewer may read the catalog; materialising it is a manager action.
+    presets: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(() => db.COMPLIANCE_PRESETS),
+    loadPresets: profileScopedProcedure("manager")
+      .input(z.object({ profileId: z.number() }))
+      .mutation(({ input }) => db.loadCompliancePresets(input.profileId)),
   }),
   // ─── Opposition Research ───────────────────────────────────────────────────
   opposition: router({
@@ -799,12 +809,15 @@ export const appRouter = router({
       }),
     // R5-099: silent-agent scan surfaced to the dashboard — flags overdue
     // agents 'silent' (idempotent) and returns the current silent set.
-    silentAgents: profileScopedProcedure("viewer")
+    // SECURITY (audit SEC-1): this MUTATES agent_status, so it is a manager-
+    // scoped mutation — never a viewer-scoped query (a read role must not be
+    // able to rewrite campaign state via GET).
+    silentAgents: profileScopedProcedure("manager")
       .input(z.object({
         profileId: z.number(),
         thresholdMinutes: z.number().int().min(5).max(24 * 60).default(60),
       }))
-      .query(({ input }) => db.scanSilentAgents(input.profileId, input.thresholdMinutes)),
+      .mutation(({ input }) => db.scanSilentAgents(input.profileId, input.thresholdMinutes)),
     upsertAgent: profileScopedProcedure("manager")
       .input(z.object({
         id: z.number().optional(),
@@ -842,9 +855,7 @@ export const appRouter = router({
         candidateName: z.string(),
         party: z.string(),
         lga: z.string().optional(),
-        // HANDOFF (db/schema agent): election_results needs a `ward`
-        // varchar(100) column — the router passes it through but drizzle
-        // silently drops it until the column exists.
+        // election_results.ward exists (schema.ts, migration 0001).
         ward: z.string().optional(),
         votes: z.number(),
         reportedAt: z.string().optional(),
@@ -955,7 +966,16 @@ export const appRouter = router({
         // be viewed through the unauthenticated endpoint.
         if (!petition || petition.status === "draft") return null;
         const count = await db.getPetitionSignatureCount(input.petitionId);
-        return { ...petition, signatureCount: count };
+        // SECURITY (audit SEC-5): sanitized projection — never leak profileId,
+        // internal timestamps, or future internal columns to anonymous callers.
+        return {
+          id: petition.id,
+          title: petition.title,
+          description: petition.description,
+          targetSignatures: petition.targetSignatures,
+          status: petition.status,
+          signatureCount: count,
+        };
       }),
     publicSign: publicProcedure
       .input(z.object({
@@ -1089,8 +1109,12 @@ Make it personal, specific to their location, and include a clear call to action
         source: z.string().optional(),
         category: z.string().optional(),
         notes: z.string().optional(),
+        // W14 donor screening (audit GAP-5): classification is required for
+        // legality checks; anonymous/diaspora have refusal rules in the db layer.
+        donorType: z.enum(["individual_local", "corporate_local", "diaspora", "anonymous"]).default("individual_local"),
+        sourceAttested: z.boolean().default(false),
       }))
-      .mutation(({ input }) => db.addFundraisingTransaction(input as any)),
+      .mutation(({ input }) => db.addScreenedFundraisingTransaction(input as any)),
   }),
   // ─── Budget ────────────────────────────────────────────────────────────────
   budget: router({
@@ -1134,6 +1158,14 @@ Make it personal, specific to their location, and include a clear call to action
     ledger: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
       .query(({ input }) => db.getBudgetLedger(input.profileId)),
+    // W14 (audit GAP-4): INEC campaign-finance disclosure report — real
+    // aggregates from the append-only ledger + recorded fundraising + §88 caps.
+    disclosureReport: profileScopedProcedure("viewer")
+      .input(z.object({
+        profileId: z.number(),
+        office: z.enum(["presidential", "gubernatorial", "senatorial", "house", "local"]),
+      }))
+      .query(({ input }) => db.getFinanceDisclosureReport(input.profileId, input.office)),
   }),
   // ─── Media Monitoring ──────────────────────────────────────────────────────
   media: router({
@@ -1167,6 +1199,15 @@ Make it personal, specific to their location, and include a clear call to action
         await dbConn.delete(mediaItems).where(eq(mediaItems.id, input.id));
         return { success: true };
       }),
+    // W14 (audit GAP-6): NBC media/advert compliance gate.
+    updateCompliance: profileScopedProcedure("manager")
+      .input(z.object({
+        profileId: z.number(),
+        id: z.number(),
+        status: z.enum(["unreviewed", "compliant", "breach", "cleared"]),
+        notes: z.string().max(2000).optional(),
+      }))
+      .mutation(({ input }) => db.updateMediaCompliance(input.id, input.profileId, input.status, input.notes)),
   }),
   // ─── Debate Coach ──────────────────────────────────────────────────────────
   debate: router({
@@ -1396,6 +1437,12 @@ Format with clear headers. Be specific to Nigerian political context.`;
       }))
       .mutation(async ({ ctx, input }) => {
         const result = await db.inviteCampaignMember(input);
+        // GAP-13: onboarding audit trail (append-only).
+        await db.logMembershipEvent({
+          profileId: input.profileId, memberId: result.id, action: "invite",
+          actorName: ctx.user.fullName ?? "unknown",
+          detail: `invited ${input.email} as ${input.role}`,
+        });
         // Notify the platform owner that a new team member was invited
         const profile = await db.getOrCreateUserProfile(ctx.user.id);
         const candidateName = profile?.candidateName ?? "Campaign";
@@ -1425,7 +1472,16 @@ The invitee can use this link to join the campaign team.`,
       // acceptance is enforced by requiring the acceptor to assert the email
       // the invite was issued to; acceptCampaignInvite rejects on mismatch.
       .input(z.object({ token: z.string(), email: z.string().email().max(320) }))
-      .mutation(({ ctx, input }) => db.acceptCampaignInvite(input.token, ctx.user.id, input.email)),
+      .mutation(async ({ ctx, input }) => {
+        const member = await db.acceptCampaignInvite(input.token, ctx.user.id, input.email);
+        // GAP-13: onboarding audit trail.
+        await db.logMembershipEvent({
+          profileId: member.profileId, memberId: member.id, action: "accept",
+          actorName: ctx.user.fullName ?? "unknown",
+          detail: `accepted invite as ${member.role}`,
+        });
+        return member;
+      }),
     updateRole: protectedProcedure
       .input(z.object({
         memberId: z.number(),
@@ -1443,7 +1499,14 @@ The invitee can use this link to join the campaign team.`,
             message: "The profile owner's role cannot be changed",
           });
         }
-        return db.updateMemberRole(input.memberId, input.role);
+        const updated = await db.updateMemberRole(input.memberId, input.role);
+        // GAP-13: onboarding audit trail.
+        await db.logMembershipEvent({
+          profileId: member.profileId, memberId: member.id, action: "role_change",
+          actorName: ctx.user.fullName ?? "unknown",
+          detail: `role ${member.role} -> ${input.role}`,
+        });
+        return updated;
       }),
     remove: protectedProcedure
       .input(z.object({ memberId: z.number() }))
@@ -1459,7 +1522,14 @@ The invitee can use this link to join the campaign team.`,
             message: "The profile owner cannot be removed from the campaign",
           });
         }
-        return db.removeCampaignMember(input.memberId);
+        const result = await db.removeCampaignMember(input.memberId);
+        // GAP-13: onboarding audit trail.
+        await db.logMembershipEvent({
+          profileId: member.profileId, memberId: member.id, action: "remove",
+          actorName: ctx.user.fullName ?? "unknown",
+          detail: `removed ${member.email ?? member.name ?? member.id}`,
+        });
+        return result;
       }),
   }),
   notifications: router({
@@ -1468,10 +1538,12 @@ The invitee can use this link to join the campaign team.`,
     // deadline-alerts-* job regardless of which profile it belonged to.
     status: profileScopedProcedure("viewer")
       .input(z.object({ profileId: z.number() }))
-      .query(async ({ ctx, input }) => {
+      .query(async ({ input }) => {
         try {
-          const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
-          const jobs = await listHeartbeatJobs(sessionToken);
+          // SECURITY (audit SEC-4): never forward the caller's session token
+          // to the third-party Forge API. Empty session = project-owner
+          // identity, which is sufficient for per-profile deadline jobs.
+          const jobs = await listHeartbeatJobs("");
           const alertJob = jobs.jobs.find(j => j.name.startsWith(`deadline-alerts-${input.profileId}-`));
           return { enabled: !!alertJob?.isEnable, job: alertJob ?? null };
         } catch {
@@ -1484,7 +1556,7 @@ The invitee can use this link to join the campaign team.`,
     enable: profileScopedProcedure("manager")
       .input(z.object({ profileId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
+        // SECURITY (audit SEC-4): no user session token leaves this server.
         const job = await createHeartbeatJob({
           name: `deadline-alerts-${input.profileId}-${ctx.user.id}`,
           cron: "0 0 8 * * *", // Daily 08:00 UTC
@@ -1494,19 +1566,19 @@ The invitee can use this link to join the campaign team.`,
           path: "/api/scheduled/deadline-check",
           payload: { profileId: input.profileId },
           description: `Daily deadline alerts for profile ${input.profileId}`,
-        }, sessionToken);
+        }, "");
         return { taskUid: job.taskUid, nextExecutionAt: job.nextExecutionAt };
       }),
     // Disable deadline alert notifications
     // SECURITY: tenancy enforced — owner/manager only.
     disable: profileScopedProcedure("manager")
       .input(z.object({ profileId: z.number() }))
-      .mutation(async ({ ctx, input }) => {
-        const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
-        const jobs = await listHeartbeatJobs(sessionToken);
+      .mutation(async ({ input }) => {
+        // SECURITY (audit SEC-4): no user session token leaves this server.
+        const jobs = await listHeartbeatJobs("");
         const alertJob = jobs.jobs.find(j => j.name.startsWith(`deadline-alerts-${input.profileId}-`));
         if (alertJob) {
-          await deleteHeartbeatJob(alertJob.taskUid, sessionToken);
+          await deleteHeartbeatJob(alertJob.taskUid, "");
         }
         return { disabled: true };
       }),
@@ -1630,6 +1702,38 @@ Produce only the manifesto section text, no commentary.`;
         await db.seedProfileData(input.profileId);
         return { success: true, message: "Non-production fixture data seeded for an explicitly enabled test profile." };
       }),
+  }),
+  // ─── W14: Election Tribunal Tracking (audit GAP-3) ───────────────────────
+  tribunal: router({
+    // SECURITY: tenancy enforced — viewer reads, manager writes, owner deletes.
+    list: profileScopedProcedure("viewer")
+      .input(z.object({ profileId: z.number() }))
+      .query(({ input }) => db.listElectionPetitions(input.profileId)),
+    upsert: profileScopedProcedure("manager")
+      .input(z.object({
+        id: z.number().optional(),
+        profileId: z.number(),
+        electionName: z.string().min(1).max(200),
+        petitionType: z.enum(["pre_election", "post_election"]).default("post_election"),
+        court: z.string().max(200).optional(),
+        caseNumber: z.string().max(100).optional(),
+        petitioner: z.string().max(200).optional(),
+        respondent: z.string().max(200).optional(),
+        counsel: z.string().max(200).optional(),
+        filedAt: z.string().optional(),
+        hearingDate: z.string().optional(),
+        status: z.enum(["filed", "hearing", "judgment", "appealed", "closed"]).default("filed"),
+        outcome: z.string().optional(),
+        notes: z.string().optional(),
+      }))
+      .mutation(({ input }) => db.upsertElectionPetition({
+        ...input,
+        filedAt: input.filedAt ? new Date(input.filedAt) : undefined,
+        hearingDate: input.hearingDate ? new Date(input.hearingDate) : undefined,
+      } as any)),
+    delete: profileScopedProcedure("owner")
+      .input(z.object({ profileId: z.number(), id: z.number() }))
+      .mutation(({ input }) => db.deleteElectionPetition(input.id, input.profileId)),
   }),
   candidateWebsite: router({
     // SECURITY: tenancy enforced — manager publishes.
