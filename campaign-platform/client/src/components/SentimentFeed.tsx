@@ -1,9 +1,15 @@
 /**
  * Real-Time Sentiment Feed
- * Live approval trend ticker showing candidate sentiment by geopolitical zone.
- * Polls the campaign planning sentiment endpoint. If no backend is configured
- * or the endpoint is unreachable, an explicit "unavailable" state is shown —
- * sentiment figures are NEVER simulated.
+ * Approval trend panel by geopolitical zone, backed by the campaign-planning
+ * FastAPI service: POST {VITE_CAMPAIGN_API_URL}/api/v1/campaign/sentiment
+ *   body:   { candidate_id: string, period: "7d" | "30d" | "90d" }
+ *   result: { items_analysed, by_sentiment, reach_by_sentiment,
+ *             by_zone: { zone: { label: count } }, by_source_type, note,
+ *             computed_at }
+ * Positive share per zone = positive / (positive + negative + neutral).
+ * Zones with no labelled items are shown as "insufficient data" — a number is
+ * never invented. If no backend is configured, the fetch fails, or
+ * items_analysed is 0, an explicit "unavailable" state is shown.
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import { TrendingUp, TrendingDown, Minus, Radio, RefreshCw, AlertTriangle } from "lucide-react";
@@ -11,11 +17,37 @@ import { TrendingUp, TrendingDown, Minus, Radio, RefreshCw, AlertTriangle } from
 interface ZoneSentiment {
   zone: string;
   code: string;
-  approval: number;
-  delta: number;   // change from last poll
+  approval: number | null; // null = insufficient labelled data
+  delta: number;   // change from last successful poll (0 on first poll)
   trend: "up" | "down" | "flat";
   sampleSize: number;
-  lastUpdated: Date;
+}
+
+interface SentimentApiResponse {
+  items_analysed: number;
+  by_sentiment: Record<string, number>;
+  reach_by_sentiment: Record<string, number>;
+  by_zone: Record<string, Record<string, number>>;
+  by_source_type: Record<string, Record<string, number>>;
+  note?: string;
+  computed_at?: string;
+}
+
+const ZONE_CODES: Record<string, string> = {
+  "south-west": "SW",
+  "south-east": "SE",
+  "south-south": "SS",
+  "north-west": "NW",
+  "north-east": "NE",
+  "north-central": "NC",
+};
+
+function zoneCode(zone: string): string {
+  const key = zone.trim().toLowerCase();
+  if (ZONE_CODES[key]) return ZONE_CODES[key];
+  // Fallback: initials of the zone name (e.g. "unspecified" -> "UN")
+  const initials = key.split(/[\s-]+/).map(w => w[0] ?? "").join("").toUpperCase();
+  return initials.slice(0, 2) || "??";
 }
 
 function approvalColor(pct: number): string {
@@ -24,53 +56,84 @@ function approvalColor(pct: number): string {
   return "oklch(0.65 0.18 25)";                   // red
 }
 
+const INSUFFICIENT_COLOR = "oklch(0.45 0.01 240)";
+
 interface Props {
-  candidateName: string;
-  office: string;
-  stateName: string;
+  profileId: number; // numeric campaign profile id — sent as candidate_id
   compact?: boolean;
 }
 
-export default function SentimentFeed({ candidateName, office, stateName, compact = false }: Props) {
+export default function SentimentFeed({ profileId, compact = false }: Props) {
   const [data, setData] = useState<ZoneSentiment[]>([]);
   const [loading, setLoading] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Approvals from the previous successful poll, for delta/trend computation.
+  const prevApprovalsRef = useRef<Record<string, number | null>>({});
 
   const fetchSentiment = useCallback(async () => {
     setLoading(true);
     try {
-      // Attempt to call the campaign planning backend
       const backendUrl = import.meta.env.VITE_CAMPAIGN_API_URL ?? "";
-      if (backendUrl) {
-        const res = await fetch(`${backendUrl}/api/campaign/sentiment`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ candidate_name: candidateName, office, state: stateName }),
-          signal: AbortSignal.timeout(3000),
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.zones) {
-            setData(json.zones);
-            setUnavailable(false);
-            setLastRefresh(new Date());
-            setLoading(false);
-            return;
-          }
-        }
+      if (!backendUrl) {
+        setData([]);
+        setUnavailable(true);
+        setLastRefresh(null);
+        setLoading(false);
+        return;
       }
+      const res = await fetch(`${backendUrl}/api/v1/campaign/sentiment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_id: String(profileId), period: "30d" }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) throw new Error(`sentiment endpoint returned ${res.status}`);
+      const json = (await res.json()) as SentimentApiResponse;
+      if (!json || typeof json.items_analysed !== "number" || json.items_analysed === 0 || !json.by_zone) {
+        // Backend reachable but no items analysed — honest unavailable state.
+        setData([]);
+        setUnavailable(true);
+        setLastRefresh(null);
+        setLoading(false);
+        return;
+      }
+      const prev = prevApprovalsRef.current;
+      const next: Record<string, number | null> = {};
+      const zones: ZoneSentiment[] = Object.entries(json.by_zone).map(([zone, labels]) => {
+        const counts = labels ?? {};
+        const sampleSize = Object.values(counts).reduce((s, n) => s + (typeof n === "number" ? n : 0), 0);
+        const labelled = (counts["positive"] ?? 0) + (counts["negative"] ?? 0) + (counts["neutral"] ?? 0);
+        const approval = labelled > 0 ? Math.round(((counts["positive"] ?? 0) / labelled) * 100) : null;
+        next[zone] = approval;
+        const prevApproval = prev[zone];
+        const delta = approval !== null && prevApproval !== null && prevApproval !== undefined
+          ? approval - prevApproval
+          : 0;
+        return {
+          zone,
+          code: zoneCode(zone),
+          approval,
+          delta,
+          trend: delta > 0 ? "up" as const : delta < 0 ? "down" as const : "flat" as const,
+          sampleSize,
+        };
+      }).sort((a, b) => b.sampleSize - a.sampleSize);
+      prevApprovalsRef.current = next;
+      setData(zones);
+      setUnavailable(false);
+      setLastRefresh(new Date());
+      setLoading(false);
     } catch {
       // Backend unavailable — show the explicit unavailable state below.
+      setData([]);
+      setUnavailable(true);
+      setLastRefresh(null);
+      setLoading(false);
     }
-    // No live sentiment source is connected. Never fabricate sentiment figures.
-    setData([]);
-    setUnavailable(true);
-    setLastRefresh(null);
-    setLoading(false);
-  }, [candidateName, office, stateName]);
+  }, [profileId]);
 
   // Initial fetch
   useEffect(() => {
@@ -87,8 +150,9 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [autoRefresh, fetchSentiment]);
 
-  const nationalAvg = data.length > 0
-    ? Math.round(data.reduce((s, z) => s + z.approval, 0) / data.length)
+  const scored = data.filter(z => z.approval !== null);
+  const nationalAvg = scored.length > 0
+    ? Math.round(scored.reduce((s, z) => s + (z.approval ?? 0), 0) / scored.length)
     : null;
 
   if (compact) {
@@ -120,12 +184,18 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
         </div>
         <div className="flex items-center gap-3 overflow-x-auto flex-1 min-w-0">
           {data.map(z => (
-            <div key={z.code} className="flex items-center gap-1 flex-shrink-0">
+            <div key={z.zone} className="flex items-center gap-1 flex-shrink-0">
               <span className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>{z.code}</span>
-              <span className="text-xs font-bold" style={{ color: approvalColor(z.approval) }}>{z.approval}%</span>
-              {z.trend === "up" && <TrendingUp className="w-3 h-3" style={{ color: "oklch(0.65 0.18 145)" }} />}
-              {z.trend === "down" && <TrendingDown className="w-3 h-3" style={{ color: "oklch(0.65 0.18 25)" }} />}
-              {z.trend === "flat" && <Minus className="w-3 h-3" style={{ color: "oklch(0.55 0.01 240)" }} />}
+              {z.approval === null ? (
+                <span className="text-xs" style={{ color: INSUFFICIENT_COLOR }} title="Insufficient labelled data">n/a</span>
+              ) : (
+                <>
+                  <span className="text-xs font-bold" style={{ color: approvalColor(z.approval) }}>{z.approval}%</span>
+                  {z.trend === "up" && <TrendingUp className="w-3 h-3" style={{ color: "oklch(0.65 0.18 145)" }} />}
+                  {z.trend === "down" && <TrendingDown className="w-3 h-3" style={{ color: "oklch(0.65 0.18 25)" }} />}
+                  {z.trend === "flat" && <Minus className="w-3 h-3" style={{ color: "oklch(0.55 0.01 240)" }} />}
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -207,7 +277,7 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
       <div className="flex flex-col gap-2">
         {data.map(z => (
           <div
-            key={z.code}
+            key={z.zone}
             className="rounded border p-2.5 flex items-center gap-3"
             style={{ background: "oklch(0.155 0.008 240)", borderColor: "oklch(0.22 0.01 240)" }}
           >
@@ -218,20 +288,26 @@ export default function SentimentFeed({ candidateName, office, stateName, compac
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs truncate" style={{ color: "oklch(0.72 0.01 240)" }}>{z.zone}</span>
                 <div className="flex items-center gap-1.5 flex-shrink-0">
-                  {z.trend === "up" && <TrendingUp className="w-3 h-3" style={{ color: "oklch(0.65 0.18 145)" }} />}
-                  {z.trend === "down" && <TrendingDown className="w-3 h-3" style={{ color: "oklch(0.65 0.18 25)" }} />}
-                  {z.trend === "flat" && <Minus className="w-3 h-3" style={{ color: "oklch(0.55 0.01 240)" }} />}
-                  <span className="text-xs font-bold" style={{ color: approvalColor(z.approval) }}>{z.approval}%</span>
-                  <span className="text-xs" style={{ color: z.delta > 0 ? "oklch(0.65 0.18 145)" : z.delta < 0 ? "oklch(0.65 0.18 25)" : "oklch(0.45 0.01 240)" }}>
-                    {z.delta > 0 ? "+" : ""}{z.delta}
-                  </span>
+                  {z.approval === null ? (
+                    <span className="text-xs" style={{ color: INSUFFICIENT_COLOR }}>insufficient data</span>
+                  ) : (
+                    <>
+                      {z.trend === "up" && <TrendingUp className="w-3 h-3" style={{ color: "oklch(0.65 0.18 145)" }} />}
+                      {z.trend === "down" && <TrendingDown className="w-3 h-3" style={{ color: "oklch(0.65 0.18 25)" }} />}
+                      {z.trend === "flat" && <Minus className="w-3 h-3" style={{ color: "oklch(0.55 0.01 240)" }} />}
+                      <span className="text-xs font-bold" style={{ color: approvalColor(z.approval) }}>{z.approval}%</span>
+                      <span className="text-xs" style={{ color: z.delta > 0 ? "oklch(0.65 0.18 145)" : z.delta < 0 ? "oklch(0.65 0.18 25)" : "oklch(0.45 0.01 240)" }}>
+                        {z.delta > 0 ? "+" : ""}{z.delta}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
               {/* Approval bar */}
               <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "oklch(0.22 0.01 240)" }}>
                 <div
                   className="h-full rounded-full transition-all duration-700"
-                  style={{ width: `${z.approval}%`, background: approvalColor(z.approval) }}
+                  style={{ width: `${z.approval ?? 0}%`, background: z.approval === null ? INSUFFICIENT_COLOR : approvalColor(z.approval) }}
                 />
               </div>
               <div className="text-xs mt-1" style={{ color: "oklch(0.35 0.01 240)" }}>n={z.sampleSize.toLocaleString()}</div>

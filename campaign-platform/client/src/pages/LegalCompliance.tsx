@@ -42,6 +42,11 @@ export default function LegalCompliance() {
     onSuccess: () => { utils.compliance.list.invalidate(); toast.success("Item saved"); setOpen(false); },
     onError: e => toast.error(e.message),
   });
+  // GAP-1: materialise the statutory INEC/EA-2022/NBC checklist (idempotent).
+  const loadPresetsMut = trpc.compliance.loadPresets.useMutation({
+    onSuccess: (d) => { utils.compliance.list.invalidate(); toast.success(d.inserted > 0 ? `Statutory checklist loaded — ${d.inserted} item(s) added` : "Statutory checklist already up to date"); },
+    onError: e => toast.error(e.message),
+  });
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ title:"", category:"Financial", description:"", status:"pending" as "compliant"|"warning"|"non_compliant"|"pending", deadline:"", notes:"" });
 
@@ -97,6 +102,7 @@ export default function LegalCompliance() {
             </div>
           )}
         </div>
+          <div className="flex items-center gap-2 mb-4">
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild><Button size="sm" style={{ background: "#008751", color: "white" }} className="gap-1.5"><Plus size={14}/> Add Item</Button></DialogTrigger>
             <DialogContent>
@@ -125,6 +131,15 @@ export default function LegalCompliance() {
               </div>
             </DialogContent>
           </Dialog>
+          {canEdit && (
+            <Button size="sm" variant="outline" className="gap-1.5" style={{ borderColor: "#4A1525", color: "#4A1525" }}
+              disabled={loadPresetsMut.isPending || !profileId}
+              title="Load the statutory INEC / Electoral Act 2022 / NBC checklist (idempotent — existing items are kept)"
+              onClick={() => profileId && loadPresetsMut.mutate({ profileId })}>
+              {loadPresetsMut.isPending ? <Loader2 size={14} className="animate-spin"/> : <Scale size={14}/>} Load Statutory Checklist
+            </Button>
+          )}
+          </div>
         </div>
       </header>
       <div className="max-w-5xl mx-auto px-6 py-8">

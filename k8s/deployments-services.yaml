@@ -445,7 +445,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: lakehouse-analytics
-          image: ghcr.io/munisp/inec-analytics:latest
+          image: ghcr.io/munisp/inec-lakehouse-analytics:latest
           # R5-093: image runs as non-root uid 10001/app (see services Dockerfile)
           securityContext:
             allowPrivilegeEscalation: false

@@ -96,12 +96,14 @@ export default function StakeholderNetworkGraph({ stakeholders }: Props) {
       const existing = categoryMap.get(cat);
       if (existing) {
         existing.score += s.priority;
-        existing.reach += (s.estimated_voter_reach ?? 0);
+        // MCK-1: estimated_voter_reach was derived from an invented population
+        // figure — aggregate the real editorial reach_pct instead.
+        existing.reach += s.reach_pct;
         existing.count += 1;
       } else {
         categoryMap.set(cat, {
           score: s.priority,
-          reach: s.estimated_voter_reach ?? 0,
+          reach: s.reach_pct,
           count: 1,
           label: s.name,
         });
@@ -266,9 +268,7 @@ export default function StakeholderNetworkGraph({ stakeholders }: Props) {
       circle.addEventListener("mouseenter", (ev) => {
         const tip = tooltipRef.current;
         if (!tip) return;
-        const reach = n.reach >= 1000000
-          ? `${(n.reach / 1000000).toFixed(1)}M`
-          : `${(n.reach / 1000).toFixed(0)}K`;
+        const reach = `${n.reach.toFixed(1)}%`;
         // R4-40: build the tooltip with textContent (never innerHTML) so a
         // hostile stakeholder label like `<img src=x onerror=…>` renders as
         // inert text instead of executing as markup.
@@ -281,7 +281,7 @@ export default function StakeholderNetworkGraph({ stakeholders }: Props) {
         scoreLine.textContent = `Priority Score: ${n.score.toFixed(1)}/10`;
         const reachLine = document.createElement("div");
         reachLine.className = "text-xs opacity-70";
-        reachLine.textContent = `Est. Reach: ~${reach} voters`;
+        reachLine.textContent = `Reach: ${reach} (editorial estimate)`;
         tip.append(title, scoreLine, reachLine);
         tip.style.display = "block";
         tip.style.left = `${(ev as MouseEvent).offsetX + 12}px`;

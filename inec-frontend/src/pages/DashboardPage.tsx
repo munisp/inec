@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -52,14 +53,17 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   useEffect(() => {
     async function load() {
+      // Election scope is resolved from the elections store — never hardcoded.
+      if (!electionId) { setLoading(false); return; }
       try {
         setError(null);
         const [stats, liveFeed] = await Promise.all([
-          api.getDashboardStats(1),
-          api.getLiveFeed(1, 15)
+          api.getDashboardStats(electionId),
+          api.getLiveFeed(electionId, 15)
         ]);
         setData(stats);
         setFeed(liveFeed);
@@ -75,7 +79,14 @@ export default function DashboardPage() {
     load();
     const interval = setInterval(load, 30000);
     return () => clearInterval(interval);
-  }, [refreshKey]);
+  }, [refreshKey, electionId]);
+
+  if (!electionId && !electionLoading) return (
+    <AuthoritativeDataUnavailable
+      title="No election selected"
+      description="Select an election to view its dashboard. No election id is assumed by default."
+    />
+  );
 
   if (loading) return <div role="status" aria-busy="true" aria-live="polite" className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" aria-hidden="true" /><span className="sr-only">Loading dashboard data</span></div>;
 
