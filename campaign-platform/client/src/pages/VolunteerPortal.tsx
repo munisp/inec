@@ -47,6 +47,11 @@ export default function VolunteerPortal() {
     onSuccess: () => { utils.volunteerTasks.list.invalidate(); },
     onError: (e) => toast.error(e.message),
   });
+  // GAP-12: volunteer-record status management (was a UI-less procedure).
+  const volunteerStatusMut = trpc.volunteers.updateStatus.useMutation({
+    onSuccess: () => { utils.volunteers.list.invalidate(); toast.success("Volunteer status updated"); },
+    onError: (e) => toast.error(e.message),
+  });
   const deleteTaskMut = trpc.volunteerTasks.delete.useMutation({
     onSuccess: () => { utils.volunteerTasks.list.invalidate(); toast.success("Task deleted"); },
     onError: (e) => toast.error(e.message),
@@ -203,6 +208,18 @@ export default function VolunteerPortal() {
                       {v.phone && <p className="text-xs text-gray-400 mb-1">📞 {v.phone}</p>}
                       {v.skills && <p className="text-xs text-gray-400 mb-2">Skills: {v.skills}</p>}
                       <p className="text-xs text-gray-500">{vTasks.length} tasks · {done} completed</p>
+                      {canEdit && (
+                        <div className="mt-2">
+                          <Select value={v.status ?? "active"} onValueChange={(s) => volunteerStatusMut.mutate({ id: v.id, status: s })} disabled={volunteerStatusMut.isPending}>
+                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="active">active</SelectItem>
+                              <SelectItem value="inactive">inactive</SelectItem>
+                              <SelectItem value="suspended">suspended</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

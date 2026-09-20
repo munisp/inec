@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Radio, AlertTriangle, CheckCircle, Plus, Loader2, Bell, BellOff } from "lucide-react";
+import { ArrowLeft, Radio, AlertTriangle, CheckCircle, Plus, Loader2, Bell, BellOff, Users } from "lucide-react";
 
 const SEV_COLORS: Record<string, string> = {
   low: "#1A3A5C",
@@ -16,6 +16,13 @@ const SEV_COLORS: Record<string, string> = {
   critical: "#7B0000",
   resolved: "#008751",
   escalated: "#D97706",
+};
+
+const AGENT_STATUS_COLORS: Record<string, string> = {
+  active: "#008751",
+  sos: "#C0392B",
+  silent: "#F59E0B",
+  offline: "#6b7280",
 };
 
 type FeedFilter = "all" | "unresolved" | "resolved";
@@ -40,6 +47,10 @@ export default function ElectionDayWarRoom() {
   const resolveMut = trpc.warRoom.resolveIncident.useMutation({
     onSuccess: () => utils.warRoom.incidents.invalidate(),
   });
+  // GAP-10: field-agent roster with 60s auto-refresh.
+  const { data: agents = [], isLoading: agentsLoading } = trpc.warRoom.agents.useQuery(
+    { profileId: profileId! }, { enabled: !!profileId, refetchInterval: 60000 }
+  );
   // R5-098: real escalation to an authority, not just a status flip.
   const escalateMut = trpc.warRoom.escalateIncident.useMutation({
     onSuccess: () => utils.warRoom.incidents.invalidate(),
@@ -94,9 +105,23 @@ export default function ElectionDayWarRoom() {
   }, [profileId, utils.warRoom.incidents]);
 
   // R5-099: silent-agent scan surfaced on the war-room dashboard.
-  const { data: silentAgents = [] } = trpc.warRoom.silentAgents.useQuery(
-    { profileId: profileId!, thresholdMinutes: 60 }, { enabled: !!profileId, refetchInterval: 60000 }
-  );
+  // Audit SEC-1: the scan mutates agent_status, so it is a manager-scoped
+  // mutation — run it on an interval and keep the last result for display.
+  const [silentAgents, setSilentAgents] = useState<any[]>([]);
+  const silentScan = trpc.warRoom.silentAgents.useMutation({
+    onSuccess: (rows) => {
+      setSilentAgents(rows ?? []);
+      utils.warRoom.agents.invalidate();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  useEffect(() => {
+    if (!profileId) return;
+    silentScan.mutate({ profileId, thresholdMinutes: 60 });
+    const t = setInterval(() => silentScan.mutate({ profileId, thresholdMinutes: 60 }), 60000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId]);
 
   const active = incidents.filter((i: any) => i.status !== "resolved").length;
   const critical = incidents.filter((i: any) => (i.severity === "critical" || i.severity === "high") && i.status !== "resolved").length;
@@ -327,6 +352,65 @@ export default function ElectionDayWarRoom() {
             </Button>
           </div>
         </div>
+
+        {/* GAP-10: Field agents panel (60s auto-refresh) */}
+        <aside className="w-72 flex-shrink-0 border-l border-gray-800 flex flex-col" style={{ background: "#221016" }}>
+          <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+            <p className="text-xs font-bold uppercase tracking-widest text-gray-400 flex items-center gap-1.5">
+              <Users size={12} /> Agents ({agents.length})
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-xs text-amber-400 hover:bg-amber-900/20 h-7 px-2"
+              disabled={!canEdit || silentScan.isPending || !profileId}
+              title="Flag deployed agents with no recent check-in as silent (manager only)"
+              onClick={() => profileId && silentScan.mutate({ profileId, thresholdMinutes: 60 })}
+            >
+              {silentScan.isPending ? <Loader2 size={12} className="animate-spin" /> : "Mark silent agents"}
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2" style={{ maxHeight: "calc(100vh - 180px)" }}>
+            {agentsLoading ? (
+              <div className="flex justify-center py-10"><Loader2 size={22} className="animate-spin text-gray-600" /></div>
+            ) : agents.length === 0 ? (
+              <p className="text-xs text-gray-600 text-center py-10">No field agents enrolled for this campaign.</p>
+            ) : (
+              agents.map((a: any) => (
+                <div key={a.id} className="rounded border border-gray-800 p-2.5" style={{ background: "#1A0D12" }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ background: AGENT_STATUS_COLORS[a.agentStatus ?? "offline"] ?? "#6b7280" }}
+                    />
+                    <span className="text-xs font-semibold text-gray-200 truncate">{a.name}</span>
+                    <span className="text-[10px] text-gray-600 ml-auto flex-shrink-0">#{a.id}</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge
+                      style={{
+                        background: (AGENT_STATUS_COLORS[a.agentStatus ?? "offline"] ?? "#6b7280") + "33",
+                        color: AGENT_STATUS_COLORS[a.agentStatus ?? "offline"] ?? "#6b7280",
+                      }}
+                      className="text-[10px]"
+                    >
+                      {(a.agentStatus ?? "offline").toUpperCase()}
+                    </Badge>
+                    {a.assignedPu && <span className="text-[10px] text-gray-500 truncate">PU: {a.assignedPu}</span>}
+                  </div>
+                  <p className="text-[10px] text-gray-600 mt-1">
+                    Last check-in: {a.lastCheckin ? new Date(a.lastCheckin).toLocaleTimeString("en-NG") : "never"}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+          {silentAgents.length > 0 && (
+            <div className="px-3 py-2 border-t border-amber-900/40 text-[10px] text-amber-300" style={{ background: "#3B2A12" }}>
+              Silent now: {silentAgents.map((a: any) => a.name).join(", ")}
+            </div>
+          )}
+        </aside>
       </div>
     </div>
   );

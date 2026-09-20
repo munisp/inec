@@ -27,7 +27,15 @@ export default function BudgetPlanner() {
     onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"table" | "chart">("table");
+  const [activeTab, setActiveTab] = useState<"table" | "chart" | "disclosure">("table");
+  // GAP-10: statutory caps (Electoral Act 2022 §88) + INEC disclosure report.
+  const { data: caps = [], isLoading: capsLoading } = trpc.budget.caps.useQuery(
+    { profileId: profileId! }, { enabled: !!profileId }
+  );
+  const [office, setOffice] = useState<"presidential" | "gubernatorial" | "senatorial" | "house" | "local">("gubernatorial");
+  const { data: disclosure, isLoading: disclosureLoading } = trpc.budget.disclosureReport.useQuery(
+    { profileId: profileId!, office }, { enabled: !!profileId }
+  );
   const [form, setForm] = useState({ description: "", category: "Advertising", budgetedAmount: "", spentAmount: "", priority: "medium" as Priority, notes: "" });
 
   const totalBudgeted = items.reduce((s, i) => s + (i.budgetedAmount ?? 0), 0);
@@ -111,11 +119,11 @@ export default function BudgetPlanner() {
       <div className="max-w-5xl mx-auto px-6 py-8">
         {/* Tab switcher */}
         <div className="flex gap-2 mb-4">
-          {(["table", "chart"] as const).map(t => (
+          {(["table", "chart", "disclosure"] as const).map(t => (
             <button key={t} onClick={() => setActiveTab(t)}
               className={`px-4 py-1.5 text-xs font-semibold uppercase tracking-wide rounded transition-all ${activeTab === t ? "text-white" : "bg-white text-gray-600 border border-gray-200"}`}
               style={activeTab === t ? { background: "#4A1525" } : {}}>
-              {t === "table" ? "Budget Table" : "Reconciliation Chart"}
+              {t === "table" ? "Budget Table" : t === "chart" ? "Reconciliation Chart" : "Statutory Caps & Disclosure"}
             </button>
           ))}
         </div>
@@ -182,6 +190,123 @@ export default function BudgetPlanner() {
               </table>
             </div>
           )
+        )}
+
+        {/* Statutory Caps & Disclosure (GAP-11) */}
+        {activeTab === "disclosure" && (
+          <div className="space-y-6">
+            {/* Statutory caps */}
+            <div className="bg-white border border-gray-200 rounded p-5" style={{ borderTop: "3px solid #4A1525" }}>
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Statutory Spending Caps</p>
+              <p className="text-xs text-gray-400 mb-4">Electoral Act 2022 §88 caps as configured in the budget_statutory_caps table. Verify against the current Act before relying on these figures.</p>
+              {capsLoading ? (
+                <div className="flex justify-center py-8"><Loader2 size={24} className="animate-spin text-gray-400"/></div>
+              ) : caps.length === 0 ? (
+                <p className="text-sm text-gray-500 py-4 text-center">No statutory caps are configured.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead><tr className="bg-gray-50 border-b">
+                    {["Office", "Cap (₦)", "Notes"].map(h => <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">{h}</th>)}
+                  </tr></thead>
+                  <tbody>{caps.map((c: any, i: number) => (
+                    <tr key={c.office ?? i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                      <td className="px-4 py-2.5 font-medium text-gray-900">{c.office}</td>
+                      <td className="px-4 py-2.5 font-mono">₦{Number(c.capAmount ?? 0).toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-xs text-gray-500">{c.notes ?? "—"}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Disclosure report */}
+            <div className="bg-white border border-gray-200 rounded p-5" style={{ borderTop: "3px solid #1A3A5C" }}>
+              <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">INEC Campaign-Finance Disclosure</p>
+                  <p className="text-xs text-gray-400">Real aggregates from the spend ledger and recorded fundraising only — unrecorded figures appear as zero.</p>
+                </div>
+                <Select value={office} onValueChange={v => setOffice(v as typeof office)}>
+                  <SelectTrigger className="h-8 text-xs w-44"><SelectValue/></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="presidential">Presidential</SelectItem>
+                    <SelectItem value="gubernatorial">Gubernatorial</SelectItem>
+                    <SelectItem value="senatorial">Senatorial</SelectItem>
+                    <SelectItem value="house">House of Reps</SelectItem>
+                    <SelectItem value="local">Local / LGA</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {disclosureLoading ? (
+                <div className="flex justify-center py-10"><Loader2 size={24} className="animate-spin text-gray-400"/></div>
+              ) : !disclosure ? (
+                <p className="text-sm text-gray-500 py-6 text-center">Disclosure report unavailable — the finance tables are not reachable.</p>
+              ) : (
+                <div className="space-y-5">
+                  {disclosure.capBreached === true && (
+                    <div className="rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 font-semibold">
+                      ⚠ Statutory cap breached: recorded spend of ₦{disclosure.totalSpent.toLocaleString()} exceeds the {office} cap of ₦{Number(disclosure.statutoryCap?.capAmount ?? 0).toLocaleString()}.
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {[
+                      { label: "Total Spent", value: `₦${disclosure.totalSpent.toLocaleString()}`, color: "#1A3A5C" },
+                      { label: "Total Budgeted", value: `₦${disclosure.totalBudgeted.toLocaleString()}`, color: "#4A1525" },
+                      { label: "Total Raised", value: `₦${disclosure.fundraising.totalRaised.toLocaleString()}`, color: "#008751" },
+                      {
+                        label: "Cap Headroom",
+                        value: disclosure.capHeadroom != null ? `₦${disclosure.capHeadroom.toLocaleString()}` : "—",
+                        color: disclosure.capHeadroom != null && disclosure.capHeadroom < 0 ? "#C0392B" : "#008751",
+                      },
+                    ].map(k => (
+                      <div key={k.label} className="border border-gray-200 rounded p-3" style={{ borderTop: `3px solid ${k.color}` }}>
+                        <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-1">{k.label}</p>
+                        <p className="font-mono font-bold" style={{ color: k.color }}>{k.value}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2">Spend by Category</p>
+                      {(disclosure.spendByCategory as any[]).length === 0 ? (
+                        <p className="text-sm text-gray-500">No spend recorded.</p>
+                      ) : (
+                        <div className="space-y-1.5 text-sm">
+                          {(disclosure.spendByCategory as any[]).map((r: any, i: number) => (
+                            <div key={r.category ?? i} className="flex justify-between gap-2">
+                              <span className="text-gray-600 truncate">{r.category ?? "Uncategorised"}</span>
+                              <span className="font-mono whitespace-nowrap">
+                                ₦{Number(r.spent ?? 0).toLocaleString()}
+                                <span className="text-gray-400"> / ₦{Number(r.budgeted ?? 0).toLocaleString()}</span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2">Fundraising</p>
+                      <div className="space-y-1.5 text-sm">
+                        <div className="flex justify-between"><span className="text-gray-600">Transactions</span><span className="font-mono">{disclosure.fundraising.transactionCount}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600">Total raised</span><span className="font-mono">₦{disclosure.fundraising.totalRaised.toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600">Verified raised</span><span className="font-mono">₦{disclosure.fundraising.verifiedRaised.toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600">Diaspora raised</span><span className="font-mono">₦{disclosure.fundraising.diasporaRaised.toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600">Anonymous donations</span><span className="font-mono">{disclosure.fundraising.anonymousCount}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600">Unattested sources</span><span className={`font-mono ${disclosure.fundraising.unattestedCount > 0 ? "text-red-700 font-bold" : ""}`}>{disclosure.fundraising.unattestedCount}</span></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-gray-400 border-t border-gray-100 pt-3">
+                    {disclosure.note} Generated {new Date(disclosure.generatedAt).toLocaleString("en-NG")}.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>
