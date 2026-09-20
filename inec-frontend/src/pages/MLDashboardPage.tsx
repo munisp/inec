@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -60,35 +61,49 @@ export default function MLDashboardPage() {
   const [modelRegistry, setModelRegistry] = useState<{ models: Record<string, ModelVersion>; production: Record<string, string> } | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  // Failed sources are tracked explicitly — a failed fetch must never render
+  // as zero rows / an empty registry (indistinguishable from "no data").
+  const [loadErrors, setLoadErrors] = useState<string[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // Election scope for election-scoped actions resolves from the elections store — never hardcoded.
+  const { electionId } = useResolvedElection();
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    try {
-      const [lh, ts, mr] = await Promise.all([
-        api.getLakehouseStatus().catch(() => ({ tiers: { bronze: 0, silver: 0, gold: 0 }, recent_runs: [] })),
-        api.getTrainingStatus().catch(() => null),
-        api.getModelRegistry().catch(() => ({ models: {}, production: {} })),
-      ]);
-      setLakehouseStatus(lh);
-      setTrainingStatus(ts);
-      setModelRegistry(mr);
-    } catch { /* handled per-call */ }
+    const failures: string[] = [];
+    const [lh, ts, mr] = await Promise.all([
+      api.getLakehouseStatus().catch(() => { failures.push('lakehouse status'); return null; }),
+      api.getTrainingStatus().catch(() => { failures.push('training status'); return null; }),
+      api.getModelRegistry().catch(() => { failures.push('model registry'); return null; }),
+    ]);
+    setLakehouseStatus(lh);
+    setTrainingStatus(ts);
+    setModelRegistry(mr);
+    setLoadErrors(failures);
     setLoading(false);
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleAction = async (action: string) => {
+    setActionError(null);
+    const needsElection = action === 'ingest' || action === 'pipeline' || action === 'batch-predict';
+    if (needsElection && !electionId) {
+      setActionError('No election selected — this action is election-scoped and was not run. Select an election first.');
+      return;
+    }
     setActionLoading(action);
     try {
-      if (action === 'ingest') await api.triggerLakehouseIngest(1);
-      else if (action === 'pipeline') await api.triggerLakehousePipeline(1);
+      if (action === 'ingest') await api.triggerLakehouseIngest(electionId as number);
+      else if (action === 'pipeline') await api.triggerLakehousePipeline(electionId as number);
       else if (action === 'retrain') await api.triggerRetrain(false);
       else if (action === 'retrain-ray') await api.triggerRetrain(true);
-      else if (action === 'batch-predict') await api.rayBatchPredict(1);
+      else if (action === 'batch-predict') await api.rayBatchPredict(electionId as number);
       else if (action === 'ray-train') await api.rayTrain();
       await loadData();
-    } catch { /* handled */ }
+    } catch (e) {
+      setActionError(`Action "${action}" failed: ${e instanceof Error ? e.message : 'unknown error'}. No changes were confirmed.`);
+    }
     setActionLoading(null);
   };
 
@@ -115,30 +130,55 @@ export default function MLDashboardPage() {
         </Button>
       </div>
 
+      {loadErrors.length > 0 && (
+        <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/30 dark:text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div className="flex-1">
+            <p className="font-semibold">Some ML infrastructure sources failed to load</p>
+            <p className="mt-1">Failed: {loadErrors.join(', ')}. Affected figures are shown as unavailable — they do not represent real zero values.</p>
+          </div>
+          <Button onClick={loadData} disabled={loading} variant="outline" size="sm" className="shrink-0">
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {actionError && (
+        <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/30 dark:text-red-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>{actionError}</p>
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center gap-1"><Database className="h-4 w-4" /> Lakehouse</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{totalRows.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">Total rows across tiers</p>
+            <div className="text-2xl font-bold">{loadErrors.includes('lakehouse status') ? '—' : totalRows.toLocaleString()}</div>
+            <p className="text-xs text-muted-foreground">{loadErrors.includes('lakehouse status') ? 'Status unavailable — see error above' : 'Total rows across tiers'}</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center gap-1"><Layers className="h-4 w-4" /> Models</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{Object.keys(models).length}</div>
-            <p className="text-xs text-muted-foreground">{Object.keys(productionModels).length} in production</p>
+            <div className="text-2xl font-bold">{loadErrors.includes('model registry') ? '—' : Object.keys(models).length}</div>
+            <p className="text-xs text-muted-foreground">{loadErrors.includes('model registry') ? 'Registry unavailable — see error above' : `${Object.keys(productionModels).length} in production`}</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center gap-1"><Activity className="h-4 w-4" /> Drift</CardTitle></CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {trainingStatus?.drift_status?.drift_detected ? (
+              {loadErrors.includes('training status') ? (
+                <span className="text-muted-foreground">Unavailable</span>
+              ) : trainingStatus?.drift_status?.drift_detected ? (
                 <span className="text-red-500">Detected</span>
-              ) : (
+              ) : trainingStatus ? (
                 <span className="text-green-500">Stable</span>
+              ) : (
+                <span className="text-muted-foreground">Unknown</span>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
@@ -149,8 +189,8 @@ export default function MLDashboardPage() {
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-sm font-medium flex items-center gap-1"><Cpu className="h-4 w-4" /> Ray</CardTitle></CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">Ready</div>
-            <p className="text-xs text-muted-foreground">Distributed compute engine</p>
+            <div className="text-2xl font-bold">—</div>
+            <p className="text-xs text-muted-foreground">No status endpoint — Ray cluster state not verified</p>
           </CardContent>
         </Card>
       </div>
@@ -165,6 +205,13 @@ export default function MLDashboardPage() {
 
         {/* Lakehouse Tab */}
         <TabsContent value="lakehouse" className="space-y-4">
+          {loadErrors.includes('lakehouse status') && (
+            <Card>
+              <CardContent className="py-4 text-sm text-muted-foreground">
+                Lakehouse tier counts and pipeline runs are unavailable — the status request failed (see error above). Figures are withheld rather than shown as zero.
+              </CardContent>
+            </Card>
+          )}
           <div className="grid grid-cols-3 gap-4">
             {(['bronze', 'silver', 'gold'] as const).map(tier => (
               <Card key={tier}>
@@ -228,7 +275,7 @@ export default function MLDashboardPage() {
           <Card>
             <CardHeader><CardTitle>Registered Models</CardTitle></CardHeader>
             <CardContent>
-              {Object.keys(models).length === 0 && <p className="text-muted-foreground text-sm">No models registered yet. Train models to populate the registry.</p>}
+              {Object.keys(models).length === 0 && <p className="text-muted-foreground text-sm">{loadErrors.includes('model registry') ? 'Model registry unavailable — the registry request failed (see error above).' : 'No models registered yet. Train models to populate the registry.'}</p>}
               <div className="space-y-3">
                 {Object.entries(models).map(([id, model]) => (
                   <div key={id} className="p-3 border rounded flex items-center justify-between">
@@ -298,7 +345,7 @@ export default function MLDashboardPage() {
                     )}
                   </div>
                 ) : (
-                  <p className="text-muted-foreground text-sm">Drift detection not yet initialized</p>
+                  <p className="text-muted-foreground text-sm">{loadErrors.includes('training status') ? 'Drift status unavailable — the training status request failed (see error above).' : 'Drift detection not yet initialized'}</p>
                 )}
               </CardContent>
             </Card>
