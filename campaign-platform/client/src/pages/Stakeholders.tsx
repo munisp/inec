@@ -400,11 +400,12 @@ function scoreStakeholders(
       const genderBonus = gender === "Female" && s.category === "Women" ? 20 : 0;
       const priorityWeight = s.priority === 1 ? 10 : 0;
       const totalScore = baseScore + reachScore + religionBonus + genderBonus + priorityWeight;
-      const pop = 3_000_000; // approximate
+      // MCK-1: no population-per-stakeholder figure exists — never invent one.
+      // Only the knowledge-base reach_pct (a real, labelled editorial field)
+      // is shown to the user.
       return {
         ...s,
         relevance_score: Math.round(totalScore * 10) / 10,
-        estimated_voter_reach: Math.round(pop * s.reach_pct / 100),
       };
     })
     .sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
@@ -436,7 +437,7 @@ export default function StakeholdersPage() {
     const lines = [
       `📋 *STAKEHOLDER BRIEF — ${s.name}*`,
       `Category: ${s.category} (${s.subcategory})`,
-      `Est. Reach (editorial heuristic, not measured): ~${((s.estimated_voter_reach ?? 0) / 1000).toFixed(0)}K voters`,
+      `Reach (editorial knowledge-base estimate): ${s.reach_pct.toFixed(1)}% of the target constituency`,
       ``,
       `*Key Ask:* ${s.key_ask}`,
       ``,
@@ -490,7 +491,9 @@ export default function StakeholdersPage() {
     }, 900);
   }
 
-  const totalReach = results.reduce((acc, s) => acc + (s.estimated_voter_reach ?? 0), 0);
+  // MCK-1: aggregate voter-reach totals were derived from an invented 3M
+  // population per stakeholder and have been removed — only group counts
+  // (real) and per-group reach_pct (editorial, labelled) are displayed.
   const priority1Count = results.filter(s => s.priority === 1).length;
 
   return (
@@ -717,24 +720,27 @@ export default function StakeholdersPage() {
                 <span style={{ color: "oklch(0.55 0.01 240)" }}>Priority 1 Groups</span>
                 <span className="font-bold" style={{ color: "oklch(0.65 0.18 145)" }}>{priority1Count}</span>
               </div>
-              <div className="flex justify-between text-xs">
-                <span style={{ color: "oklch(0.55 0.01 240)" }}>Est. reach (editorial heuristic)</span>
-                <span className="font-bold" style={{ color: "oklch(0.75 0.15 50)" }}>{(totalReach / 1_000_000).toFixed(1)}M</span>
-              </div>
               <p className="text-xs leading-snug" style={{ color: "oklch(0.45 0.01 240)" }}>
-                Reach figures are editorial estimates for planning only — not measured data.
+                Per-group reach percentages are editorial knowledge-base values for planning only — no measured voter-reach totals exist, so none are shown.
               </p>
             </div>
           )}
-          {/* Sentiment Feed — live approval tracker */}
+          {/* Sentiment Feed — live approval tracker (BUG-2: real backend contract, keyed by campaign profile id) */}
           {generated && !loading && (
             <div className="p-4 border-t" style={{ borderColor: "oklch(0.22 0.01 240)" }}>
-              <SentimentFeed
-                candidateName={candidateName}
-                office={office}
-                stateName={selectedState?.name ?? stateCode}
-                compact
-              />
+              {profileId != null ? (
+                <SentimentFeed profileId={profileId} compact />
+              ) : (
+                <div
+                  className="rounded border px-3 py-2 flex items-center gap-3"
+                  style={{ background: "oklch(0.155 0.008 240)", borderColor: "oklch(0.22 0.01 240)" }}
+                >
+                  <span className="text-xs font-bold" style={{ color: "oklch(0.55 0.01 240)" }}>SENTIMENT</span>
+                  <span className="text-xs" style={{ color: "oklch(0.55 0.01 240)" }}>
+                    Unavailable — no campaign profile selected
+                  </span>
+                </div>
+              )}
             </div>
           )}
           {/* Campaign Tools Quick Access */}
@@ -873,7 +879,7 @@ export default function StakeholdersPage() {
                   </div>
                   <div className="flex items-center gap-2 text-xs px-3 py-1 rounded" style={{ background: "oklch(0.18 0.008 240)", border: "1px solid oklch(0.28 0.01 240)" }}>
                     <CheckCircle2 className="w-3 h-3" style={{ color: "oklch(0.65 0.18 145)" }} />
-                    <span style={{ color: "oklch(0.65 0.18 145)" }}>{filtered.length} groups · {(totalReach / 1_000_000).toFixed(1)}M est. reach (editorial heuristic)</span>
+                    <span style={{ color: "oklch(0.65 0.18 145)" }}>{filtered.length} groups</span>
                   </div>
                 </div>
                 <div className="px-4 py-1.5 border-b text-xs" style={{ borderColor: "oklch(0.22 0.01 240)", background: "oklch(0.12 0.008 240)", color: "oklch(0.45 0.01 240)" }}>
@@ -925,7 +931,7 @@ export default function StakeholdersPage() {
 
                             <div className="flex items-center justify-between mt-2">
                               <span className="text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>
-                                ~{((s.estimated_voter_reach ?? 0) / 1000).toFixed(0)}K voters (heuristic)
+                                Reach: {s.reach_pct.toFixed(1)}% (editorial estimate)
                               </span>
                               <div className="flex items-center gap-1 text-xs" style={{ color: "oklch(0.45 0.01 240)" }}>
                                 <span>Score: {s.relevance_score?.toFixed(0)}</span>

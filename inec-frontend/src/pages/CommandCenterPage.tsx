@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../lib/api';
+import { useResolvedElection } from '../lib/gotv-session';
 import { AuthoritativeDataUnavailable } from '../components/AuthoritativeDataUnavailable';
 import { logger } from '../lib/utils';
 import { Activity, AlertTriangle, Radio, Shield, Clock, RefreshCw, Zap, MapPin } from 'lucide-react';
@@ -82,13 +83,15 @@ export default function CommandCenterPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState<'states' | 'zones'>('states');
   const sseRef = useRef<EventSource | null>(null);
+  // Election scope for the live feed resolves from the elections store — never hardcoded.
+  const { electionId } = useResolvedElection();
 
   const fetchData = useCallback(async () => {
     try {
       setError(null);
       const [live, feed, rules] = await Promise.all([
         api.getCommandCenterLive(),
-        api.getLiveFeed(1, 10),
+        electionId ? api.getLiveFeed(electionId, 10) : Promise.resolve([]),
         api.getEscalationConfig(),
       ]);
       setData(live);
@@ -104,7 +107,7 @@ export default function CommandCenterPage() {
       setLastUpdated(null);
       setError('command-center-source-unavailable');
     }
-  }, []);
+  }, [electionId]);
 
   useEffect(() => {
     fetchData();
@@ -446,7 +449,7 @@ export default function CommandCenterPage() {
             </h2>
             <div className="max-h-64 overflow-y-auto divide-y dark:divide-gray-700">
               {liveFeed.length === 0 && (
-                <p className="p-4 text-sm text-gray-400">No recent submissions</p>
+                <p className="p-4 text-sm text-gray-400">{electionId ? 'No recent submissions' : 'No election selected — live feed is election-scoped'}</p>
               )}
               {liveFeed.map((item) => (
                 <div key={item.id} className="p-3 text-xs hover:bg-gray-50 dark:hover:bg-gray-750">
