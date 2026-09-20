@@ -91,6 +91,36 @@ export async function getUserByOpenId(openId: string) {
   return getUserByUsername(openId);
 }
 
+/**
+ * SECURITY (audit SEC-8): does this account have MFA enabled on the shared
+ * INEC-side identity store? The Go backend enforces TOTP at its own login;
+ * the campaign login must not become a password-only bypass for those
+ * accounts. Defensive: when the Go EMS schema (mfa_settings) is not
+ * co-deployed, there is nothing to bypass and we report "unknown".
+ */
+export async function getUserMfaEnabled(userId: number): Promise<boolean | "unknown"> {
+  const db = getDb();
+  if (!db) return "unknown";
+  try {
+    const rows = await db.execute(sql`
+      SELECT totp_enabled, webauthn_enabled, sms_enabled
+      FROM mfa_settings WHERE user_id = ${userId} LIMIT 1`);
+    const row = (rows as unknown as { rows?: Array<Record<string, unknown>> }).rows?.[0]
+      ?? (rows as unknown as Array<Record<string, unknown>>)[0];
+    if (!row) return false;
+    return Number(row.totp_enabled) === 1 || Number(row.webauthn_enabled) === 1 || Number(row.sms_enabled) === 1;
+  } catch {
+    return "unknown"; // mfa_settings table not present in this deployment
+  }
+}
+
+/** Authenticated password change (audit SEC-11): verify current hash, then update. */
+export async function updateUserPassword(userId: number, newPasswordHash: string) {
+  const db = getDb();
+  if (!db) throw new Error("DB not available");
+  await db.execute(sql`UPDATE users SET password_hash = ${newPasswordHash} WHERE id = ${userId}`);
+}
+
 export async function getUserByUsername(username: string) {
   const db = getDb();
   if (!db) return undefined;
@@ -103,19 +133,6 @@ export async function getUserByUsername(username: string) {
 }
 
 // ─── Candidate Profiles ───────────────────────────────────────────────────────
-export async function getOrCreateDefaultProfile(_userId?: number) {
-  const db = getDb();
-  if (!db) return null;
-  const rows = await db
-    .select()
-    .from(schema.candidateProfiles)
-    .where(eq(schema.candidateProfiles.isActive, true))
-    .orderBy(schema.candidateProfiles.id)
-    .limit(1);
-  // A missing profile is an operational setup state, not a reason to fabricate a candidate.
-  return rows[0] ?? null;
-}
-
 export async function updateProfile(id: number, data: Partial<schema.InsertCandidateProfile>) {
   const db = getDb();
   if (!db) return null;
@@ -445,6 +462,13 @@ export async function resolveDsar(
               .where(eq(schema.petitions.profileId, profileId)),
           ),
         ));
+    } else if (req.subjectTable === "campaign_members") {
+      // Membership rows are not DSAR erasure subjects — offboarding goes
+      // through team.remove, which is itself audit-logged (GAP-13).
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "campaign_members records are managed via team.remove, not DSAR erasure",
+      });
     } else {
       const tableMap = {
         voter_registrations: schema.voterRegistrations,
@@ -452,7 +476,7 @@ export async function resolveDsar(
         stakeholder_contacts: schema.stakeholderContacts,
         volunteers: schema.volunteers,
       } as const;
-      const table = tableMap[req.subjectTable];
+      const table = tableMap[req.subjectTable as keyof typeof tableMap];
       await db
         .delete(table)
         .where(and(eq(table.id, req.subjectId), eq(table.profileId, profileId)));
@@ -884,6 +908,50 @@ export async function upsertComplianceItem(data: typeof schema.complianceItems.$
   return rows[0];
 }
 
+// ─── Statutory compliance presets (audit GAP-1 / GAP-6) ─────────────────────
+// The real statutory checklist a Nigerian campaign must track: INEC filing
+// obligations under the Electoral Act 2022 and the NBC broadcast-advert
+// clearance gate. These are templates materialised per campaign profile —
+// statuses always start "pending"; nothing here asserts compliance.
+export const COMPLIANCE_PRESETS: ReadonlyArray<{
+  title: string;
+  category: string;
+  description: string;
+}> = [
+  { title: "Party Nomination Form (INEC CF001)", category: "Legal",
+    description: "File the candidate nomination form with the party secretariat and INEC within the statutory nomination window." },
+  { title: "Candidate Affidavit of Personal Particulars", category: "Legal",
+    description: "Sworn affidavit of personal particulars submitted to INEC alongside the nomination form." },
+  { title: "Campaign Finance Report — Periodic (EA 2022 s.87)", category: "Finance",
+    description: "Periodic campaign finance report to INEC as required by the Electoral Act 2022." },
+  { title: "Final Campaign Finance Report (post-election)", category: "Finance",
+    description: "Final campaign finance report submitted to INEC within the statutory post-election window." },
+  { title: "Campaign Spending Cap Compliance (EA 2022 s.88)", category: "Finance",
+    description: "Verify total campaign expenditure stays within the statutory cap for the contested office (see Budget → Statutory Caps & Disclosure)." },
+  { title: "Polling & Collation Agent Accreditation List", category: "Electoral",
+    description: "Submit the list of polling and collation agents to INEC before the accreditation deadline." },
+  { title: "Broadcast Advert Clearance (NBC)", category: "Media",
+    description: "Every broadcast advert must be cleared before airing; track per-item clearance on the Media Monitoring page." },
+];
+
+/** Idempotently materialise the statutory checklist for a profile. */
+export async function loadCompliancePresets(profileId: number) {
+  const db = getDb();
+  if (!db) return { inserted: 0, skipped: 0 };
+  const existing = await db
+    .select({ title: schema.complianceItems.title })
+    .from(schema.complianceItems)
+    .where(eq(schema.complianceItems.profileId, profileId));
+  const have = new Set(existing.map((r) => r.title));
+  const missing = COMPLIANCE_PRESETS.filter((p) => !have.has(p.title));
+  if (missing.length > 0) {
+    await db.insert(schema.complianceItems).values(
+      missing.map((p) => ({ ...p, profileId, status: "pending" as const })),
+    );
+  }
+  return { inserted: missing.length, skipped: COMPLIANCE_PRESETS.length - missing.length };
+}
+
 // ─── Opposition Research ──────────────────────────────────────────────────────
 export async function getOppositionResearch(profileId: number) {
   const db = getDb();
@@ -1115,9 +1183,13 @@ export async function upsertFieldAgent(data: typeof schema.fieldAgents.$inferIns
   if (!db) return null;
   if (data.id) {
     // SECURITY: tenant-guarded update — never set profileId on update.
+    // BUGFIX (audit SEC-2): do NOT stamp lastCheckin on edits — a manager
+    // fixing a typo used to silently mark the agent just-checked-in,
+    // defeating the silent-agent scan. Only an explicit caller-supplied
+    // lastCheckin (or agentCheckIn) may move that timestamp.
     const { id, profileId, ...rest } = data;
     const rows = await db.update(schema.fieldAgents)
-      .set({ ...rest, lastCheckin: new Date() })
+      .set(rest)
       .where(and(eq(schema.fieldAgents.id, id), eq(schema.fieldAgents.profileId, requireTenantId(data.profileId))))
       .returning();
     return assertUpdated(rows, "Field agent");
@@ -1745,7 +1817,29 @@ export async function seedProfileData(profileId: number): Promise<void> {
     { fullName: "Sani Ibrahim Wada", phone: "08015555555", lga: "Tarauni", role: "Transport Coordinator", skills: "Logistics, vehicle management", status: "active" as const },
     { fullName: "Maryam Garba Tukur", phone: "08036666666", lga: "Fagge", role: "Media Liaison", skills: "Photography, social media", status: "active" as const },
   ];
+  // SEC-15: every seeded personal-data row carries a consent + provenance
+  // trail honestly labelled as demo seed — fabricated rows must be
+  // distinguishable from real consented records at the data layer.
+  const seedTrail = async (
+    subjectTable: "voter_registrations" | "diaspora_contacts" | "stakeholder_contacts" | "volunteers" | "petition_signatures",
+    ids: number[],
+  ) => {
+    for (const subjectId of ids) {
+      await db.insert(schema.consentRecords).values({
+        profileId, subjectTable, subjectId,
+        lawfulBasis: "legitimate_interest", purpose: "demo seed data — replace with real consented records",
+        consentGranted: false,
+      });
+      await db.insert(schema.dataProvenanceLedger).values({
+        profileId, subjectTable, subjectId,
+        source: "demo_seed", lawfulBasis: "legitimate_interest",
+        notes: "Seeded demo record; not a real consented contact.",
+      });
+    }
+  };
+
   const insertedVols = await db.insert(volunteers).values(volData.map(v => ({ ...v, profileId }))).returning();
+  await seedTrail("volunteers", insertedVols.map((r) => r.id));
   if (insertedVols.length >= 2) {
     await db.insert(volunteerTasks).values([
       { profileId, volunteerId: insertedVols[0].id, title: "Register 200 voters in Dala ward", taskType: "canvassing" as const, status: "completed" as const, dueDate: daysFromNow(-7) },
@@ -1825,20 +1919,22 @@ export async function seedProfileData(profileId: number): Promise<void> {
     { profileId, title: "Support Free Education in Kano State", description: "We call on the next governor of Kano State to implement free education from primary to JSS3 level for all Kano children.", targetSignatures: 50000, status: "active" as const },
   ]).returning();
   if (petition) {
-    await db.insert(petitionSignatures).values([
+    const seededSigs = await db.insert(petitionSignatures).values([
       { petitionId: petition.id, signerName: "Aminu Suleiman", lga: "Dala" },
       { petitionId: petition.id, signerName: "Fatima Ibrahim", lga: "Gwale" },
       { petitionId: petition.id, signerName: "Musa Wada", lga: "Nassarawa" },
-    ]);
+    ]).returning({ id: petitionSignatures.id });
+    await seedTrail("petition_signatures", seededSigs.map((r) => r.id));
   }
 
   // ── Diaspora Contacts ─────────────────────────────────────────────────────
-  await db.insert(diasporaContacts).values([
+  const seededDiaspora = await db.insert(diasporaContacts).values([
     { profileId, name: "Dr. Usman Kano", country: "United Kingdom", city: "London", phone: "+447911123456", email: "usman.kano@gmail.com", organization: "Kano UK Association", status: "active" as const },
     { profileId, name: "Hajiya Maryam Sule", country: "United States", city: "Houston", phone: "+17135551234", email: "maryam.sule@yahoo.com", organization: "Kano-Texas Community", status: "active" as const },
     { profileId, name: "Alhaji Bello Dantata", country: "Saudi Arabia", city: "Jeddah", phone: "+966501234567", organization: "Nigerian Muslim Community Jeddah", status: "active" as const },
     { profileId, name: "Prof. Amina Garba", country: "Canada", city: "Toronto", phone: "+14165551234", email: "amina.garba@utoronto.ca", organization: "Kano Professionals Canada", status: "active" as const },
-  ]);
+  ]).returning({ id: diasporaContacts.id });
+  await seedTrail("diaspora_contacts", seededDiaspora.map((r) => r.id));
 
   // ── Endorsements ──────────────────────────────────────────────────────────
   await db.insert(endorsements).values([
@@ -1891,7 +1987,7 @@ export async function seedProfileData(profileId: number): Promise<void> {
   ]);
 
   // ── Stakeholder Contacts ──────────────────────────────────────────────────
-  await db.insert(stakeholderContacts).values([
+  const seededStakeholders = await db.insert(stakeholderContacts).values([
     { profileId, name: "Alhaji Aminu Dantata", title: "Business Mogul", organization: "Dantata Group", category: "Business", phone: "08031234567", state: "Kano", lga: "Municipal", influenceLevel: "critical" as const, relationship: "supporter", nextAction: "Confirm attendance at final rally" },
     { profileId, name: "Emir of Kano", title: "His Royal Highness", organization: "Kano Emirate", category: "Traditional", state: "Kano", influenceLevel: "critical" as const, relationship: "neutral", nextAction: "Request audience before election day" },
     { profileId, name: "Dr. Fatima Aliyu", title: "Chairman, NMA Kano", organization: "Nigerian Medical Association", category: "Professional", phone: "08052345678", email: "fatima.a@nma.org", state: "Kano", influenceLevel: "high" as const, relationship: "supporter" },
@@ -1899,7 +1995,8 @@ export async function seedProfileData(profileId: number): Promise<void> {
     { profileId, name: "Hajiya Zainab Umar", title: "President, KMWA", organization: "Kano Market Women Association", category: "Civil Society", phone: "08094567890", state: "Kano", influenceLevel: "high" as const, relationship: "supporter" },
     { profileId, name: "Bishop Emmanuel Okafor", title: "Bishop", organization: "Catholic Diocese of Kano", category: "Religious", phone: "08015678901", state: "Kano", influenceLevel: "medium" as const, relationship: "neutral", nextAction: "Invite to interfaith dialogue" },
     { profileId, name: "Prof. Abdullahi Usman", title: "Vice Chancellor", organization: "Bayero University Kano", category: "Academia", phone: "08036789012", email: "vc@buk.edu.ng", state: "Kano", influenceLevel: "medium" as const, relationship: "neutral" },
-  ]);
+  ]).returning({ id: stakeholderContacts.id });
+  await seedTrail("stakeholder_contacts", seededStakeholders.map((r) => r.id));
 
   // ── Field Agents ──────────────────────────────────────────────────────────
   await db.insert(fieldAgents).values([
@@ -1936,17 +2033,23 @@ export async function seedProfileData(profileId: number): Promise<void> {
     { profileId, topic: "Education", keyMessage: "Free education from primary to JSS3 for all Kano children", counterArguments: ["Education funding is federal", "Quality over quantity"], statistics: ["1.2M out-of-school children in Kano", "2,000 schools need renovation"], practiceScore: 9 },
     { profileId, topic: "Security & Banditry", keyMessage: "Community policing and intelligence sharing to defeat banditry", counterArguments: ["Security is federal responsibility", "Army handles banditry"], statistics: ["Banditry incidents up 40% under APC", "200 kidnappings in 2023"], practiceScore: 8 },
   ]);
-}
 
-export async function getProfileById(id: number) {
-  const db = getDb();
-  if (!db) return null;
-  const rows = await db
-    .select()
-    .from(schema.candidateProfiles)
-    .where(eq(schema.candidateProfiles.id, id))
-    .limit(1);
-  return rows[0] ?? null;
+  // SEC-15: audit-trail the fabrication itself — one data_access_audit entry
+  // per seeded personal-data table, so any reviewer can see exactly which
+  // rows are demo data, in the same ledger used for real data access.
+  for (const [subjectTable, rowCount] of [
+    ["voter_registrations", seededVoters.length],
+    ["volunteers", insertedVols.length],
+    ["petition_signatures", petition ? 3 : 0],
+    ["diaspora_contacts", seededDiaspora.length],
+    ["stakeholder_contacts", seededStakeholders.length],
+  ] as const) {
+    await logDataAccess({
+      profileId, actorName: "seed_demo_data", subjectTable,
+      action: "seed_demo", rowCount,
+      purpose: "Demo fixture seeding (non-production, explicitly enabled); rows are fabricated and labelled demo_seed in the provenance ledger",
+    });
+  }
 }
 
 // ─── Upcoming Deadlines ────────────────────────────────────────────────────────
@@ -1998,12 +2101,22 @@ export async function getCampaignMembers(profileId: number) {
     .orderBy(schema.campaignMembers.invitedAt);
 }
 
+// SECURITY (audit SEC-6): invite tokens are bearer credentials — store only
+// the SHA-256 hash in the database. The plaintext token exists solely in the
+// invite URL returned to the inviter; a DB read leak no longer exposes
+// usable invite links. (sha256 hex = 64 chars, same width as before, so no
+// schema change is required.)
+async function hashInviteToken(token: string): Promise<string> {
+  const { createHash } = await import("crypto");
+  return createHash("sha256").update(token).digest("hex");
+}
+
 export async function inviteCampaignMember(input: {
   profileId: number; email: string; name: string; role: "manager" | "viewer"; origin?: string;
 }) {
   const db = getDb();
   if (!db) throw new Error("DB not available");
-  // Generate a cryptographically random invite token
+  // Generate a cryptographically random invite token; persist only its hash.
   const { randomBytes } = await import("crypto");
   const inviteToken = randomBytes(32).toString("hex");
   const [row] = await db.insert(schema.campaignMembers).values({
@@ -2011,7 +2124,7 @@ export async function inviteCampaignMember(input: {
     email: input.email,
     name: input.name,
     role: input.role,
-    inviteToken,
+    inviteToken: await hashInviteToken(inviteToken),
   }).returning();
   return { ...row, inviteToken, inviteUrl: input.origin ? `${input.origin}/join?token=${inviteToken}` : null };
 }
@@ -2021,15 +2134,18 @@ export async function inviteCampaignMember(input: {
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isInviteExpired(invitedAt: Date | string | null | undefined): boolean {
-  if (!invitedAt) return false; // legacy rows without a timestamp stay usable
+  // SECURITY (audit SEC-7): fail closed — a row without a timestamp cannot
+  // prove it is within the TTL, so it is expired (previously usable forever).
+  if (!invitedAt) return true;
   return Date.now() - new Date(invitedAt).getTime() > INVITE_TTL_MS;
 }
 
 export async function acceptCampaignInvite(token: string, userId: number, userEmail?: string | null) {
   const db = getDb();
   if (!db) throw new Error("DB not available");
+  const tokenHash = await hashInviteToken(token);
   const [member] = await db.select().from(schema.campaignMembers)
-    .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
+    .where(eq(schema.campaignMembers.inviteToken, tokenHash)).limit(1);
   // SECURITY: typed TRPCErrors — bare Errors surface as HTTP 500s.
   if (!member) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid invite token" });
@@ -2068,7 +2184,7 @@ export async function acceptCampaignInvite(token: string, userId: number, userEm
       ...(emailToSet ? { email: emailToSet } : {}),
     })
     .where(and(
-      eq(schema.campaignMembers.inviteToken, token),
+      eq(schema.campaignMembers.inviteToken, tokenHash),
       isNull(schema.campaignMembers.acceptedAt)
     ))
     .returning();
@@ -2082,7 +2198,7 @@ export async function getMemberByInviteToken(token: string) {
   const db = getDb();
   if (!db) return null;
   const [member] = await db.select().from(schema.campaignMembers)
-    .where(eq(schema.campaignMembers.inviteToken, token)).limit(1);
+    .where(eq(schema.campaignMembers.inviteToken, await hashInviteToken(token))).limit(1);
   // SECURITY: expired invites resolve to null — same as an unknown token, so
   // callers cannot probe token validity windows.
   if (!member || isInviteExpired(member.invitedAt)) return null;
@@ -2105,29 +2221,6 @@ export async function removeCampaignMember(memberId: number) {
   await db.delete(schema.campaignMembers)
     .where(eq(schema.campaignMembers.id, memberId));
   return { success: true };
-}
-
-// ─── Get current user's role for a profile ────────────────────────────────────
-// Read-only hot path: called by per-request middleware. One indexed round-trip
-// (candidate_profiles.id/user_id PK + campaign_members(profile_id, user_id)
-// index), returns null — never throws — when the user has no membership.
-export async function getMyRoleForProfile(profileId: number, userId: number): Promise<"owner" | "manager" | "viewer" | null> {
-  const db = getDb();
-  if (!db) return null;
-  try {
-    const result = await db.execute(sql<{ role: string | null }>`
-      SELECT COALESCE(
-        (SELECT 'owner' FROM candidate_profiles WHERE id = ${profileId} AND user_id = ${userId} LIMIT 1),
-        (SELECT role::text FROM campaign_members WHERE profile_id = ${profileId} AND user_id = ${userId} LIMIT 1)
-      ) AS role
-    `);
-    const role = result.rows[0]?.role;
-    if (role === "owner" || role === "manager" || role === "viewer") return role;
-    return null;
-  } catch (err) {
-    logger.error("getMyRoleForProfile lookup failed", { err });
-    return null;
-  }
 }
 
 // ─── Get single petition by ID (public) ──────────────────────────────────────
@@ -2326,4 +2419,203 @@ export async function deleteStakeholderContact(id: number) {
   const { eq } = await import("drizzle-orm");
   await db.delete(stakeholderContacts).where(eq(stakeholderContacts.id, id));
   return { success: true };
+}
+
+// ─── W14: Audit-driven gap closures (deep audit 2026-09) ────────────────────
+
+// GAP-3: election tribunal tracking (legal petitions, not signature drives).
+export async function listElectionPetitions(profileId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(schema.electionPetitions)
+    .where(eq(schema.electionPetitions.profileId, requireTenantId(profileId)))
+    .orderBy(desc(schema.electionPetitions.createdAt));
+}
+
+export async function upsertElectionPetition(data: typeof schema.electionPetitions.$inferInsert) {
+  const db = getDb();
+  if (!db) return null;
+  if (data.id) {
+    const { id, profileId, ...rest } = data;
+    const rows = await db
+      .update(schema.electionPetitions)
+      .set({ ...rest, updatedAt: new Date() })
+      .where(and(
+        eq(schema.electionPetitions.id, id),
+        eq(schema.electionPetitions.profileId, requireTenantId(data.profileId)),
+      ))
+      .returning();
+    return assertUpdated(rows, "Election petition");
+  }
+  const rows = await db.insert(schema.electionPetitions).values(data).returning();
+  return rows[0];
+}
+
+export async function deleteElectionPetition(id: number, profileId: number) {
+  const db = getDb();
+  if (!db) return { deleted: 0 };
+  const rows = await db
+    .delete(schema.electionPetitions)
+    .where(and(
+      eq(schema.electionPetitions.id, id),
+      eq(schema.electionPetitions.profileId, requireTenantId(profileId)),
+    ))
+    .returning({ id: schema.electionPetitions.id });
+  if (rows.length === 0) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Election petition not found" });
+  }
+  return { deleted: rows.length };
+}
+
+// GAP-4: INEC campaign-finance disclosure report — REAL aggregates only, from
+// the append-only spend ledger, recorded fundraising, and the §88 cap table.
+// Figures the campaign has not recorded appear as zero/null, never estimated.
+export async function getFinanceDisclosureReport(profileId: number, office: string) {
+  const db = getDb();
+  if (!db) return null;
+  const pid = requireTenantId(profileId);
+
+  const spend = await db.execute(sql`
+    SELECT COALESCE(SUM(spent_amount), 0)::numeric(15,2) AS total_spent,
+           COALESCE(SUM(budgeted_amount), 0)::numeric(15,2) AS total_budgeted
+    FROM budget_items WHERE profile_id = ${pid}`);
+  const spendRow = (spend.rows?.[0] ?? {}) as Record<string, unknown>;
+
+  const byCategory = await db.execute(sql`
+    SELECT category,
+           COALESCE(SUM(budgeted_amount), 0)::numeric(15,2) AS budgeted,
+           COALESCE(SUM(spent_amount), 0)::numeric(15,2) AS spent
+    FROM budget_items WHERE profile_id = ${pid}
+    GROUP BY category ORDER BY spent DESC`);
+
+  const raised = await db.execute(sql`
+    SELECT COALESCE(SUM(amount), 0)::numeric(15,2) AS total_raised,
+           COUNT(*)::int AS transaction_count,
+           COALESCE(SUM(amount) FILTER (WHERE is_verified), 0)::numeric(15,2) AS verified_raised,
+           COALESCE(SUM(amount) FILTER (WHERE donor_type = 'diaspora'), 0)::numeric(15,2) AS diaspora_raised,
+           COUNT(*) FILTER (WHERE donor_type = 'anonymous')::int AS anonymous_count,
+           COUNT(*) FILTER (WHERE NOT source_attested)::int AS unattested_count
+    FROM fundraising_transactions WHERE profile_id = ${pid}`);
+  const raisedRow = (raised.rows?.[0] ?? {}) as Record<string, unknown>;
+
+  const capRows = await db
+    .select()
+    .from(schema.budgetStatutoryCaps)
+    .where(eq(schema.budgetStatutoryCaps.office, office as never));
+  const cap = capRows[0] ?? null;
+
+  const totalSpent = Number(spendRow.total_spent ?? 0);
+  return {
+    profileId: pid,
+    office,
+    statutoryCap: cap ? { capAmount: cap.capAmount, notes: cap.notes } : null,
+    totalBudgeted: Number(spendRow.total_budgeted ?? 0),
+    totalSpent,
+    capHeadroom: cap ? cap.capAmount - totalSpent : null,
+    capBreached: cap ? totalSpent > cap.capAmount : null,
+    spendByCategory: byCategory.rows,
+    fundraising: {
+      totalRaised: Number(raisedRow.total_raised ?? 0),
+      transactionCount: Number(raisedRow.transaction_count ?? 0),
+      verifiedRaised: Number(raisedRow.verified_raised ?? 0),
+      diasporaRaised: Number(raisedRow.diaspora_raised ?? 0),
+      anonymousCount: Number(raisedRow.anonymous_count ?? 0),
+      unattestedCount: Number(raisedRow.unattested_count ?? 0),
+    },
+    note: "Computed from the campaign's own recorded ledger and fundraising "
+      + "rows only. The statutory cap comes from the operator-maintained "
+      + "budget_statutory_caps table (Electoral Act 2022 s.88 seed); verify "
+      + "against the current Act before filing. INEC accepts no electronic "
+      + "submission from this platform — export and file through INEC channels.",
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// GAP-5: donor screening on fundraising writes. Operator-configured limits —
+// labelled, never asserted as the statute itself.
+export const DONOR_SCREENING_CONFIG = {
+  // Per-donor aggregate cap (NGN). Set CAMPAIGN_PER_DONOR_CAP_NGN to align
+  // with the limit applicable under the current Electoral Act and INEC regs.
+  perDonorCapNgn: Number(process.env.CAMPAIGN_PER_DONOR_CAP_NGN ?? 50_000_000),
+  // Anonymous cash above this threshold (NGN) is rejected — the campaign
+  // cannot demonstrate source. 0 = no anonymous donations accepted.
+  anonymousLimitNgn: Number(process.env.CAMPAIGN_ANONYMOUS_LIMIT_NGN ?? 0),
+};
+
+export async function addScreenedFundraisingTransaction(
+  data: typeof schema.fundraisingTransactions.$inferInsert,
+) {
+  const db = getDb();
+  if (!db) return null;
+  const donorType = data.donorType ?? "individual_local";
+
+  if (donorType === "anonymous" && Number(data.amount) > DONOR_SCREENING_CONFIG.anonymousLimitNgn) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Anonymous donations above ₦${DONOR_SCREENING_CONFIG.anonymousLimitNgn} are refused: the source cannot be demonstrated (operator-configured limit CAMPAIGN_ANONYMOUS_LIMIT_NGN).`,
+    });
+  }
+  // Foreign/diaspora funding: allowed only with an explicit source attestation
+  // recorded. The operator remains responsible for EA 2022 legality; the
+  // platform refuses unattested foreign-source money by default.
+  if (donorType === "diaspora" && !data.sourceAttested) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Diaspora/foreign-source donations require a recorded source attestation (sourceAttested=true) confirming the donation is lawful under the Electoral Act 2022.",
+    });
+  }
+  if (donorType !== "anonymous" && data.donorName) {
+    const agg = await db.execute(sql`
+      SELECT COALESCE(SUM(amount), 0)::numeric(15,2) AS total
+      FROM fundraising_transactions
+      WHERE profile_id = ${requireTenantId(data.profileId!)} AND donor_name = ${data.donorName}`);
+    const prior = Number((agg.rows?.[0] as Record<string, unknown> | undefined)?.total ?? 0);
+    if (prior + Number(data.amount) > DONOR_SCREENING_CONFIG.perDonorCapNgn) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `Per-donor aggregate cap exceeded: ${data.donorName} has ₦${prior} recorded; this transaction would exceed the operator-configured cap of ₦${DONOR_SCREENING_CONFIG.perDonorCapNgn} (CAMPAIGN_PER_DONOR_CAP_NGN).`,
+      });
+    }
+  }
+  const rows = await db.insert(schema.fundraisingTransactions).values(data).returning();
+  return rows[0];
+}
+
+// GAP-6: NBC media/advert compliance gate.
+export async function updateMediaCompliance(
+  id: number, profileId: number, status: string, notes?: string,
+) {
+  const db = getDb();
+  if (!db) return null;
+  if (!["unreviewed", "compliant", "breach", "cleared"].includes(status)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "compliance status must be unreviewed|compliant|breach|cleared" });
+  }
+  const rows = await db
+    .update(schema.mediaItems)
+    .set({ complianceStatus: status, complianceNotes: notes ?? null })
+    .where(and(eq(schema.mediaItems.id, id), eq(schema.mediaItems.profileId, requireTenantId(profileId))))
+    .returning();
+  return assertUpdated(rows, "Media item");
+}
+
+// GAP-13: onboarding audit trail — every membership lifecycle event is
+// recorded in the append-only data_access_audit ledger (subject_table
+// 'campaign_members' added by migration 0008).
+export async function logMembershipEvent(entry: {
+  profileId: number;
+  memberId: number;
+  action: string; // invite|accept|role_change|remove
+  actorName: string;
+  detail?: string;
+}) {
+  await logDataAccess({
+    profileId: entry.profileId,
+    subjectTable: "campaign_members",
+    action: entry.action,
+    rowCount: 1,
+    actorName: entry.actorName,
+    purpose: entry.detail ?? `membership ${entry.action}`,
+  });
 }
