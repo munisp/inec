@@ -129,6 +129,13 @@ interface LandmarkData {
 
 export default function GeoLibreMapPage() {
   const [activeTab, setActiveTab] = useState<TabId>('live-map');
+  // Sync the GeoLibre store's election scope from the elections store —
+  // the store default is 0 (unresolved), never a hardcoded election id.
+  const { electionId: resolvedElectionId } = useResolvedElection();
+  const setStoreElectionId = useGeoLibreStore(s => s.setElectionId);
+  useEffect(() => {
+    if (resolvedElectionId) setStoreElectionId(resolvedElectionId);
+  }, [resolvedElectionId, setStoreElectionId]);
 
   const tabs: { id: TabId; label: string; icon: typeof MapPin }[] = [
     { id: 'live-map', label: 'Live Map', icon: Globe },
@@ -287,6 +294,8 @@ function LiveMapTab() {
 
   // Load data
   const loadData = useCallback(async () => {
+    // Election scope 0 = unresolved — do not fetch against a fabricated id.
+    if (!store.electionId) return;
     store.setLoading(true);
     try {
       const [pus, incidents, bvas, offi] = await Promise.all([
@@ -1411,6 +1420,8 @@ function GeoLibreViewerTab() {
   }, []);
 
   const exportToGeoLibre = useCallback(async () => {
+    // Election scope 0 = unresolved — never export under a fabricated id.
+    if (!store.electionId) return;
     const project = {
       version: '1.0',
       name: `INEC Election ${store.electionId} — GeoLibre Analysis`,
@@ -1435,7 +1446,8 @@ function GeoLibreViewerTab() {
         <Button variant="outline" size="sm" onClick={() => loadProject(urlInput)}>
           <Globe className="w-3.5 h-3.5 mr-1" /> Load
         </Button>
-        <Button variant="outline" size="sm" onClick={exportToGeoLibre}>
+        <Button variant="outline" size="sm" onClick={exportToGeoLibre} disabled={!store.electionId}
+          title={store.electionId ? undefined : 'No election resolved — export unavailable'}>
           <Download className="w-3.5 h-3.5 mr-1" /> Export to GeoLibre
         </Button>
         <Button variant="outline" size="sm" onClick={() => setViewerUrl(GEOLIBRE_BASE_URL)}>
@@ -1476,6 +1488,8 @@ function FieldKitTab() {
   const [error, setError] = useState<string | null>(null);
 
   const loadApprovedManifests = useCallback(async () => {
+    // Election scope 0 = unresolved — do not fetch against a fabricated id.
+    if (!store.electionId) return;
     setLoading(true);
     setError(null);
     try {
