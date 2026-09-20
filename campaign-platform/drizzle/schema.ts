@@ -716,7 +716,7 @@ export type SurveyResponse = typeof surveyResponses.$inferSelect;
 // A/B message experiments on the campaign's own consented audiences.
 export const messageTests = pgTable("message_tests", {
   id: serial("id").primaryKey(),
-  profileId: integer("profile_id").references(() => candidateProfiles.id),
+  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
   name: varchar("name", { length: 200 }).notNull(),
   channel: varchar("channel", { length: 40 }),
   status: varchar("status", { length: 20 }).default("draft").notNull(),
