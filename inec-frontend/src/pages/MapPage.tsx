@@ -36,6 +36,17 @@ type TileMode = 'street' | 'satellite';
 
 function formatNumber(n: number) { return new Intl.NumberFormat().format(n); }
 
+// Great-circle distance between two [lng, lat] points (haversine), in km.
+function haversineKm(a: [number, number], b: [number, number]): number {
+  const R = 6371;
+  const dLat = (b[1] - a[1]) * Math.PI / 180;
+  const dLng = (b[0] - a[0]) * Math.PI / 180;
+  const lat1 = a[1] * Math.PI / 180;
+  const lat2 = b[1] * Math.PI / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
 // R4-56: glyphs endpoint is configurable so production deployments can point
 // at their own hosted font service instead of the public demo tiles. The
 // default preserves prior behavior; set VITE_MAP_GLYPHS_URL to override
@@ -56,7 +67,7 @@ export default function MapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapContainerB = useRef<HTMLDivElement>(null);
   const mapRefB = useRef<maplibregl.Map | null>(null);
-  const { electionId: resolvedElectionId } = useResolvedElection();
+  const { electionId: resolvedElectionId, loading: electionLoading } = useResolvedElection();
   const { t } = useI18n();
   const [showTableView, setShowTableView] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -116,6 +127,49 @@ export default function MapPage() {
   const incidentMarkers = useRef<maplibregl.Marker[]>([]);
   const weatherMarkers = useRef<maplibregl.Marker[]>([]);
   const meshLayerAdded = useRef(false);
+  // #12 Measurement tool: real two-point great-circle distance from map clicks.
+  const [measuring, setMeasuring] = useState(false);
+  const [measurePoints, setMeasurePoints] = useState<Array<[number, number]>>([]);
+  const measuringRef = useRef(false);
+  const measureMarkers = useRef<maplibregl.Marker[]>([]);
+
+  // #12 Measurement tool: toggle measuring mode and draw the measured segment.
+  useEffect(() => { measuringRef.current = measuring; }, [measuring]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    measureMarkers.current.forEach(m => m.remove());
+    measureMarkers.current = [];
+    if (!map) return;
+    try { if (map.getLayer('measure-line')) map.removeLayer('measure-line'); } catch {}
+    try { if (map.getSource('measure-line')) map.removeSource('measure-line'); } catch {}
+    if (measurePoints.length === 0) return;
+    try {
+      measurePoints.forEach(pt => {
+        measureMarkers.current.push(new maplibregl.Marker({ color: '#7c3aed' }).setLngLat(pt).addTo(map));
+      });
+      if (measurePoints.length === 2) {
+        map.addSource('measure-line', {
+          type: 'geojson',
+          data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: measurePoints } } as any,
+        });
+        map.addLayer({
+          id: 'measure-line', type: 'line', source: 'measure-line',
+          paint: { 'line-color': '#7c3aed', 'line-width': 2, 'line-dasharray': [2, 1] },
+        });
+      }
+    } catch (e) { logger.error(e); }
+  }, [measurePoints, states]);
+
+  function toggleMeasure() {
+    if (measuring) {
+      setMeasuring(false);
+      setMeasurePoints([]);
+    } else {
+      setMeasurePoints([]);
+      setMeasuring(true);
+    }
+  }
 
   function sendMetric(event: string, data: any) {
     try {
@@ -125,13 +179,16 @@ export default function MapPage() {
     } catch {}
   }
 
-  useEffect(() => { loadData(); }, []);
+  // Election scope is resolved from the elections store — never hardcoded.
+  // Data loads only once an election id has resolved.
+  useEffect(() => { if (resolvedElectionId) loadData(); }, [resolvedElectionId]);
 
   async function loadData(stateCode?: string) {
+    if (!resolvedElectionId) return;
     setLoading(true);
     try {
       setMapDataError(null);
-      const data = await api.getMapData(1, stateCode);
+      const data = await api.getMapData(resolvedElectionId, stateCode);
       setStates(data.states);
       setPus(data.polling_units);
       const withResults = data.polling_units.filter((p: PUData) => p.result_id).length;
@@ -787,6 +844,14 @@ export default function MapPage() {
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     (window as any).__map = map;
 
+    // #12 Measurement tool: while measuring, each map click records a real
+    // coordinate; two clicks define the measured segment.
+    map.on('click', (e) => {
+      if (!measuringRef.current) return;
+      const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+      setMeasurePoints(prev => (prev.length >= 2 ? [pt] : [...prev, pt]));
+    });
+
     map.on('load', () => {
       const t1 = performance.now();
       sendMetric('map_load', { duration_ms: Math.round(t1 - t0), tileMode, compareMode, state: selectedState?.code || null });
@@ -1136,6 +1201,15 @@ export default function MapPage() {
       return () => { try { ws.close(); } catch {} };
     } catch {}
   }, []);
+
+  if (!resolvedElectionId && !electionLoading) {
+    return (
+      <AuthoritativeDataUnavailable
+        title="No election selected"
+        description="Election map geography is election-scoped. Select an election to load verified state and polling-unit data — no election id is assumed by default."
+      />
+    );
+  }
 
   if (loading && states.length === 0) {
     return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
@@ -1770,20 +1844,21 @@ export default function MapPage() {
                   {voiceListening ? 'Listening...' : 'Speak'}
                 </Button>
               </div>
-              {/* #12 Measurement tools */}
+              {/* #12 Measurement tools — real two-point great-circle distance.
+                  Click the map twice while measuring; the haversine distance of
+                  the segment is shown. Nothing is estimated or fabricated. */}
               <div className="flex items-center justify-between">
                 <span className="text-xs flex items-center gap-1"><MapPin className="w-3 h-3" /> Measure</span>
-                <Button size="sm" variant="outline" className="h-6 text-xs px-2"
-                  onClick={() => {
-                    if (!mapRef.current) return;
-                    const map = mapRef.current;
-                    const center = map.getCenter();
-                    const zoom = map.getZoom();
-                    const metersPerPixel = 40075016.686 * Math.cos(center.lat * Math.PI / 180) / Math.pow(2, zoom + 8);
-                    const radiusKm = (metersPerPixel * 100 / 1000).toFixed(1);
-                    alert(`Map center: ${center.lat.toFixed(4)}°N, ${center.lng.toFixed(4)}°E\nZoom: ${zoom.toFixed(1)}\n100px ≈ ${radiusKm} km`);
-                  }}>
-                  Distance
+                <Button size="sm" variant={measuring ? 'default' : 'outline'} className="h-6 text-xs px-2"
+                  aria-pressed={measuring}
+                  onClick={toggleMeasure}>
+                  {measuring
+                    ? (measurePoints.length === 2
+                        ? (haversineKm(measurePoints[0], measurePoints[1]) < 1
+                            ? `${Math.round(haversineKm(measurePoints[0], measurePoints[1]) * 1000)} m`
+                            : `${haversineKm(measurePoints[0], measurePoints[1]).toFixed(2)} km`)
+                        : `Click ${measurePoints.length === 1 ? 'end point' : '2 points'}`)
+                    : 'Distance'}
                 </Button>
               </div>
               {/* #27 Satellite change detection */}
