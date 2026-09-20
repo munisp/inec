@@ -202,6 +202,11 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "Failed to create user")
 		return
 	}
+	// SEC-10: account creation is a security-relevant event — audit it like
+	// promotions/device registrations. Never log the password or hash.
+	auditWrite("USER_REGISTERED", "user", fmt.Sprintf("%d", uid), r, map[string]interface{}{
+		"username": req.Username, "role": req.Role, "state_code": req.StateCode,
+	})
 	token, _ := createAccessToken(map[string]interface{}{
 		"sub": fmt.Sprintf("%d", uid), "username": req.Username, "role": req.Role, "full_name": req.FullName,
 	})
@@ -209,6 +214,75 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		"access_token": token, "token_type": "bearer",
 		"user": M{"id": uid, "username": req.Username, "full_name": req.FullName, "role": req.Role, "staff_id": req.StaffID, "state_code": req.StateCode},
 	})
+}
+
+// handleChangePassword (SEC-11): authenticated password change. Verifies the
+// current password against the stored hash, enforces the same policy as
+// registration, rejects reusing the current password, and audits the change.
+// Self-service forgot-password remains unavailable — it requires an email/SMS
+// dispatch provider contract (same blocker as GOTV OTP, SEC-13).
+func handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	claims, err := getCurrentUser(r)
+	if err != nil {
+		writeError(w, 401, "authentication required")
+		return
+	}
+	username, _ := claims["username"].(string)
+	if username == "" {
+		writeError(w, 401, "invalid authentication context")
+		return
+	}
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		writeError(w, 400, "current_password and new_password are required")
+		return
+	}
+	if len(req.NewPassword) < 8 || len(req.NewPassword) > 128 {
+		writeError(w, 400, "password must be 8-128 characters")
+		return
+	}
+	hasUpper, hasLower, hasDigit := false, false, false
+	for _, c := range req.NewPassword {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasUpper || !hasLower || !hasDigit {
+		writeError(w, 400, "password must contain uppercase, lowercase, and digit")
+		return
+	}
+	var uid int
+	var storedHash string
+	if err := dbQueryRowCtx(r.Context(), "SELECT id, password_hash FROM users WHERE username=?", username).Scan(&uid, &storedHash); err != nil {
+		writeError(w, 401, "account not found")
+		return
+	}
+	if !verifyPassword(req.CurrentPassword, storedHash) {
+		writeError(w, 401, "current password is incorrect")
+		return
+	}
+	if verifyPassword(req.NewPassword, storedHash) {
+		writeError(w, 400, "new password must differ from the current password")
+		return
+	}
+	if _, err := dbExecCtx(r.Context(), "UPDATE users SET password_hash=? WHERE id=?", hashPassword(req.NewPassword), uid); err != nil {
+		writeError(w, 500, "failed to update password")
+		return
+	}
+	auditWrite("PASSWORD_CHANGED", "user", fmt.Sprintf("%d", uid), r, map[string]interface{}{"username": username})
+	writeJSON(w, 200, M{"ok": true})
 }
 
 func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
