@@ -28,6 +28,9 @@ import MediaMonitoring from "./pages/MediaMonitoring";
 import DebateCoach from "./pages/DebateCoach";
 import FundraisingTracker from "./pages/FundraisingTracker";
 import BudgetPlanner from "./pages/BudgetPlanner";
+import DataProtection from "./pages/DataProtection";
+import Analytics from "./pages/Analytics";
+import Tribunal from "./pages/Tribunal";
 import CandidateProfilePage from "./pages/CandidateProfilePage";
 import CampaignTeam from "./pages/CampaignTeam";
 import MobileNav from "./components/MobileNav";
@@ -63,6 +66,9 @@ function Router() {
       <Route path={"/debate-coach"} component={DebateCoach} />
       <Route path={"/fundraising"} component={FundraisingTracker} />
       <Route path={"/budget"} component={BudgetPlanner} />
+      <Route path={"/data-protection"} component={DataProtection} />
+      <Route path={"/analytics"} component={Analytics} />
+      <Route path={"/tribunal"} component={Tribunal} />
       <Route path={"/profile"} component={CandidateProfilePage} />
       <Route path={"/team"} component={CampaignTeam} />
       <Route path={"/dashboard"} component={Dashboard} />

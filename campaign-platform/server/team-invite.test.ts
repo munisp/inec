@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("pg", async () => await import("./testkit/fakePg"));
@@ -15,6 +16,12 @@ import { INVITE_TTL_MS } from "./db";
 // timezone, so fixtures must use the same string shape real pg returns.
 const pgTs = (d: Date) => d.toISOString().replace("T", " ").replace("Z", "");
 
+// Tokens are stored as SHA-256 hashes in invite_token (audit SEC-6); the
+// plaintext "tok-abc" only ever exists in the invite URL presented to the
+// inviter. fakePg routes by table, but fixtures mirror real storage.
+const PLAINTEXT_TOKEN = "tok-abc";
+const TOKEN_HASH = createHash("sha256").update(PLAINTEXT_TOKEN).digest("hex");
+
 function memberRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 7,
@@ -23,7 +30,7 @@ function memberRow(overrides: Record<string, unknown> = {}) {
     email: "invitee@example.com",
     name: "Invitee",
     role: "viewer",
-    invite_token: "tok-abc",
+    invite_token: TOKEN_HASH,
     invited_at: pgTs(new Date()),
     accepted_at: null,
     ...overrides,
@@ -47,7 +54,7 @@ describe("team invites", () => {
     const caller = appRouter.createCaller(createCtx(createTestUser()));
 
     const err = await caller.team
-      .confirmAccept({ token: "tok-abc", email: "invitee@example.com" })
+      .confirmAccept({ token: PLAINTEXT_TOKEN, email: "invitee@example.com" })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(TRPCError);
@@ -61,7 +68,7 @@ describe("team invites", () => {
     ]);
     const caller = appRouter.createCaller(createCtx(null)); // public query
 
-    await expect(caller.team.acceptInvite({ token: "tok-abc" })).resolves.toBeNull();
+    await expect(caller.team.acceptInvite({ token: PLAINTEXT_TOKEN })).resolves.toBeNull();
   });
 
   it("accepts a fresh invite with the matching email", async () => {
@@ -77,7 +84,7 @@ describe("team invites", () => {
     const caller = appRouter.createCaller(createCtx(createTestUser()));
 
     const result = await caller.team.confirmAccept({
-      token: "tok-abc",
+      token: PLAINTEXT_TOKEN,
       email: "invitee@example.com",
     });
 

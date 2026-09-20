@@ -81,7 +81,9 @@ export const useGeoLibreStore = create<GeoLibreMapState>((set) => ({
   viewState: NIGERIA_CENTER,
   setViewState: (vs) => set((s) => ({ viewState: { ...s.viewState, ...vs } })),
 
-  electionId: 1,
+  // 0 = unresolved. Election scope is synced from the elections store
+  // (useResolvedElection) — never silently hardcoded to a real id.
+  electionId: 0,
   setElectionId: (id) => set({ electionId: id }),
   selectedStateCode: null,
   setSelectedStateCode: (code) => set({ selectedStateCode: code }),

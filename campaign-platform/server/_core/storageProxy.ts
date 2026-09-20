@@ -1,5 +1,14 @@
 import type { Express } from "express";
 import { ENV } from "./env";
+import { sdk } from "./sdk";
+
+/**
+ * Storage proxy. SECURITY (audit SEC-3): previously ANY storage key could be
+ * presigned anonymously. Now only keys under a public prefix (published
+ * candidate websites — they are meant to be world-readable) are served
+ * without a session; every other key requires an authenticated session.
+ */
+const PUBLIC_KEY_PREFIXES = ["campaign-sites/"];
 
 export function registerStorageProxy(app: Express) {
   app.get("/manus-storage/*", async (req, res) => {
@@ -7,6 +16,15 @@ export function registerStorageProxy(app: Express) {
     if (!key) {
       res.status(400).send("Missing storage key");
       return;
+    }
+
+    if (!PUBLIC_KEY_PREFIXES.some(p => key.startsWith(p))) {
+      try {
+        await sdk.authenticateRequest(req);
+      } catch {
+        res.status(401).send("Authentication required for this storage key");
+        return;
+      }
     }
 
     if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {

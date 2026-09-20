@@ -50,11 +50,11 @@ export const adminProcedure = t.procedure.use(
 // or membership verification, so any authenticated user could read/write any
 // other campaign's data (IDOR). The helpers below close that hole.
 //
-// NOTE on db.getMyRoleForProfile (server/db.ts): it returns "viewer" when the
-// user has NO membership row at all (fail-open default), so it cannot by itself
-// enforce tenancy for read access. resolveProfileRole below performs a strict
-// resolution instead: owner via candidate_profiles.user_id, else an explicit
-// campaign_members row, else null (no access).
+// resolveProfileRole below performs a STRICT resolution: owner via
+// candidate_profiles.user_id, else an explicit campaign_members row, else
+// null (no access). (The former db.getMyRoleForProfile helper was removed in
+// the 2026-09 audit — zero callers, and its fail-open semantics were unsafe
+// to keep around.)
 export type ProfileRole = "owner" | "manager" | "viewer";
 
 const PROFILE_ROLE_RANK: Record<ProfileRole, number> = {

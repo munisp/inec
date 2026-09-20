@@ -100,8 +100,22 @@ export class Pool {
     const result = fakePgState.handler(text, params);
     return Promise.resolve({ ...result, rows: toArrayRows(result.rows, text) });
   }
-  connect(): never {
-    throw new Error("fake pg Pool: transactions are not supported in tests");
+  // Transaction support: drizzle calls pool.connect() and runs
+  // BEGIN/COMMIT/ROLLBACK on the client. The fake routes those statements
+  // through the same programmable handler (they record as queries so tests
+  // can assert on transactional boundaries) — isolation semantics are out of
+  // scope for a test double.
+  connect() {
+    const client = {
+      query: (config: string | { text: string }, params: unknown[] = []) => {
+        const text = typeof config === "string" ? config : config.text;
+        fakePgState.queries.push({ text, params });
+        const result = fakePgState.handler(text, params);
+        return Promise.resolve({ ...result, rows: toArrayRows(result.rows, text) });
+      },
+      release: () => {},
+    };
+    return Promise.resolve(client);
   }
   on() {
     return this;

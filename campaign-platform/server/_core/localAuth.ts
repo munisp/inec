@@ -68,6 +68,20 @@ export function registerLocalAuthRoutes(app: Express) {
       return;
     }
 
+    // SECURITY (audit SEC-8): accounts with MFA enabled on the shared INEC
+    // identity store must not get a password-only session here — the Go EMS
+    // login enforces the second factor, this one cannot. Fail closed only
+    // when we can positively confirm MFA is on; "unknown" (mfa schema not
+    // co-deployed) does not block legitimate campaign-only deployments.
+    const mfa = await db.getUserMfaEnabled(user.id);
+    if (mfa === true) {
+      res.status(403).json({
+        error: "this account has multi-factor authentication enabled; sign in through the INEC portal which enforces the second factor",
+        code: "MFA_REQUIRED_ELSEWHERE",
+      });
+      return;
+    }
+
     // Successful login: reset the per-user throttle window for this key.
     // The per-IP spraying window intentionally keeps counting.
     await resetRateLimit(`login:user:${throttleKey}`);
@@ -90,5 +104,56 @@ export function registerLocalAuthRoutes(app: Express) {
       user: { username: user.username, fullName: user.fullName, role: user.role },
       ...(includeSessionCookie ? { sessionCookie: `${COOKIE_NAME}=${sessionToken}` } : {}),
     });
+  });
+
+  // ─── Authenticated password change (audit SEC-11) ─────────────────────────
+  // There was previously NO password change/reset flow anywhere in the
+  // platform. This is the self-service change path (authenticated, current
+  // password verified, same policy as the Go backend: 8-128 chars with
+  // upper+lower+digit). Self-service reset for forgotten passwords remains
+  // an admin action out-of-band (no email/phone channel exists on accounts).
+  app.post("/api/change-password", async (req: Request, res: Response) => {
+    let session;
+    try {
+      session = await sdk.authenticateRequest(req);
+    } catch {
+      res.status(401).json({ error: "authentication required" });
+      return;
+    }
+    const { currentPassword, newPassword } = req.body ?? {};
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string" || !currentPassword || !newPassword) {
+      res.status(400).json({ error: "currentPassword and newPassword are required" });
+      return;
+    }
+    if (
+      newPassword.length < 8 || newPassword.length > 128 ||
+      !/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)
+    ) {
+      res.status(400).json({ error: "password must be 8-128 characters and include upper-case, lower-case, and a digit" });
+      return;
+    }
+
+    // Same brute-force protection as login, keyed to the authenticated user.
+    const key = `change-pw:${session.username}:${req.ip || req.socket.remoteAddress || "unknown"}`;
+    const attempt = await hitRateLimit(key, LOGIN_WINDOW_SECONDS, LOGIN_MAX_ATTEMPTS);
+    if (!attempt.allowed) {
+      res.setHeader("Retry-After", String(attempt.retryAfterSeconds));
+      res.status(429).json({ error: "too many attempts; try again in a few minutes" });
+      return;
+    }
+
+    const user = await db.getUserByUsername(session.username);
+    if (!user || !(await bcrypt.compare(currentPassword, user.passwordHash))) {
+      res.status(401).json({ error: "current password is incorrect" });
+      return;
+    }
+    if (await bcrypt.compare(newPassword, user.passwordHash)) {
+      res.status(400).json({ error: "new password must differ from the current password" });
+      return;
+    }
+
+    await db.updateUserPassword(user.id, await bcrypt.hash(newPassword, 10));
+    await resetRateLimit(key);
+    res.json({ ok: true });
   });
 }

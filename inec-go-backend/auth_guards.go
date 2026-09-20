@@ -125,8 +125,10 @@ func handlePromoteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		UserID int    `json:"user_id" validate:"required,gt=0"`
-		Role   string `json:"role" validate:"required,oneof=admin presiding_officer collation_officer observer public"`
+		UserID int `json:"user_id" validate:"required,gt=0"`
+		// SEC-14: oneof list must match the users.role CHECK (migrations/000050)
+		// — admins can now assign the officer roles the guards reference.
+		Role string `json:"role" validate:"required,oneof=admin presiding_officer collation_officer returning_officer ict_officer security dpo officer observer public"`
 	}
 	if !decodeAndValidateBody(w, r, &req) {
 		return
