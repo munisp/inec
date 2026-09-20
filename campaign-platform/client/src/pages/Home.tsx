@@ -17,7 +17,8 @@ import {
   Scale, Search, Zap, BarChart2, FileText, ClipboardList,
   Globe, Star, DollarSign, Wallet, Radio, Mic2, TrendingUp, Activity,
   Settings, ChevronRight, Cpu, UserCog, Save, History, CheckCircle,
-  AlertTriangle, Clock, Shield, Database, GitCompare, Download, Sparkles, X, Copy, Loader2
+  AlertTriangle, Clock, Shield, Database, GitCompare, Download, Sparkles, X, Copy, Loader2,
+  FlaskConical, Gavel
 } from "lucide-react";
 
 // ─── Feature Grid ─────────────────────────────────────────────────────────────
@@ -42,6 +43,9 @@ const FEATURES = [
   { path: "/budget", icon: Wallet, label: "Budget Planner", desc: "Plan & monitor campaign spend", color: "#1A3A5C" },
   { path: "/media-monitoring", icon: Radio, label: "Media Monitoring", desc: "Track press coverage & sentiment", color: "#008751" },
   { path: "/debate-coach", icon: Mic2, label: "Debate Coach", desc: "AI debate prep & talking points", color: "#4A1525" },
+  { path: "/data-protection", icon: Shield, label: "Data Protection", desc: "NDPA consent, DSAR & transparency", color: "#C0392B" },
+  { path: "/analytics", icon: FlaskConical, label: "Campaign Analytics", desc: "Consented panel & message tests", color: "#4A1525" },
+  { path: "/tribunal", icon: Gavel, label: "Election Tribunal", desc: "Track election petitions & hearings", color: "#1A3A5C" },
   { path: "/team", icon: UserCog, label: "Campaign Team", desc: "Manage team members & roles", color: "#1A3A5C" },
   { path: "/dashboard", icon: Activity, label: "KPI Dashboard", desc: "Live aggregated campaign metrics", color: "#008751" },
 ];
