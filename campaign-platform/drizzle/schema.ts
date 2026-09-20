@@ -95,6 +95,9 @@ export const voterRegistrations = pgTable("voter_registrations", {
   ward: varchar("ward", { length: 100 }),
   pollingUnit: varchar("polling_unit", { length: 200 }),
   phone: varchar("phone", { length: 20 }),
+  // Optional PWD accessibility needs recorded WITH the voter's consent
+  // (W14, audit GAP-7) — drives accessible-PU assignment planning.
+  accessibilityNeeds: varchar("accessibility_needs", { length: 120 }),
   registeredAt: timestamp("registered_at").defaultNow().notNull(),
   isVerified: boolean("is_verified").default(false),
 });
@@ -126,6 +129,9 @@ export const campaignPuAssignments = pgTable("campaign_pu_assignments", {
   agentPhone: varchar("agent_phone", { length: 20 }),
   status: varchar("status", { length: 50 }),
   notes: text("notes"),
+  // PWD-accessible designation — campaign-side planning flag (W14, audit
+  // GAP-7); the shared Go-owned PU registry is intentionally not modified.
+  pwdAccessible: boolean("pwd_accessible").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   unique("campaign_pu_assignments_profile_pu_unique").on(table.profileId, table.puCode),
@@ -371,6 +377,9 @@ export const fundraisingTransactions = pgTable("fundraising_transactions", {
   notes: text("notes"),
   transactedAt: timestamp("transacted_at").defaultNow().notNull(),
   isVerified: boolean("is_verified").default(false),
+  // Donor screening (W14, audit GAP-5): funding-legality classification.
+  donorType: varchar("donor_type", { length: 20 }).default("individual_local"),
+  sourceAttested: boolean("source_attested").default(false),
 });
 export type FundraisingTransaction = typeof fundraisingTransactions.$inferSelect;
 
@@ -430,6 +439,9 @@ export const mediaItems = pgTable("media_items", {
   url: text("url"),
   publishedAt: timestamp("published_at"),
   notes: text("notes"),
+  // NBC media/advert compliance gate (W14, audit GAP-6)
+  complianceStatus: varchar("compliance_status", { length: 20 }).default("unreviewed"),
+  complianceNotes: text("compliance_notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 export type MediaItem = typeof mediaItems.$inferSelect;
@@ -578,7 +590,7 @@ export const lawfulBasisEnum = pgEnum("lawful_basis", [
 /** Personal-data tables covered by the compliance substrate. */
 export const subjectTableEnum = pgEnum("subject_table", [
   "voter_registrations", "diaspora_contacts", "stakeholder_contacts",
-  "volunteers", "petition_signatures",
+  "volunteers", "petition_signatures", "campaign_members",
 ]);
 
 // Per-subject, per-purpose consent registry. Withdrawal is a state transition
@@ -704,7 +716,7 @@ export type SurveyResponse = typeof surveyResponses.$inferSelect;
 // A/B message experiments on the campaign's own consented audiences.
 export const messageTests = pgTable("message_tests", {
   id: serial("id").primaryKey(),
-  profileId: integer("profile_id").notNull().references(() => candidateProfiles.id),
+  profileId: integer("profile_id").references(() => candidateProfiles.id),
   name: varchar("name", { length: 200 }).notNull(),
   channel: varchar("channel", { length: 40 }),
   status: varchar("status", { length: 20 }).default("draft").notNull(),
@@ -731,3 +743,28 @@ export const messageEvents = pgTable("message_events", {
   index("message_events_variant_idx").on(table.variantId, table.eventType),
 ]);
 export type MessageEvent = typeof messageEvents.$inferSelect;
+
+// ─── W14: Election Tribunal Tracking (audit GAP-3) ───────────────────────────
+// Post/pre-election LEGAL petitions (tribunal/court cases) — distinct from
+// `petitions`, which are signature drives.
+export const electionPetitions = pgTable("election_petitions", {
+  id: serial("id").primaryKey(),
+  profileId: integer("profile_id").references(() => candidateProfiles.id),
+  electionName: varchar("election_name", { length: 200 }).notNull(),
+  petitionType: varchar("petition_type", { length: 20 }).default("post_election").notNull(), // pre_election|post_election
+  court: varchar("court", { length: 200 }),
+  caseNumber: varchar("case_number", { length: 100 }),
+  petitioner: varchar("petitioner", { length: 200 }),
+  respondent: varchar("respondent", { length: 200 }),
+  counsel: varchar("counsel", { length: 200 }),
+  filedAt: timestamp("filed_at"),
+  hearingDate: timestamp("hearing_date"),
+  status: varchar("status", { length: 30 }).default("filed").notNull(), // filed|hearing|judgment|appealed|closed
+  outcome: text("outcome"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("election_petitions_profile_idx").on(table.profileId),
+]);
+export type ElectionPetition = typeof electionPetitions.$inferSelect;
