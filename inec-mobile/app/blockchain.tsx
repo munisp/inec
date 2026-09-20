@@ -4,12 +4,19 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { api as apiCall } from '../src/lib/api';
 
-interface ChainStatus {
-  channel: string;
-  block_height: number;
-  peers_connected: number;
-  orderer_status: string;
-  chaincode_version: string;
+// Response shape of GET /integrity/fabric/health (handleFabricAnchorHealth,
+// fabric_anchor.go). The backend returns 503 with this same JSON body when
+// anchoring is unavailable, so the error path also parses it.
+interface FabricHealth {
+  enabled: boolean;
+  required: boolean;
+  status: 'disabled' | 'healthy' | 'degraded' | 'unavailable' | string;
+  pending?: number;
+  failed?: number;
+  unavailable?: number;
+  channel?: string;
+  chaincode?: string;
+  reason?: string;
 }
 
 interface VerifyResult {
@@ -20,7 +27,7 @@ interface VerifyResult {
 }
 
 export default function BlockchainScreen() {
-  const [chainStatus, setChainStatus] = useState<ChainStatus | null>(null);
+  const [fabricHealth, setFabricHealth] = useState<FabricHealth | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -28,10 +35,23 @@ export default function BlockchainScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const res = await apiCall<ChainStatus>('/blockchain/fabric/status');
-      setChainStatus(res);
+      // Real route: GET /integrity/fabric/health (main.go registers it; the
+      // previous '/blockchain/fabric/status' path does not exist — 404).
+      const res = await apiCall<FabricHealth>('/integrity/fabric/health');
+      setFabricHealth(res);
     } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Failed to load blockchain status');
+      // The backend answers 503 with the health JSON body when anchoring is
+      // unavailable — surface that honest status instead of a bare error.
+      const msg = e instanceof Error ? e.message : '';
+      const body = msg.match(/^\d+:\s*(\{[\s\S]*\})$/)?.[1];
+      let parsed: FabricHealth | null = null;
+      if (body) { try { parsed = JSON.parse(body) as FabricHealth; } catch { parsed = null; } }
+      if (parsed && typeof parsed.status === 'string') {
+        setFabricHealth(parsed);
+      } else {
+        setFabricHealth(null);
+        Alert.alert('Error', msg || 'Failed to load Fabric anchoring status');
+      }
     }
     setLoading(false);
   };
@@ -40,10 +60,15 @@ export default function BlockchainScreen() {
     setLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      const res = await apiCall<VerifyResult>('/blockchain/fabric/verify-chain', { method: 'POST' });
+      // Backend registers this route as GET (main.go). When no external
+      // Fabric/IPFS backend is configured it answers 503 with an explicit
+      // "not configured" error — that message is shown verbatim; no success
+      // is ever simulated.
+      const res = await apiCall<VerifyResult>('/blockchain/fabric/verify-chain');
       setVerifyResult(res);
     } catch (e: unknown) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Chain verification failed');
+      setVerifyResult(null);
+      Alert.alert('Chain verification unavailable', e instanceof Error ? e.message : 'Chain verification failed');
     }
     setLoading(false);
   };
@@ -59,16 +84,33 @@ export default function BlockchainScreen() {
         <TouchableOpacity style={styles.button} onPress={loadStatus} disabled={loading} activeOpacity={0.8}>
           <Text style={styles.buttonText}>{loading ? 'Loading...' : 'Check Fabric Status'}</Text>
         </TouchableOpacity>
-        {chainStatus && (
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Text style={styles.statNumber}>{chainStatus.block_height}</Text>
-              <Text style={styles.statLabel}>Block Height</Text>
+        {fabricHealth && (
+          <View>
+            <View style={styles.statsGrid}>
+              <View style={styles.statCard}>
+                <Text style={[styles.statNumber, { color: fabricHealth.status === 'healthy' ? '#166534' : fabricHealth.status === 'degraded' ? '#b45309' : '#dc2626', textTransform: 'capitalize' }]}>
+                  {fabricHealth.status}
+                </Text>
+                <Text style={styles.statLabel}>Anchoring Status</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statNumber}>{fabricHealth.pending ?? 0}</Text>
+                <Text style={styles.statLabel}>Pending Anchors</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={[styles.statNumber, { color: (fabricHealth.failed ?? 0) > 0 ? '#dc2626' : '#111827' }]}>{fabricHealth.failed ?? 0}</Text>
+                <Text style={styles.statLabel}>Failed Anchors</Text>
+              </View>
             </View>
-            <View style={styles.statCard}>
-              <Text style={[styles.statNumber, { color: '#166534' }]}>{chainStatus.peers_connected}</Text>
-              <Text style={styles.statLabel}>Peers</Text>
-            </View>
+            {fabricHealth.channel ? (
+              <Text style={styles.muted}>Channel: {fabricHealth.channel} | Chaincode: {fabricHealth.chaincode ?? '—'}</Text>
+            ) : null}
+            {fabricHealth.reason ? (
+              <Text style={[styles.muted, { color: '#dc2626' }]}>Reason: {fabricHealth.reason}</Text>
+            ) : null}
+            {!fabricHealth.enabled ? (
+              <Text style={styles.muted}>Fabric anchoring is not enabled on this deployment{fabricHealth.required ? ' (required by policy)' : ''}.</Text>
+            ) : null}
           </View>
         )}
       </View>

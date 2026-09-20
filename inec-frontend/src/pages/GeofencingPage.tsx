@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 
 interface GeofenceStats {
   total_checks: number;
@@ -23,8 +24,21 @@ export default function GeofencingPage() {
   const [spoofForm, setSpoofForm] = useState({ lat: '', lng: '', deviceId: '', accuracy: '' });
   const [spoofResult, setSpoofResult] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  // Election scope resolves from the elections store — never hardcoded.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
-  useEffect(() => { api.getGeofenceStats(1).then(setStats).catch(err => console.error("API error:", err)); }, []);
+  const loadStats = () => {
+    if (!electionId) return;
+    setStatsError(null);
+    api.getGeofenceStats(electionId)
+      .then(setStats)
+      .catch((e: unknown) => { setStats(null); setStatsError((e as Error)?.message || 'geofence-stats-source-unavailable'); });
+  };
+
+  useEffect(() => {
+    if (electionId) loadStats();
+  }, [electionId]);
 
   const handleCheck = async () => {
     if (!form.lat || !form.lng || !form.puCode) return;
@@ -52,6 +66,24 @@ export default function GeofencingPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold dark:text-white">Geofencing & GPS Verification</h1>
+
+      {/* Explicit states: stats fetch failure and unresolved election scope are
+          distinguished from "no checks recorded yet". */}
+      {statsError && (
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg p-4 flex items-center justify-between">
+          <div>
+            <p className="font-medium text-red-800 dark:text-red-300">Geofence statistics could not be loaded</p>
+            <p className="text-sm text-red-700 dark:text-red-400">Reference: {statsError}. The check tools below still work; aggregate stats are withheld.</p>
+          </div>
+          <button onClick={loadStats} className="bg-red-600 text-white rounded px-3 py-1.5 text-sm hover:bg-red-700">Retry</button>
+        </div>
+      )}
+      {!statsError && !stats && !electionId && !electionLoading && (
+        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+          <p className="font-medium text-amber-800 dark:text-amber-300">No election selected</p>
+          <p className="text-sm text-amber-700 dark:text-amber-400">Aggregate geofence statistics are election-scoped — select an election to load them. No election id is assumed by default.</p>
+        </div>
+      )}
 
       {/* Stats */}
       {stats && (

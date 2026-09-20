@@ -26,7 +26,6 @@ const T: Record<Lang, Record<string, string>> = {
     priority_groups: "Priority Groups",
     critical_priority: "Critical Priority",
     high_priority: "High Priority",
-    est_voter_reach: "Est. Voter Reach",
     top10_heading: "Top 10 Stakeholder Groups — Engagement Playbook",
     cultural_protocol: "Cultural Protocol",
     talking_points: "Talking Points",
@@ -42,7 +41,6 @@ const T: Record<Lang, Record<string, string>> = {
     priority_groups: "Ƙungiyoyin Da Suka Fi Muhimmanci",
     critical_priority: "Muhimmanci na Farko",
     high_priority: "Muhimmanci Mai Girma",
-    est_voter_reach: "Adadin Masu Zaɓe da Za a Iya Kaiwa",
     top10_heading: "Manyan Ƙungiyoyi 10 — Tsarin Hulɗa",
     cultural_protocol: "Al'adar Hulɗa",
     talking_points: "Manyan Batutuwa",
@@ -58,7 +56,6 @@ const T: Record<Lang, Record<string, string>> = {
     priority_groups: "Àwọn Ẹgbẹ́ Pàtàkì",
     critical_priority: "Ìpele Pàtàkì Jùlọ",
     high_priority: "Ìpele Pàtàkì Gíga",
-    est_voter_reach: "Iye Àwọn Oludibo Tí A Lè De",
     top10_heading: "Àwọn Ẹgbẹ́ Olùkópa 10 Tó Ṣe Pàtàkì — Ètò Ìjọpọ̀",
     cultural_protocol: "Àṣà Ìbáṣepọ̀",
     talking_points: "Àwọn Ọ̀rọ̀ Pàtàkì",
@@ -74,7 +71,6 @@ const T: Record<Lang, Record<string, string>> = {
     priority_groups: "Otu ndị Dị Mkpa",
     critical_priority: "Ọkwa Mkpa Kachasị",
     high_priority: "Ọkwa Mkpa Dị Elu",
-    est_voter_reach: "Ọnụọgụ ndị Ntuli Aka Enwere Ike Iru",
     top10_heading: "Otu ndị Ọrụ 10 Kacha Mkpa — Atụmatụ Mmekọrịta",
     cultural_protocol: "Omenaala Mmekọrịta",
     talking_points: "Isi Okwu Dị Mkpa",
@@ -107,8 +103,10 @@ export function generateBriefHTML(
   const eOffice = escapeHtml(office);
   const eStateName = escapeHtml(stateName);
   const eParty = escapeHtml(party);
+  // MCK-1: estimated_voter_reach was computed from an invented population
+  // figure — rank and report using the real editorial reach_pct only.
   const top10 = [...stakeholders]
-    .sort((a, b) => a.priority - b.priority || (b.estimated_voter_reach ?? b.reach_pct * 50000) - (a.estimated_voter_reach ?? a.reach_pct * 50000))
+    .sort((a, b) => a.priority - b.priority || b.reach_pct - a.reach_pct)
     .slice(0, 10);
 
   const rows = top10.map((s, i) => {
@@ -116,7 +114,7 @@ export function generateBriefHTML(
     const talkingPoints = s.talking_points?.slice(0, 3) ?? [s.key_ask];
     const priorityColor = s.priority === 1 ? "#dc2626" : s.priority === 2 ? "#d97706" : "#2563eb";
     const priorityLabel = s.priority === 1 ? "CRITICAL" : s.priority === 2 ? "HIGH" : "MEDIUM";
-    const reach = s.estimated_voter_reach !== undefined ? s.estimated_voter_reach : Math.round(s.reach_pct * 50000);
+    const reach = `${s.reach_pct.toFixed(1)}% (editorial estimate)`;
     return `
     <div style="margin-bottom:14px;padding:12px;border:1px solid #e5e7eb;border-left:4px solid ${accentColor};border-radius:6px;page-break-inside:avoid;">
       <div style="display:flex;align-items:flex-start;gap:10px;">
@@ -125,7 +123,7 @@ export function generateBriefHTML(
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
             <span style="font-size:14px;font-weight:700;color:#111827;">${icon} ${escapeHtml(s.name)}</span>
             <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:${priorityColor}22;color:${priorityColor};border:1px solid ${priorityColor}44;">${priorityLabel}</span>
-            <span style="font-size:10px;color:#6b7280;margin-left:auto;">${escapeHtml(s.category)} · ~${(reach / 1000).toFixed(0)}K voters</span>
+            <span style="font-size:10px;color:#6b7280;margin-left:auto;">${escapeHtml(s.category)} · reach ${reach}</span>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px;">
             <div>
@@ -152,7 +150,9 @@ export function generateBriefHTML(
     </div>`;
   }).join("");
 
-  const totalReach = top10.reduce((sum, s) => sum + (s.estimated_voter_reach !== undefined ? s.estimated_voter_reach : Math.round(s.reach_pct * 50000)), 0);
+  // MCK-1: no real voter-reach totals exist, so the old "Est. Voter Reach"
+  // stat tile (an invented figure) is removed — the stats row keeps only the
+  // three counts that come from real data.
   const critical = top10.filter(s => s.priority === 1).length;
   const high = top10.filter(s => s.priority === 2).length;
   const dateStr = new Date().toLocaleDateString("en-NG", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
@@ -171,7 +171,7 @@ export function generateBriefHTML(
     .header { border-bottom: 3px solid ${accentColor}; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; }
     .header h1 { font-size: 21px; margin: 0 0 4px 0; color: ${accentColor}; }
     .header .meta { font-size: 12px; color: #6b7280; }
-    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
     .stat { background: #f9fafb; border: 1px solid #e5e7eb; border-left: 4px solid ${accentColor}; border-radius: 8px; padding: 10px 14px; text-align: center; }
     .stat .val { font-size: 20px; font-weight: 700; color: ${accentColor}; }
     .stat .lbl { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
@@ -191,7 +191,6 @@ export function generateBriefHTML(
     <div class="stat"><div class="val">${top10.length}</div><div class="lbl">${t.priority_groups}</div></div>
     <div class="stat"><div class="val">${critical}</div><div class="lbl">${t.critical_priority}</div></div>
     <div class="stat"><div class="val">${high}</div><div class="lbl">${t.high_priority}</div></div>
-    <div class="stat"><div class="val">${(totalReach / 1000000).toFixed(1)}M</div><div class="lbl">${t.est_voter_reach}</div></div>
   </div>
   <div class="section-title">${t.top10_heading}</div>
   ${rows}

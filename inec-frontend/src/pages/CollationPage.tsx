@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { logger } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { useResolvedElection } from '@/lib/gotv-session';
 import { AuthoritativeDataUnavailable } from '@/components/AuthoritativeDataUnavailable';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -47,13 +48,16 @@ export default function CollationPage() {
   ]);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Election scope resolves from the elections store — never hardcoded.
+  const { electionId, loading: electionLoading } = useResolvedElection();
 
   useEffect(() => {
     async function load() {
+      if (!electionId) { setLoading(false); return; }
       setLoading(true);
       try {
         setError(null);
-        const res = await api.getCollation(1, level, parentCode);
+        const res = await api.getCollation(electionId, level, parentCode);
         setData(res);
       } catch (e) {
         logger.error(e);
@@ -64,7 +68,7 @@ export default function CollationPage() {
       }
     }
     load();
-  }, [level, parentCode, refreshKey]);
+  }, [level, parentCode, refreshKey, electionId]);
 
   const drillDown = (item: CollationItem) => {
     const next = NEXT_LEVEL[level];
@@ -85,6 +89,13 @@ export default function CollationPage() {
   const topParties = data.length > 0 && data[0].party_scores
     ? [...new Set(data.flatMap(d => d.party_scores.map(p => p.abbreviation)))].slice(0, 6)
     : [];
+
+  if (!electionId && !electionLoading) return (
+    <AuthoritativeDataUnavailable
+      title="No election selected"
+      description="Collation records are election-scoped. Select an election to drill into states, LGAs, wards, and polling units — no election id is assumed by default."
+    />
+  );
 
   if (loading) return <div className="flex items-center justify-center h-64"><Activity className="w-6 h-6 animate-spin text-green-700" /></div>;
 

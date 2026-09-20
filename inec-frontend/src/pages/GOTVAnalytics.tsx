@@ -57,30 +57,43 @@ export default function GOTVAnalytics() {
   const [partyCode] = useGOTVParty();
   const { electionId, elections } = useResolvedElection();
   const electionName = elections.find(e => e.id === electionId)?.title ?? null;
+  // Fetch failures are surfaced explicitly — never rendered as "no data".
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [turnoutError, setTurnoutError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadAnalytics = () => {
     // Analytics are party-scoped — never fetch without an explicit selection.
     if (!partyCode) return;
+    setLoading(true);
+    setLoadError(null);
     const headers = gotvAuthHeaders();
+    const getJson = (r: Response) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); };
     Promise.all([
-      fetch('/gotv/roi/channels', { headers }).then(r => r.json()).catch(() => ({ channels: [] })),
-      fetch('/gotv/ai/variants', { headers }).then(r => r.json()).catch(() => ({ variants: [] })),
+      fetch('/gotv/roi/channels', { headers }).then(getJson),
+      fetch('/gotv/ai/variants', { headers }).then(getJson),
     ]).then(([roiData, aiData]) => {
       setRoi(roiData.channels || []);
       setVariants(aiData.variants || []);
+    }).catch((e) => {
+      setRoi([]);
+      setVariants([]);
+      setLoadError(e instanceof Error ? e.message : 'GOTV analytics service unavailable');
     }).finally(() => setLoading(false));
-  }, [partyCode]);
+  };
+
+  useEffect(() => { loadAnalytics(); }, [partyCode]);
 
   const loadTurnout = () => {
     // Write path: election scope must be explicitly resolved — never hardcoded.
     if (!electionId) return;
+    setTurnoutError(null);
     fetch('/gotv/turnout/predict', {
       method: 'POST', headers: gotvAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ ward_codes: [], election_id: electionId }),
     })
-      .then(r => r.json())
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(d => setPredictions(d.predictions || []))
-      .catch(() => setPredictions([]));
+      .catch((e) => { setPredictions([]); setTurnoutError(e instanceof Error ? e.message : 'turnout prediction failed'); });
   };
 
   if (!partyCode) {
@@ -97,6 +110,23 @@ export default function GOTVAnalytics() {
   }
 
   if (loading) return <div className="text-center py-12 text-muted-foreground">Loading analytics...</div>;
+
+  if (loadError) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <GOTVPartySelector />
+        </div>
+        <Card>
+          <CardContent className="py-8 text-center space-y-3">
+            <p className="font-medium text-red-700">GOTV analytics could not be loaded</p>
+            <p className="text-sm text-muted-foreground">Reference: {loadError}. ROI and AI variant figures are withheld — this is not "no data".</p>
+            <Button variant="outline" size="sm" onClick={loadAnalytics}>Retry</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -209,7 +239,16 @@ export default function GOTVAnalytics() {
 
       {view === 'turnout' && (
         <div className="space-y-2">
-          {predictions.length === 0 ? (
+          {turnoutError && (
+            <Card>
+              <CardContent className="py-4 text-center space-y-2">
+                <p className="text-sm font-medium text-red-700">Turnout prediction failed</p>
+                <p className="text-xs text-muted-foreground">Reference: {turnoutError}</p>
+                <Button variant="outline" size="sm" onClick={loadTurnout} disabled={!electionId}>Retry</Button>
+              </CardContent>
+            </Card>
+          )}
+          {predictions.length === 0 && !turnoutError ? (
             <Card>
               <CardContent className="py-8 text-center">
                 <p className="text-muted-foreground mb-3">Run turnout prediction for all wards</p>

@@ -19,7 +19,7 @@ func initDB(db *sql.DB) {
 		username TEXT UNIQUE NOT NULL,
 		password_hash TEXT NOT NULL,
 		full_name TEXT NOT NULL,
-		role TEXT NOT NULL CHECK(role IN ('admin','presiding_officer','collation_officer','observer','public')),
+		role TEXT NOT NULL CHECK(role IN ('admin','presiding_officer','collation_officer','returning_officer','ict_officer','security','dpo','officer','observer','public')), -- SEC-14: keep in sync with migrations/000050
 		staff_id TEXT UNIQUE,
 		state_code TEXT,
 		lga_code TEXT,
@@ -182,9 +182,17 @@ func initDB(db *sql.DB) {
 		polling_units_reported INTEGER DEFAULT 0,
 		polling_units_total INTEGER DEFAULT 0,
 		status TEXT DEFAULT 'in_progress' CHECK(status IN ('in_progress','completed','disputed')),
+		form_type TEXT,
+		form_serial TEXT,
+		form_image_hash TEXT,
+		signed_by TEXT,
+		form_submitted_at TIMESTAMP,
 		last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (election_id) REFERENCES elections(id),
-		UNIQUE(election_id, level, area_code)
+		UNIQUE(election_id, level, area_code),
+		CHECK ((level = 'ward' AND (form_type = 'EC8B' OR form_type IS NULL)) OR
+			(level = 'lga' AND (form_type = 'EC8C' OR form_type IS NULL)) OR
+			(level IN ('state','national') AND form_type IS NULL)) -- GAP-2: keep in sync with migrations/000051
 	);
 	CREATE TABLE IF NOT EXISTS collation_party_scores (
 		id SERIAL PRIMARY KEY,
